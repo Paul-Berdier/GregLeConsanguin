@@ -8,8 +8,11 @@ class Voice(commands.Cog):
     @commands.command()
     async def join(self, ctx):
         """Fait rejoindre Greg le Consanguin dans le salon vocal."""
-        if ctx.author.voice:
-            channel = ctx.author.voice.channel
+        # Récupérer l'utilisateur en tant que "Member"
+        member = ctx.guild.get_member(ctx.author.id)
+
+        if member and member.voice:  # Vérifie si l'auteur est bien un membre et s'il est en vocal
+            channel = member.voice.channel
             await channel.connect()
             await ctx.send("Pff… Encore une corvée. Bon, me voilà dans le vocal.")
         else:
@@ -22,7 +25,7 @@ class Voice(commands.Cog):
             await ctx.voice_client.disconnect()
             await ctx.send("Tsss… Je m’en vais, bande de gueux.")
         else:
-            await ctx.send("Je suis pas dans un vocal, cervelle de moineau.")
+            await ctx.send("Je suis pas dans un salon vocal, cervelle de moineau.")
 
 def setup(bot):
     bot.add_cog(Voice(bot))
