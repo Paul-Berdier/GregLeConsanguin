@@ -1,16 +1,15 @@
 from discord.ext import commands
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
+import requests
 import config
-import os
 from gtts import gTTS
+import os
+
 
 class ChatAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.model_name = "mistralai/Mistral-7B-Instruct-v0.1"
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float16)
+        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+        self.headers = {"Authorization": f"Bearer {config.HUGGINGFACE_API_KEY}"}
 
     @commands.command()
     async def ask(self, ctx, *, question):
@@ -21,19 +20,23 @@ class ChatAI(commands.Cog):
 
         await ctx.send("Ugh… Je réfléchis...")
 
-        # Générer une réponse
-        inputs = self.tokenizer(question, return_tensors="pt")
-        outputs = self.model.generate(**inputs, max_length=200)
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Envoyer la requête à Hugging Face
+        response = requests.post(self.api_url, headers=self.headers, json={"inputs": question})
 
-        await ctx.send(f"🤖 Greg : {response}")
+        if response.status_code == 200:
+            response_text = response.json()[0]["generated_text"]
+        else:
+            response_text = "Je suis trop fatigué pour réfléchir… Réessaie plus tard."
+
+        await ctx.send(f"🤖 Greg : {response_text}")
 
         # Synthèse vocale
         filename = "response.mp3"
-        tts = gTTS(text=response, lang="fr")
+        tts = gTTS(text=response_text, lang="fr")
         tts.save(filename)
 
         ctx.voice_client.play(discord.FFmpegPCMAudio(filename))
+
 
 def setup(bot):
     bot.add_cog(ChatAI(bot))
