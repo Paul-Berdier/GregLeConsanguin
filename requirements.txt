@@ -5,3 +5,5 @@ ffmpeg
 gtts
 numpy
 python-dotenv
+transformers
+huggingface_hub
