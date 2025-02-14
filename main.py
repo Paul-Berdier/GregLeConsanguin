@@ -10,6 +10,7 @@ intents.messages = True
 intents.guilds = True
 intents.voice_states = True
 intents.message_content = True  # Active l'accès aux messages
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
