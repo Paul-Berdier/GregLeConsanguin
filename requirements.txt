@@ -7,3 +7,4 @@ numpy
 python-dotenv
 transformers
 huggingface_hub
+torch
