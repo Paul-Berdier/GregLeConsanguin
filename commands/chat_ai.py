@@ -8,7 +8,7 @@ import os
 class ChatAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
         self.headers = {"Authorization": f"Bearer {config.HUGGINGFACE_API_KEY}"}
 
     @commands.command()
