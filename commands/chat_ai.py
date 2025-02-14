@@ -8,7 +8,7 @@ from gtts import gTTS
 class ChatAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.model_name = "mistralai/Mistral-7B"
+        self.model_name = "mistralai/Mistral-7B-Instruct-v0.3"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float16)
 
