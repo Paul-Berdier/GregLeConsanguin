@@ -1,0 +1,7 @@
+discord.py
+openai
+yt-dlp
+ffmpeg
+gtts
+numpy
+python-dotenv
