@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import yt_dlp
+import os
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -15,7 +16,15 @@ class Music(commands.Cog):
 
         await ctx.send("🎵 Pff… Je vais chercher ta musique.")
 
-        # Télécharger l'audio avec les cookies YouTube
+        # Récupérer le chemin des cookies depuis Railway
+        cookies_path = os.getenv("YOUTUBE_COOKIES_PATH", "youtube.com_cookies.txt")
+
+        # Vérifier si le fichier de cookies existe
+        if not os.path.exists(cookies_path):
+            await ctx.send("❌ Erreur : Le fichier de cookies est introuvable. Vérifie qu'il est bien ajouté.")
+            return
+
+        # Télécharger l'audio avec yt-dlp et les cookies YouTube
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -24,7 +33,9 @@ class Music(commands.Cog):
                 'preferredquality': '192',
             }],
             'outtmpl': 'song.mp3',
-            'cookies': 'youtube.com_cookies.txt'  # Utiliser les cookies exportés
+            'cookies': cookies_path,  # Utiliser les cookies exportés
+            'noplaylist': True,  # Évite les playlists
+            'quiet': False  # Active les logs pour voir si les cookies sont bien lus
         }
 
         try:
@@ -37,7 +48,7 @@ class Music(commands.Cog):
             await ctx.send("🎶 Voilà… J'espère que tu vas aimer, sombre idiot.")
 
         except Exception as e:
-            await ctx.send(f"Erreur en téléchargeant la musique : {e}")
+            await ctx.send(f"❌ Erreur en téléchargeant la musique : {e}")
 
 def setup(bot):
     bot.add_cog(Music(bot))
