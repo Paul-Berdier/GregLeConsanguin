@@ -16,15 +16,15 @@ class Music(commands.Cog):
 
         await ctx.send("🎵 Pff… Je vais chercher ta musique.")
 
-        # Récupérer le chemin des cookies depuis Railway
-        cookies_path = os.getenv("YOUTUBE_COOKIES_PATH", "youtube.com_cookies.txt")
+        # Récupérer le bon chemin des cookies
+        cookies_path = os.getenv("YOUTUBE_COOKIES_PATH", "/app/youtube.com_cookies.txt")
 
-        # Vérifier si le fichier de cookies existe
+        # Vérifier si le fichier existe
         if not os.path.exists(cookies_path):
-            await ctx.send("❌ Erreur : Le fichier de cookies est introuvable. Vérifie qu'il est bien ajouté.")
+            await ctx.send("❌ Erreur : Le fichier de cookies YouTube est introuvable.")
             return
 
-        # Télécharger l'audio avec yt-dlp et les cookies YouTube
+        # Télécharger l'audio avec yt-dlp et les cookies
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -33,9 +33,10 @@ class Music(commands.Cog):
                 'preferredquality': '192',
             }],
             'outtmpl': 'song.mp3',
-            'cookies': cookies_path,  # Utiliser les cookies exportés
-            'noplaylist': True,  # Évite les playlists
-            'quiet': False  # Active les logs pour voir si les cookies sont bien lus
+            'cookies': cookies_path,  # Utilisation des cookies YouTube
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'quiet': False  # Debugging
         }
 
         try:
