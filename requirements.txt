@@ -1,6 +1,6 @@
 discord.py
 openai
-yt-dlp
+yt-dlp --upgrade
 ffmpeg
 gtts
 numpy

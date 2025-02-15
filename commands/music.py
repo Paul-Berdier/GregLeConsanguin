@@ -8,14 +8,14 @@ class Music(commands.Cog):
 
     @commands.command()
     async def play(self, ctx, url):
-        """Joue une musique YouTube"""
+        """Joue une musique YouTube en utilisant yt-dlp avec des cookies."""
         if not ctx.voice_client:
-            await ctx.send("Tsss… Faut que je sois dans un vocal d’abord, abruti.")
+            await ctx.send("Je dois être dans un salon vocal, imbécile. Utilise `!join` d'abord.")
             return
 
         await ctx.send("🎵 Pff… Je vais chercher ta musique.")
 
-        # Télécharger l'audio
+        # Télécharger l'audio avec les cookies YouTube
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -24,15 +24,20 @@ class Music(commands.Cog):
                 'preferredquality': '192',
             }],
             'outtmpl': 'song.mp3',
+            'cookies': 'youtube.com_cookies.txt'  # Utiliser les cookies exportés
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-        # Lire la musique
-        ctx.voice_client.play(discord.FFmpegPCMAudio("song.mp3"))
+            # Lire l'audio dans le vocal
+            ctx.voice_client.play(discord.FFmpegPCMAudio("song.mp3"))
 
-        await ctx.send("🎶 Voilà… C’est pas trop dur pour toi d’écouter une mélodie ?")
+            await ctx.send("🎶 Voilà… J'espère que tu vas aimer, sombre idiot.")
+
+        except Exception as e:
+            await ctx.send(f"Erreur en téléchargeant la musique : {e}")
 
 def setup(bot):
     bot.add_cog(Music(bot))
