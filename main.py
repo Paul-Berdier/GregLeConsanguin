@@ -5,6 +5,10 @@ from commands.voice import Voice
 from commands.music import Music
 from commands.chat_ai import ChatAI
 
+import os
+os.system("apt-get update && apt-get install -y ffmpeg")
+
+
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
