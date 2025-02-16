@@ -1,10 +1,9 @@
 discord.py
 openai
 yt-dlp
-static-ffmpeg
-ffmpeg
-gtts
+ffmpeg-python
 numpy
+gtts
 python-dotenv
 transformers
 huggingface_hub
