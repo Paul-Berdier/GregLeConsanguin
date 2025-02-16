@@ -1,6 +1,7 @@
 discord.py
 openai
 yt-dlp
+ffmpeg-static
 ffmpeg
 gtts
 numpy
