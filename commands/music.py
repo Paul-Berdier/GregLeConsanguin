@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import yt_dlp
-from ffmpeg_static import get_ffmpeg_path
+from static-ffmpeg import get_ffmpeg_path
 import discord
 
 import os
