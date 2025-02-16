@@ -2,8 +2,6 @@ import discord
 from discord.ext import commands
 import yt_dlp
 import ffmpeg
-import discord
-
 import os
 
 class Music(commands.Cog):
@@ -12,31 +10,32 @@ class Music(commands.Cog):
 
     @commands.command()
     async def play(self, ctx, url):
-        """Joue une musique YouTube en utilisant yt-dlp avec des cookies."""
+        """Télécharge et joue une musique YouTube avec des cookies."""
+
         if not ctx.voice_client:
-            await ctx.send("Je dois être dans un salon vocal, imbécile. Utilise `!join` d'abord.")
+            await ctx.send("Je dois être dans un salon vocal ! Utilise `!join` d'abord.")
             return
 
         await ctx.send("🎵 Pff… Je vais chercher ta musique.")
 
-        # Récupérer le bon chemin des cookies
+        # Récupérer le chemin des cookies YouTube
         cookies_path = os.getenv("YOUTUBE_COOKIES_PATH", "/app/youtube.com_cookies.txt")
 
         # Vérifier si le fichier existe
         if not os.path.exists(cookies_path):
-            await ctx.send("❌ Erreur : Le fichier de cookies YouTube est introuvable.")
+            await ctx.send(f"❌ Erreur : Le fichier de cookies YouTube est introuvable à `{cookies_path}`.")
             return
 
-        # Télécharger l'audio avec yt-dlp et les cookies
+        # Options yt-dlp avec cookies
         ydl_opts = {
             'format': 'bestaudio/best',
+            'outtmpl': 'song.mp3',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': 'song.mp3',
-            'cookies': cookies_path,  # Utilisation des cookies YouTube
+            'cookiefile': cookies_path,  # ✅ Utilisation correcte des cookies
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'quiet': False  # Debugging
@@ -53,7 +52,7 @@ class Music(commands.Cog):
             # Lire l'audio dans le vocal
             ctx.voice_client.play(discord.FFmpegPCMAudio("converted.mp3"))
 
-            await ctx.send("🎶 Voilà… J'espère que tu vas aimer, sombre idiot.")
+            await ctx.send("🎶 Voilà… J'espère que tu vas aimer.")
 
         except Exception as e:
             await ctx.send(f"❌ Erreur en téléchargeant la musique : {e}")
