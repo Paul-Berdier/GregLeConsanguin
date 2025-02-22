@@ -9,14 +9,25 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.queue = []  # File d'attente des musiques
-        self.is_playing = False  # Indique si une musique est en cours de lecture
+        self.is_playing = False
         self.current_song = None  # Musique actuellement en lecture
+        self.ffmpeg_path = self.detect_ffmpeg()  # Détecte automatiquement ffmpeg
+
+    def detect_ffmpeg(self):
+        """Détecte ffmpeg et retourne son chemin."""
+        FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "ffmpeg"]
+        for path in FFMPEG_PATHS:
+            if os.path.exists(path) and os.access(path, os.X_OK):  # Vérifie si exécutable
+                print(f"🔥 FFmpeg détecté : {path}")
+                return path
+        print("❌ Aucun ffmpeg trouvé, Railway est en PLS.")
+        return "ffmpeg"  # Tente par défaut
 
     @commands.command()
     async def play(self, ctx, url):
         """Ajoute une musique à la playlist et joue si inactif."""
         if ctx.voice_client is None:
-            await ctx.invoke(self.join)  # Fait rejoindre le vocal automatiquement
+            await ctx.invoke(ctx.bot.get_cog("Voice").join)  # Fait rejoindre le vocal automatiquement
 
         await ctx.send(f"🎵 Tss… Encore une requête ridicule. **{url}** ajouté à la playlist.")
         self.queue.append(url)
@@ -44,10 +55,9 @@ class Music(commands.Cog):
         filename, title, duration = song_info
         self.current_song = title
 
-        # **Correction ici : utilisation correcte de FFmpeg avec get_ffmpeg_path()**
         try:
             ctx.voice_client.play(
-                discord.FFmpegPCMAudio(filename, executable="ffmpeg"),  # Utilise "ffmpeg" directement
+                discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),  # Utilise le chemin détecté
                 after=lambda e: self.bot.loop.create_task(self.play_next(ctx))
             )
             await ctx.send(f"🎶 Bon... **{title}** (`{duration}`), tiens, t'es content ?")
@@ -56,6 +66,8 @@ class Music(commands.Cog):
 
     async def download_audio(self, url):
         """Télécharge et convertit la musique en mp3."""
+        os.makedirs("downloads", exist_ok=True)  # Crée le dossier si absent
+
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloads/%(title)s.%(ext)s',
@@ -64,13 +76,12 @@ class Music(commands.Cog):
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'cookiefile': "youtube.com_cookies.txt",  # ✅ Utilisation des cookies
+            'ffmpeg_location': self.ffmpeg_path,  # 🔥 Force l'utilisation de ffmpeg
+            'cookiefile': "youtube.com_cookies.txt",
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'quiet': False,
         }
-
-        os.makedirs("downloads", exist_ok=True)  # Crée le dossier si absent
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
