@@ -9,4 +9,3 @@ transformers
 huggingface_hub
 torch
 PyNaCl
-ffmpeg-static
