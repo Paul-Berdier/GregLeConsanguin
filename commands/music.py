@@ -13,21 +13,6 @@ class Music(commands.Cog):
         self.current_song = None  # Musique actuellement en lecture
 
     @commands.command()
-    async def join(self, ctx):
-        """Fait rejoindre Greg dans un salon vocal."""
-        if ctx.author.voice is None:
-            await ctx.send("❌ T'es même pas dans un vocal, sombre idiot.")
-            return
-
-        voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            await voice_channel.connect()
-            await ctx.send(f"👑 Greg le Consanguin se ramène dans **{voice_channel.name}**. C'est quoi cet endroit miteux ?")
-        else:
-            await ctx.voice_client.move_to(voice_channel)
-            await ctx.send(f"👑 Greg le Consanguin s’installe dans **{voice_channel.name}**. Vous allez faire quoi ? Me virer ?")
-
-    @commands.command()
     async def play(self, ctx, url):
         """Ajoute une musique à la playlist et joue si inactif."""
         if ctx.voice_client is None:

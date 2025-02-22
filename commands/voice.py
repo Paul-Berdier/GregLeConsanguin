@@ -7,16 +7,20 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def join(self, ctx):
-        """Fait rejoindre Greg le Consanguin dans le salon vocal."""
-        # Récupérer l'utilisateur en tant que "Member"
-        member = ctx.guild.get_member(ctx.author.id)
+        """Fait rejoindre Greg dans un salon vocal."""
+        if ctx.author.voice is None:
+            await ctx.send("❌ T'es même pas dans un vocal, sombre idiot.")
+            return
 
-        if member and member.voice:  # Vérifie si l'auteur est bien un membre et s'il est en vocal
-            channel = member.voice.channel
-            await channel.connect()
-            await ctx.send("Pff… Encore une corvée. Bon, me voilà dans le vocal.")
+        voice_channel = ctx.author.voice.channel
+        if ctx.voice_client is None:
+            await voice_channel.connect()
+            await ctx.send(
+                f"👑 Greg le Consanguin se ramène dans **{voice_channel.name}**. C'est quoi cet endroit miteux ?")
         else:
-            await ctx.send("T'es même pas dans un vocal, idiot.")
+            await ctx.voice_client.move_to(voice_channel)
+            await ctx.send(
+                f"👑 Greg le Consanguin s’installe dans **{voice_channel.name}**. Vous allez faire quoi ? Me virer ?")
 
     @commands.command()
     async def leave(self, ctx):
