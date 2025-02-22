@@ -101,15 +101,6 @@ class Music(commands.Cog):
         await ctx.send("⏹ Marre de vos goûts éclatés, Greg coupe tout.")
 
     @commands.command()
-    async def leave(self, ctx):
-        """Fait quitter Greg du salon vocal."""
-        if ctx.voice_client is not None:
-            await ctx.voice_client.disconnect()
-            await ctx.send("👋 Greg se barre. Vous êtes nuls.")
-        else:
-            await ctx.send("❌ Je suis même pas là, abruti.")
-
-    @commands.command()
     async def playlist(self, ctx):
         """Affiche la file d'attente."""
         if len(self.queue) == 0:
