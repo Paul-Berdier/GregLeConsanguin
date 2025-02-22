@@ -3,10 +3,7 @@ from discord.ext import commands
 import yt_dlp
 import os
 import asyncio
-import static_ffmpeg  # Import de static-ffmpeg
-
-# Ajoute automatiquement ffmpeg au PATH
-static_ffmpeg.add_paths()
+from ffmpeg_static import get_ffmpeg_path  # Import correct de ffmpeg-static
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -62,10 +59,10 @@ class Music(commands.Cog):
         filename, title, duration = song_info
         self.current_song = title
 
-        # Jouer la musique avec `static_ffmpeg`
+        # **Correction ici : utilisation correcte de FFmpeg avec get_ffmpeg_path()**
         try:
             ctx.voice_client.play(
-                discord.FFmpegPCMAudio(filename, executable="static_ffmpeg"),
+                discord.FFmpegPCMAudio(filename, executable=get_ffmpeg_path()),
                 after=lambda e: self.bot.loop.create_task(self.play_next(ctx))
             )
             await ctx.send(f"🎶 Bon... **{title}** (`{duration}`), tiens, t'es content ?")
