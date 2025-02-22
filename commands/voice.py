@@ -27,9 +27,9 @@ class Voice(commands.Cog):
         """Fait quitter Greg le Consanguin du salon vocal."""
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
-            await ctx.send("Tsss… Je m’en vais, bande de gueux.")
+            await ctx.send("👋 Tsss… Je m’en vais, bande de gueux.")
         else:
-            await ctx.send("Je suis pas dans un salon vocal, cervelle de moineau.")
+            await ctx.send("❌ Je suis pas dans un salon vocal, cervelle de moineau.")
 
 def setup(bot):
     bot.add_cog(Voice(bot))
