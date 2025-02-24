@@ -31,7 +31,6 @@ class Music(commands.Cog):
 
         await ctx.send(f"🎵 Tss… Encore une requête ridicule. **{url}** ajouté à la playlist.")
         self.queue.append(url)
-
         if not self.is_playing:
             await self.play_next(ctx)
 
