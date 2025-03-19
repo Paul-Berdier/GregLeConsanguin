@@ -79,7 +79,21 @@ class Music(commands.Cog):
 
     async def add_to_queue(self, ctx, url):
         """Ajoute une musique à la playlist et joue si inactif."""
-        await ctx.send(f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,  # Ne télécharge pas directement
+            'force_generic_extractor': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            # Si c'est une playlist, ne garde que la première vidéo
+            if 'entries' in info:
+                url = info['entries'][0]['url']  # Prend uniquement la première vidéo
+
+        await ctx.send(
+            f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
         self.queue.append(url)
 
         if not self.is_playing:
@@ -140,7 +154,7 @@ class Music(commands.Cog):
                 title = info.get('title', 'Musique inconnue')
                 duration = info.get('duration', 0)
 
-                if duration > 3600:
+                if duration > 1200:
                     await ctx.send(f"⛔ *Une heure ?! Êtes-vous devenu fou, Ô Maître cruel ?*")
                     return None
 
