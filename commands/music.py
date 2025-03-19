@@ -119,6 +119,7 @@ class Music(commands.Cog):
         """Télécharge et convertit la musique en mp3 avec contrôle de durée."""
         os.makedirs("downloads", exist_ok=True)  # Crée le dossier si absent
 
+
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloads/%(title)s.%(ext)s',
