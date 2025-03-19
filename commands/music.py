@@ -130,6 +130,7 @@ class Music(commands.Cog):
             'nocheckcertificate': True,
             'ignoreerrors': False,
             'quiet': False,
+            'cookiefile': "youtube.com_cookies.txt"
         }
 
         try:
