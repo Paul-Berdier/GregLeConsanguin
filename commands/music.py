@@ -38,11 +38,12 @@ class Music(commands.Cog):
     async def search_youtube(self, ctx, query):
         """Recherche YouTube et propose 3 résultats."""
         ydl_opts = {
-            'quiet': True,
+            'quiet': False,  # Met à False pour voir les erreurs
             'default_search': 'ytsearch3',
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'extract_flat': True,
+            'force_generic_extractor': True,  # Force le bon extracteur
         }
 
         try:
