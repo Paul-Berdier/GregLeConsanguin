@@ -36,47 +36,35 @@ class Music(commands.Cog):
             await self.search_youtube(ctx, query_or_url)
 
     async def search_youtube(self, ctx, query):
-        """Recherche YouTube et propose 3 résultats."""
+        """Recherche YouTube et ajoute directement la première vidéo trouvée."""
         ydl_opts = {
             'quiet': False,  # Met à False pour voir les erreurs
-            'default_search': 'ytsearch3',
+            'format': 'bestaudio/best',
+            'default_search': 'ytsearch1',  # Cherche et récupère uniquement la première vidéo
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'extract_flat': True,
-            'force_generic_extractor': True,  # Force le bon extracteur
+            'extract_flat': False,  # On désactive extract_flat pour éviter les erreurs
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 results = ydl.extract_info(query, download=False)
 
-            if not results or 'entries' not in results:
-                await ctx.send("❌ *Hélas, Majesté... je ne trouve rien. Mais que suis-je, si ce n'est un serviteur incapable...*")
+            if not results or 'entries' not in results or len(results['entries']) == 0:
+                await ctx.send(
+                    "❌ *Hélas, Majesté... je ne trouve rien. Peut-être votre goût musical est-il tout simplement introuvable...*")
                 return
 
-            self.search_results[ctx.author.id] = results['entries']
+            video = results['entries'][0]  # Prend uniquement la première vidéo
+            chosen_url = video['url']
+            title = video['title']
 
-            message = "**🔍 Voici ce que j'ai péniblement trouvé, Votre Grandeur :**\n"
-            for i, video in enumerate(results['entries'], 1):
-                message += f"**{i}.** [{video['title']}]({video['url']})\n"
-
-            message += "\n*Daignez me donner un numéro, Ô Lumière du royaume...*"
-
-            await ctx.send(message)
-
-            def check(m):
-                return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= 3
-
-            try:
-                msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-                choice = int(msg.content) - 1
-                chosen_url = self.search_results[ctx.author.id][choice]['url']
-                await self.add_to_queue(ctx, chosen_url)
-            except asyncio.TimeoutError:
-                await ctx.send("⏳ *Ô Ciel ! Que d’indécision ! Greg retourne à ses misérables obligations...*")
+            await ctx.send(f"🎵 *Majesté, j'ai trouvé ceci :* [{title}]({chosen_url})")
+            await self.add_to_queue(ctx, chosen_url)
 
         except Exception as e:
             await ctx.send(f"❌ *Ah... encore un imprévu... Comme la vie est cruelle envers un simple serf...* {e}")
+            print(f"Erreur dans search_youtube: {e}")
 
     async def add_to_queue(self, ctx, url):
         """Ajoute une musique à la playlist et joue si inactif."""
