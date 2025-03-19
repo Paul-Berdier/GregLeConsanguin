@@ -28,59 +28,59 @@ class Music(commands.Cog):
         if ctx.voice_client is None:
             await ctx.invoke(self.bot.get_command("join"))  # Fait rejoindre le vocal
 
-        await ctx.send(
-            f"🎵 *Ugh... Encore une de vos requêtes, Majesté ? Bien sûr... Que ne ferais-je pas pour vous...*")
+        await ctx.send(f"🎵 *Ugh... Encore une de vos requêtes, Majesté ?* Bien sûr... Que ne ferais-je pas pour vous...")
 
-        # Vérifie si c'est un lien YouTube
-        if query_or_url.startswith(("http://", "https://")) and (
-                "youtube.com/watch?v=" in query_or_url or "youtu.be/" in query_or_url):
+        if "youtube.com/watch?v=" in query_or_url or "youtu.be/" in query_or_url:
             await self.add_to_queue(ctx, query_or_url)
         else:
             await self.search_youtube(ctx, query_or_url)
 
     async def search_youtube(self, ctx, query):
-        """Recherche YouTube et ajoute directement la première vidéo trouvée."""
+        """Recherche YouTube et propose 3 résultats."""
         ydl_opts = {
-            'quiet': False,
-            'format': 'bestaudio/best',
-            'default_search': 'ytsearch1',  # Prend UNIQUEMENT la première vidéo
+            'quiet': True,
+            'default_search': 'ytsearch3',
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'extract_flat': False,  # Désactive extract_flat pour récupérer les bonnes infos
+            'extract_flat': True,
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(query, download=False)
+                results = ydl.extract_info(query, download=False)
 
-            if not info or 'entries' not in info or len(info['entries']) == 0:
-                await ctx.send("❌ *Hélas, Majesté... je ne trouve rien. Peut-être votre goût musical est-il tout simplement introuvable...*")
+            if not results or 'entries' not in results:
+                await ctx.send("❌ *Hélas, Majesté... je ne trouve rien. Mais que suis-je, si ce n'est un serviteur incapable...*")
                 return
 
-            video = info['entries'][0]  # Prend uniquement la première vidéo
-            chosen_url = video['url']
-            title = video['title']
+            self.search_results[ctx.author.id] = results['entries']
 
-            await ctx.send(f"🎵 *Majesté, voici votre requête :* [{title}]({chosen_url})")
-            await self.add_to_queue(ctx, chosen_url, title)
+            message = "**🔍 Voici ce que j'ai péniblement trouvé, Votre Grandeur :**\n"
+            for i, video in enumerate(results['entries'], 1):
+                message += f"**{i}.** [{video['title']}]({video['url']})\n"
+
+            message += "\n*Daignez me donner un numéro, Ô Lumière du royaume...*"
+
+            await ctx.send(message)
+
+            def check(m):
+                return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= 3
+
+            try:
+                msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+                choice = int(msg.content) - 1
+                chosen_url = self.search_results[ctx.author.id][choice]['url']
+                await self.add_to_queue(ctx, chosen_url)
+            except asyncio.TimeoutError:
+                await ctx.send("⏳ *Ô Ciel ! Que d’indécision ! Greg retourne à ses misérables obligations...*")
 
         except Exception as e:
             await ctx.send(f"❌ *Ah... encore un imprévu... Comme la vie est cruelle envers un simple serf...* {e}")
-            print(f"Erreur dans search_youtube: {e}")
 
-    async def add_to_queue(self, ctx, url, title=None):
+    async def add_to_queue(self, ctx, url):
         """Ajoute une musique à la playlist et joue si inactif."""
-        song_info = await self.download_audio(ctx, url)
-
-        if song_info is None:
-            await ctx.send("❌ *Impossible de télécharger ce caprice musical...*")
-            return
-
-        filename, title = song_info
-        self.queue.append(filename)
-
-        await ctx.send(f"🎵 **{title}** ajouté à la playlist. *Que cette abomination commence...*")
-
+        await ctx.send(f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
+        self.queue.append(url)
 
         if not self.is_playing:
             await self.play_next(ctx)
@@ -116,9 +116,8 @@ class Music(commands.Cog):
             await ctx.send(f"❌ *Oh, quelle horreur... Encore un problème...* {e}")
 
     async def download_audio(self, ctx, url):
-        """Télécharge et convertit la musique en mp3 avec contrôle de durée."""
+        """Télécharge et convertit la musique en mp3 (avec vérification de durée et cookies)."""
         os.makedirs("downloads", exist_ok=True)  # Crée le dossier si absent
-
 
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -129,33 +128,33 @@ class Music(commands.Cog):
                 'preferredquality': '192',
             }],
             'ffmpeg_location': self.ffmpeg_path,
+            'cookiefile': "youtube.com_cookies.txt",
             'nocheckcertificate': True,
             'ignoreerrors': False,
             'quiet': False,
-            'cookiefile': "youtube.com_cookies.txt"
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)  # Ne télécharge pas encore, on vérifie d'abord
+                info = ydl.extract_info(url, download=False)
                 title = info.get('title', 'Musique inconnue')
                 duration = info.get('duration', 0)
 
-                # Vérifie que la durée est raisonnable
-                if duration > 1200:  # 20 minutes max
-                    await ctx.send(f"⛔ *Combien de temps ?! Êtes-vous devenu fou, Ô Maître cruel ? (20 minutes max)*")
+                if duration > 3600:
+                    await ctx.send(f"⛔ *Une heure ?! Êtes-vous devenu fou, Ô Maître cruel ?*")
                     return None
 
-                ydl.download([url])  # Maintenant, on télécharge
-
-                # Génère le bon nom de fichier en .mp3
+                ydl.download([url])
                 filename = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
 
             return filename, title, duration
 
+        except yt_dlp.utils.DownloadError as e:
+            await ctx.send(f"❌ *Impossible de satisfaire ce caprice, Ô Seigneur du mauvais goût...* {e}")
+            return None
+
         except Exception as e:
-            print(f"Erreur dans download_audio: {e}")
-            await ctx.send(f"❌ *Majesté, impossible de récupérer ce titre... Encore une de vos idées de génie.*")
+            print(f"Erreur inattendue : {e}")
             return None
 
     @commands.command()
