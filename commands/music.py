@@ -96,6 +96,7 @@ class Music(commands.Cog):
             f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
         self.queue.append(url)
 
+
         if not self.is_playing:
             await self.play_next(ctx)
 
