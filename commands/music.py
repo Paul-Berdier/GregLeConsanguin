@@ -54,7 +54,7 @@ class Music(commands.Cog):
                 info = ydl.extract_info(query, download=False)
 
             if not info or 'entries' not in info or len(info['entries']) == 0:
-                "❌ *Hélas, Majesté... je ne trouve rien. Peut-être votre goût musical est-il tout simplement introuvable...*")
+                await ctx.send("❌ *Hélas, Majesté... je ne trouve rien. Peut-être votre goût musical est-il tout simplement introuvable...*")
                 return
 
             video = info['entries'][0]  # Prend uniquement la première vidéo
