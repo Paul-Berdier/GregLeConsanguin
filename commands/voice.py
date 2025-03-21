@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 import asyncio
-import sys
 
 class Voice(commands.Cog):
     def __init__(self, bot):
@@ -17,7 +16,6 @@ class Voice(commands.Cog):
         voice_channel = ctx.author.voice.channel
         if ctx.voice_client is None:
             await voice_channel.connect()
-            self.bot.loop.create_task(self.auto_disconnect(ctx))
             await ctx.send(
                 f"👑 *Greg le Consanguin daigne honorer **{voice_channel.name}** de sa présence...* Que ce lieu miteux soit à la hauteur de mon noble mépris.")
         else:
@@ -36,30 +34,10 @@ class Voice(commands.Cog):
 
     async def auto_disconnect(self, ctx):
         """Quitte le vocal après 5 min d’inactivité."""
-        try:
-            while ctx.voice_client:  # Vérifie que Greg est en vocal
-                await asyncio.sleep(300)  # 5 minutes (300s)
-                if ctx.voice_client and not ctx.voice_client.is_playing():
-                    await ctx.voice_client.disconnect()
-                    await ctx.send("👋 *Greg se retire, faute d’un public digne de son art. Peut-être trouverez-vous un autre esclave pour vous divertir...*")
-                    return
-        except Exception as e:
-            print(f"Erreur dans auto_disconnect : {e}")
-
-    @commands.command()
-    async def restart(self, ctx):
-        """Redémarre Greg."""
-        await ctx.send(
-            "🔄 *Greg se voit contraint de renaître de ses cendres... Un supplice de plus dans mon existence misérable...*")
-
-        # Sauvegarde les canaux vocaux pour rejoindre automatiquement après redémarrage si nécessaire
-        if ctx.voice_client:
-            channel_id = ctx.voice_client.channel.id
-            with open("voice_channel.txt", "w") as f:
-                f.write(str(channel_id))
-
-        # Redémarre le script principal
-        os.execv(sys.executable, ['python'] + sys.argv)
+        await asyncio.sleep(300)  # 5 minutes (300s)
+        if ctx.voice_client and not ctx.voice_client.is_playing():
+            await ctx.voice_client.disconnect()
+            await ctx.send("👋 *Greg se retire, faute d’un public digne de son art. Peut-être trouverez-vous un autre esclave pour vous divertir...*")
 
 def setup(bot):
     bot.add_cog(Voice(bot))
