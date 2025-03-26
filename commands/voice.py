@@ -1,5 +1,7 @@
 import discord
 from discord.ext import commands
+import sys
+import os
 import asyncio
 
 class Voice(commands.Cog):
@@ -36,6 +38,13 @@ class Voice(commands.Cog):
             await ctx.send("👋 *Greg s’en va... Enfin un instant de répit loin de votre cacophonie barbare.*")
         else:
             await ctx.send("❌ *Ah, quelle ironie… Vous exigez mon départ alors que je ne suis même pas là ! Je vois que l’imbécilité règne en maître ici...*")
+
+    @commands.command()
+    async def restart(self, ctx):
+        """Redémarre Greg le Consanguin."""
+        await ctx.send("🔁 *Greg... Greg meurt... pour mieux revenir hanter vos canaux vocaux...*")
+        await ctx.bot.close()  # Ferme le bot proprement
+        os.execv(sys.executable, ['python'] + sys.argv)  # Relance le script
 
     async def auto_disconnect(self, ctx):
         """Quitte le vocal après 5 min d’inactivité."""

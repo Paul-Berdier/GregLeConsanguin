@@ -111,6 +111,7 @@ class Music(commands.Cog):
                 after=lambda e: self.bot.loop.create_task(self.play_next(ctx))
             )
             await ctx.send(f"🎶 *Majesté, voici votre requête, aussi abominable soit-elle :* **{title}** (`{duration}`).")
+            self.bot.loop.create_task(self.bot.get_cog("Voice").auto_disconnect(ctx))
         except Exception as e:
             await ctx.send(f"❌ *Oh, quelle horreur... Encore un problème...* {e}")
 
