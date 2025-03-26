@@ -11,7 +11,9 @@
 ✔ **Télécharge et joue des musiques YouTube avec `yt-dlp` et `FFmpeg`.**  
 ✔ **Affiche la file d’attente et permet de naviguer entre les musiques.**  
 ✔ **Permet de rechercher une musique par texte et de choisir parmi les 3 meilleures.**  
+✔ **Prend uniquement la première musique si un lien de playlist est donné.**  
 ✔ **Se déconnecte après 5 minutes d’inactivité, parce qu’il n’a pas que ça à faire.**  
+✔ **Peut être redémarré avec une commande `!restart`, comme une malédiction éternelle.**  
 ✔ **Vous insulte subtilement (ou pas).**  
 
 ---
@@ -101,13 +103,14 @@ railway run ffmpeg -version
 |----------|------------|
 | `!join` | Greg rejoint le vocal (en râlant). |
 | `!leave` | Greg quitte le vocal (soulagé). |
-| `!play <url/recherche>` | Ajoute une musique YouTube ou cherche une vidéo. |
+| `!play <url/recherche>` | Ajoute une musique YouTube ou cherche une vidéo. Prend uniquement la première musique si c’est une playlist. |
 | `!pause` | Met en pause la musique avec un soupir exaspéré. |
 | `!resume` | Reprend la musique (contraint et forcé). |
 | `!skip` | Passe à la musique suivante en insultant votre goût musical. |
 | `!stop` | Stoppe la musique et vide la file d’attente. |
 | `!playlist` | Affiche la file d’attente en commentant vos choix douteux. |
 | `!current` | Affiche la musique en cours avec dédain. |
+| `!restart` | Redémarre Greg dans la douleur, pour votre bon plaisir. |
 
 ---
 
@@ -133,3 +136,4 @@ railway run ffmpeg -version
 ✔ **Un bot prêt à vous haïr avec la plus grande révérence**  
 
 🔥 **Faites tourner Greg et laissez-le vous mépriser en musique !** 🎶👑
+
