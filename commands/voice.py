@@ -14,14 +14,19 @@ class Voice(commands.Cog):
             return
 
         voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            await voice_channel.connect()
-            await ctx.send(
-                f"👑 *Greg le Consanguin daigne honorer **{voice_channel.name}** de sa présence...* Que ce lieu miteux soit à la hauteur de mon noble mépris.")
-        else:
-            await ctx.voice_client.move_to(voice_channel)
-            await ctx.send(
-                f"👑 *Majesté, Greg est à vos pieds et change de crasseux taudis pour **{voice_channel.name}**. Que le destin me vienne en aide...*")
+        try:
+            if ctx.voice_client is None:
+                await voice_channel.connect(timeout=10)
+                await ctx.send(
+                    f"👑 *Greg le Consanguin daigne honorer **{voice_channel.name}** de sa présence...* Que ce lieu miteux soit à la hauteur de mon noble mépris.")
+            else:
+                await ctx.voice_client.move_to(voice_channel)
+                await ctx.send(
+                    f"👑 *Majesté, Greg est à vos pieds et change de crasseux taudis pour **{voice_channel.name}**. Que le destin me vienne en aide...*")
+        except asyncio.TimeoutError:
+            await ctx.send("⏱️ *Majesté... Greg a tenté de se connecter, mais le Royaume du Vocal est en grève. Misère...*")
+        except Exception as e:
+            await ctx.send(f"❌ *Un obstacle infernal m'empêche de rejoindre le vocal, Ô Majesté...* `{e}`")
 
     @commands.command()
     async def leave(self, ctx):
@@ -34,7 +39,7 @@ class Voice(commands.Cog):
 
     async def auto_disconnect(self, ctx):
         """Quitte le vocal après 5 min d’inactivité."""
-        await asyncio.sleep(300)  # 5 minutes (300s)
+        await asyncio.sleep(300)
         if ctx.voice_client and not ctx.voice_client.is_playing():
             await ctx.voice_client.disconnect()
             await ctx.send("👋 *Greg se retire, faute d’un public digne de son art. Peut-être trouverez-vous un autre esclave pour vous divertir...*")
