@@ -1,8 +1,24 @@
-# **👑 Greg le Consanguin - Bot Discord** 🎵🎙️  
+# **👑 Greg le Consanguin - Bot Discord** 🎵🎤  
 
 **Le seul bot qui joue de la musique tout en méprisant son public.**  
 💀 **Un larbin noble, fatigué, servile et snob.**  
 💬 **Vous êtes son roi, mais il vous hait profondément.**  
+
+---
+
+## **✨ Prérequis : Créer un bot sur Discord Developer Portal**
+
+1. Rendez-vous sur [https://discord.com/developers/applications](https://discord.com/developers/applications)
+2. Cliquez sur **"New Application"** et donnez un nom à votre bot (ex: *Greg le Consanguin*)
+3. Allez dans **"Bot"** > **"Add Bot"** > Confirmez
+4. Activez les préférences suivantes dans "Privileged Gateway Intents" :
+   - `MESSAGE CONTENT INTENT`
+   - `SERVER MEMBERS INTENT`
+5. Copiez le **TOKEN** du bot et gardez-le bien (vous en aurez besoin dans Railway)
+6. Allez dans **"OAuth2" > "URL Generator"**, cochez :
+   - Scopes : `bot`
+   - Bot Permissions : `Connect`, `Speak`, `Read Message History`, `Send Messages`
+7. Générez l'URL, ouvrez-la dans votre navigateur et **ajoutez le bot à votre serveur** Discord
 
 ---
 
@@ -114,7 +130,7 @@ railway run ffmpeg -version
 
 ---
 
-## **🐛 Debug & Problèmes**
+## **🛠️ Debug & Problèmes**
 ### **🔴 `ffmpeg not found`**
 1. **Tester si `ffmpeg` est installé** :
    ```sh
