@@ -139,8 +139,8 @@ class Music(commands.Cog):
                 title = info.get('title', 'Musique inconnue')
                 duration = info.get('duration', 0)
 
-                if duration > 3600:
-                    await ctx.send(f"⛔ *Une heure ?! Êtes-vous devenu fou, Ô Maître cruel ?*")
+                if duration > 1200:
+                    await ctx.send(f"⛔ *Une heure ?! Êtes-vous devenu fou, Ô Maître cruel ?* (Vidéo de 20min maximum")
                     return None
 
                 ydl.download([url])
