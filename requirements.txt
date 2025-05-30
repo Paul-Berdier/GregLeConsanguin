@@ -2,7 +2,7 @@ discord.py
 openai
 yt-dlp
 ffmpeg-python
-numpy
+numpy==2.2.0
 gtts
 python-dotenv
 transformers
