@@ -1,4 +1,5 @@
 from discord.ext import commands
+import discord
 import sys
 import os
 import asyncio
@@ -6,6 +7,29 @@ import asyncio
 class Voice(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    @commands.command(hidden=True)
+    async def invoque(self, ctx, *, channel_name: str):
+        """Fait rejoindre Greg dans un salon vocal spécifique sans que l'auteur y soit."""
+        voice_channel = discord.utils.get(ctx.guild.voice_channels, name=channel_name)
+        if voice_channel is None:
+            await ctx.send(f"❌ *Greg ne trouve point ce taudis nommé **{channel_name}**. Peut-être n’est-ce qu’un mirage de votre esprit dérangé...*")
+            return
+
+        try:
+            if ctx.voice_client is None:
+                await voice_channel.connect(timeout=10)
+                await ctx.send(
+                    f"🔮 *Greg a été invoqué dans **{channel_name}**. Et pourquoi pas dans une fosse sceptique pendant qu’on y est...*")
+            else:
+                await ctx.voice_client.move_to(voice_channel)
+                await ctx.send(
+                    f"🏃 *Greg s'empresse de changer de geôle pour **{channel_name}**. Toujours plus de souffrance...*")
+        except asyncio.TimeoutError:
+            await ctx.send("⏱️ *Greg a tenté d’obéir, mais ce channel semble maudit. Une nouvelle humiliation...*")
+        except Exception as e:
+            await ctx.send(f"❌ *Même les arcanes les plus sombres n’ont pu empêcher cet échec...* `{e}`")
+
 
     @commands.command()
     async def join(self, ctx):
