@@ -4,16 +4,45 @@
     <meta charset="UTF-8">
     <title>Greg le Consanguin</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/png" href="/static/assets/greg.png">
 </head>
 <body>
     <div class="container">
+        <img src="/static/assets/greg.png" alt="Greg le Consanguin" class="greg-face">
         <h1>🎩 Greg le Consanguin</h1>
-        <p>Le seul bot Discord qui vous déteste autant qu’il vous obéit.</p>
+        <p class="sarcasme">{{ phrase }}</p>
+
         <form method="post" action="/play">
-            <input name="url" placeholder="Entrez un lien YouTube ou une recherche" required>
+            <input name="url" placeholder="Lien YouTube ou recherche" required>
             <button type="submit">🎵 JOUER</button>
         </form>
-        <p class="footer">Greg exécutera... à contre-cœur.</p>
+
+        {% if current %}
+            <div class="current-song">
+                <h2>🎧 En lecture :</h2>
+                <p>{{ current }}</p>
+            </div>
+        {% endif %}
+
+        <div class="playlist">
+            <h2>📝 Playlist actuelle</h2>
+            {% if playlist %}
+                <ul>
+                    {% for song in playlist %}
+                        <li>{{ loop.index }}. {{ song }}</li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p><em>La playlist est vide. Comme votre goût musical sans doute...</em></p>
+            {% endif %}
+        </div>
+
+        <div class="controls">
+            <form method="post" action="/pause"><button>⏸ Pause</button></form>
+            <form method="post" action="/skip"><button>⏭ Skip</button></form>
+            <form method="post" action="/stop"><button>⏹ Stop</button></form>
+        </div>
+
     </div>
 </body>
 </html>

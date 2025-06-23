@@ -3,6 +3,21 @@ from discord.ext import commands
 import yt_dlp
 import os
 import asyncio
+import json
+
+PLAYLIST_FILE = "playlist.json"
+
+def load_playlist():
+    if not os.path.exists(PLAYLIST_FILE):
+        with open(PLAYLIST_FILE, "w") as f:
+            json.dump([], f)
+    with open(PLAYLIST_FILE, "r") as f:
+        return json.load(f)
+
+def save_playlist(playlist):
+    with open(PLAYLIST_FILE, "w") as f:
+        json.dump(playlist, f)
+
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -95,6 +110,9 @@ class Music(commands.Cog):
     async def add_to_queue(self, ctx, url):
         await ctx.send(f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
         self.queue.append(url)
+        playlist = load_playlist()
+        playlist.append(url)
+        save_playlist(playlist)
 
         if not self.is_playing:
             await self.play_next(ctx)
@@ -174,6 +192,13 @@ class Music(commands.Cog):
     async def skip(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
+
+            # Supprime la première entrée dans la playlist JSON
+            playlist = load_playlist()
+            if playlist:
+                playlist.pop(0)
+                save_playlist(playlist)
+
             await ctx.send("⏭ *Qu’on en finisse ! Que je puisse un jour me reposer !*")
         else:
             await ctx.send("❌ *Voyons, Votre Altesse... Il n'y a rien à zapper...*")
@@ -181,8 +206,14 @@ class Music(commands.Cog):
     @commands.command()
     async def stop(self, ctx):
         self.queue.clear()
+        save_playlist([])
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
+            playlist = load_playlist()
+            if playlist:
+                playlist.pop(0)
+                save_playlist(playlist)
+
         await ctx.send("⏹ *Majesté a tranché ! L’infamie musicale cesse ici.*")
 
     @commands.command()
