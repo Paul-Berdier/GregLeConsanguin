@@ -23,6 +23,19 @@ class Music(commands.Cog):
         print("❌ Aucun ffmpeg trouvé, Railway est en PLS.")
         return "ffmpeg"
 
+    def sanitize_url(self, url: str) -> str:
+        """Nettoie l’URL YouTube pour virer les listes et autres fragments inutiles."""
+        from urllib.parse import urlparse, parse_qs, urlencode
+
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        if 'v' not in query:
+            return url  # Rien à nettoyer
+
+        clean_query = {'v': query['v'][0]}  # On garde uniquement l'ID de la vidéo
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(clean_query)}"
+        return clean_url
+
     @commands.command()
     async def play(self, ctx, *, query_or_url):
         """Cherche une vidéo YouTube par texte ou joue directement un lien."""
@@ -32,7 +45,8 @@ class Music(commands.Cog):
         await ctx.send("🎵 *Ugh... Encore une de vos requêtes, Majesté ?* Bien sûr... Que ne ferais-je pas pour vous...")
 
         if "youtube.com/watch?v=" in query_or_url or "youtu.be/" in query_or_url:
-            await self.add_to_queue(ctx, query_or_url)
+            cleaned_url = self.sanitize_url(query_or_url)
+            await self.add_to_queue(ctx, cleaned_url)
         else:
             await self.search_youtube(ctx, query_or_url)
 
