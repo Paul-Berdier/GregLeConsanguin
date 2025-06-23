@@ -9,3 +9,5 @@ transformers
 huggingface_hub
 torch
 PyNaCl
+flask
+requests
