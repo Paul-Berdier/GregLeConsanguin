@@ -1,155 +1,131 @@
-# **👑 Greg le Consanguin - Bot Discord** 🎵🎤  
 
-**Le seul bot qui joue de la musique tout en méprisant son public.**  
-💀 **Un larbin noble, fatigué, servile et snob.**  
-💬 **Vous êtes son roi, mais il vous hait profondément.**  
+## 🧾 `README.md` — **Greg le Consanguin** 🎩💀🎶
 
----
-
-## **✨ Prérequis : Créer un bot sur Discord Developer Portal**
-
-1. Rendez-vous sur [https://discord.com/developers/applications](https://discord.com/developers/applications)
-2. Cliquez sur **"New Application"** et donnez un nom à votre bot (ex: *Greg le Consanguin*)
-3. Allez dans **"Bot"** > **"Add Bot"** > Confirmez
-4. Activez les préférences suivantes dans "Privileged Gateway Intents" :
-   - `MESSAGE CONTENT INTENT`
-   - `SERVER MEMBERS INTENT`
-5. Copiez le **TOKEN** du bot et gardez-le bien (vous en aurez besoin dans Railway)
-6. Allez dans **"OAuth2" > "URL Generator"**, cochez :
-   - Scopes : `bot`
-   - Bot Permissions : `Connect`, `Speak`, `Read Message History`, `Send Messages`
-7. Générez l'URL, ouvrez-la dans votre navigateur et **ajoutez le bot à votre serveur** Discord
+> *Le seul bot Discord qui obéit en râlant. À déployer sur Railway pour le torturer à distance.*
 
 ---
 
-## **🚀 Fonctionnalités**
-✔ **Rejoint et quitte un salon vocal (à contrecœur).**  
-✔ **Télécharge et joue des musiques YouTube avec `yt-dlp` et `FFmpeg`.**  
-✔ **Affiche la file d’attente et permet de naviguer entre les musiques.**  
-✔ **Permet de rechercher une musique par texte et de choisir parmi les 3 meilleures.**  
-✔ **Prend uniquement la première musique si un lien de playlist est donné.**  
-✔ **Se déconnecte après 5 minutes d’inactivité, parce qu’il n’a pas que ça à faire.**  
-✔ **Peut être redémarré avec une commande `!restart`, comme une malédiction éternelle.**  
-✔ **Vous insulte subtilement (ou pas).**  
+## **👑 Présentation**
+
+Greg est un bot Discord qui :
+
+* Rejoint un salon vocal (à contrecœur)
+* Joue des musiques YouTube avec `yt-dlp` et `ffmpeg`
+* Se synchronise avec un site web pour le contrôler comme un esclave
+* Vous méprise en musique et en silence
 
 ---
 
-## **📜 Installation sur Railway avec Docker**
-### **1️⃣ Créer un projet sur Railway**
-1. **Créez un compte** sur Railway → [https://railway.app/](https://railway.app/)  
-2. **Créez un projet** (`New Project`)  
-3. **Connectez votre dépôt GitHub**  
+## **⚙️ Prérequis Discord Developer Portal**
+
+1. Allez sur [https://discord.com/developers/applications](https://discord.com/developers/applications)
+2. **New Application** → nommez-la "Greg le Consanguin"
+3. **Bot** → **Add Bot** → cochez :
+
+   * `MESSAGE CONTENT INTENT`
+   * `SERVER MEMBERS INTENT`
+4. Copiez le **TOKEN** du bot
+
+### Ajouter Greg à un serveur :
+
+* Allez dans `OAuth2` → `URL Generator`
+
+  * Scopes : `bot`
+  * Bot Permissions : `Connect`, `Speak`, `Send Messages`, `Read Message History`
+* Générez l’URL et invitez Greg
 
 ---
 
-### **2️⃣ Ajouter un Dockerfile**
-Ajoutez un fichier **Dockerfile** à la racine du projet :
-```dockerfile
-FROM python:3.12-slim
+## **🚀 Déploiement sur Railway**
 
-# Installer les dépendances système
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+### ✅ Étapes :
 
-# Définir le répertoire de travail
-WORKDIR /app
+#### 1️⃣ Créer un projet Railway
 
-# Copier les fichiers du projet
-COPY . .
+* [https://railway.app](https://railway.app) → `New Project`
+* Connectez votre dépôt GitHub contenant Greg
 
-# Installer les dépendances Python
-RUN pip install --no-cache-dir -r requirements.txt
+#### 2️⃣ Configurer le type de build
 
-# Lancer le bot
-CMD ["python", "main.py"]
-```
+* **Settings** → `Build Type` → sélectionnez **Python** (pas Docker)
 
-**Commit et push sur Railway :**
-```sh
-git add Dockerfile
-git commit -m "Ajout du Dockerfile"
-git push railway main
-```
+#### 3️⃣ Ajouter les Variables d’Environnement (onglet `Variables`) :
 
-### **3️⃣ Configurer Railway pour utiliser Docker**
-- **Sur l’interface Railway** :  
-  `Settings` → `Build Type` → **Docker**  
-- **Ou via la CLI** :
-  ```sh
-  railway settings set "Build Type" to "Docker"
-  ```
+| Nom                    | Valeur                           | Description                               |
+| ---------------------- | -------------------------------- | ----------------------------------------- |
+| `DISCORD_TOKEN`        | votre clé du bot Discord         | Pour connecter Greg                       |
+| `DISCORD_WEBHOOK_URL`  | Webhook d’un salon texte Discord | Pour que le site web envoie les commandes |
+| `HUGGINGFACE_API_KEY`  | (optionnel pour chat vocal)      | Si vous utilisez `!ask`                   |
+| `YOUTUBE_COOKIES_PATH` | `/app/youtube.com_cookies.txt`   | Chemin vers vos cookies YouTube           |
 
 ---
 
-### **4️⃣ Ajouter les Variables d’Environnement**
-Dans **Railway → Variables**, ajoutez :
+## 🍪 Comment générer `youtube.com_cookies.txt`
 
-| Nom de la Variable      | Valeur                           | Description |
-|------------------------|--------------------------------|-------------|
-| `DISCORD_TOKEN`        | `VOTRE_TOKEN_DISCORD`          | Clé API du bot |
-| `YOUTUBE_COOKIES_PATH` | `/app/youtube.com_cookies.txt` | Chemin des cookies YouTube |
+Si certaines vidéos YouTube échouent à cause de vérifications (âge, bot, etc.) :
 
-Si YouTube bloque certaines vidéos, ajoutez **vos cookies** (via l'extension **Get Cookies.txt** sur Chrome/Firefox), et uploadez le fichier `youtube.com_cookies.txt` sur Railway.
+1. Installez l’extension **Get cookies.txt** sur Chrome ou Firefox
+2. Allez sur [youtube.com](https://youtube.com) connecté à votre compte
+3. Cliquez sur l’icône de l’extension > cliquez "Export cookies"
+4. Enregistrez le fichier sous le nom **`youtube.com_cookies.txt`**
+5. Dans Railway :
 
----
-
-### **5️⃣ Commandes utiles pour Railway**
-📌 **Lancer Railway en local :**
-```sh
-npm install -g @railway/cli
-railway login
-railway link -p VOTRE_ID_PROJET
-railway shell
-```
-
-📌 **Déploiement et debug :**
-```sh
-railway up
-railway logs
-```
-
-📌 **Tester si `ffmpeg` fonctionne :**
-```sh
-railway run ffmpeg -version
-```
+   * Onglet "Files" > Importez ce fichier
+   * Vérifiez que sa variable `YOUTUBE_COOKIES_PATH` pointe vers `/app/youtube.com_cookies.txt`
 
 ---
 
-## **🎮 Commandes du bot**
-| Commande | Description |
-|----------|------------|
-| `!join` | Greg rejoint le vocal (en râlant). |
-| `!leave` | Greg quitte le vocal (soulagé). |
-| `!play <url/recherche>` | Ajoute une musique YouTube ou cherche une vidéo. Prend uniquement la première musique si c’est une playlist. |
-| `!pause` | Met en pause la musique avec un soupir exaspéré. |
-| `!resume` | Reprend la musique (contraint et forcé). |
-| `!skip` | Passe à la musique suivante en insultant votre goût musical. |
-| `!stop` | Stoppe la musique et vide la file d’attente. |
-| `!playlist` | Affiche la file d’attente en commentant vos choix douteux. |
-| `!current` | Affiche la musique en cours avec dédain. |
-| `!restart` | Redémarre Greg dans la douleur, pour votre bon plaisir. |
+## 🧱 Configuration réseau (Networking)
+
+1. Dans votre projet Railway :
+
+   * Allez dans `Settings > Networking`
+2. Cliquez sur **Generate Domain**
+
+   * Une URL publique vous sera attribuée (ex: `greg.up.railway.app`)
+3. Votre site web de contrôle de Greg est accessible publiquement à cette URL
 
 ---
 
-## **🛠️ Debug & Problèmes**
-### **🔴 `ffmpeg not found`**
-1. **Tester si `ffmpeg` est installé** :
-   ```sh
-   railway run ffmpeg -version
-   ```
-2. **Forcer `yt-dlp` à trouver `ffmpeg`** :
-   ```python
-   ydl_opts = {
-       'ffmpeg_location': "ffmpeg"
-   }
-   ```
-3. **Essayer avec Docker si ça persiste.**
+## ⚠️ Limitations techniques
+
+* 🎥 **Les vidéos YouTube doivent faire moins de 20 minutes**
+
+  * Au-delà, Greg refuse de souffrir : cela provoque une erreur ou un plantage
+  * Limite fixée dans `music.py` à 1200 secondes
 
 ---
 
-## **💡 Greg le Consanguin : Un serviteur fatigué, mais docile**
-✔ **Railway + Docker = Un Greg stable et performant**  
-✔ **Insultes raffinées et obéissance contrainte**  
-✔ **Un bot prêt à vous haïr avec la plus grande révérence**  
+## 🖥️ Interface Web
 
-🔥 **Faites tourner Greg et laissez-le vous mépriser en musique !** 🎶👑
+Votre site web (Flask) permet de :
 
+* Voir la playlist actuelle
+* Ajouter une musique
+* Skip, Pause ou Stop via boutons
+* Synchronisation avec les commandes Discord (`!play`, `!skip`, etc.)
+
+---
+
+## 🧪 Commandes Discord
+
+| Commande      | Effet                                               |
+| ------------- | --------------------------------------------------- |
+| `!join`       | Greg rejoint le vocal (en râlant)                   |
+| `!leave`      | Greg quitte le vocal (soulagé)                      |
+| `!play <url>` | Ajoute une musique (nettoie les playlists)          |
+| `!pause`      | Met en pause                                        |
+| `!resume`     | Reprend                                             |
+| `!skip`       | Passe à la suivante et retire de la playlist        |
+| `!stop`       | Coupe tout et vide la file                          |
+| `!playlist`   | Affiche la file d’attente                           |
+| `!current`    | Affiche la musique en cours                         |
+| `!ask`        | (optionnel) Greg répond en vocal via IA HuggingFace |
+
+---
+
+## 💀 Greg vous méprise, mais vous obéit
+
+* ✔️ Site web relié au bot Discord
+* ✔️ Playlist partagée en temps réel
+* ✔️ Insultes élégantes et obéissance programmée
