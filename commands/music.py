@@ -110,8 +110,15 @@ class Music(commands.Cog):
     async def add_to_queue(self, ctx, url):
         await ctx.send(f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
         self.queue.append(url)
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                title = info.get("title", url)
+            except Exception:
+                title = url
+
         playlist = load_playlist()
-        playlist.append(url)
+        playlist.append({"title": title, "url": url})
         save_playlist(playlist)
 
         if not self.is_playing:
@@ -150,6 +157,11 @@ class Music(commands.Cog):
     async def download_audio(self, ctx, url):
         os.makedirs("downloads", exist_ok=True)
 
+        if not os.path.exists("youtube.com_cookies.txt"):
+            await ctx.send(
+                "❌ *Misère… Les cookies sont introuvables, Majesté. Greg est impuissant face à votre négligence...*")
+            return
+
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloads/greg_audio.%(ext)s',
@@ -159,11 +171,14 @@ class Music(commands.Cog):
                 'preferredquality': '192',
             }],
             'ffmpeg_location': self.ffmpeg_path,
-            'cookiefile': "youtube.com_cookies.txt",
+            'cookiefile': os.path.abspath("youtube.com_cookies.txt"),
             'nocheckcertificate': True,
             'ignoreerrors': False,
             'quiet': False,
         }
+
+        print("🎩 Greg se prépare à souffrir avec ces options :")
+        print(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
