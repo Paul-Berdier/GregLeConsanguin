@@ -175,7 +175,20 @@ class Music(commands.Cog):
             'nocheckcertificate': True,
             'ignoreerrors': False,
             'quiet': False,
+            'sleep_interval_requests': 1,
+            'ratelimit': 5.0,
+            'extractor_args': {
+                'youtube': [
+                    '--no-check-certificate',
+                    '--force-ipv4'
+                ]
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+            },
+            'youtube_include_dash_manifest': False
         }
+
 
         print("🎩 Greg se prépare à souffrir avec ces options :")
         print(ydl_opts)
