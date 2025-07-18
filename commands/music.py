@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from extractors import get_extractor, get_search_module
 import yt_dlp
 import os
 import asyncio
@@ -53,17 +54,84 @@ class Music(commands.Cog):
 
     @commands.command()
     async def play(self, ctx, *, query_or_url):
-        """Cherche une vidéo YouTube par texte ou joue directement un lien."""
+        """
+        Joue une URL directe ou cherche via une plateforme (YouTube/SoundCloud...).
+        """
         if ctx.voice_client is None:
             await ctx.invoke(self.bot.get_command("join"))
 
-        await ctx.send("🎵 *Ugh... Encore une de vos requêtes, Majesté ?* Bien sûr... Que ne ferais-je pas pour vous...")
+        await ctx.send(
+            "🎵 *Ugh... Encore une de vos requêtes, Majesté ?* Bien sûr... Que ne ferais-je pas pour vous...*")
 
-        if "youtube.com/watch?v=" in query_or_url or "youtu.be/" in query_or_url:
-            cleaned_url = self.sanitize_url(query_or_url)
-            await self.add_to_queue(ctx, cleaned_url)
-        else:
-            await self.search_youtube(ctx, query_or_url)
+        if "http://" in query_or_url or "https://" in query_or_url:
+            # Lien direct : on l'ajoute à la queue
+            await self.add_to_queue(ctx, query_or_url)
+            return
+
+        # Requête textuelle : proposer les plateformes
+        options = {
+            "1": "youtube",
+            "2": "soundcloud"
+        }
+
+        message = (
+            "**🧭 Où dois-je chercher ce vacarme ?**\n"
+            "**1.** YouTube\n"
+            "**2.** SoundCloud\n"
+            "\n*Majesté, tapez le chiffre correspondant...*"
+        )
+
+        await ctx.send(message)
+
+        def check(m):
+            return m.author == ctx.author and m.content in options
+
+        try:
+            reply = await self.bot.wait_for("message", check=check, timeout=30.0)
+            source = options[reply.content]
+            await self.search_source(ctx, query_or_url, source)
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ *Trop lent, Majesté... Greg va s'éventrer tout seul en attendant...*")
+
+    async def search_source(self, ctx, query, source: str):
+        """
+        Recherche sur un extracteur (youtube, soundcloud, etc.) via son module.
+        """
+        extractor = get_search_module(source)
+        if extractor is None or not hasattr(extractor, "search"):
+            await ctx.send(
+                f"❌ *Majesté, je ne sais pas comment chercher sur « {source} ». Que la honte s'abatte sur moi...*")
+            return
+
+        try:
+            results = extractor.search(query)
+        except Exception as e:
+            await ctx.send(f"❌ *L'Oracle {source} s’est tu :* {e}")
+            return
+
+        if not results:
+            await ctx.send(f"❌ *Pas de réponse, Majesté. Ce royaume musical est vide comme votre foi en moi...*")
+            return
+
+        self.search_results[ctx.author.id] = results
+
+        message = f"**🔍 Résultats depuis {source.capitalize()} :**\n"
+        for i, item in enumerate(results[:3], 1):
+            message += f"**{i}.** [{item['title']}]({item['url']})\n"
+
+        message += "\n*Choisissez votre poison sonore avec un chiffre, Ô Excellence...*"
+        await ctx.send(message)
+
+        def check(m):
+            return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
+
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+            choice = int(msg.content) - 1
+            url = results[choice]['url']
+            await self.add_to_queue(ctx, url)
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ *Trop lent... Greg retourne gémir en silence...*")
 
     async def search_youtube(self, ctx, query):
         """Recherche YouTube et propose 3 résultats."""
@@ -157,63 +225,32 @@ class Music(commands.Cog):
     async def download_audio(self, ctx, url):
         os.makedirs("downloads", exist_ok=True)
 
-        if not os.path.exists("youtube.com_cookies.txt"):
-            await ctx.send(
-                "❌ *Misère… Les cookies sont introuvables, Majesté. Greg est impuissant face à votre négligence...*")
-            return
+        # Injecte les cookies Railway si présents
+        cookies_env = os.environ.get("YT_COOKIES_TXT")
+        if cookies_env:
+            with open("youtube.com_cookies.txt", "w") as f:
+                f.write(cookies_env)
 
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'downloads/greg_audio.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'ffmpeg_location': self.ffmpeg_path,
-            'cookiefile': os.path.abspath("youtube.com_cookies.txt"),
-            'nocheckcertificate': True,
-            'ignoreerrors': False,
-            'quiet': False,
-            'sleep_interval_requests': 1,
-            'ratelimit': 5.0,
-            'extractor_args': {
-                'youtube': [
-                    '--no-check-certificate',
-                    '--force-ipv4'
-                ]
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-            },
-            'youtube_include_dash_manifest': False
-        }
-
-
-        print("🎩 Greg se prépare à souffrir avec ces options :")
-        print(ydl_opts)
+        extractor = get_extractor(url)
+        if not extractor:
+            await ctx.send("❌ *Greg ne connaît pas ce royaume sonore… Requête rejetée.*")
+            return None
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'Musique inconnue')
-                duration = info.get('duration', 0)
+            filename, title, duration = extractor.download(
+                url,
+                ffmpeg_path=self.ffmpeg_path,
+                cookies_file="youtube.com_cookies.txt"
+            )
 
-                if duration > 1200:
-                    await ctx.send(f"⛔ *Une heure ?! Êtes-vous devenu fou, Ô Maître cruel ?* (Vidéo de 20min maximum")
-                    return None
-
-                ydl.download([url])
-                filename = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
+            if duration > 1200:
+                await ctx.send("⛔ *Vingt minutes ?! Et puis quoi encore ? Un opéra complet ?!*")
+                return None
 
             return filename, title, duration
 
-        except yt_dlp.utils.DownloadError as e:
-            await ctx.send(f"❌ *Impossible de satisfaire ce caprice, Ô Seigneur du mauvais goût...* {e}")
-            return None
-
         except Exception as e:
-            print(f"Erreur inattendue : {e}")
+            await ctx.send(f"❌ *Greg s’étrangle sur le fichier... {e}*")
             return None
 
     @commands.command()
