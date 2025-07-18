@@ -1,4 +1,3 @@
-
 ## 🧾 `README.md` — **Greg le Consanguin** 🎩💀🎶
 
 > *Le seul bot Discord qui obéit en râlant. À déployer sur Railway pour le torturer à distance.*
@@ -13,6 +12,8 @@ Greg est un bot Discord qui :
 * Joue des musiques YouTube avec `yt-dlp` et `ffmpeg`
 * Se synchronise avec un site web pour le contrôler comme un esclave
 * Vous méprise en musique et en silence
+* Supporte **plusieurs sources musicales** : YouTube, SoundCloud… et d'autres à venir
+* Utilise un système modulaire propre (`extractors/`) pour gérer chaque source individuellement
 
 ---
 
@@ -56,7 +57,7 @@ Greg est un bot Discord qui :
 | `DISCORD_TOKEN`        | votre clé du bot Discord         | Pour connecter Greg                       |
 | `DISCORD_WEBHOOK_URL`  | Webhook d’un salon texte Discord | Pour que le site web envoie les commandes |
 | `HUGGINGFACE_API_KEY`  | (optionnel pour chat vocal)      | Si vous utilisez `!ask`                   |
-| `YOUTUBE_COOKIES_PATH` | `/app/youtube.com_cookies.txt`   | Chemin vers vos cookies YouTube           |
+| `YT_COOKIES_TXT`       | contenu brut de `youtube.com_cookies.txt` | Injecté automatiquement au démarrage |
 
 ---
 
@@ -70,8 +71,10 @@ Si certaines vidéos YouTube échouent à cause de vérifications (âge, bot, et
 4. Enregistrez le fichier sous le nom **`youtube.com_cookies.txt`**
 5. Dans Railway :
 
-   * Onglet "Files" > Importez ce fichier
-   * Vérifiez que sa variable `YOUTUBE_COOKIES_PATH` pointe vers `/app/youtube.com_cookies.txt`
+   * Ouvrez l’onglet `Variables`
+   * Créez une variable nommée `YT_COOKIES_TXT`
+   * Collez **tout le contenu du fichier**, y compris l’en-tête Netscape
+   * Greg le convertira automatiquement en fichier local à chaque redémarrage
 
 ---
 
@@ -113,7 +116,7 @@ Votre site web (Flask) permet de :
 | ------------- | --------------------------------------------------- |
 | `!join`       | Greg rejoint le vocal (en râlant)                   |
 | `!leave`      | Greg quitte le vocal (soulagé)                      |
-| `!play <url>` | Ajoute une musique (nettoie les playlists)          |
+| `!play <texte ou lien>` | Si lien → joue direct. Si texte → Greg vous demande YouTube ou SoundCloud |
 | `!pause`      | Met en pause                                        |
 | `!resume`     | Reprend                                             |
 | `!skip`       | Passe à la suivante et retire de la playlist        |
@@ -124,8 +127,7 @@ Votre site web (Flask) permet de :
 
 ---
 
-## 💀 Greg vous méprise, mais vous obéit
+## 🔌 Architecture `extractors/` (système modulaire)
 
-* ✔️ Site web relié au bot Discord
-* ✔️ Playlist partagée en temps réel
-* ✔️ Insultes élégantes et obéissance programmée
+Chaque source musicale (YouTube, SoundCloud…) est gérée dans un module dédié :
+
