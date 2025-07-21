@@ -1,5 +1,8 @@
 #extractors/soundcloud.py
 
+import asyncio
+import concurrent.futures
+import functools
 from yt_dlp import YoutubeDL
 
 def is_valid(url: str) -> bool:
@@ -34,14 +37,14 @@ def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     Retourne (chemin du fichier, titre, durée).
     """
     ydl_opts = {
-        'format': 'bestaudio/best',            # Qualité audio optimale
-        'outtmpl': 'downloads/greg_audio.%(ext)s',  # Fichier temporaire de sortie
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloads/greg_audio.%(ext)s',
         'postprocessors': [{
-            'key': 'FFmpegExtractAudio',       # Conversion via FFmpeg en mp3
+            'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'ffmpeg_location': ffmpeg_path,        # Chemin vers ffmpeg (fourni par l’appelant)
+        'ffmpeg_location': ffmpeg_path,
         'quiet': False,
         'nocheckcertificate': True,
         'ratelimit': 5.0,
@@ -50,12 +53,15 @@ def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
     print(f"🎧 Extraction SoundCloud : {url}")
 
+    loop = asyncio.get_event_loop()
+
+    # Téléchargement dans un thread séparé pour ne pas bloquer Discord
     with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)  # Récupération des métadonnées
+        info = await loop.run_in_executor(None, functools.partial(ydl.extract_info, url, False))
         title = info.get("title", "Son inconnu")
         duration = info.get("duration", 0)
 
-        ydl.download([url])  # Téléchargement effectif
+        await loop.run_in_executor(None, functools.partial(ydl.download, [url]))
         filename = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
 
     return filename, title, duration
