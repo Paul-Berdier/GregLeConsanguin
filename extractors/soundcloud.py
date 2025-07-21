@@ -31,9 +31,14 @@ def search(query: str):
         return results.get("entries", []) if results else []
 
 
-def download(url: str, ffmpeg_path: str, cookies_file: str = None):
+import asyncio
+import functools
+import os
+from yt_dlp import YoutubeDL
+
+async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     """
-    Télécharge une piste SoundCloud sous forme audio .mp3.
+    Télécharge une piste SoundCloud en audio .mp3 (asynchrone).
     Retourne (chemin du fichier, titre, durée).
     """
     ydl_opts = {
@@ -55,12 +60,13 @@ def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
     loop = asyncio.get_event_loop()
 
-    # Téléchargement dans un thread séparé pour ne pas bloquer Discord
     with YoutubeDL(ydl_opts) as ydl:
+        # Récupère les métadonnées sans bloquer l’event loop
         info = await loop.run_in_executor(None, functools.partial(ydl.extract_info, url, False))
         title = info.get("title", "Son inconnu")
         duration = info.get("duration", 0)
 
+        # Lance le téléchargement audio
         await loop.run_in_executor(None, functools.partial(ydl.download, [url]))
         filename = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
 
