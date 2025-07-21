@@ -11,5 +11,3 @@ torch
 PyNaCl
 flask
 requests
-functools
-asyncio
