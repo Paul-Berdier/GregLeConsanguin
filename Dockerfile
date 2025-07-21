@@ -11,7 +11,8 @@ WORKDIR /app
 COPY . .
 
 # Installe les dépendances Python
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install git+https://github.com/Rapptz/discord.py@master#egg=discord.py[voice] && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Définit la commande de lancement
 CMD ["python", "main.py"]

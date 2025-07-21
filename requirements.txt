@@ -1,8 +1,8 @@
-discord.py
+# discord.py==2.5.2  Pas encore à jour
 openai
 yt-dlp
 ffmpeg-python
-numpy
+numpy>=2.2.0
 gtts
 python-dotenv
 transformers
