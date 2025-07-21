@@ -237,7 +237,7 @@ class Music(commands.Cog):
             return None
 
         try:
-            filename, title, duration = extractor.download(
+            filename, title, duration = await extractor.download(
                 url,
                 ffmpeg_path=self.ffmpeg_path,
                 cookies_file="youtube.com_cookies.txt"
