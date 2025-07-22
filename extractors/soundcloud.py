@@ -37,7 +37,7 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     Retourne (chemin du fichier, titre, durée).
     """
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Privilégie le m4a avant .opus
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Privilégie m4a si dispo
         'outtmpl': 'downloads/greg_audio.%(ext)s',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
@@ -64,7 +64,7 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
         await loop.run_in_executor(None, functools.partial(ydl.download, [url]))
         original_filename = ydl.prepare_filename(info)
 
-        # Gestion des formats : conversion si .opus
+        # Conversion si format .opus
         if original_filename.endswith(".opus"):
             converted = original_filename.replace(".opus", ".mp3")
             subprocess.run([
