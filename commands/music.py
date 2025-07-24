@@ -222,6 +222,58 @@ class Music(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ *Oh, quelle horreur... Encore un problème...* {e}")
 
+    @commands.command()
+    async def stream(self, ctx, *, query_or_url: str):
+        """
+        Joue un morceau en streaming depuis une URL ou une recherche (YouTube/SoundCloud).
+        """
+        if ctx.voice_client is None:
+            if ctx.author.voice:
+                await ctx.author.voice.channel.connect()
+            else:
+                return await ctx.send("🎧 Tu dois être dans un salon vocal, pitoyable créature.")
+
+        await ctx.send(f"🔍 *Greg farfouille dans les poubelles du Web pour :* `{query_or_url}`...")
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'default_search': 'ytsearch',
+            'nocheckcertificate': True,
+        }
+
+        loop = asyncio.get_event_loop()
+
+        def extract_info():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(query_or_url, download=False)
+
+        try:
+            data = await loop.run_in_executor(None, extract_info)
+            info = data['entries'][0] if 'entries' in data else data
+            url_audio = info['url']
+            title = info.get('title', 'Son inconnu')
+        except Exception as e:
+            return await ctx.send(f"❌ *Le grand Oracle `yt-dlp` s’est emmêlé dans ses parchemins...* {e}")
+
+        try:
+            source = discord.FFmpegPCMAudio(
+                url_audio,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn",
+                executable=self.ffmpeg_path
+            )
+
+            if ctx.voice_client.is_playing():
+                ctx.voice_client.stop()
+
+            ctx.voice_client.play(source,
+                                  after=lambda e: print(f"▶️ Terminé : {e}" if e else f"🎶 Lecture finie : {title}"))
+            self.current_song = title
+            await ctx.send(f"▶️ *Votre infâme sélection est lancée en streaming :* **{title}**")
+        except Exception as e:
+            await ctx.send(f"❌ *Greg ne parvient pas à lire cette ignominie...* {e}")
+
     async def download_audio(self, ctx, url):
         os.makedirs("downloads", exist_ok=True)
 
