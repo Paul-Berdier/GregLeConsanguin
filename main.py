@@ -3,27 +3,17 @@
 import discord
 from discord.ext import commands
 import config
-from commands.voice import Voice
-from commands.music import Music
-from commands.chat_ai import ChatAI
-
 import os
-os.system("apt-get update && apt-get install -y ffmpeg")
 import asyncio
+import json
 from flask import Flask, render_template, request, redirect
 import threading
 import requests
-import json
 
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-intents.voice_states = True
-intents.message_content = True
-intents.members = True
+# ====== DISCORD SETUP ======
 intents = discord.Intents.all()
-
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree  # Slash commands
 
 # ===== GESTION DE LA PLAYLIST =====
 PLAYLIST_FILE = "playlist.json"
@@ -39,20 +29,25 @@ def save_playlist(playlist):
     with open(PLAYLIST_FILE, "w") as f:
         json.dump(playlist, f)
 
-# ===== CHARGEMENT DES COGS DISCORD =====
+# ===== CHARGEMENT AUTOMATIQUE DES COGS =====
 async def load_cogs():
-    await bot.add_cog(Music(bot))
-    await bot.add_cog(Voice(bot))
-    await bot.add_cog(ChatAI(bot))
+    for filename in os.listdir("./commands"):
+        if filename.endswith(".py"):
+            extension = f"commands.{filename[:-3]}"
+            try:
+                await bot.load_extension(extension)
+                print(f"✅ Extension chargée : {extension}")
+            except Exception as e:
+                print(f"❌ Erreur lors du chargement de {extension} : {e}")
 
 @bot.event
 async def on_ready():
-    print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
     await load_cogs()
+    await bot.tree.sync()
+    print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
 
 # ===== INTERFACE FLASK =====
 app = Flask(__name__, static_folder="static", template_folder="templates")
-
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 messages_sarcastiques = [
@@ -101,8 +96,9 @@ def stop():
 def run_flask():
     app.run(host="0.0.0.0", port=3000)
 
-# ===== LANCEMENT COMBINÉ BOT + FLASK =====
+# ===== LANCEMENT COMBINÉ DISCORD + FLASK =====
 if __name__ == "__main__":
+    os.system("apt-get update && apt-get install -y ffmpeg")  # Install ffmpeg (si Railway)
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
     bot.run(config.DISCORD_TOKEN)
