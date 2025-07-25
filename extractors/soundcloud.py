@@ -1,8 +1,11 @@
+# extractors/soundcloud.py
+
 import asyncio
 import functools
 import os
 import subprocess
 from yt_dlp import YoutubeDL
+from pathlib import Path
 
 
 def is_valid(url: str) -> bool:
@@ -72,13 +75,46 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
             os.remove(original_filename)
             filename = converted
         else:
-            filename = (
-                original_filename
-                .replace(".webm", ".mp3")
-                .replace(".m4a", ".mp3")
-            )
+            filename = Path(original_filename).with_suffix(".mp3")
 
         if not os.path.exists(filename):
             raise FileNotFoundError(f"Fichier manquant après extraction : {filename}")
 
     return filename, title, duration
+
+async def stream(url_or_query: str, ffmpeg_path: str):
+    """
+    Récupère les infos nécessaires pour lire un flux audio SoundCloud avec FFmpegPCMAudio.
+    Retourne (source, titre).
+    """
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'default_search': 'scsearch3',
+        'nocheckcertificate': True,
+    }
+
+    loop = asyncio.get_event_loop()
+
+    def extract():
+        with YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url_or_query, download=False)
+
+    try:
+        data = await loop.run_in_executor(None, extract)
+        info = data['entries'][0] if 'entries' in data else data
+        stream_url = info['url']
+        title = info.get('title', 'Son inconnu')
+
+        import discord
+        source = discord.FFmpegPCMAudio(
+            stream_url,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            options="-vn",
+            executable=ffmpeg_path
+        )
+
+        return source, title
+
+    except Exception as e:
+        raise RuntimeError(f"Échec de l'extraction SoundCloud : {e}")

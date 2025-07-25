@@ -1,3 +1,5 @@
+# commands/music.py
+
 import discord
 from discord.ext import commands
 from extractors import get_extractor, get_search_module
@@ -52,46 +54,80 @@ class Music(commands.Cog):
         clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(clean_query)}"
         return clean_url
 
+    async def ask_play_mode(self, ctx, url):
+        await ctx.send(
+            "**📦 Dois-je souffrir en le téléchargeant ou simplement le vomir dans vos oreilles ?**\n"
+            "**1.** Télécharger puis jouer\n"
+            "**2.** Lecture directe (stream)\n"
+            "*Votre choix, Ô Plaie royale...*"
+        )
+
+        def check(m):
+            return m.author == ctx.author and m.content in ["1", "2"]
+
+        try:
+            response = await self.bot.wait_for("message", check=check, timeout=30)
+            if response.content == "1":
+                await self.add_to_queue(ctx, url)
+            else:
+                extractor = get_extractor(url)
+                if not extractor or not hasattr(extractor, "stream"):
+                    return await ctx.send("❌ *Greg ne sait pas vomir ce son en streaming...*")
+
+                source, title = await extractor.stream(url, self.ffmpeg_path)
+
+                if ctx.voice_client.is_playing():
+                    ctx.voice_client.stop()
+
+                ctx.voice_client.play(source,
+                                      after=lambda e: print(f"▶️ Terminé : {e}" if e else f"🎶 Lecture finie : {title}")
+                                      )
+                self.current_song = title
+                await ctx.send(f"▶️ *Votre infâme sélection est lancée en streaming :* **{title}**")
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ *Trop lent... Greg ira se pendre avec un câble Jack 3.5mm...*")
+
     @commands.command()
     async def play(self, ctx, *, query_or_url):
         """
-        Joue une URL directe ou cherche via une plateforme (YouTube/SoundCloud...).
+        Joue une URL ou une recherche YouTube, en mode téléchargement ou streaming.
         """
         if ctx.voice_client is None:
             await ctx.invoke(self.bot.get_command("join"))
 
-        await ctx.send(
-            "🎵 *Ugh... Encore une de vos requêtes, Majesté ?* Bien sûr... Que ne ferais-je pas pour vous...*")
+        await ctx.send("🎵 *Ugh... Encore une de vos requêtes, Majesté ? Que souhaitez-vous cette fois ?...*")
 
         if "http://" in query_or_url or "https://" in query_or_url:
-            # Lien direct : on l'ajoute à la queue
-            await self.add_to_queue(ctx, query_or_url)
+            await self.ask_play_mode(ctx, query_or_url)
             return
 
-        # Requête textuelle : proposer les plateformes
-        options = {
-            "1": "youtube",
-            "2": "soundcloud"
-        }
+        # Sinon, recherche sur Soundcloud automatiquement
+        extractor = get_search_module("soundcloud")
+        results = extractor.search(query_or_url)
 
-        message = (
-            "**🧭 Où dois-je chercher ce vacarme ?**\n"
-            "**1.** YouTube\n"
-            "**2.** SoundCloud\n"
-            "\n*Majesté, tapez le chiffre correspondant...*"
-        )
+        if not results:
+            await ctx.send("❌ *Rien, Majesté. Même Soundcloud a fui votre exigence...*")
+            return
 
-        await ctx.send(message)
+        self.search_results[ctx.author.id] = results
 
-        def check(m):
-            return m.author == ctx.author and m.content in options
+        msg = "**🔍 Résultats Soundcloud :**\n"
+        for i, item in enumerate(results[:3], 1):
+            msg += f"**{i}.** [{item['title']}]({item['url']})\n"
+
+        msg += "\n*Majesté, un chiffre s'il vous plaît...*"
+        await ctx.send(msg)
+
+        def check_choice(m):
+            return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
 
         try:
-            reply = await self.bot.wait_for("message", check=check, timeout=30.0)
-            source = options[reply.content]
-            await self.search_source(ctx, query_or_url, source)
+            reply = await self.bot.wait_for("message", check=check_choice, timeout=30)
+            choice = int(reply.content) - 1
+            selected_url = results[choice]["url"]
+            await self.ask_play_mode(ctx, selected_url)
         except asyncio.TimeoutError:
-            await ctx.send("⏳ *Trop lent, Majesté... Greg va s'éventrer tout seul en attendant...*")
+            await ctx.send("⏳ *Trop lent, Majesté... Greg retourne se lamenter dans l’ombre...*")
 
     async def search_source(self, ctx, query, source: str):
         """
@@ -133,48 +169,6 @@ class Music(commands.Cog):
         except asyncio.TimeoutError:
             await ctx.send("⏳ *Trop lent... Greg retourne gémir en silence...*")
 
-    async def search_youtube(self, ctx, query):
-        """Recherche YouTube et propose 3 résultats."""
-        ydl_opts = {
-            'quiet': True,
-            'default_search': 'ytsearch3',
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'extract_flat': True,
-        }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                results = ydl.extract_info(f"ytsearch3:{query}", download=False)
-
-            if not results or 'entries' not in results or not results['entries']:
-                await ctx.send("❌ *Hélas, Majesté... Aucun résultat. Soit YouTube vous hait, soit votre goût musical est trop obscur.*")
-                return
-
-            self.search_results[ctx.author.id] = results['entries']
-
-            message = "**🔍 Voici ce que j'ai péniblement trouvé, Votre Grandeur :**\n"
-            for i, video in enumerate(results['entries'], 1):
-                message += f"**{i}.** [{video['title']}]({video['url']})\n"
-
-            message += "\n*Daignez me donner un numéro, Ô Lumière du royaume...*"
-
-            await ctx.send(message)
-
-            def check(m):
-                return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= 3
-
-            try:
-                msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-                choice = int(msg.content) - 1
-                chosen_url = self.search_results[ctx.author.id][choice]['url']
-                await self.add_to_queue(ctx, chosen_url)
-            except asyncio.TimeoutError:
-                await ctx.send("⏳ *Ô Ciel ! Que d’indécision ! Greg retourne à ses misérables obligations...*")
-
-        except Exception as e:
-            await ctx.send(f"❌ *Ah... encore un imprévu... Comme la vie est cruelle envers un simple serf...* {e}")
-
     async def add_to_queue(self, ctx, url):
         await ctx.send(f"🎵 **{url}** ajouté à la playlist. *Puisse-t-elle ne pas être une insulte au bon goût, Majesté...*")
         self.queue.append(url)
@@ -201,109 +195,35 @@ class Music(commands.Cog):
         self.is_playing = True
         url = self.queue.pop(0)
 
-        song_info = await self.download_audio(ctx, url)
-        if song_info is None:
-            await ctx.send("❌ *Impossible de télécharger cela... Mon incompétence est sans limite, Majesté...*")
-            await self.play_next(ctx)
-            return
-
-        filename, title, duration = song_info
-        self.current_song = title
-
-        await asyncio.sleep(2)
-
         try:
+            # Utilise un extracteur personnalisé en fonction de l'URL
+            extractor = get_extractor(url)
+            if extractor is None:
+                await ctx.send("❌ *Greg ne connaît pas cette source musicale... Quelle ignominie !*")
+                await self.play_next(ctx)
+                return
+
+            filename, title, duration = await extractor.download(
+                url,
+                ffmpeg_path=self.ffmpeg_path,
+                cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
+            )
+
+            self.current_song = title
+            await asyncio.sleep(2)
+
             ctx.voice_client.play(
                 discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),
                 after=lambda e: self.bot.loop.create_task(self.play_next(ctx))
             )
-            await ctx.send(f"🎶 *Majesté, voici votre requête, aussi abominable soit-elle :* **{title}** (`{duration}`).")
+
+            await ctx.send(
+                f"🎶 *Majesté, voici votre requête, aussi abominable soit-elle :* **{title}** (`{duration}` sec).")
             self.bot.loop.create_task(self.bot.get_cog("Voice").auto_disconnect(ctx))
-        except Exception as e:
-            await ctx.send(f"❌ *Oh, quelle horreur... Encore un problème...* {e}")
-
-    @commands.command()
-    async def stream(self, ctx, *, query_or_url: str):
-        """
-        Joue un morceau en streaming depuis une URL ou une recherche (YouTube/SoundCloud).
-        """
-        if ctx.voice_client is None:
-            if ctx.author.voice:
-                await ctx.author.voice.channel.connect()
-            else:
-                return await ctx.send("🎧 Tu dois être dans un salon vocal, pitoyable créature.")
-
-        await ctx.send(f"🔍 *Greg farfouille dans les poubelles du Web pour :* `{query_or_url}`...")
-
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'default_search': 'ytsearch',
-            'nocheckcertificate': True,
-        }
-
-        loop = asyncio.get_event_loop()
-
-        def extract_info():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(query_or_url, download=False)
-
-        try:
-            data = await loop.run_in_executor(None, extract_info)
-            info = data['entries'][0] if 'entries' in data else data
-            url_audio = info['url']
-            title = info.get('title', 'Son inconnu')
-        except Exception as e:
-            return await ctx.send(f"❌ *Le grand Oracle `yt-dlp` s’est emmêlé dans ses parchemins...* {e}")
-
-        try:
-            source = discord.FFmpegPCMAudio(
-                url_audio,
-                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                options="-vn",
-                executable=self.ffmpeg_path
-            )
-
-            if ctx.voice_client.is_playing():
-                ctx.voice_client.stop()
-
-            ctx.voice_client.play(source,
-                                  after=lambda e: print(f"▶️ Terminé : {e}" if e else f"🎶 Lecture finie : {title}"))
-            self.current_song = title
-            await ctx.send(f"▶️ *Votre infâme sélection est lancée en streaming :* **{title}**")
-        except Exception as e:
-            await ctx.send(f"❌ *Greg ne parvient pas à lire cette ignominie...* {e}")
-
-    async def download_audio(self, ctx, url):
-        os.makedirs("downloads", exist_ok=True)
-
-        # Injecte les cookies Railway si présents
-        cookies_env = os.environ.get("YT_COOKIES_TXT")
-        if cookies_env:
-            with open("youtube.com_cookies.txt", "w") as f:
-                f.write(cookies_env)
-
-        extractor = get_extractor(url)
-        if not extractor:
-            await ctx.send("❌ *Greg ne connaît pas ce royaume sonore… Requête rejetée.*")
-            return None
-
-        try:
-            filename, title, duration = await extractor.download(
-                url,
-                ffmpeg_path=self.ffmpeg_path,
-                cookies_file="youtube.com_cookies.txt"
-            )
-
-            if duration > 1200:
-                await ctx.send("⛔ *Vingt minutes ?! Et puis quoi encore ? Un opéra complet ?!*")
-                return None
-
-            return filename, title, duration
 
         except Exception as e:
-            await ctx.send(f"❌ *Greg s’étrangle sur le fichier... {e}*")
-            return None
+            await ctx.send(f"❌ *Greg s’étrangle sur cette bouillie sonore :* {e}")
+            await self.play_next(ctx)
 
     @commands.command()
     async def skip(self, ctx):
