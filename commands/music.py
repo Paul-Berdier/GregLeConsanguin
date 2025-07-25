@@ -26,7 +26,6 @@ def save_playlist(playlist):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.bot.tree = bot.tree  # Pour slash commands
         self.queue = []
         self.is_playing = False
         self.current_song = None
