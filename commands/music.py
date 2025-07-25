@@ -87,48 +87,6 @@ class Music(commands.Cog):
         except asyncio.TimeoutError:
             await ctx.send("⏳ *Trop lent... Greg ira se pendre avec un câble Jack 3.5mm...*")
 
-    @commands.command()
-    async def play(self, ctx, *, query_or_url):
-        """
-        Joue une URL ou une recherche YouTube, en mode téléchargement ou streaming.
-        """
-        if ctx.voice_client is None:
-            await ctx.invoke(self.bot.get_command("join"))
-
-        await ctx.send("🎵 *Ugh... Encore une de vos requêtes, Majesté ? Que souhaitez-vous cette fois ?...*")
-
-        if "http://" in query_or_url or "https://" in query_or_url:
-            await self.ask_play_mode(ctx, query_or_url)
-            return
-
-        # Sinon, recherche sur Soundcloud automatiquement
-        extractor = get_search_module("soundcloud")
-        results = extractor.search(query_or_url)
-
-        if not results:
-            await ctx.send("❌ *Rien, Majesté. Même Soundcloud a fui votre exigence...*")
-            return
-
-        self.search_results[ctx.author.id] = results
-
-        msg = "**🔍 Résultats Soundcloud :**\n"
-        for i, item in enumerate(results[:3], 1):
-            msg += f"**{i}.** [{item['title']}]({item['url']})\n"
-
-        msg += "\n*Majesté, un chiffre s'il vous plaît...*"
-        await ctx.send(msg)
-
-        def check_choice(m):
-            return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
-
-        try:
-            reply = await self.bot.wait_for("message", check=check_choice, timeout=30)
-            choice = int(reply.content) - 1
-            selected_url = results[choice]["url"]
-            await self.ask_play_mode(ctx, selected_url)
-        except asyncio.TimeoutError:
-            await ctx.send("⏳ *Trop lent, Majesté... Greg retourne se lamenter dans l’ombre...*")
-
     async def search_source(self, ctx, query, source: str):
         """
         Recherche sur un extracteur (youtube, soundcloud, etc.) via son module.
@@ -225,7 +183,49 @@ class Music(commands.Cog):
             await ctx.send(f"❌ *Greg s’étrangle sur cette bouillie sonore :* {e}")
             await self.play_next(ctx)
 
-    @commands.command()
+    @commands.command(name="play", help="Joue un son depuis une URL ou une recherche. Streaming ou téléchargement.")
+    async def play(self, ctx, *, query_or_url):
+        """
+        Joue une URL ou une recherche YouTube, en mode téléchargement ou streaming.
+        """
+        if ctx.voice_client is None:
+            await ctx.invoke(self.bot.get_command("join"))
+
+        await ctx.send("🎵 *Ugh... Encore une de vos requêtes, Majesté ? Que souhaitez-vous cette fois ?...*")
+
+        if "http://" in query_or_url or "https://" in query_or_url:
+            await self.ask_play_mode(ctx, query_or_url)
+            return
+
+        # Sinon, recherche sur Soundcloud automatiquement
+        extractor = get_search_module("soundcloud")
+        results = extractor.search(query_or_url)
+
+        if not results:
+            await ctx.send("❌ *Rien, Majesté. Même Soundcloud a fui votre exigence...*")
+            return
+
+        self.search_results[ctx.author.id] = results
+
+        msg = "**🔍 Résultats Soundcloud :**\n"
+        for i, item in enumerate(results[:3], 1):
+            msg += f"**{i}.** [{item['title']}]({item['url']})\n"
+
+        msg += "\n*Majesté, un chiffre s'il vous plaît...*"
+        await ctx.send(msg)
+
+        def check_choice(m):
+            return m.author == ctx.author and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
+
+        try:
+            reply = await self.bot.wait_for("message", check=check_choice, timeout=30)
+            choice = int(reply.content) - 1
+            selected_url = results[choice]["url"]
+            await self.ask_play_mode(ctx, selected_url)
+        except asyncio.TimeoutError:
+            await ctx.send("⏳ *Trop lent, Majesté... Greg retourne se lamenter dans l’ombre...*")
+
+    @commands.command(name="skip", help="Passe à la piste suivante dans la playlist.")
     async def skip(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
@@ -240,7 +240,7 @@ class Music(commands.Cog):
         else:
             await ctx.send("❌ *Voyons, Votre Altesse... Il n'y a rien à zapper...*")
 
-    @commands.command()
+    @commands.command(name="stop", help="Arrête la lecture et vide la file d'attente.")
     async def stop(self, ctx):
         self.queue.clear()
         save_playlist([])
@@ -253,7 +253,7 @@ class Music(commands.Cog):
 
         await ctx.send("⏹ *Majesté a tranché ! L’infamie musicale cesse ici.*")
 
-    @commands.command()
+    @commands.command(name="playlist", help="Affiche la file d’attente actuelle.")
     async def playlist(self, ctx):
         if len(self.queue) == 0:
             await ctx.send("📋 *Majesté... c'est le vide sidéral ici. Une playlist digne de votre grandeur, j’imagine...*")
@@ -262,7 +262,7 @@ class Music(commands.Cog):
         queue_list = "\n".join([f"**{i+1}.** {url}" for i, url in enumerate(self.queue)])
         await ctx.send(f"🎶 *Oh, quelle misérable sélection musicale ! Mais voici votre liste, Ô Souverain :*\n{queue_list}")
 
-    @commands.command()
+    @commands.command(name="pause", help="Met la musique actuelle en pause.")
     async def pause(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.pause()
@@ -270,7 +270,7 @@ class Music(commands.Cog):
         else:
             await ctx.send("❌ *Pardonnez mon insolence, Ô Éminence, mais il n’y a rien à interrompre... Peut-être que votre majestueux cerveau a oublié ce détail ?*")
 
-    @commands.command()
+    @commands.command(name="resume", help="Reprend la lecture si elle est en pause.")
     async def resume(self, ctx):
         if ctx.voice_client and ctx.voice_client.is_paused():
             ctx.voice_client.resume()
@@ -278,7 +278,7 @@ class Music(commands.Cog):
         else:
             await ctx.send("❌ *Que voulez-vous que je reprenne, Majesté ? Le son du silence ? Ah, quelle sagesse... si seulement c'était volontaire de votre part.*")
 
-    @commands.command()
+    @commands.command(name="current", help="Affiche la musique actuellement jouée.")
     async def current(self, ctx):
         if self.current_song:
             await ctx.send(f"🎧 *Majesté, vos oreilles saignent peut-être, mais voici l’ignoble bruit qui souille ce canal :* **{self.current_song}**. *Profitez donc de cette... ‘expérience’.*")

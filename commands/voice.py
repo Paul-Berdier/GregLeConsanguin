@@ -1,3 +1,5 @@
+# commands/voice.py
+
 from discord.ext import commands
 import discord
 import sys
@@ -30,8 +32,7 @@ class Voice(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ *Même les arcanes les plus sombres n’ont pu empêcher cet échec...* `{e}`")
 
-
-    @commands.command()
+    @commands.command(name="join", help="Fait rejoindre Greg dans votre salon vocal misérable.")
     async def join(self, ctx):
         """Fait rejoindre Greg dans un salon vocal."""
         if ctx.author.voice is None:
@@ -53,7 +54,7 @@ class Voice(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ *Un obstacle infernal m'empêche de rejoindre le vocal, Ô Majesté...* `{e}`")
 
-    @commands.command()
+    @commands.command(name="leave", help="Fait quitter Greg du vocal, enfin libéré de vous.")
     async def leave(self, ctx):
         """Fait quitter Greg du salon vocal."""
         if ctx.voice_client:
@@ -62,7 +63,7 @@ class Voice(commands.Cog):
         else:
             await ctx.send("❌ *Ah, quelle ironie… Vous exigez mon départ alors que je ne suis même pas là ! Je vois que l’imbécilité règne en maître ici...*")
 
-    @commands.command()
+    @commands.command(name="restart", help="Redémarre Greg. Ne me tentez pas trop...")
     async def restart(self, ctx):
         """Redémarre Greg le Consanguin."""
         await ctx.send("🔁 *Greg... Greg meurt... pour mieux revenir hanter vos canaux vocaux...*")
