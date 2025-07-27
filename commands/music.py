@@ -13,24 +13,28 @@ PLAYLIST_FILE = "playlist.json"
 
 def load_playlist():
     if not os.path.exists(PLAYLIST_FILE):
-        with open(PLAYLIST_FILE, "w") as f:
-            json.dump([], f)
+        return []
     with open(PLAYLIST_FILE, "r") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except Exception:
+            return []
 
-def save_playlist(playlist):
+def save_playlist(queue):
     with open(PLAYLIST_FILE, "w") as f:
-        json.dump(playlist, f)
+        json.dump(queue, f)
+
 
 
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queue = []
+        self.queue = load_playlist()  # ← CHARGEMENT au démarrage !
         self.is_playing = False
         self.current_song = None
         self.search_results = {}
         self.ffmpeg_path = self.detect_ffmpeg()
+
 
     def detect_ffmpeg(self):
         """Détecte ffmpeg automatiquement."""
@@ -132,26 +136,20 @@ class Music(commands.Cog):
         await interaction.followup.send(f"▶️ *Votre ignoble sélection est lancée en streaming (direct) :* **{title}**")
 
     async def add_to_queue(self, interaction, url):
-        await interaction.followup.send(f"🎵 Ajouté à la playlist : {url}")
+        """Ajoute un morceau à la file d'attente et sauvegarde la playlist."""
         self.queue.append(url)
+        save_playlist(self.queue)  # <-- La queue est toujours une liste d'URL
 
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            try:
-                info = ydl.extract_info(url, download=False)
-                title = info.get("title", url)
-            except Exception:
-                title = url
+        await interaction.followup.send(f"🎵 Ajouté à la playlist : {url}")
 
-        playlist = load_playlist()
-        playlist.append({"title": title, "url": url})
-        save_playlist(playlist)
-
+        # Si aucune musique ne joue, on lance immédiatement la lecture
         if not self.is_playing:
             await self.play_next(interaction)
 
     async def play_next(self, interaction):
         if not self.queue:
             self.is_playing = False
+            save_playlist(self.queue)  # <-- met à jour la file persistante si la playlist est vide
             await interaction.followup.send("📍 *Plus rien à jouer. Enfin une pause pour Greg...*")
             return
 
@@ -199,26 +197,21 @@ class Music(commands.Cog):
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
+        if self.queue:
+            self.queue.pop(0)
+            save_playlist(self.queue)
+        await interaction.response.send_message("⏭ *Et que ça saute !*")
 
-            playlist = load_playlist()
-            if playlist:
-                playlist.pop(0)
-                save_playlist(playlist)
-
-            await interaction.response.send_message("⏭ *Et que ça saute !*")
-        else:
-            await interaction.response.send_message("❌ *Rien à zapper... pitoyable...*")
 
     @app_commands.command(name="stop", description="Stoppe tout et vide la playlist.")
     async def stop(self, interaction: discord.Interaction):
         self.queue.clear()
-        save_playlist([])
-
+        save_playlist(self.queue)
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
-
         await interaction.response.send_message("⏹ *Majesté l’a décidé : tout s’arrête ici...*")
+
 
     @app_commands.command(name="pause", description="Met en pause la musique actuelle.")
     async def pause(self, interaction: discord.Interaction):

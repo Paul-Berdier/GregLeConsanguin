@@ -61,36 +61,28 @@ messages_sarcastiques = [
 def index():
     import random
     phrase = random.choice(messages_sarcastiques)
-    playlist = load_playlist()
+    playlist = load_playlist()  # On lit pour affichage (jamais pour modifier !)
     return render_template("index.html", phrase=phrase, playlist=playlist)
 
 @app.route("/play", methods=["POST"])
 def play():
     url = request.form["url"]
-    playlist = load_playlist()
-    playlist.append(url)
-    save_playlist(playlist)
-    requests.post(WEBHOOK_URL, json={"content": f"!play {url}"})
+    requests.post(WEBHOOK_URL, json={"content": f"/play {url}"})
     return redirect("/")
 
 @app.route("/pause", methods=["POST"])
 def pause():
-    requests.post(WEBHOOK_URL, json={"content": "!pause"})
+    requests.post(WEBHOOK_URL, json={"content": "/pause"})
     return redirect("/")
 
 @app.route("/skip", methods=["POST"])
 def skip():
-    playlist = load_playlist()
-    if playlist:
-        playlist.pop(0)
-        save_playlist(playlist)
-    requests.post(WEBHOOK_URL, json={"content": "!skip"})
+    requests.post(WEBHOOK_URL, json={"content": "/skip"})
     return redirect("/")
 
 @app.route("/stop", methods=["POST"])
 def stop():
-    save_playlist([])
-    requests.post(WEBHOOK_URL, json={"content": "!stop"})
+    requests.post(WEBHOOK_URL, json={"content": "/stop"})
     return redirect("/")
 
 def run_flask():
