@@ -50,6 +50,7 @@ button:hover {
     border-radius: 100px;
     margin-bottom: 20px;
     box-shadow: 0 0 10px #888;
+    transition: box-shadow 0.3s;
 }
 
 .sarcasme {
@@ -84,4 +85,15 @@ button:hover {
 .controls form {
     display: inline-block;
     margin: 5px;
+}
+
+/* Animation de rotation (liée à la classe .playing dans index.html) */
+.greg-face.playing {
+    animation: tourner 2s linear infinite;
+    box-shadow: 0 0 32px 4px #f5d76e;
+}
+
+@keyframes tourner {
+    0%   { transform: rotate(0deg);}
+    100% { transform: rotate(360deg);}
 }

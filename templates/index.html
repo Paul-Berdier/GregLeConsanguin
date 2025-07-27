@@ -5,22 +5,36 @@
     <title>Greg le Consanguin</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="icon" type="image/png" href="/static/assets/greg.png">
+    <style>
+        .greg-face.playing {
+            animation: tourner 2s linear infinite;
+            box-shadow: 0 0 32px 4px #f5d76e;
+        }
+        @keyframes tourner {
+            0%   { transform: rotate(0deg);}
+            100% { transform: rotate(360deg);}
+        }
+    </style>
 </head>
 <body>
     <div class="container">
-        <img src="/static/assets/greg.jpg" alt="Greg le Consanguin" class="greg-face">
+        <img src="/static/assets/greg.jpg"
+             alt="Greg le Consanguin"
+             class="greg-face{% if current %} playing{% endif %}">
         <h1>🎩 Greg le Consanguin</h1>
         <p class="sarcasme">{{ phrase }}</p>
 
         <form method="post" action="/play">
-            <input name="url" placeholder="Lien Soundcloud ou recherche" required>
+            <input name="url" placeholder="Lien Soundcloud, YouTube ou recherche…" required>
             <button type="submit">🎵 JOUER</button>
         </form>
 
         {% if current %}
             <div class="current-song">
                 <h2>🎧 En lecture :</h2>
-                <p>{{ current }}</p>
+                <p>
+                  <a href="{{ current }}" target="_blank" style="color:#ffe066;">{{ current }}</a>
+                </p>
             </div>
         {% endif %}
 
@@ -29,7 +43,9 @@
             {% if playlist %}
                 <ul>
                     {% for song in playlist %}
-                        <li>{{ loop.index }}. {{ song }}</li>
+                        <li>{{ loop.index }}.
+                            <a href="{{ song }}" target="_blank">{{ song }}</a>
+                        </li>
                     {% endfor %}
                 </ul>
             {% else %}
@@ -42,7 +58,6 @@
             <form method="post" action="/skip"><button>⏭ Skip</button></form>
             <form method="post" action="/stop"><button>⏹ Stop</button></form>
         </div>
-
     </div>
 </body>
 </html>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Résultats de la recherche – Greg le Consanguin</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🎩 Greg le Consanguin</h1>
+        <p class="sarcasme">Résultats pour <strong>{{ query }}</strong></p>
+
+        {% if results %}
+            <ol>
+            {% for item in results %}
+                <li>
+                    <span style="font-weight:bold">{{ item.title }}</span>
+                    <form action="/select" method="post" style="display:inline;">
+                        <input type="hidden" name="url" value="{{ item.url }}">
+                        <button type="submit">➕ Ajouter à la playlist</button>
+                    </form>
+                    <a href="{{ item.url }}" target="_blank" style="margin-left:10px;color:#ffe066;">🔗 Écouter</a>
+                </li>
+            {% endfor %}
+            </ol>
+        {% else %}
+            <p>Aucun résultat trouvé… Même Greg n’aurait pas fait mieux.</p>
+        {% endif %}
+
+        <a href="/" style="display:inline-block;margin-top:30px;">⏪ Retour</a>
+    </div>
+</body>
+</html>

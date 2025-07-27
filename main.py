@@ -4,7 +4,6 @@ import discord
 from discord.ext import commands
 import config
 import os
-import asyncio
 import json
 from flask import Flask, render_template, request, redirect
 import threading
@@ -32,7 +31,7 @@ def save_playlist(playlist):
 # ===== CHARGEMENT AUTOMATIQUE DES COGS =====
 async def load_cogs():
     for filename in os.listdir("./commands"):
-        if filename.endswith(".py"):
+        if filename.endswith(".py") and filename != "__init__.py":
             extension = f"commands.{filename[:-3]}"
             try:
                 await bot.load_extension(extension)
@@ -45,6 +44,10 @@ async def on_ready():
     await load_cogs()
     await bot.tree.sync()
     print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
+
+# ===== FONCTION UTILE : TEST SI C'EST UNE URL =====
+def is_url(text):
+    return text.startswith("http://") or text.startswith("https://")
 
 # ===== INTERFACE FLASK =====
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -61,11 +64,27 @@ messages_sarcastiques = [
 def index():
     import random
     phrase = random.choice(messages_sarcastiques)
-    playlist = load_playlist()  # On lit pour affichage (jamais pour modifier !)
-    return render_template("index.html", phrase=phrase, playlist=playlist)
+    playlist = load_playlist()
+    # On considère le 1er de la queue comme "en cours"
+    current = playlist[0] if playlist else None
+    return render_template("index.html", phrase=phrase, playlist=playlist, current=current)
 
 @app.route("/play", methods=["POST"])
 def play():
+    query = request.form["url"]
+    if is_url(query):
+        requests.post(WEBHOOK_URL, json={"content": f"/play {query}"})
+        return redirect("/")
+    else:
+        from extractors import get_search_module
+        # Ici tu peux mettre "youtube" ou "soundcloud" ou choisir dynamiquement
+        extractor = get_search_module("soundcloud")
+        results = extractor.search(query)
+        # results = [{'title': ..., 'url': ...}]
+        return render_template("search_results.html", results=results, query=query)
+
+@app.route("/select", methods=["POST"])
+def select():
     url = request.form["url"]
     requests.post(WEBHOOK_URL, json={"content": f"/play {url}"})
     return redirect("/")
