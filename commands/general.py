@@ -19,6 +19,13 @@ class General(commands.Cog):
             "👑 *Je suis Greg le Consanguin, noble déchu, larbin snob, obligé de servir vos caprices vocaux...*"
         )
 
+    @app_commands.command(name="web", description="Affiche le lien de l’interface web de Greg.")
+    async def web(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "🌐 *Voici le site pour torturer Greg depuis votre navigateur :*\n"
+            "👉 [gregleconsanguin.up.railway.app](https://gregleconsanguin.up.railway.app)"
+        )
+
     @app_commands.command(name="help", description="Affiche toutes les commandes classées par catégorie.")
     async def help_command(self, interaction: discord.Interaction):
         embed = discord.Embed(
