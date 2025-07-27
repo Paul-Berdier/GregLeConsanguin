@@ -84,37 +84,52 @@ class Music(commands.Cog):
         except asyncio.TimeoutError:
             await interaction.followup.send("⏳ *Trop lent. Greg retourne râler dans sa crypte...*")
 
+    # async def ask_play_mode(self, interaction, url):
+    #     await interaction.followup.send(
+    #         "**📦 Dois-je souffrir en le téléchargeant ou simplement le vomir dans vos oreilles ?**\n"
+    #         "**1.** Télécharger puis jouer\n"
+    #         "**2.** Lecture directe (stream)"
+    #     )
+    #
+    #     def check(m):
+    #         return m.author.id == interaction.user.id and m.content in ["1", "2"]
+    #
+    #     try:
+    #         msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+    #         if msg.content == "1":
+    #             await self.add_to_queue(interaction, url)
+    #         else:
+    #             extractor = get_extractor(url)
+    #             if not extractor or not hasattr(extractor, "stream"):
+    #                 return await interaction.followup.send("❌ *Impossible de streamer ce son, même les démons refusent.*")
+    #
+    #             source, title = await extractor.stream(url, self.ffmpeg_path)
+    #
+    #             vc = interaction.guild.voice_client
+    #             if vc.is_playing():
+    #                 vc.stop()
+    #
+    #             vc.play(source, after=lambda e: print(f"▶️ Fin du stream : {title} ({e})" if e else f"🎶 Fin lecture : {title}"))
+    #             self.current_song = title
+    #             await interaction.followup.send(f"▶️ *Votre ignoble sélection est lancée en streaming :* **{title}**")
+    #
+    #     except asyncio.TimeoutError:
+    #         await interaction.followup.send("⏳ *Trop lent. Greg se pend avec un câble MIDI...*")
+
     async def ask_play_mode(self, interaction, url):
-        await interaction.followup.send(
-            "**📦 Dois-je souffrir en le téléchargeant ou simplement le vomir dans vos oreilles ?**\n"
-            "**1.** Télécharger puis jouer\n"
-            "**2.** Lecture directe (stream)"
-        )
+        extractor = get_extractor(url)
+        if not extractor or not hasattr(extractor, "stream"):
+            return await interaction.followup.send("❌ *Impossible de streamer ce son, même les démons refusent.*")
 
-        def check(m):
-            return m.author.id == interaction.user.id and m.content in ["1", "2"]
+        source, title = await extractor.stream(url, self.ffmpeg_path)
 
-        try:
-            msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-            if msg.content == "1":
-                await self.add_to_queue(interaction, url)
-            else:
-                extractor = get_extractor(url)
-                if not extractor or not hasattr(extractor, "stream"):
-                    return await interaction.followup.send("❌ *Impossible de streamer ce son, même les démons refusent.*")
+        vc = interaction.guild.voice_client
+        if vc.is_playing():
+            vc.stop()
 
-                source, title = await extractor.stream(url, self.ffmpeg_path)
-
-                vc = interaction.guild.voice_client
-                if vc.is_playing():
-                    vc.stop()
-
-                vc.play(source, after=lambda e: print(f"▶️ Fin du stream : {title} ({e})" if e else f"🎶 Fin lecture : {title}"))
-                self.current_song = title
-                await interaction.followup.send(f"▶️ *Votre ignoble sélection est lancée en streaming :* **{title}**")
-
-        except asyncio.TimeoutError:
-            await interaction.followup.send("⏳ *Trop lent. Greg se pend avec un câble MIDI...*")
+        vc.play(source, after=lambda e: print(f"▶️ Fin du stream : {title} ({e})" if e else f"🎶 Fin lecture : {title}"))
+        self.current_song = title
+        await interaction.followup.send(f"▶️ *Votre ignoble sélection est lancée en streaming (direct) :* **{title}**")
 
     async def add_to_queue(self, interaction, url):
         await interaction.followup.send(f"🎵 Ajouté à la playlist : {url}")
