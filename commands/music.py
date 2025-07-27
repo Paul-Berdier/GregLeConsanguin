@@ -56,7 +56,7 @@ class Music(commands.Cog):
         await interaction.followup.send("🎵 *Encore une demande musicale, Majesté ? Quel supplice...*")
 
         if "http://" in query_or_url or "https://" in query_or_url:
-            await self.ask_play_mode(interaction, query_or_url)
+            await self.add_to_queue(interaction, query_or_url)
             return
 
         extractor = get_search_module("soundcloud")
@@ -163,19 +163,36 @@ class Music(commands.Cog):
             await interaction.followup.send("❌ *Aucun extracteur trouvé. Quelle misère...*")
             return
 
-        filename, title, duration = await extractor.download(
-            url,
-            ffmpeg_path=self.ffmpeg_path,
-            cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
-        )
-
-        self.current_song = title
-
         vc = interaction.guild.voice_client
-        vc.play(discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),
-                after=lambda e: self.bot.loop.create_task(self.play_next(interaction)))
 
-        await interaction.followup.send(f"🎶 *Majesté, voici votre requête :* **{title}** (`{duration}` sec)")
+        # --- Privilégier le stream direct si possible ---
+        if hasattr(extractor, "stream"):
+            try:
+                source, title = await extractor.stream(url, self.ffmpeg_path)
+                self.current_song = title
+                if vc.is_playing():
+                    vc.stop()
+                vc.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(interaction)))
+                await interaction.followup.send(f"▶️ *Streaming direct :* **{title}**")
+                return
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ *Échec du stream, je tente le téléchargement...* `{e}`")
+
+        # --- Fallback : téléchargement classique ---
+        try:
+            filename, title, duration = await extractor.download(
+                url,
+                ffmpeg_path=self.ffmpeg_path,
+                cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
+            )
+            self.current_song = title
+            vc.play(
+                discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),
+                after=lambda e: self.bot.loop.create_task(self.play_next(interaction))
+            )
+            await interaction.followup.send(f"🎶 *Téléchargé et joué :* **{title}** (`{duration}` sec)")
+        except Exception as e:
+            await interaction.followup.send(f"❌ *Même le téléchargement échoue, Majesté...* `{e}`")
 
     @app_commands.command(name="skip", description="Passe à la piste suivante.")
     async def skip(self, interaction: discord.Interaction):
