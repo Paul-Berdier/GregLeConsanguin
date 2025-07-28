@@ -38,7 +38,7 @@ except Exception as e:
 def run_web():
     print("[DEBUG] Lancement de socketio.run ...")
     try:
-        socketio.run(app, host="0.0.0.0", port=3000)
+        socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
         print("[DEBUG] Fin de socketio.run (ne devrait jamais s'afficher sauf crash Flask)")
     except Exception as e:
         print(f"[FATAL] Erreur socketio.run : {e}")
