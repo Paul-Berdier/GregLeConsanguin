@@ -7,6 +7,7 @@ import os
 print("=== DEBUG CWD:", os.getcwd())
 print("=== DEBUG LIST templates:", os.listdir("web/templates"))
 print("=== DEBUG PATH index.html:", os.path.exists("web/templates/index.html"))
+print("=== DEBUG ABS INDEX:", os.path.abspath("web/templates/index.html"))
 
 print("[DEBUG] Import app.py OK")
 
@@ -14,6 +15,8 @@ def create_web_app(playlist_manager):
     print("[DEBUG] create_web_app appelée")
     app = Flask(__name__, static_folder="web/static", template_folder="web/templates")
     socketio = SocketIO(app)
+
+from flask import Flask, render_template_string
 
     @app.route("/")
     def index():
