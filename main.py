@@ -72,6 +72,22 @@ async def on_ready():
     await bot.tree.sync()
     print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
 
+# ==== Attendre que le serveur web soit dispo avant de connecter le client SocketIO ====
+import time
+def wait_for_web():
+    import socket
+    for i in range(15):  # Tente 15 fois, 1 seconde entre chaque
+        try:
+            s = socket.create_connection(("localhost", 3000), 1)
+            s.close()
+            print("[DEBUG] Web serveur up après", i + 1, "s")
+            return
+        except Exception:
+            print(f"[DEBUG] Web non prêt, tentative {i + 1}/15...")
+            time.sleep(1)
+    print("[FATAL] Serveur web jamais prêt !")
+    raise SystemExit(1)
+
 if __name__ == "__main__":
     print("[DEBUG] Thread Flask démarrage...")
     try:
@@ -81,9 +97,12 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[FATAL] Erreur démarrage thread Flask : {e}")
 
+    # Patiente jusqu'à ce que le serveur web soit réellement prêt
+    wait_for_web()
+
     print("[DEBUG] Lancement SocketIO client bot ...")
     try:
-        start_socketio_client("http://localhost:5000")
+        start_socketio_client("http://localhost:3000")
         print("[DEBUG] SocketIO client démarré")
     except Exception as e:
         print(f"[FATAL] Erreur démarrage SocketIO client : {e}")
