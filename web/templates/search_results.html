@@ -15,7 +15,7 @@
             {% for item in results %}
                 <li>
                     <span style="font-weight:bold">{{ item.title }}</span>
-                    <form action="/select" method="post" style="display:inline;">
+                    <form action="/api/play" method="post" style="display:inline;">
                         <input type="hidden" name="url" value="{{ item.url }}">
                         <button type="submit">➕ Ajouter à la playlist</button>
                     </form>

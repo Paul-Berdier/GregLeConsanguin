@@ -28,6 +28,8 @@ input {
     margin-top: 20px;
     border: none;
     border-radius: 5px;
+    background: #282828;
+    color: #fff;
 }
 
 button {
@@ -39,6 +41,7 @@ button {
     border: none;
     border-radius: 5px;
     cursor: pointer;
+    transition: background .15s;
 }
 
 button:hover {
@@ -74,12 +77,14 @@ button:hover {
 .playlist ul {
     list-style: none;
     padding-left: 0;
+    margin: 0;
 }
 
 .playlist li {
     text-align: left;
     padding: 5px;
     border-bottom: 1px solid #444;
+    word-break: break-all;
 }
 
 .controls form {
@@ -87,13 +92,23 @@ button:hover {
     margin: 5px;
 }
 
-/* Animation de rotation (liée à la classe .playing dans index.html) */
-.greg-face.playing {
-    animation: tourner 2s linear infinite;
-    box-shadow: 0 0 32px 4px #f5d76e;
+/* Suggestions dynamiques (autocomplete) */
+.suggestions {
+    position: relative;
+    width: 80%;
+    margin: 0 auto;
+    background: #232323;
+    border-radius: 0 0 8px 8px;
+    border: 1px solid #444;
+    border-top: none;
+    z-index: 2;
 }
-
-@keyframes tourner {
-    0%   { transform: rotate(0deg);}
-    100% { transform: rotate(360deg);}
+.suggestion-item {
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #333;
+    text-align: left;
+    color: #ffd180;
 }
+.suggestion-item:last-child { border-bottom: none; }
+.suggestion-item:hover { background: #383838; color: #fff; }
