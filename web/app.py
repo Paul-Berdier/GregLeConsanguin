@@ -3,6 +3,11 @@
 from flask import Flask, render_template, request, redirect, jsonify
 from flask_socketio import SocketIO, emit
 
+import os
+print("=== DEBUG CWD:", os.getcwd())
+print("=== DEBUG LIST templates:", os.listdir("web/templates"))
+print("=== DEBUG PATH index.html:", os.path.exists("web/templates/index.html"))
+
 print("[DEBUG] Import app.py OK")
 
 def create_web_app(playlist_manager):
