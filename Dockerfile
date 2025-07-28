@@ -27,6 +27,9 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 RUN ls -al /app
+RUN ls -al /app/web
+RUN ls -al /app/web/templates
+
 
 
 # Commande de démarrage du bot
