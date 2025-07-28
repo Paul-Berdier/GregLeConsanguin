@@ -1,29 +1,56 @@
-# main.py
+print("=== TOP MAIN.PY ===")
 
 import os
+print("[DEBUG] Import os OK")
+
 import threading
-from bot_socket import start_socketio_client, pm  # pm = PlaylistManager partagé
-import discord
-from discord.ext import commands
+print("[DEBUG] Import threading OK")
 
-# Import web/app
-from web.app import create_web_app
+try:
+    from bot_socket import start_socketio_client, pm  # pm = PlaylistManager partagé
+    print("[DEBUG] Import bot_socket OK")
+except Exception as e:
+    print(f"[FATAL] Erreur import bot_socket : {e}")
 
-print("[DEBUG] Démarrage main.py")
+try:
+    import discord
+    print("[DEBUG] Import discord OK")
+    from discord.ext import commands
+    print("[DEBUG] Import discord.ext.commands OK")
+except Exception as e:
+    print(f"[FATAL] Erreur import discord : {e}")
+
+try:
+    from web.app import create_web_app
+    print("[DEBUG] Import web.app.create_web_app OK")
+except Exception as e:
+    print(f"[FATAL] Erreur import web.app : {e}")
+
+print("[DEBUG] Démarrage main.py (après tous imports)")
 
 # ===== Lancer le serveur Web (Flask + SocketIO) =====
-app, socketio = create_web_app(pm)
-print("[DEBUG] Flask app et SocketIO créés")
+try:
+    app, socketio = create_web_app(pm)
+    print("[DEBUG] Flask app et SocketIO créés")
+except Exception as e:
+    print(f"[FATAL] Erreur création Flask app : {e}")
 
 def run_web():
     print("[DEBUG] Lancement de socketio.run ...")
-    socketio.run(app, host="0.0.0.0", port=3000)
-    print("[DEBUG] Fin de socketio.run (ne devrait jamais s'afficher sauf crash Flask)")
+    try:
+        socketio.run(app, host="0.0.0.0", port=3000)
+        print("[DEBUG] Fin de socketio.run (ne devrait jamais s'afficher sauf crash Flask)")
+    except Exception as e:
+        print(f"[FATAL] Erreur socketio.run : {e}")
 
 # ===== Discord Bot Setup =====
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
-print("[DEBUG] Instance bot Discord créée")
+try:
+    intents = discord.Intents.all()
+    print("[DEBUG] Création intents OK")
+    bot = commands.Bot(command_prefix="!", intents=intents)
+    print("[DEBUG] Instance bot Discord créée")
+except Exception as e:
+    print(f"[FATAL] Erreur setup bot Discord : {e}")
 
 # Charger les cogs comme d'habitude, mais en passant 'pm' au Music Cog si besoin
 async def load_cogs():
@@ -47,14 +74,26 @@ async def on_ready():
 
 if __name__ == "__main__":
     print("[DEBUG] Thread Flask démarrage...")
-    flask_thread = threading.Thread(target=run_web)
-    flask_thread.start()
+    try:
+        flask_thread = threading.Thread(target=run_web)
+        flask_thread.start()
+        print("[DEBUG] Thread Flask démarré")
+    except Exception as e:
+        print(f"[FATAL] Erreur démarrage thread Flask : {e}")
 
     print("[DEBUG] Lancement SocketIO client bot ...")
-    start_socketio_client("http://localhost:3000")  # Mets bien l'URL de ton web/socketio ici
+    try:
+        start_socketio_client("http://localhost:3000")
+        print("[DEBUG] SocketIO client démarré")
+    except Exception as e:
+        print(f"[FATAL] Erreur démarrage SocketIO client : {e}")
 
     print("[DEBUG] Lancement bot Discord...")
-    import config  # Mets ton token dans config.py
-    bot.run(config.DISCORD_TOKEN)
-    print("[DEBUG] Fin bot.run (ne devrait jamais s’afficher sauf crash Discord bot)")
+    try:
+        import config  # Mets ton token dans config.py
+        print("[DEBUG] Import config OK")
+        bot.run(config.DISCORD_TOKEN)
+    except Exception as e:
+        print(f"[FATAL] Erreur bot.run ou import config : {e}")
 
+    print("[DEBUG] Fin bot.run (ne devrait jamais s’afficher sauf crash Discord bot)")
