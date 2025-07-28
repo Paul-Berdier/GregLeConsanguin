@@ -83,7 +83,7 @@ if __name__ == "__main__":
 
     print("[DEBUG] Lancement SocketIO client bot ...")
     try:
-        start_socketio_client("http://localhost:3000")
+        start_socketio_client("http://localhost:5000")
         print("[DEBUG] SocketIO client démarré")
     except Exception as e:
         print(f"[FATAL] Erreur démarrage SocketIO client : {e}")

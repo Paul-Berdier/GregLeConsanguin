@@ -39,7 +39,7 @@ def on_playlist_update(data):
     except Exception as e:
         print(f"[FATAL] pm.reload() dans on_playlist_update : {e}")
 
-def start_socketio_client(server_url="http://localhost:3000"):
+def start_socketio_client(server_url="http://localhost:5000"):
     print(f"[DEBUG] start_socketio_client appelé avec URL={server_url}")
     try:
         sio.connect(server_url)
