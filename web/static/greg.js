@@ -1,8 +1,9 @@
+// === Autocomplétion dynamique SoundCloud / YouTube ===
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
 let debounce = null;
 
-input.addEventListener("input", function () {
+input.addEventListener("input", function() {
     const val = this.value;
     if (debounce) clearTimeout(debounce);
     if (!val.trim() || val.startsWith("http")) {
@@ -27,7 +28,7 @@ input.addEventListener("input", function () {
     }, 300);
 });
 
-suggestions.addEventListener("click", function (e) {
+suggestions.addEventListener("click", function(e) {
     if (e.target.classList.contains("suggestion-item")) {
         input.value = e.target.getAttribute("data-title");
         suggestions.style.display = "none";
@@ -35,23 +36,25 @@ suggestions.addEventListener("click", function (e) {
     }
 });
 
-input.addEventListener("blur", function () {
+input.addEventListener("blur", function() {
     setTimeout(() => { suggestions.style.display = "none"; }, 200);
 });
-input.addEventListener("focus", function () {
+
+input.addEventListener("focus", function() {
     if (suggestions.innerHTML) suggestions.style.display = "block";
 });
 
-// Contrôles (Pause / Skip / Stop)
+// === Contrôles AJAX sans reload (panel.html) ===
 document.querySelectorAll(".controls button").forEach(btn => {
-    btn.addEventListener("click", function (e) {
+    btn.addEventListener("click", function(e) {
         e.preventDefault();
-        const action = this.closest("form").action;
-        fetch(action, { method: "POST" });
+        const action = this.dataset.action;
+        if (!action) return;
+        fetch(`/api/${action}`, { method: "POST" });
     });
 });
 
-// Playlist live avec Socket.IO
+// === Socket.IO : Sync playlist & current ===
 const socket = io();
 
 function updatePlaylist(playlist, current) {
@@ -60,10 +63,10 @@ function updatePlaylist(playlist, current) {
         if (current) {
             currentDiv.innerHTML = `<h2>🎧 En lecture :</h2>
                 <p><a href="${current}" target="_blank" style="color:#ffe066;">${current}</a></p>`;
-            document.querySelector('.greg-face').classList.add('playing');
+            document.querySelector('.greg-face')?.classList.add('playing');
         } else {
             currentDiv.innerHTML = "";
-            document.querySelector('.greg-face').classList.remove('playing');
+            document.querySelector('.greg-face')?.classList.remove('playing');
         }
     }
 
@@ -72,39 +75,30 @@ function updatePlaylist(playlist, current) {
         playlistDiv.innerHTML = playlist.length
             ? playlist.map((song, i) =>
                 `<li>${i + 1}. <a href="${song}" target="_blank">${song}</a></li>`
-            ).join('')
+              ).join('')
             : `<p><em>La playlist est vide. Comme votre goût musical sans doute...</em></p>`;
     }
 }
 
-socket.on("playlist_update", function (data) {
+socket.on("playlist_update", function(data) {
     updatePlaylist(data.queue, data.current);
 });
 
-// Envoi du formulaire principal
-document.getElementById("play-form").addEventListener("submit", function (e) {
-    e.preventDefault();
-    const val = input.value.trim();
-    const button = document.getElementById("play-button");
-    if (!val) return;
-
-    button.disabled = true;
-    button.innerText = "⏳ Greg s'exécute...";
-
-    fetch("/api/play", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: val })
-    }).then(() => {
-        input.value = "";
-        suggestions.style.display = "none";
-        suggestions.innerHTML = "";
-        setTimeout(() => {
-            button.disabled = false;
-            button.innerText = "🎵 JOUER";
-        }, 1000);
-    }).catch(() => {
-        button.disabled = false;
-        button.innerText = "🎵 JOUER";
+// === Envoi commande PLAY depuis le formulaire (panel.html) ===
+const form = document.getElementById("play-form");
+if (form) {
+    form.addEventListener("submit", function(e) {
+        e.preventDefault();
+        const val = input.value;
+        if (!val.trim()) return;
+        fetch("/api/play", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: val })
+        }).then(() => {
+            input.value = "";
+            suggestions.style.display = "none";
+            suggestions.innerHTML = "";
+        });
     });
-});
+}

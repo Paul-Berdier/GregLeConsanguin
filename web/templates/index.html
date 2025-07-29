@@ -1,21 +1,17 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="UTF-8">
-  <title>🎩 Greg le Consanguin</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta charset="UTF-8">
+    <title>👑 Greg le Consanguin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='assets/greg.jpg') }}" type="image/jpeg">
 </head>
 <body>
-  <div class="container">
-    <h1>🎩 Greg le Consanguin</h1>
-
-    {% if user %}
-      <p>Bienvenue {{ user.username }}#{{ user.discriminator }} !</p>
-      <a href="/panel"><button>🧠 Accéder au Panel</button></a>
-      <a href="/logout"><button>🚪 Se déconnecter</button></a>
-    {% else %}
-      <a href="/login"><button>🔑 Se connecter avec Discord</button></a>
-    {% endif %}
-  </div>
+    <div class="container">
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face">
+        <h1>Greg le Consanguin</h1>
+        <p class="sarcasme">Un larbin musical insupportable, et vous osez vouloir l’utiliser ?</p>
+        <a href="/login"><button>🔐 Connexion Discord</button></a>
+    </div>
 </body>
 </html>

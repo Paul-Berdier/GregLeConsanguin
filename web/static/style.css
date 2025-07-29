@@ -103,6 +103,7 @@ button:hover {
     border-top: none;
     z-index: 2;
 }
+
 .suggestion-item {
     padding: 10px;
     cursor: pointer;
@@ -110,5 +111,12 @@ button:hover {
     text-align: left;
     color: #ffd180;
 }
-.suggestion-item:last-child { border-bottom: none; }
-.suggestion-item:hover { background: #383838; color: #fff; }
+
+.suggestion-item:last-child {
+    border-bottom: none;
+}
+
+.suggestion-item:hover {
+    background: #383838;
+    color: #fff;
+}

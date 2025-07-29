@@ -2,79 +2,68 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>🎩 Greg le Consanguin - Panel</title>
+    <title>🎧 Greg le Consanguin - Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='assets/greg.jpg') }}" type="image/jpeg">
 </head>
 <body>
     <div class="container">
-        <h1>Bienvenue {{ user.username }} 👑</h1>
-        <p>Choisis un serveur et un salon vocal pour faire exécuter les ordres par Greg.</p>
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face{% if current %} playing{% endif %}">
+        <h1>Bienvenue, {{ user["username"] }}#{{ user["discriminator"] }}</h1>
+        <p class="sarcasme">Encore toi… Bon, choisis un serveur où me faire souffrir.</p>
 
-        <form id="select-form">
-            <label for="guild">🎭 Serveur :</label>
-            <select id="guild" name="guild">
-                {% for g in user.guilds %}
-                    <option value="{{ g.id }}">{{ g.name }}</option>
+        <form method="post" action="/panel">
+            <select name="guild_id" required>
+                {% for guild in guilds %}
+                    <option value="{{ guild.id }}" {% if guild.id == selected_guild_id %}selected{% endif %}>
+                        {{ guild.name }}
+                    </option>
                 {% endfor %}
             </select>
-
-            <label for="channel">🔊 Salon vocal :</label>
-            <select id="channel" name="channel">
-                <!-- À remplir dynamiquement avec JS -->
+            <select name="channel_id" required>
+                {% for channel in channels %}
+                    <option value="{{ channel.id }}" {% if channel.id == selected_channel_id %}selected{% endif %}>
+                        {{ channel.name }}
+                    </option>
+                {% endfor %}
             </select>
-
-            <button type="submit">🎮 Contrôler Greg</button>
+            <button type="submit">🎤 Utiliser ce salon</button>
         </form>
 
-        <hr>
+        <form method="post" action="/api/play" id="play-form" autocomplete="off">
+            <input id="music-input" name="url" placeholder="Lien ou recherche…" required autocomplete="off">
+            <button type="submit">🎵 JOUER</button>
+            <div class="suggestions" id="suggestions" style="display:none;"></div>
+        </form>
 
-        <div id="controls" style="display:none;">
-            <input type="text" id="music-url" placeholder="Lien ou recherche musique…">
-            <button onclick="sendCommand('play')">🎵 Play</button>
-            <button onclick="sendCommand('skip')">⏭ Skip</button>
-            <button onclick="sendCommand('stop')">⏹ Stop</button>
+        <div class="current-song">
+            {% if current %}
+                <h2>🎧 En lecture :</h2>
+                <p><a href="{{ current }}" target="_blank" style="color:#ffe066;">{{ current }}</a></p>
+            {% endif %}
+        </div>
+
+        <div class="playlist">
+            <h2>📝 Playlist actuelle</h2>
+            <ul>
+                {% if playlist %}
+                    {% for song in playlist %}
+                        <li>{{ loop.index }}. <a href="{{ song }}" target="_blank">{{ song }}</a></li>
+                    {% endfor %}
+                {% else %}
+                    <p><em>La playlist est vide. Comme votre goût musical sans doute…</em></p>
+                {% endif %}
+            </ul>
+        </div>
+
+        <div class="controls">
+            <form><button data-action="pause">⏸ Pause</button></form>
+            <form><button data-action="skip">⏭ Skip</button></form>
+            <form><button data-action="stop">⏹ Stop</button></form>
         </div>
     </div>
 
-    <script>
-        const form = document.getElementById("select-form");
-        const controls = document.getElementById("controls");
-        const guildSelect = document.getElementById("guild");
-        const channelSelect = document.getElementById("channel");
-
-        guildSelect.addEventListener("change", function () {
-            const guildId = this.value;
-            channelSelect.innerHTML = "";
-            fetch(`/api/channels?guild_id=${guildId}`)
-                .then(r => r.json())
-                .then(chans => {
-                    chans.forEach(c => {
-                        const opt = document.createElement("option");
-                        opt.value = c.id;
-                        opt.innerText = c.name;
-                        channelSelect.appendChild(opt);
-                    });
-                });
-        });
-
-        form.addEventListener("submit", function (e) {
-            e.preventDefault();
-            controls.style.display = "block";
-        });
-
-        function sendCommand(action) {
-            const guild_id = guildSelect.value;
-            const channel_id = channelSelect.value;
-            const url = document.getElementById("music-url").value;
-
-            fetch(`/api/command/${action}`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({guild_id, channel_id, url})
-            }).then(r => r.json()).then(res => {
-                console.log("Commande envoyée :", res);
-            });
-        }
-    </script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
 </body>
 </html>
