@@ -42,22 +42,19 @@
         const guildSelect = document.getElementById("guild");
         const channelSelect = document.getElementById("channel");
 
-        // 🧠 Mock : À remplacer par un appel réel à ton bot pour récupérer les salons vocaux
-        const dummyChannels = {
-            "guild_id_1": [{id: "123", name: "Général"}, {id: "124", name: "Chill"}],
-            "guild_id_2": [{id: "555", name: "Musique"}]
-        };
-
         guildSelect.addEventListener("change", function () {
             const guildId = this.value;
             channelSelect.innerHTML = "";
-            const chans = dummyChannels[guildId] || [];
-            chans.forEach(c => {
-                const opt = document.createElement("option");
-                opt.value = c.id;
-                opt.innerText = c.name;
-                channelSelect.appendChild(opt);
-            });
+            fetch(`/api/channels?guild_id=${guildId}`)
+                .then(r => r.json())
+                .then(chans => {
+                    chans.forEach(c => {
+                        const opt = document.createElement("option");
+                        opt.value = c.id;
+                        opt.innerText = c.name;
+                        channelSelect.appendChild(opt);
+                    });
+                });
         });
 
         form.addEventListener("submit", function (e) {

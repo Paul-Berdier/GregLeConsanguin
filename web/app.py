@@ -5,6 +5,7 @@ from flask_socketio import SocketIO, emit
 import os
 
 def create_web_app(playlist_manager):
+    playlist_manager.bot = app.bot if hasattr(app, "bot") else None
     app = Flask(__name__, static_folder="static", template_folder="templates")
     socketio = SocketIO(app)
 
@@ -75,5 +76,26 @@ def create_web_app(playlist_manager):
         import asyncio
         asyncio.run_coroutine_threadsafe(trigger_play(bot), bot.loop)
         return jsonify(ok=True)
+
+    @app.route("/api/channels")
+    def get_voice_channels():
+        if "user" not in session:
+            return jsonify({"error": "unauthorized"}), 401
+
+        guild_id = request.args.get("guild_id")
+        if not guild_id:
+            return jsonify({"error": "missing guild_id"}), 400
+
+        # Parcourir les guilds connectés
+        for g in playlist_manager.bot.guilds:
+            if str(g.id) == guild_id:
+                channels = [
+                    {"id": c.id, "name": c.name}
+                    for c in g.voice_channels
+                ]
+                return jsonify(channels)
+
+        return jsonify([])  # Si le bot n’est pas dans ce serveur
+
 
     return app, socketio
