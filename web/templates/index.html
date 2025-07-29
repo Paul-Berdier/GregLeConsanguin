@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <title>Greg le Consanguin</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="icon" href="{{ url_for('static', filename='greg.jpg') }}" type="image/jpg">
+    <link rel="icon" href="{{ url_for('static', filename='assets/greg.jpg') }}" type="image/jpeg">
     <style>
         .greg-face.playing { animation: tourner 2s linear infinite; box-shadow: 0 0 32px 4px #f5d76e; }
         @keyframes tourner { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
@@ -50,7 +50,7 @@
             <form method="post" action="/api/stop"><button>⏹ Stop</button></form>
         </div>
     </div>
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="/web/statics"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
 </body>
 </html>
