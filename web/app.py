@@ -84,6 +84,6 @@ from flask import Flask, render_template_string
         print("[DEBUG] socketio: client connecté")
         emit("playlist_update", playlist_manager.to_dict())
 
-    print("[DEBUG] create_web_app terminé, prêt à return")
-    return app, socketio
+        print("[DEBUG] create_web_app terminé, prêt à return")
+        return app, socketio
 
