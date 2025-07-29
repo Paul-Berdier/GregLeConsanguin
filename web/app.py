@@ -13,7 +13,7 @@ print("[DEBUG] Import app.py OK")
 
 def create_web_app(playlist_manager):
     print("[DEBUG] create_web_app appelée")
-    app = Flask(__name__, static_folder="web/static", template_folder="web/templates")
+    app = Flask(__name__, static_folder="static", template_folder="templates")
     socketio = SocketIO(app)
 
     @app.route("/test")
