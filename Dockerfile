@@ -26,11 +26,6 @@ RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
     pip install --no-cache-dir -r requirements.txt
 
-RUN ls -al /app
-RUN ls -al /app/web
-RUN ls -al /app/web/templates
-
-
 
 # Commande de démarrage du bot
 CMD ["python", "main.py"]
