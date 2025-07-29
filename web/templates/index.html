@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <title>Greg le Consanguin</title>
-    <link rel="stylesheet" href="/web/staticcss">
-    <link rel="icon" type="image/png" href="/web/static/assets/greg.png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('web/static', filename='assets/greg.png') }}">
+    <link rel="icon" href="{{ url_for('static', filename='greg.jpg') }}" type="image/jpg">
     <style>
         .greg-face.playing { animation: tourner 2s linear infinite; box-shadow: 0 0 32px 4px #f5d76e; }
         @keyframes tourner { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
@@ -12,7 +13,7 @@
 </head>
 <body>
     <div class="container">
-        <img src="/web/static/greg.jpg"
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}"
              alt="Greg le Consanguin"
              class="greg-face{% if current %} playing{% endif %}">
         <h1>🎩 Greg le Consanguin</h1>
