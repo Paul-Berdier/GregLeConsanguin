@@ -1,57 +1,21 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <title>Greg le Consanguin</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="icon" href="{{ url_for('static', filename='assets/greg.jpg') }}" type="image/jpeg">
-    <style>
-        .greg-face.playing { animation: tourner 2s linear infinite; box-shadow: 0 0 32px 4px #f5d76e; }
-        @keyframes tourner { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
-    </style>
+  <meta charset="UTF-8">
+  <title>🎩 Greg le Consanguin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="container">
-        <img src="{{ url_for('static', filename='assets/greg.jpg') }}"
-             alt="Greg le Consanguin"
-             class="greg-face{% if current %} playing{% endif %}">
-        <h1>🎩 Greg le Consanguin</h1>
-        <p class="sarcasme">{{ phrase }}</p>
+  <div class="container">
+    <h1>🎩 Greg le Consanguin</h1>
 
-        <form method="post" action="/api/play" id="play-form" autocomplete="off">
-            <input id="music-input" name="url" placeholder="Lien Soundcloud, YouTube ou recherche…" required autocomplete="off">
-            <button type="submit" id="play-button">🎵 JOUER</button>
-            <div class="suggestions" id="suggestions" style="display:none;"></div>
-        </form>
-
-        <div class="current-song">
-            {% if current %}
-                <h2>🎧 En lecture :</h2>
-                <p><a href="{{ current }}" target="_blank" style="color:#ffe066;">{{ current }}</a></p>
-            {% endif %}
-        </div>
-
-        <div class="playlist">
-            <h2>📝 Playlist actuelle</h2>
-            <ul>
-                {% if playlist %}
-                    {% for song in playlist %}
-                        <li>{{ loop.index }}. <a href="{{ song }}" target="_blank">{{ song }}</a></li>
-                    {% endfor %}
-                {% else %}
-                    <p><em>La playlist est vide. Comme votre goût musical sans doute...</em></p>
-                {% endif %}
-            </ul>
-        </div>
-
-        <div class="controls">
-            <form method="post" action="/api/pause"><button>⏸ Pause</button></form>
-            <form method="post" action="/api/skip"><button>⏭ Skip</button></form>
-            <form method="post" action="/api/stop"><button>⏹ Stop</button></form>
-        </div>
-    </div>
-
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script src="{{ url_for('static', filename='greg.js') }}"></script>
+    {% if user %}
+      <p>Bienvenue {{ user.username }}#{{ user.discriminator }} !</p>
+      <a href="/panel"><button>🧠 Accéder au Panel</button></a>
+      <a href="/logout"><button>🚪 Se déconnecter</button></a>
+    {% else %}
+      <a href="/login"><button>🔑 Se connecter avec Discord</button></a>
+    {% endif %}
+  </div>
 </body>
 </html>

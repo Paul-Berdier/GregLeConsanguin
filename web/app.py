@@ -11,9 +11,13 @@ def create_web_app(playlist_manager):
 
     @app.route("/")
     def index():
-        playlist = playlist_manager.get_queue()
-        current = playlist_manager.get_current()
-        return render_template("index.html", playlist=playlist, current=current)
+        user = session.get("user")
+        return render_template("index.html", user=user)
+
+    @app.route("/logout")
+    def logout():
+        session.clear()
+        return redirect("/")
 
     @app.route("/api/play", methods=["POST"])
     def api_play():
