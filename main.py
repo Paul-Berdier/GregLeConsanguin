@@ -1,100 +1,68 @@
-print("[DEBUG] TOP bot_socket.py")
+# main.py
 
-try:
-    import socketio
-    print("[DEBUG] Import socketio OK")
-except Exception as e:
-    print(f"[FATAL] Import socketio : {e}")
+print("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-try:
-    from playlist_manager import PlaylistManager
-    print("[DEBUG] Import PlaylistManager OK")
-except Exception as e:
-    print(f"[FATAL] Import playlist_manager : {e}")
+import os
+import threading
+import time
+import socket
 
-# Instance partagée de PlaylistManager
-try:
-    pm = PlaylistManager()
-    print("[DEBUG] Instance PlaylistManager créée")
-except Exception as e:
-    print(f"[FATAL] Création PlaylistManager : {e}")
+from bot_socket import start_socketio_client, pm  # pm = PlaylistManager partagé
+import discord
+from discord.ext import commands
+from web.app import create_web_app
 
-try:
-    sio = socketio.Client()
-    print("[DEBUG] Instance socketio.Client créée")
-except Exception as e:
-    print(f"[FATAL] Création socketio.Client : {e}")
+# ===== Création bot Discord =====
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Bot Discord injecté depuis main.py
-bot = None  # sera défini après l'initialisation du bot dans main.py
+# Injecter bot dans bot_socket pour activer la lecture depuis le web
+import bot_socket
+bot_socket.bot = bot
 
-@sio.event
-def connect():
-    print("[SocketIO] Bot Discord connecté au serveur web pour la synchro playlist.")
+# ===== Serveur Web (Flask + SocketIO) =====
+app, socketio = create_web_app(pm)
 
-@sio.on('playlist_update')
-def on_playlist_update(data):
-    print("[SocketIO] Event 'playlist_update' reçu : rechargement + déclenchement lecture")
-    try:
-        import asyncio
-        pm.reload()
-        asyncio.run(trigger_play(bot))
-    except Exception as e:
-        print(f"[FATAL] Erreur dans on_playlist_update : {e}")
+def run_web():
+    socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
 
-async def trigger_play(bot):
-    if bot is None:
-        print("[FATAL] bot non initialisé dans trigger_play()")
-        return
-
-    music_cog = bot.get_cog("Music")
-    if not music_cog:
-        print("[FATAL] Music cog introuvable.")
-        return
-
-    for guild in bot.guilds:
-        voice_channel = None
-
-        # Trouver un utilisateur humain en vocal
-        for vc in guild.voice_channels:
-            for member in vc.members:
-                if not member.bot:
-                    voice_channel = vc
-                    break
-            if voice_channel:
-                break
-
-        if not voice_channel:
-            print("[INFO] Aucun humain en vocal, Greg ne bouge pas.")
-            return
-
-        # Greg rejoint si nécessaire
-        if guild.voice_client is None:
+# ===== Chargement des Cogs =====
+async def load_cogs():
+    for filename in os.listdir("./commands"):
+        if filename.endswith(".py") and filename != "__init__.py":
+            extension = f"commands.{filename[:-3]}"
             try:
-                await voice_channel.connect()
-                print(f"[DEBUG] Greg a rejoint le vocal : {voice_channel.name}")
+                await bot.load_extension(extension)
+                print(f"✅ Cog chargé : {extension}")
             except Exception as e:
-                print(f"[ERROR] Échec de connexion vocal : {e}")
-                return
+                print(f"❌ Erreur chargement {extension} : {e}")
 
-        # Faux interaction pour déclencher play_next()
-        class FakeInteraction:
-            def __init__(self, guild):
-                self.guild = guild
-                self.user = voice_channel.members[0]
-                self.followup = self
-            async def send(self, msg): print(f"[GregFake] {msg}")
+@bot.event
+async def on_ready():
+    await load_cogs()
+    await bot.tree.sync()
+    print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
 
+# ===== Attente que le web soit prêt =====
+def wait_for_web():
+    for i in range(15):
         try:
-            await music_cog.play_next(FakeInteraction(guild))
-            print("[DEBUG] play_next() lancé depuis le web")
-        except Exception as e:
-            print(f"[ERROR] Erreur lors du déclenchement play_next : {e}")
+            s = socket.create_connection(("localhost", 3000), 1)
+            s.close()
+            return
+        except Exception:
+            time.sleep(1)
+    raise SystemExit("[FATAL] Serveur web jamais prêt !")
 
-def start_socketio_client(server_url="http://localhost:3000"):
-    print(f"[DEBUG] start_socketio_client avec URL = {server_url}")
-    try:
-        sio.connect(server_url)
-        print("[SocketIO] Connecté à", server_url)
-    except Exception as e:
-        print("[SocketIO] Erreur de connexion à SocketIO :", e)
+# ===== Lancement combiné Flask + Discord bot =====
+if __name__ == "__main__":
+    # Lancer le serveur web dans un thread
+    threading.Thread(target=run_web).start()
+    wait_for_web()
+
+    # Lancer le client SocketIO pour écoute des mises à jour playlist
+    start_socketio_client("http://localhost:3000")
+
+    # Lancer Greg le serviteur vocal
+    import config
+    bot.run(config.DISCORD_TOKEN)
