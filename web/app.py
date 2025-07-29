@@ -83,5 +83,6 @@ def create_web_app(playlist_manager):
         emit("playlist_update", playlist_manager.to_dict())
 
         print("[DEBUG] create_web_app terminé, prêt à return")
-        return app, socketio
+
+    return app, socketio
 
