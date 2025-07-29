@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <title>Greg le Consanguin</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="icon" type="image/png" href="/static/assets/greg.png">
+    <link rel="stylesheet" href="/web/staticcss">
+    <link rel="icon" type="image/png" href="/web/static/assets/greg.png">
     <style>
         .greg-face.playing { animation: tourner 2s linear infinite; box-shadow: 0 0 32px 4px #f5d76e; }
         @keyframes tourner { 0% { transform: rotate(0deg);} 100% { transform: rotate(360deg);} }
@@ -12,7 +12,7 @@
 </head>
 <body>
     <div class="container">
-        <img src="/static/assets/greg.jpg"
+        <img src="/web/static/greg.jpg"
              alt="Greg le Consanguin"
              class="greg-face{% if current %} playing{% endif %}">
         <h1>🎩 Greg le Consanguin</h1>
@@ -51,6 +51,6 @@
         </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/static/greg.js"></script>
+    <script src="/web/statics"></script>
 </body>
 </html>
