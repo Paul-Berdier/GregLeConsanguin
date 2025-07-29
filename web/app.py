@@ -16,8 +16,6 @@ def create_web_app(playlist_manager):
     app = Flask(__name__, static_folder="web/static", template_folder="web/templates")
     socketio = SocketIO(app)
 
-from flask import Flask, render_template_string
-
     @app.route("/")
     def index():
         print("[DEBUG] GET / appelé")
