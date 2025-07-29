@@ -97,5 +97,59 @@ def create_web_app(playlist_manager):
 
         return jsonify([])  # Si le bot n’est pas dans ce serveur
 
+    @app.route("/api/command/<action>", methods=["POST"])
+    def trigger_command(action):
+        if "user" not in session:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.json
+        guild_id = int(data.get("guild_id"))
+        channel_id = int(data.get("channel_id"))
+        url = data.get("url", "")
+
+        bot = playlist_manager.bot
+        if bot is None:
+            return jsonify({"error": "bot not ready"}), 500
+
+        guild = discord.utils.get(bot.guilds, id=guild_id)
+        if guild is None:
+            return jsonify({"error": "guild not found"}), 404
+
+        voice_channel = discord.utils.get(guild.voice_channels, id=channel_id)
+        if voice_channel is None:
+            return jsonify({"error": "voice channel not found"}), 404
+
+        # Créer une fausse interaction
+        class FakeInteraction:
+            def __init__(self):
+                self.guild = guild
+                self.user = guild.members[0]
+                self.channel = None
+                self.followup = self
+            async def send(self, msg): print(f"[GregFake] {msg}")
+
+        async def run_action():
+            try:
+                await voice_channel.connect()
+            except:
+                pass  # déjà connecté
+
+            music_cog = bot.get_cog("Music")
+            if music_cog is None:
+                print("[ERROR] Music cog non trouvé.")
+                return
+
+            fake = FakeInteraction()
+            if action == "play":
+                await music_cog.play(fake, url=url)
+            elif action == "skip":
+                await music_cog.skip(fake)
+            elif action == "stop":
+                await music_cog.stop(fake)
+
+        import asyncio
+        asyncio.create_task(run_action())
+
+        return jsonify({"status": "ok"})
 
     return app, socketio
