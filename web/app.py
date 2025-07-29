@@ -69,4 +69,11 @@ def create_web_app(playlist_manager):
     def ws_connect():
         emit("playlist_update", playlist_manager.to_dict())
 
+    @app.route("/api/debug_trigger", methods=["POST"])
+    def debug_trigger():
+        from bot_socket import trigger_play, bot
+        import asyncio
+        asyncio.run_coroutine_threadsafe(trigger_play(bot), bot.loop)
+        return jsonify(ok=True)
+
     return app, socketio

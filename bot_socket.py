@@ -41,10 +41,12 @@ def on_playlist_update(data):
         pm.reload()
         if bot and hasattr(bot, 'loop'):
             asyncio.run_coroutine_threadsafe(trigger_play(bot), bot.loop)
+            print("[DEBUG] trigger_play() soumis à la boucle principale")
         else:
-            print("[FATAL] Bot ou sa loop non disponible")
+            print("[FATAL] Bot ou sa boucle event est indisponible")
     except Exception as e:
         print(f"[FATAL] Erreur dans on_playlist_update : {e}")
+
 
 
 def start_socketio_client(server_url="http://localhost:3000"):
