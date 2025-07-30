@@ -1,5 +1,7 @@
 # web/app.py
 
+# web/app.py
+
 from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
 from web.oauth import oauth_bp
@@ -23,11 +25,16 @@ def create_web_app(playlist_manager):
 
     @app.route("/panel")
     def panel():
-        if "user" not in session:
+        user = session.get("user")
+        if not user:
             return redirect("/login")
-        user = session["user"]
-        # Ajoute ici la logique pour envoyer guilds/channels si besoin
-        return render_template("panel.html", user=user)
+        user_guild_ids = set(g['id'] for g in user['guilds'])
+        bot_guilds = app.bot.guilds  # list of discord.Guild
+        # Filtre : ne montrer QUE les serveurs où Greg est présent
+        common_guilds = [g for g in bot_guilds if str(g.id) in user_guild_ids]
+        # Adapter le format si besoin
+        guilds_fmt = [{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in common_guilds]
+        return render_template("panel.html", guilds=guilds_fmt, user=user)
 
     @app.route("/api/play", methods=["POST"])
     def api_play():
@@ -76,18 +83,20 @@ def create_web_app(playlist_manager):
         if not guild_id:
             return jsonify({"error": "missing guild_id"}), 400
 
-        # On suppose que tu as déjà accès à ton objet bot Discord
-        bot = playlist_manager.bot  # ou l’endroit où tu as stocké ton bot
+        # Accès correct à l'objet bot
+        bot = app.bot
         guild = bot.get_guild(int(guild_id))
         if not guild:
             return jsonify({"error": "guild not found"}), 404
 
-        # Vrais salons vocaux (permission de Greg obligatoire !)
         channels = [{"id": c.id, "name": c.name} for c in guild.voice_channels]
         return jsonify(channels)
 
     @socketio.on("connect")
-    def ws_connect():
-        emit("playlist_update", playlist_manager.to_dict())
+    def ws_connect(auth=None):
+        if playlist_manager is not None:
+            emit("playlist_update", playlist_manager.to_dict())
+        else:
+            print("[FATAL] playlist_manager is None dans ws_connect !")
 
     return app, socketio
