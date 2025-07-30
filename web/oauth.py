@@ -5,7 +5,7 @@ import requests
 oauth_bp = Blueprint('oauth', __name__)
 
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_TOKEN")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET ")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
 DISCORD_API_BASE_URL = "https://discord.com/api"
 
