@@ -1,13 +1,11 @@
 # web/app.py
 
-# web/app.py
-
 from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
 from web.oauth import oauth_bp
 import os
 
-def create_web_app(playlist_manager):
+def create_web_app(get_pm):  # get_pm(guild_id) retourne le bon PlaylistManager !
     app = Flask(__name__, static_folder="static", template_folder="templates")
     socketio = SocketIO(app)
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
@@ -28,43 +26,76 @@ def create_web_app(playlist_manager):
         user = session.get("user")
         if not user:
             return redirect("/login")
+
+        # IDs des serveurs où l'utilisateur est membre
         user_guild_ids = set(g['id'] for g in user['guilds'])
-        bot_guilds = app.bot.guilds  # list of discord.Guild
-        # Filtre : ne montrer QUE les serveurs où Greg est présent
+        print("\n[DEBUG] Guilds côté utilisateur (user['guilds']):")
+        for g in user['guilds']:
+            print(f" - {g['id']} : {g['name']}")
+
+        # Serveurs où Greg est présent (bot_guilds)
+        bot_guilds = app.bot.guilds  # liste de discord.Guild
+        print("[DEBUG] Guilds côté Greg (bot.guilds):")
+        for g in bot_guilds:
+            print(f" - {g.id} : {g.name}")
+
+        # Serveurs communs user + Greg
         common_guilds = [g for g in bot_guilds if str(g.id) in user_guild_ids]
+        print("[DEBUG] Guilds communs (affichés dans le select):")
+        for g in common_guilds:
+            print(f" - {g.id} : {g.name}")
+
+        # Salons vocaux pour chaque serveur commun
+        for g in common_guilds:
+            print(f"   [DEBUG] {g.name} (ID {g.id}) salons vocaux :")
+            for c in g.voice_channels:
+                print(f"     - {c.id} : {c.name}")
+
         # Adapter le format si besoin
         guilds_fmt = [{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in common_guilds]
         return render_template("panel.html", guilds=guilds_fmt, user=user)
 
     @app.route("/api/play", methods=["POST"])
     def api_play():
-        try:
-            url = request.json["url"]
-        except:
-            url = request.form.get("url")
-        playlist_manager.add(url)
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
+        data = request.get_json() or request.form
+        guild_id = data.get("guild_id")
+        url = data.get("url")
+        if not guild_id or not url:
+            return jsonify({"error": "missing guild_id or url"}), 400
+        pm = get_pm(guild_id)
+        pm.add(url)
+        socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
         return jsonify(ok=True)
 
     @app.route("/api/skip", methods=["POST"])
     def api_skip():
-        playlist_manager.skip()
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
+        data = request.get_json() or request.form
+        guild_id = data.get("guild_id")
+        if not guild_id:
+            return jsonify({"error": "missing guild_id"}), 400
+        pm = get_pm(guild_id)
+        pm.skip()
+        socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
         return jsonify(ok=True)
 
     @app.route("/api/stop", methods=["POST"])
     def api_stop():
-        playlist_manager.stop()
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
-        return jsonify(ok=True)
-
-    @app.route("/api/pause", methods=["POST"])
-    def api_pause():
+        data = request.get_json() or request.form
+        guild_id = data.get("guild_id")
+        if not guild_id:
+            return jsonify({"error": "missing guild_id"}), 400
+        pm = get_pm(guild_id)
+        pm.stop()
+        socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
         return jsonify(ok=True)
 
     @app.route("/api/playlist", methods=["GET"])
     def api_playlist():
-        return jsonify(playlist_manager.to_dict())
+        guild_id = request.args.get("guild_id")
+        if not guild_id:
+            return jsonify({"error": "missing guild_id"}), 400
+        pm = get_pm(guild_id)
+        return jsonify(pm.to_dict())
 
     @app.route("/autocomplete", methods=["GET"])
     def autocomplete():
@@ -94,9 +125,7 @@ def create_web_app(playlist_manager):
 
     @socketio.on("connect")
     def ws_connect(auth=None):
-        if playlist_manager is not None:
-            emit("playlist_update", playlist_manager.to_dict())
-        else:
-            print("[FATAL] playlist_manager is None dans ws_connect !")
+        # Ce WS n'est plus lié à une guild unique !
+        pass
 
     return app, socketio

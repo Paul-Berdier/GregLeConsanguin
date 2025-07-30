@@ -85,6 +85,9 @@ def callback():
         f"{DISCORD_API_BASE_URL}/users/@me/guilds",
         headers={"Authorization": f"Bearer {access_token}"}
     )
+
+    print("DEBUG: guilds payload:", guilds_res, file=sys.stderr)
+
     guilds_res.raise_for_status()
     guilds = guilds_res.json()
 
@@ -92,6 +95,8 @@ def callback():
         {"id": g["id"], "name": g["name"], "icon": g["icon"]}
         for g in guilds
     ]
+
+    print("DEBUG: user payload:", user)
 
     session["user"] = user
     return redirect("/panel")

@@ -1,3 +1,5 @@
+# main.py
+
 print("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
 import os
@@ -6,25 +8,33 @@ import time
 import socket
 import discord
 from discord.ext import commands
+from playlist_manager import PlaylistManager  # Ajoute cette import si absent
 
 from web.app import create_web_app
 import config
 
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET ")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
-DISCORD_API_BASE_URL = "https://discord.com/api"
+# --------- PlaylistManager multi-serveur -----------
+playlist_managers = {}  # {guild_id: PlaylistManager}
+
+def get_pm(guild_id):
+    guild_id = str(guild_id)
+    if guild_id not in playlist_managers:
+        playlist_managers[guild_id] = PlaylistManager(guild_id)
+    return playlist_managers[guild_id]
 
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ===== Crée l'app Flask + SocketIO =====
-app, socketio = create_web_app(None)  # Plus besoin de pm global, tu passes None
-app.bot = bot  # Permet d'accéder au bot dans Flask pour les endpoints dynamiques
+app, socketio = create_web_app(get_pm)  # PAS None !
+app.bot = bot
 
 def run_web():
     socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+
+# ... (reste inchangé)
+
 
 # ===== Chargement des Cogs Discord =====
 async def load_cogs():
