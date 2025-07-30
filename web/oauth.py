@@ -12,6 +12,10 @@ DISCORD_API_BASE_URL = "https://discord.com/api"
 @oauth_bp.route("/login")
 def login():
     scope = "identify guilds"
+    import os
+    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")))
+    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(DISCORD_CLIENT_SECRET))
+
     discord_auth_url = (
         f"{DISCORD_API_BASE_URL}/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
@@ -26,6 +30,10 @@ def callback():
     code = request.args.get("code")
     if not code:
         return "Missing code", 400
+
+    import os
+    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")))
+    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(DISCORD_CLIENT_SECRET))
 
     data = {
         "client_id": DISCORD_CLIENT_ID,
