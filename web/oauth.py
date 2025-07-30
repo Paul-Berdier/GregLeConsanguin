@@ -1,82 +1,67 @@
-# web/app.py
-
-from flask import Flask, render_template, request, redirect, jsonify, session, url_for
-from flask_socketio import SocketIO, emit
-from web.oauth import oauth_bp
+from flask import Blueprint, redirect, request, session, url_for
 import os
+import requests
 
-def create_web_app(playlist_manager):
-    print("[DEBUG] create_web_app appelée")
-    app = Flask(__name__, static_folder="static", template_folder="templates")
-    socketio = SocketIO(app)
+oauth_bp = Blueprint('oauth', __name__)
 
-    # === CONFIGURATION SÉCURITÉ ===
-    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
-    app.register_blueprint(oauth_bp)
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
+DISCORD_API_BASE_URL = "https://discord.com/api"
 
-    # === PAGE D'ACCUEIL ===
-    @app.route("/")
-    def index():
-        if "user" not in session:
-            return redirect("/login")
-        return redirect("/panel")
+@oauth_bp.route("/login")
+def login():
+    scope = "identify guilds"
+    discord_auth_url = (
+        f"{DISCORD_API_BASE_URL}/oauth2/authorize"
+        f"?client_id={DISCORD_CLIENT_ID}"
+        f"&redirect_uri={DISCORD_REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope={scope.replace(' ', '%20')}"
+    )
+    return redirect(discord_auth_url)
 
-    # === PAGE PANEL UTILISATEUR ===
-    @app.route("/panel")
-    def panel():
-        if "user" not in session:
-            return redirect("/login")
-        user = session["user"]
-        return render_template("panel.html", user=user)
+@oauth_bp.route("/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "Missing code", 400
 
-    # === API : ajout musique ===
-    @app.route("/api/play", methods=["POST"])
-    def api_play():
-        try:
-            url = request.json["url"]
-        except:
-            url = request.form.get("url")
+    data = {
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": DISCORD_REDIRECT_URI,
+        "scope": "identify guilds"
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        print(f"[DEBUG] POST /api/play appelé avec url = {url}")
-        playlist_manager.add(url)
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
-        return jsonify(ok=True)
+    r = requests.post(f"{DISCORD_API_BASE_URL}/oauth2/token", data=data, headers=headers)
+    r.raise_for_status()
+    token_data = r.json()
+    access_token = token_data["access_token"]
 
-    @app.route("/api/skip", methods=["POST"])
-    def api_skip():
-        playlist_manager.skip()
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
-        return jsonify(ok=True)
+    # Récupère infos utilisateur
+    user_res = requests.get(
+        f"{DISCORD_API_BASE_URL}/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    user_res.raise_for_status()
+    user = user_res.json()
 
-    @app.route("/api/stop", methods=["POST"])
-    def api_stop():
-        playlist_manager.stop()
-        socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
-        return jsonify(ok=True)
+    # Récupère serveurs
+    guilds_res = requests.get(
+        f"{DISCORD_API_BASE_URL}/users/@me/guilds",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    guilds_res.raise_for_status()
+    guilds = guilds_res.json()
 
-    @app.route("/api/pause", methods=["POST"])
-    def api_pause():
-        return jsonify(ok=True)
+    user["guilds"] = [
+        {"id": g["id"], "name": g["name"], "icon": g["icon"]}
+        for g in guilds
+    ]
 
-    @app.route("/api/playlist", methods=["GET"])
-    def api_playlist():
-        return jsonify(playlist_manager.to_dict())
-
-    @app.route("/autocomplete", methods=["GET"])
-    def autocomplete():
-        query = request.args.get("q", "").strip()
-        print(f"[DEBUG] GET /autocomplete appelé, query = {query}")
-        if not query:
-            return {"results": []}
-        from extractors import get_search_module
-        extractor = get_search_module("soundcloud")
-        results = extractor.search(query)
-        suggestions = [{"title": r["title"], "url": r["url"]} for r in results][:5]
-        return {"results": suggestions}
-
-    @socketio.on("connect")
-    def ws_connect():
-        print("[DEBUG] socketio: client connecté")
-        emit("playlist_update", playlist_manager.to_dict())
-
-    return app, socketio
+    session["user"] = user
+    return redirect("/panel")
