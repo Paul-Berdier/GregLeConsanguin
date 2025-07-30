@@ -1,25 +1,34 @@
-from flask import Blueprint, redirect, request, session, url_for
+from flask import Blueprint, redirect, request, session
 import os
 import requests
 
 oauth_bp = Blueprint('oauth', __name__)
 
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET ")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
 DISCORD_API_BASE_URL = "https://discord.com/api"
+
+def get_discord_client_id():
+    return os.environ.get("DISCORD_CLIENT_ID")
+
+def get_discord_client_secret():
+    return os.environ.get("DISCORD_CLIENT_SECRET")  # PAS d'espace après le nom !
+
+def get_discord_redirect_uri():
+    return os.environ.get("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
 
 @oauth_bp.route("/login")
 def login():
     scope = "identify guilds"
-    import os
-    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")))
-    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(DISCORD_CLIENT_SECRET))
+    client_id = get_discord_client_id()
+    redirect_uri = get_discord_redirect_uri()
+
+    # DEBUG
+    import sys
+    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")), file=sys.stderr)
 
     discord_auth_url = (
         f"{DISCORD_API_BASE_URL}/oauth2/authorize"
-        f"?client_id={DISCORD_CLIENT_ID}"
-        f"&redirect_uri={DISCORD_REDIRECT_URI}"
+        f"?client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
         f"&response_type=code"
         f"&scope={scope.replace(' ', '%20')}"
     )
@@ -31,21 +40,25 @@ def callback():
     if not code:
         return "Missing code", 400
 
-    import os
-    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")))
-    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(DISCORD_CLIENT_SECRET))
+    client_id = get_discord_client_id()
+    client_secret = get_discord_client_secret()
+    redirect_uri = get_discord_redirect_uri()
+
+    # DEBUG
+    import sys
+    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")), file=sys.stderr)
+    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(client_secret), file=sys.stderr)
 
     data = {
-        "client_id": DISCORD_CLIENT_ID,
-        "client_secret": DISCORD_CLIENT_SECRET,
+        "client_id": client_id,
+        "client_secret": client_secret,
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": DISCORD_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "scope": "identify guilds"
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    import sys
     print("DEBUG: token payload:", data, file=sys.stderr)
     print("DEBUG: headers:", headers, file=sys.stderr)
     print("DEBUG: URL:", f"{DISCORD_API_BASE_URL}/oauth2/token", file=sys.stderr)
