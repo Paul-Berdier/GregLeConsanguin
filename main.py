@@ -53,4 +53,11 @@ def wait_for_web():
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
     wait_for_web()
+
+    import os
+
+    print("DEBUG: client_id:", DISCORD_CLIENT_ID, file=sys.stderr)
+    print("DEBUG: client_secret:", DISCORD_CLIENT_SECRET, file=sys.stderr)
+    print("DEBUG: redirect_uri:", DISCORD_REDIRECT_URI, file=sys.stderr)
+
     bot.run(config.DISCORD_TOKEN)

@@ -37,8 +37,17 @@ def callback():
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
+    import sys
+    print("DEBUG: token payload:", data, file=sys.stderr)
+    print("DEBUG: headers:", headers, file=sys.stderr)
+    print("DEBUG: URL:", f"{DISCORD_API_BASE_URL}/oauth2/token", file=sys.stderr)
+
     r = requests.post(f"{DISCORD_API_BASE_URL}/oauth2/token", data=data, headers=headers)
     r.raise_for_status()
+
+    print("DEBUG: status_code:", r.status_code, file=sys.stderr)
+    print("DEBUG: response text:", r.text, file=sys.stderr)
+
     token_data = r.json()
     access_token = token_data["access_token"]
 
