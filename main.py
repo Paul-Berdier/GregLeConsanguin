@@ -49,9 +49,13 @@ async def load_cogs():
 
 @bot.event
 async def on_ready():
+    print("====== EVENT on_ready() ======")
     await load_cogs()
     await bot.tree.sync()
     print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
+    print("[DEBUG] Guilds côté Greg :")
+    for g in bot.guilds:
+        print(f"- {g.id}: {g.name}")
 
 # ===== Attente que le serveur web réponde =====
 def wait_for_web():
@@ -68,11 +72,4 @@ def wait_for_web():
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
     wait_for_web()
-
-    import os
-
-    print("DEBUG: client_id:", DISCORD_CLIENT_ID, file=sys.stderr)
-    print("DEBUG: client_secret:", DISCORD_CLIENT_SECRET, file=sys.stderr)
-    print("DEBUG: redirect_uri:", DISCORD_REDIRECT_URI, file=sys.stderr)
-
     bot.run(config.DISCORD_TOKEN)
