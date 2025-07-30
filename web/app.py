@@ -1,13 +1,15 @@
 # web/app.py
 
-from flask import Flask, render_template, request, redirect, jsonify
+from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
+from web.oauth import oauth_bp
 import os
 
 def create_web_app(playlist_manager):
-    playlist_manager.bot = app.bot if hasattr(app, "bot") else None
     app = Flask(__name__, static_folder="static", template_folder="templates")
     socketio = SocketIO(app)
+    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
+    app.register_blueprint(oauth_bp)
 
     @app.route("/")
     def index():
@@ -19,14 +21,20 @@ def create_web_app(playlist_manager):
         session.clear()
         return redirect("/")
 
+    @app.route("/panel")
+    def panel():
+        if "user" not in session:
+            return redirect("/login")
+        user = session["user"]
+        # Ajoute ici la logique pour envoyer guilds/channels si besoin
+        return render_template("panel.html", user=user)
+
     @app.route("/api/play", methods=["POST"])
     def api_play():
         try:
             url = request.json["url"]
         except:
             url = request.form.get("url")
-
-        print(f"[DEBUG] POST /api/play appelé avec url = {url}")
         playlist_manager.add(url)
         socketio.emit("playlist_update", playlist_manager.to_dict(), broadcast=True)
         return jsonify(ok=True)
@@ -62,98 +70,24 @@ def create_web_app(playlist_manager):
         suggestions = [{"title": r["title"], "url": r["url"]} for r in results][:5]
         return {"results": suggestions}
 
-    @app.route("/search", methods=["POST"])
-    def search():
-        query = request.form["url"]
-        from extractors import get_search_module
-        extractor = get_search_module("soundcloud")
-        results = extractor.search(query)
-        return render_template("search_results.html", results=results, query=query)
-
-    @socketio.on("connect")
-    def ws_connect():
-        emit("playlist_update", playlist_manager.to_dict())
-
-    @app.route("/api/debug_trigger", methods=["POST"])
-    def debug_trigger():
-        from bot_socket import trigger_play, bot
-        import asyncio
-        asyncio.run_coroutine_threadsafe(trigger_play(bot), bot.loop)
-        return jsonify(ok=True)
-
     @app.route("/api/channels")
-    def get_voice_channels():
-        if "user" not in session:
-            return jsonify({"error": "unauthorized"}), 401
-
+    def get_channels():
         guild_id = request.args.get("guild_id")
         if not guild_id:
             return jsonify({"error": "missing guild_id"}), 400
 
-        # Parcourir les guilds connectés
-        for g in playlist_manager.bot.guilds:
-            if str(g.id) == guild_id:
-                channels = [
-                    {"id": c.id, "name": c.name}
-                    for c in g.voice_channels
-                ]
-                return jsonify(channels)
-
-        return jsonify([])  # Si le bot n’est pas dans ce serveur
-
-    @app.route("/api/command/<action>", methods=["POST"])
-    def trigger_command(action):
-        if "user" not in session:
-            return jsonify({"error": "unauthorized"}), 401
-
-        data = request.json
-        guild_id = int(data.get("guild_id"))
-        channel_id = int(data.get("channel_id"))
-        url = data.get("url", "")
-
-        bot = playlist_manager.bot
-        if bot is None:
-            return jsonify({"error": "bot not ready"}), 500
-
-        guild = discord.utils.get(bot.guilds, id=guild_id)
-        if guild is None:
+        # On suppose que tu as déjà accès à ton objet bot Discord
+        bot = playlist_manager.bot  # ou l’endroit où tu as stocké ton bot
+        guild = bot.get_guild(int(guild_id))
+        if not guild:
             return jsonify({"error": "guild not found"}), 404
 
-        voice_channel = discord.utils.get(guild.voice_channels, id=channel_id)
-        if voice_channel is None:
-            return jsonify({"error": "voice channel not found"}), 404
+        # Vrais salons vocaux (permission de Greg obligatoire !)
+        channels = [{"id": c.id, "name": c.name} for c in guild.voice_channels]
+        return jsonify(channels)
 
-        # Créer une fausse interaction
-        class FakeInteraction:
-            def __init__(self):
-                self.guild = guild
-                self.user = guild.members[0]
-                self.channel = None
-                self.followup = self
-            async def send(self, msg): print(f"[GregFake] {msg}")
-
-        async def run_action():
-            try:
-                await voice_channel.connect()
-            except:
-                pass  # déjà connecté
-
-            music_cog = bot.get_cog("Music")
-            if music_cog is None:
-                print("[ERROR] Music cog non trouvé.")
-                return
-
-            fake = FakeInteraction()
-            if action == "play":
-                await music_cog.play(fake, url=url)
-            elif action == "skip":
-                await music_cog.skip(fake)
-            elif action == "stop":
-                await music_cog.stop(fake)
-
-        import asyncio
-        asyncio.create_task(run_action())
-
-        return jsonify({"status": "ok"})
+    @socketio.on("connect")
+    def ws_connect():
+        emit("playlist_update", playlist_manager.to_dict())
 
     return app, socketio

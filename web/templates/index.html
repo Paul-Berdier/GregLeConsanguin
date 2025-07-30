@@ -8,10 +8,30 @@
 </head>
 <body>
     <div class="container">
-        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face">
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}"
+             alt="Greg le Consanguin"
+             class="greg-face">
         <h1>Greg le Consanguin</h1>
-        <p class="sarcasme">Un larbin musical insupportable, et vous osez vouloir l’utiliser ?</p>
-        <a href="/login"><button>🔐 Connexion Discord</button></a>
+        <p class="sarcasme">Le larbin noble le plus fatigué de Discord.<br>Il vous sert... à contrecœur.</p>
+
+        {% if user %}
+            <div style="margin: 20px 0;">
+                <p>Bienvenue, <b>{{ user.username }}#{{ user.discriminator }}</b> !</p>
+                <a href="/panel"><button>🎛️ Accéder au Panel</button></a>
+                <a href="/logout"><button style="background-color:#444;">🚪 Déconnexion</button></a>
+            </div>
+            <p style="font-size:0.9em;color:#aaa;">
+                (Tu peux gérer ta musique ou martyriser Greg depuis le panel)<br>
+                <span style="font-size:2em;">🙄</span>
+            </p>
+        {% else %}
+            <div style="margin: 24px 0;">
+                <a href="/login"><button style="font-size:1.2em;">🔐 Connexion Discord</button></a>
+            </div>
+            <p style="font-size:0.92em;color:#999;">
+                Connecte-toi pour ordonner à Greg de jouer tes pires playlists... ou pour le regarder râler.
+            </p>
+        {% endif %}
     </div>
 </body>
 </html>

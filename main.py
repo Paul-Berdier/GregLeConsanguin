@@ -1,5 +1,3 @@
-# main.py
-
 print("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
 import os
@@ -9,18 +7,16 @@ import socket
 import discord
 from discord.ext import commands
 
-from bot_socket import start_socketio_client, pm
-import bot_socket  # Pour injection du bot
 from web.app import create_web_app
 import config
 
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot_socket.bot = bot  # Injecte le bot dans bot_socket
 
 # ===== Crée l'app Flask + SocketIO =====
-app, socketio = create_web_app(pm)
+app, socketio = create_web_app(None)  # Plus besoin de pm global, tu passes None
+app.bot = bot  # Permet d'accéder au bot dans Flask pour les endpoints dynamiques
 
 def run_web():
     socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
@@ -57,5 +53,4 @@ def wait_for_web():
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
     wait_for_web()
-    start_socketio_client("http://localhost:3000")
     bot.run(config.DISCORD_TOKEN)

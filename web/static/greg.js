@@ -1,48 +1,52 @@
+// web/static/greg.js
+
 // === Autocomplétion dynamique SoundCloud / YouTube ===
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
 let debounce = null;
 
-input.addEventListener("input", function() {
-    const val = this.value;
-    if (debounce) clearTimeout(debounce);
-    if (!val.trim() || val.startsWith("http")) {
-        suggestions.style.display = "none";
-        suggestions.innerHTML = "";
-        return;
-    }
-    debounce = setTimeout(() => {
-        fetch(`/autocomplete?q=${encodeURIComponent(val)}`)
-            .then(res => res.json())
-            .then(data => {
-                if (!data.results.length) {
-                    suggestions.style.display = "none";
-                    suggestions.innerHTML = "";
-                    return;
-                }
-                suggestions.innerHTML = data.results.map(
-                    item => `<div class="suggestion-item" data-title="${item.title.replace(/"/g, '&quot;')}" data-url="${item.url}">${item.title}</div>`
-                ).join('');
-                suggestions.style.display = "block";
-            });
-    }, 300);
-});
+if (input && suggestions) {
+    input.addEventListener("input", function() {
+        const val = this.value;
+        if (debounce) clearTimeout(debounce);
+        if (!val.trim() || val.startsWith("http")) {
+            suggestions.style.display = "none";
+            suggestions.innerHTML = "";
+            return;
+        }
+        debounce = setTimeout(() => {
+            fetch(`/autocomplete?q=${encodeURIComponent(val)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.results.length) {
+                        suggestions.style.display = "none";
+                        suggestions.innerHTML = "";
+                        return;
+                    }
+                    suggestions.innerHTML = data.results.map(
+                        item => `<div class="suggestion-item" data-title="${item.title.replace(/"/g, '&quot;')}" data-url="${item.url}">${item.title}</div>`
+                    ).join('');
+                    suggestions.style.display = "block";
+                });
+        }, 300);
+    });
 
-suggestions.addEventListener("click", function(e) {
-    if (e.target.classList.contains("suggestion-item")) {
-        input.value = e.target.getAttribute("data-title");
-        suggestions.style.display = "none";
-        suggestions.innerHTML = "";
-    }
-});
+    suggestions.addEventListener("click", function(e) {
+        if (e.target.classList.contains("suggestion-item")) {
+            input.value = e.target.getAttribute("data-title");
+            suggestions.style.display = "none";
+            suggestions.innerHTML = "";
+        }
+    });
 
-input.addEventListener("blur", function() {
-    setTimeout(() => { suggestions.style.display = "none"; }, 200);
-});
+    input.addEventListener("blur", function() {
+        setTimeout(() => { suggestions.style.display = "none"; }, 200);
+    });
 
-input.addEventListener("focus", function() {
-    if (suggestions.innerHTML) suggestions.style.display = "block";
-});
+    input.addEventListener("focus", function() {
+        if (suggestions.innerHTML) suggestions.style.display = "block";
+    });
+}
 
 // === Contrôles AJAX sans reload (panel.html) ===
 document.querySelectorAll(".controls button").forEach(btn => {
@@ -58,6 +62,7 @@ document.querySelectorAll(".controls button").forEach(btn => {
 const socket = io();
 
 function updatePlaylist(playlist, current) {
+    // Affichage de la musique en cours
     const currentDiv = document.querySelector(".current-song");
     if (currentDiv) {
         if (current) {
@@ -69,12 +74,16 @@ function updatePlaylist(playlist, current) {
             document.querySelector('.greg-face')?.classList.remove('playing');
         }
     }
-
-    const playlistDiv = document.querySelector(".playlist ul");
+    // Affichage dynamique de la playlist (avec boutons cliquables)
+    const playlistDiv = document.getElementById("playlist-ul");
     if (playlistDiv) {
         playlistDiv.innerHTML = playlist.length
             ? playlist.map((song, i) =>
-                `<li>${i + 1}. <a href="${song}" target="_blank">${song}</a></li>`
+                `<li data-index="${i}">
+                    <a href="${song}" target="_blank">${song}</a>
+                    <button class="play-this" title="Jouer ce morceau">▶️</button>
+                    <button class="move-top" title="Passer en tête">⏫</button>
+                </li>`
               ).join('')
             : `<p><em>La playlist est vide. Comme votre goût musical sans doute...</em></p>`;
     }
@@ -86,7 +95,7 @@ socket.on("playlist_update", function(data) {
 
 // === Envoi commande PLAY depuis le formulaire (panel.html) ===
 const form = document.getElementById("play-form");
-if (form) {
+if (form && input && suggestions) {
     form.addEventListener("submit", function(e) {
         e.preventDefault();
         const val = input.value;
@@ -102,3 +111,50 @@ if (form) {
         });
     });
 }
+
+// === Sélection dynamique des salons vocaux ===
+const guildSelect = document.getElementById("guild-select");
+const channelSelect = document.getElementById("channel-select");
+if (guildSelect && channelSelect) {
+    guildSelect.addEventListener("change", function() {
+        fetch(`/api/channels?guild_id=${guildSelect.value}`)
+            .then(r => r.json())
+            .then(chans => {
+                channelSelect.innerHTML = "";
+                chans.forEach(c => {
+                    const opt = document.createElement("option");
+                    opt.value = c.id;
+                    opt.innerText = c.name;
+                    channelSelect.appendChild(opt);
+                });
+            });
+    });
+}
+
+// === Playlist cliquable (play/move) ===
+function playlistClickHandler(e) {
+    if (e.target.classList.contains("play-this")) {
+        const li = e.target.closest("li");
+        const index = li.dataset.index;
+        fetch("/api/command/play_at", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ index })
+        });
+    }
+    if (e.target.classList.contains("move-top")) {
+        const li = e.target.closest("li");
+        const index = li.dataset.index;
+        fetch("/api/command/move_top", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ index })
+        });
+    }
+}
+
+const playlistUl = document.getElementById("playlist-ul");
+if (playlistUl) {
+    playlistUl.addEventListener("click", playlistClickHandler);
+}
+

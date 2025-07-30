@@ -12,15 +12,16 @@
         <h1>Bienvenue, {{ user["username"] }}#{{ user["discriminator"] }}</h1>
         <p class="sarcasme">Encore toi… Bon, choisis un serveur où me faire souffrir.</p>
 
-        <form method="post" action="/panel">
-            <select name="guild_id" required>
+        <!-- Sélection dynamique serveur & salon -->
+        <form id="guild-form" autocomplete="off">
+            <select name="guild_id" id="guild-select" required>
                 {% for guild in guilds %}
                     <option value="{{ guild.id }}" {% if guild.id == selected_guild_id %}selected{% endif %}>
                         {{ guild.name }}
                     </option>
                 {% endfor %}
             </select>
-            <select name="channel_id" required>
+            <select name="channel_id" id="channel-select" required>
                 {% for channel in channels %}
                     <option value="{{ channel.id }}" {% if channel.id == selected_channel_id %}selected{% endif %}>
                         {{ channel.name }}
@@ -30,7 +31,8 @@
             <button type="submit">🎤 Utiliser ce salon</button>
         </form>
 
-        <form method="post" action="/api/play" id="play-form" autocomplete="off">
+        <!-- Formulaire musique avec autocomplétion -->
+        <form id="play-form" autocomplete="off">
             <input id="music-input" name="url" placeholder="Lien ou recherche…" required autocomplete="off">
             <button type="submit">🎵 JOUER</button>
             <div class="suggestions" id="suggestions" style="display:none;"></div>
@@ -45,10 +47,14 @@
 
         <div class="playlist">
             <h2>📝 Playlist actuelle</h2>
-            <ul>
+            <ul id="playlist-ul">
                 {% if playlist %}
                     {% for song in playlist %}
-                        <li>{{ loop.index }}. <a href="{{ song }}" target="_blank">{{ song }}</a></li>
+                        <li data-index="{{ loop.index0 }}">
+                            <a href="{{ song }}" target="_blank">{{ song }}</a>
+                            <button class="play-this" title="Jouer ce morceau">▶️</button>
+                            <button class="move-top" title="Passer en tête">⏫</button>
+                        </li>
                     {% endfor %}
                 {% else %}
                     <p><em>La playlist est vide. Comme votre goût musical sans doute…</em></p>
@@ -65,5 +71,6 @@
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='greg.js') }}"></script>
+
 </body>
 </html>

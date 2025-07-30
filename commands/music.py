@@ -12,11 +12,16 @@ from playlist_manager import PlaylistManager
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.pm = PlaylistManager()  # Toujours la même instance/fichier pour tout le projet
-        self.is_playing = False
-        self.current_song = None
+        self.managers = {}  # guild_id : PlaylistManager
+        self.is_playing = {}
+        self.current_song = {}
         self.search_results = {}
         self.ffmpeg_path = self.detect_ffmpeg()
+
+    def get_pm(self, guild_id):
+        if guild_id not in self.managers:
+            self.managers[guild_id] = PlaylistManager(guild_id)
+        return self.managers[guild_id]
 
     def detect_ffmpeg(self):
         FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "ffmpeg"]
@@ -29,8 +34,8 @@ class Music(commands.Cog):
 
     @app_commands.command(name="play", description="Joue un son depuis une URL ou une recherche.")
     async def play(self, interaction: discord.Interaction, query_or_url: str):
-        await interaction.response.defer()
-        self.pm.reload()  # Toujours recharger avant lecture/modif (pour synchro web)
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
         if interaction.guild.voice_client is None:
             if interaction.user.voice and interaction.user.voice.channel:
                 await interaction.user.voice.channel.connect()
@@ -72,27 +77,29 @@ class Music(commands.Cog):
         if vc.is_playing():
             vc.stop()
         vc.play(source, after=lambda e: print(f"▶️ Fin du stream : {title} ({e})" if e else f"🎶 Fin lecture : {title}"))
-        self.current_song = title
+        self.current_song[interaction.guild.id] = title
         await interaction.followup.send(f"▶️ *Votre ignoble sélection est lancée en streaming (direct) :* **{title}**")
 
     async def add_to_queue(self, interaction, url):
-        self.pm.reload()
-        self.pm.add(url)
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
+        pm.add(url)
         await interaction.followup.send(f"🎵 Ajouté à la playlist : {url}")
-        if not self.is_playing:
+        if not self.is_playing.get(interaction.guild.id, False):
             await self.play_next(interaction)
 
     async def play_next(self, interaction):
-        self.pm.reload()
-        queue = self.pm.get_queue()
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
+        queue = pm.get_queue()
         if not queue:
-            self.is_playing = False
+            self.is_playing[interaction.guild.id] = False
             await interaction.followup.send("📍 *Plus rien à jouer. Enfin une pause pour Greg...*")
             return
-        self.is_playing = True
+        self.is_playing[interaction.guild.id] = True
         url = queue.pop(0)
-        self.pm.queue = queue  # Retire la musique lue
-        self.pm.save()
+        pm.queue = queue  # Retire la musique lue
+        pm.save()
         extractor = get_extractor(url)
         if extractor is None:
             await interaction.followup.send("❌ *Aucun extracteur trouvé. Quelle misère...*")
@@ -101,7 +108,7 @@ class Music(commands.Cog):
         if hasattr(extractor, "stream"):
             try:
                 source, title = await extractor.stream(url, self.ffmpeg_path)
-                self.current_song = title
+                self.current_song[interaction.guild.id] = title
                 if vc.is_playing():
                     vc.stop()
                 vc.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(interaction)))
@@ -115,7 +122,7 @@ class Music(commands.Cog):
                 ffmpeg_path=self.ffmpeg_path,
                 cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
             )
-            self.current_song = title
+            self.current_song[interaction.guild.id] = title
             vc.play(
                 discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),
                 after=lambda e: self.bot.loop.create_task(self.play_next(interaction))
@@ -126,15 +133,16 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Passe à la piste suivante.")
     async def skip(self, interaction: discord.Interaction):
-        self.pm.reload()
-        self.pm.skip()
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
+        pm.skip()
         await interaction.response.send_message("⏭ *Et que ça saute !*")
-        # (optionnel : forcer le bot à stopper la lecture)
 
     @app_commands.command(name="stop", description="Stoppe tout et vide la playlist.")
     async def stop(self, interaction: discord.Interaction):
-        self.pm.reload()
-        self.pm.stop()
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
+        pm.stop()
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
@@ -160,8 +168,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="playlist", description="Affiche les morceaux en attente.")
     async def playlist(self, interaction: discord.Interaction):
-        self.pm.reload()
-        queue = self.pm.get_queue()
+        pm = self.get_pm(interaction.guild.id)
+        pm.reload()
+        queue = pm.get_queue()
         if not queue:
             return await interaction.response.send_message("📋 *Playlist vide. Rien. Nada. Comme votre inspiration musicale.*")
         lines = "\n".join([f"**{i+1}.** {url}" for i, url in enumerate(queue)])
@@ -169,13 +178,47 @@ class Music(commands.Cog):
 
     @app_commands.command(name="current", description="Affiche le morceau actuellement joué.")
     async def current(self, interaction: discord.Interaction):
-        current = self.pm.get_current()
+        pm = self.get_pm(interaction.guild.id)
+        current = pm.get_current()
         if current:
             await interaction.response.send_message(f"🎧 *Musique actuelle :* **{current}**")
         else:
             await interaction.response.send_message("❌ *Rien en cours. Profitez du silence, il vous va si bien.*")
 
+    # Lecture directe d'un index dans la playlist (appelable via l'API Flask)
+    async def play_at(self, guild: discord.Guild, index: int):
+        pm = self.get_pm(guild.id)
+        pm.reload()
+        queue = pm.get_queue()
+        if not (0 <= index < len(queue)):
+            print("[Music] Index de lecture hors playlist")
+            return False
+        url = queue.pop(index)
+        queue.insert(0, url)
+        pm.queue = queue
+        pm.save()
+        class FakeInteraction:
+            def __init__(self, guild): self.guild = guild
+            async def followup(self): pass
+            async def send(self, msg): print("[FakeInteraction]", msg)
+        await self.play_next(FakeInteraction(guild))
+        return True
+
+    # Déplace un morceau en haut de la playlist
+    def move_top(self, guild_id: int, index: int):
+        pm = self.get_pm(guild_id)
+        pm.reload()
+        queue = pm.get_queue()
+        if not (0 <= index < len(queue)):
+            print("[Music] Index move_top hors playlist")
+            return False
+        song = queue.pop(index)
+        queue.insert(0, song)
+        pm.queue = queue
+        pm.save()
+        return True
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
     print("✅ Cog 'Music' chargé avec slash commands.")
+
