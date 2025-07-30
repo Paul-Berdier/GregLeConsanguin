@@ -10,6 +10,11 @@ from discord.ext import commands
 from web.app import create_web_app
 import config
 
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET ")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI") or "http://localhost:3000/callback"
+DISCORD_API_BASE_URL = "https://discord.com/api"
+
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
