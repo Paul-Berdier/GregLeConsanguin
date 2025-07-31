@@ -208,7 +208,10 @@ class Music(commands.Cog):
     async def play_for_user(self, guild_id, user_id, url):
         """Méthode appelée par Flask quand un user web ajoute une musique.
         Le bot trouve le membre, rejoint son vocal, et joue."""
+        print(f"[DEBUG][MUSIC] play_for_user: guild_id={guild_id}, channel_id={channel_id}, url={url}")
         guild = self.bot.get_guild(int(guild_id))
+        print(f"[DEBUG][MUSIC] get_guild: {guild}")
+
         if not guild:
             print("[Music] Serveur introuvable")
             return
@@ -217,6 +220,9 @@ class Music(commands.Cog):
         if not member or not member.voice or not member.voice.channel:
             print("[Music] Utilisateur non connecté en vocal ou introuvable")
             return
+        for g in guild.members:
+            print(f"[DEBUG][MUSIC] Membres: {g} (id={g.id})")
+
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             vc = await member.voice.channel.connect()

@@ -40,55 +40,70 @@ def create_web_app(get_pm):
     # PAGE PANEL PRINCIPALE
     @app.route("/panel")
     def panel():
-
-        user = session.get("user")
-        guild_id = request.args.get("guild_id")
-        channel_id = request.args.get("channel_id")
-        print("[DEBUG][/panel] guild_id=", guild_id, "channel_id=", channel_id)
-
-        if not user:
-            return redirect("/login")
-        if not guild_id or not channel_id:
-            return redirect("/select")
-        bot_guilds = app.bot.guilds
-        guild = next((g for g in bot_guilds if str(g.id) == str(guild_id)), None)
-        if not guild:
-            return "Serveur introuvable ou Greg n'est pas dessus.", 400
-        pm = app.get_pm(guild_id)
-        playlist = pm.get_queue()
-        current = pm.get_current()
-        return render_template("panel.html",
-            guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in bot_guilds],
-            user=user,
-            guild_id=guild_id,
-            channel_id=channel_id,
-            playlist=playlist,
-            current=current
-        )
+        try:
+            print("[DEBUG][/panel] CALL", flush=True)
+            user = session.get("user")
+            guild_id = request.args.get("guild_id")
+            channel_id = request.args.get("channel_id")
+            print("[DEBUG][/panel] user:", user, "guild_id:", guild_id, "channel_id:", channel_id, flush=True)
+            if not user:
+                print("[DEBUG][/panel] PAS DE USER, REDIRECT LOGIN", flush=True)
+                return redirect("/login")
+            if not guild_id or not channel_id:
+                print("[DEBUG][/panel] MISSING guild/channel, REDIRECT /select", flush=True)
+                return redirect("/select")
+            bot_guilds = app.bot.guilds
+            print("[DEBUG][/panel] bot_guilds:", bot_guilds, flush=True)
+            guild = next((g for g in bot_guilds if str(g.id) == str(guild_id)), None)
+            if not guild:
+                print("[DEBUG][/panel] GUILD INTROUVABLE", flush=True)
+                return "Serveur introuvable ou Greg n'est pas dessus.", 400
+            pm = app.get_pm(guild_id)
+            playlist = pm.get_queue()
+            current = pm.get_current()
+            print("[DEBUG][/panel] RENDER panel.html", flush=True)
+            return render_template("panel.html",
+                                   guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in
+                                           bot_guilds],
+                                   user=user,
+                                   guild_id=guild_id,
+                                   channel_id=channel_id,
+                                   playlist=playlist,
+                                   current=current
+                                   )
+        except Exception as e:
+            import traceback
+            print("[FATAL][panel]", e, flush=True)
+            print(traceback.format_exc(), flush=True)
+            return f"Erreur interne côté Greg :<br><pre>{e}\n{traceback.format_exc()}</pre>", 500
 
     # === ROUTES API SYNCHRONES DISCORD + WEB ===
 
     # --- PLAY ---
     @app.route("/api/play", methods=["POST"])
     def api_play():
-        data = request.get_json(force=True)
+        data = request.json or request.form
+        url = data.get("url")
         guild_id = data.get("guild_id")
         channel_id = data.get("channel_id")
-        url = data.get("url")
-        user_id = session.get("user", {}).get("id")
-        if not all([guild_id, url, user_id]):
-            return jsonify({"error": "missing guild_id, url, or user_id"}), 400
-
-        # Appelle la méthode du cog Music (discord)
+        print("[DEBUG][API/PLAY] Appel reçu :", url, guild_id, channel_id)
         music_cog = app.bot.get_cog("Music")
+        print("[DEBUG][API/PLAY] Music cog :", music_cog)
         if not music_cog:
-            return jsonify({"error": "Music cog not loaded"}), 500
-
+            print("[FATAL][API/PLAY] Music cog introuvable !")
+            return jsonify(error="music_cog missing"), 500
         import asyncio
         loop = asyncio.get_event_loop()
-        # La méthode doit gérer connexion au vocal, ajout dans la playlist, etc.
-        loop.create_task(music_cog.play_for_user(guild_id, user_id, url, channel_id=channel_id))
-        print(f"[DEBUG][API] play_for_user({guild_id}, {user_id}, {url}, {channel_id}) demandé via web.")
+        try:
+            loop.create_task(music_cog.play_for_user(guild_id, channel_id, url))
+            print("[DEBUG][API/PLAY] play_for_user lancé en tâche asynchrone")
+        except Exception as e:
+            print("[FATAL][API/PLAY] Erreur dans create_task :", e)
+            return jsonify(error=str(e)), 500
+        # MAJ playlist côté web
+        pm = app.get_pm(guild_id)
+        socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
+        print("[DEBUG][API/PLAY] playlist_update emit envoyé")
         return jsonify(ok=True)
 
     # --- PAUSE ---

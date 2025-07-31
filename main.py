@@ -48,12 +48,13 @@ async def load_cogs():
 @bot.event
 async def on_ready():
     print("====== EVENT on_ready() ======")
+    print("Utilisateur bot :", bot.user)
+    print("Serveurs :", [g.name for g in bot.guilds])
+    print("Slash commands globales :", [cmd.name for cmd in await bot.tree.fetch_commands()])
     await load_cogs()
     await bot.tree.sync()
-    print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user}")
-    print("[DEBUG][main.py] Guilds côté Greg :")
-    for g in bot.guilds:
-        print(f"- {g.id}: {g.name}")
+    print("Slash commands sync DONE !")
+
 
 # ===== Attente que le serveur web réponde =====
 def wait_for_web():
