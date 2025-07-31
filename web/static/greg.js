@@ -1,17 +1,14 @@
 // === GREG LE CONSANGUIN - JS Web Panel Dynamique ===
 
-// Récupération des inputs et des selects
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
-
 let debounce = null;
 let currentGuildId = null;
 let currentChannelId = null;
 
-// --- DEBUG ---
 function dbg(...args) { console.log("[GREG.js]", ...args); }
 
-// === Autocomplétion dynamique SoundCloud / YouTube ===
+// === Autocomplétion dynamique ===
 if (input && suggestions) {
     input.addEventListener("input", function() {
         const val = this.value;
@@ -60,9 +57,9 @@ const guildSelect = document.getElementById("guild-select");
 const channelSelect = document.getElementById("channel-select");
 
 if (guildSelect && channelSelect) {
-    // Chargement initial
     currentGuildId = guildSelect.value;
     dbg("Init currentGuildId:", currentGuildId);
+
     // Charger salons textuels au démarrage
     loadTextChannels(currentGuildId);
 
@@ -78,7 +75,6 @@ if (guildSelect && channelSelect) {
     });
 }
 
-// Fonction utilitaire pour charger salons textuels
 function loadTextChannels(guildId) {
     fetch(`/api/text_channels?guild_id=${guildId}`)
         .then(r => r.json())
@@ -96,13 +92,13 @@ function loadTextChannels(guildId) {
         });
 }
 
-// === Contrôles AJAX des boutons du panel (Play, Pause, etc.) ===
+// === Contrôles AJAX (Play, Pause, etc.) ===
 document.querySelectorAll(".controls button").forEach(btn => {
     btn.addEventListener("click", function(e) {
         e.preventDefault();
         const action = this.dataset.action;
         if (!action) return;
-        if (!currentGuildId) return alert("Choisis un serveur !");
+        if (!currentGuildId || !currentChannelId) return alert("Choisis un serveur et un salon textuel !");
         dbg("Action bouton:", action, "Sur serveur:", currentGuildId, "Salon:", currentChannelId);
         fetch(`/api/${action}`, {
             method: "POST",

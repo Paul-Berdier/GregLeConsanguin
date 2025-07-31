@@ -40,9 +40,12 @@ def create_web_app(get_pm):
     # PAGE PANEL PRINCIPALE
     @app.route("/panel")
     def panel():
+
         user = session.get("user")
         guild_id = request.args.get("guild_id")
         channel_id = request.args.get("channel_id")
+        print("[DEBUG][/panel] guild_id=", guild_id, "channel_id=", channel_id)
+
         if not user:
             return redirect("/login")
         if not guild_id or not channel_id:
