@@ -2,79 +2,61 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>🎧 Greg le Consanguin - Panel</title>
+    <title>Panel – Greg le Consanguin</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="icon" href="{{ url_for('static', filename='assets/greg.jpg') }}" type="image/jpeg">
 </head>
 <body>
     <div class="container">
-        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face{% if current %} playing{% endif %}">
-        <h1>Bienvenue, {{ user["username"] }}#{{ user["discriminator"] }}</h1>
-        <p class="sarcasme">Encore toi… Bon, choisis un serveur où me faire souffrir.</p>
-
-        <!-- Sélection dynamique serveur & salon -->
-        <form id="guild-form" autocomplete="off">
-            <select name="guild_id" id="guild-select" required>
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face">
+        <h1>Panneau de Greg le Consanguin</h1>
+        <p class="sarcasme">
+            Vous voilà ici... on ne vous a jamais dit d’avoir meilleur goût ?
+        </p>
+        <div>
+            <label for="guild-select">Serveur :</label>
+            <select id="guild-select">
                 {% for guild in guilds %}
-                    <option value="{{ guild.id }}" {% if guild.id == selected_guild_id %}selected{% endif %}>
+                    <option value="{{ guild.id }}" {% if guild.id == guild_id %}selected{% endif %}>
                         {{ guild.name }}
                     </option>
                 {% endfor %}
             </select>
-            <select name="channel_id" id="channel-select" required>
-                {% for channel in channels %}
-                    <option value="{{ channel.id }}" {% if channel.id == selected_channel_id %}selected{% endif %}>
-                        {{ channel.name }}
-                    </option>
-                {% endfor %}
+            <label for="channel-select">Salon textuel :</label>
+            <select id="channel-select">
+                <!-- Rempli dynamiquement via JS -->
             </select>
-            <button type="submit">🎤 Utiliser ce salon</button>
-        </form>
-
-        <!-- Formulaire musique avec autocomplétion -->
-        <form id="play-form" autocomplete="off">
-            <form method="post" action="/api/play" id="play-form" autocomplete="off">
-                <input id="music-input" name="url" placeholder="Lien ou recherche…" required autocomplete="off">
-                <input type="hidden" id="guild-id" name="guild_id" value="{{ selected_guild_id or '' }}">
-                <input type="hidden" id="channel-id" name="channel_id" value="{{ selected_channel_id or '' }}">
-                <button type="submit">🎵 JOUER</button>
-                <div class="suggestions" id="suggestions" style="display:none;"></div>
-            </form>
-        </form>
-
-        <div class="current-song">
-            {% if current %}
-                <h2>🎧 En lecture :</h2>
-                <p><a href="{{ current }}" target="_blank" style="color:#ffe066;">{{ current }}</a></p>
-            {% endif %}
+            <a href="/select" style="float:right;"><button>⇦ Changer de serveur</button></a>
         </div>
-
+        <form id="play-form" autocomplete="off" style="margin-top:18px;">
+            <input id="music-input" type="text" placeholder="Colle une URL ou cherche un son..." autocomplete="off" />
+            <button type="submit">🎵 Joue ça, Greg</button>
+            <div id="suggestions" class="suggestions"></div>
+        </form>
+        <div class="controls">
+            <button data-action="play">Play</button>
+            <button data-action="pause">Pause</button>
+            <button data-action="resume">Resume</button>
+            <button data-action="skip">Skip</button>
+            <button data-action="stop">Stop</button>
+        </div>
+        <div class="current-song"></div>
         <div class="playlist">
-            <h2>📝 Playlist actuelle</h2>
+            <h2>Playlist en attente</h2>
             <ul id="playlist-ul">
                 {% if playlist %}
                     {% for song in playlist %}
-                        <li data-index="{{ loop.index0 }}">
+                        <li>
                             <a href="{{ song }}" target="_blank">{{ song }}</a>
-                            <button class="play-this" title="Jouer ce morceau">▶️</button>
-                            <button class="move-top" title="Passer en tête">⏫</button>
                         </li>
                     {% endfor %}
                 {% else %}
-                    <p><em>La playlist est vide. Comme votre goût musical sans doute…</em></p>
+                    <p><em>La playlist est vide. Comme votre inspiration.</em></p>
                 {% endif %}
             </ul>
         </div>
-
-        <div class="controls">
-            <form><button data-action="pause">⏸ Pause</button></form>
-            <form><button data-action="skip">⏭ Skip</button></form>
-            <form><button data-action="stop">⏹ Stop</button></form>
-        </div>
+        <a href="/logout"><button>Déconnexion</button></a>
     </div>
-
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='greg.js') }}"></script>
-
 </body>
 </html>

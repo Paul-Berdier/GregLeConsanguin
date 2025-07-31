@@ -1,11 +1,17 @@
-// === Autocomplétion dynamique SoundCloud / YouTube ===
+// === GREG LE CONSANGUIN - JS Web Panel Dynamique ===
+
+// Récupération des inputs et des selects
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
+
 let debounce = null;
+let currentGuildId = null;
+let currentChannelId = null;
 
-let currentGuildId = null;   // Pour savoir sur quel serveur on bosse (panel.html)
-let currentChannelId = null; // Pour la salle vocale
+// --- DEBUG ---
+function dbg(...args) { console.log("[GREG.js]", ...args); }
 
+// === Autocomplétion dynamique SoundCloud / YouTube ===
 if (input && suggestions) {
     input.addEventListener("input", function() {
         const val = this.value;
@@ -49,17 +55,59 @@ if (input && suggestions) {
     });
 }
 
-// === Contrôles AJAX sans reload (panel.html) ===
+// === Sélection dynamique des serveurs et salons textuels ===
+const guildSelect = document.getElementById("guild-select");
+const channelSelect = document.getElementById("channel-select");
+
+if (guildSelect && channelSelect) {
+    // Chargement initial
+    currentGuildId = guildSelect.value;
+    dbg("Init currentGuildId:", currentGuildId);
+    // Charger salons textuels au démarrage
+    loadTextChannels(currentGuildId);
+
+    guildSelect.addEventListener("change", function() {
+        currentGuildId = guildSelect.value;
+        dbg("Changement de serveur:", currentGuildId);
+        loadTextChannels(currentGuildId);
+    });
+
+    channelSelect.addEventListener("change", function() {
+        currentChannelId = channelSelect.value;
+        dbg("Changement de salon textuel:", currentChannelId);
+    });
+}
+
+// Fonction utilitaire pour charger salons textuels
+function loadTextChannels(guildId) {
+    fetch(`/api/text_channels?guild_id=${guildId}`)
+        .then(r => r.json())
+        .then(chans => {
+            channelSelect.innerHTML = "";
+            chans.forEach(c => {
+                const opt = document.createElement("option");
+                opt.value = c.id;
+                opt.innerText = c.name;
+                channelSelect.appendChild(opt);
+            });
+            if (channelSelect.options.length)
+                currentChannelId = channelSelect.options[0].value;
+            dbg("Salons textuels chargés:", chans, "currentChannelId:", currentChannelId);
+        });
+}
+
+// === Contrôles AJAX des boutons du panel (Play, Pause, etc.) ===
 document.querySelectorAll(".controls button").forEach(btn => {
     btn.addEventListener("click", function(e) {
         e.preventDefault();
         const action = this.dataset.action;
         if (!action) return;
         if (!currentGuildId) return alert("Choisis un serveur !");
+        dbg("Action bouton:", action, "Sur serveur:", currentGuildId, "Salon:", currentChannelId);
         fetch(`/api/${action}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ guild_id: currentGuildId })
+            body: JSON.stringify({ guild_id: currentGuildId, channel_id: currentChannelId })
         });
     });
 });
@@ -68,7 +116,6 @@ document.querySelectorAll(".controls button").forEach(btn => {
 const socket = io();
 
 function updatePlaylist(playlist, current) {
-    // Affichage de la musique en cours
     const currentDiv = document.querySelector(".current-song");
     if (currentDiv) {
         if (current) {
@@ -80,7 +127,7 @@ function updatePlaylist(playlist, current) {
             document.querySelector('.greg-face')?.classList.remove('playing');
         }
     }
-    // Affichage dynamique de la playlist (avec boutons cliquables)
+    // Affichage dynamique de la playlist
     const playlistDiv = document.getElementById("playlist-ul");
     if (playlistDiv) {
         playlistDiv.innerHTML = playlist.length
@@ -96,10 +143,11 @@ function updatePlaylist(playlist, current) {
 }
 
 socket.on("playlist_update", function(data) {
+    dbg("Playlist MAJ via SocketIO", data);
     updatePlaylist(data.queue, data.current);
 });
 
-// === Envoi commande PLAY depuis le formulaire (panel.html) ===
+// === Envoi commande PLAY depuis le formulaire ===
 const form = document.getElementById("play-form");
 if (form && input && suggestions) {
     form.addEventListener("submit", function(e) {
@@ -107,9 +155,10 @@ if (form && input && suggestions) {
         const val = input.value;
         if (!val.trim()) return;
         if (!currentGuildId || !currentChannelId) {
-            alert("Choisis un serveur ET un salon vocal !");
+            alert("Choisis un serveur ET un salon textuel !");
             return;
         }
+        dbg("Formulaire play submit :", val, "guild:", currentGuildId, "channel:", currentChannelId);
         fetch("/api/play", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -122,40 +171,14 @@ if (form && input && suggestions) {
     });
 }
 
-// === Sélection dynamique des salons vocaux et mémorisation serveur/salon ===
-const guildSelect = document.getElementById("guild-select");
-const channelSelect = document.getElementById("channel-select");
-if (guildSelect && channelSelect) {
-    currentGuildId = guildSelect.value;
-    currentChannelId = channelSelect.value;
-    guildSelect.addEventListener("change", function() {
-        currentGuildId = guildSelect.value;
-        fetch(`/api/channels?guild_id=${guildSelect.value}`)
-            .then(r => r.json())
-            .then(chans => {
-                channelSelect.innerHTML = "";
-                chans.forEach(c => {
-                    const opt = document.createElement("option");
-                    opt.value = c.id;
-                    opt.innerText = c.name;
-                    channelSelect.appendChild(opt);
-                });
-                // Mettre à jour automatiquement le premier salon
-                if (channelSelect.options.length)
-                    currentChannelId = channelSelect.options[0].value;
-            });
-    });
-    channelSelect.addEventListener("change", function() {
-        currentChannelId = channelSelect.value;
-    });
-}
-
 // === Playlist cliquable (play/move) ===
 function playlistClickHandler(e) {
     if (!currentGuildId) return alert("Choisis un serveur !");
+    const li = e.target.closest("li");
+    if (!li) return;
+    const index = li.dataset.index;
     if (e.target.classList.contains("play-this")) {
-        const li = e.target.closest("li");
-        const index = li.dataset.index;
+        dbg("Demande play_at index", index, "guild:", currentGuildId);
         fetch("/api/command/play_at", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -163,8 +186,7 @@ function playlistClickHandler(e) {
         });
     }
     if (e.target.classList.contains("move-top")) {
-        const li = e.target.closest("li");
-        const index = li.dataset.index;
+        dbg("Demande move_top index", index, "guild:", currentGuildId);
         fetch("/api/command/move_top", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

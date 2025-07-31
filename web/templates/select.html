@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Sélection du serveur – Greg le Consanguin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face">
+        <h1>Choisis ton serveur Discord</h1>
+        <p class="sarcasme">Parce qu’il faut bien supporter tes choix douteux...</p>
+        <form method="get" action="/panel" id="select-form">
+            <label for="guild-select">Serveur :</label><br>
+            <select id="guild-select" name="guild_id" required>
+                {% for guild in guilds %}
+                    <option value="{{ guild.id }}">{{ guild.name }}</option>
+                {% endfor %}
+            </select>
+            <br>
+            <label for="channel-select">Salon textuel :</label><br>
+            <select id="channel-select" name="channel_id" required>
+                <!-- Dynamique via JS -->
+            </select>
+            <br>
+            <button type="submit">Accéder au Panel</button>
+        </form>
+        <a href="/logout"><button>Déconnexion</button></a>
+    </div>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
+</body>
+</html>
