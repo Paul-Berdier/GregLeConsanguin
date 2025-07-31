@@ -3,7 +3,8 @@ const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
 let debounce = null;
 
-let currentGuildId = null;  // Pour savoir sur quel serveur on bosse (panel.html)
+let currentGuildId = null;   // Pour savoir sur quel serveur on bosse (panel.html)
+let currentChannelId = null; // Pour la salle vocale
 
 if (input && suggestions) {
     input.addEventListener("input", function() {
@@ -105,11 +106,14 @@ if (form && input && suggestions) {
         e.preventDefault();
         const val = input.value;
         if (!val.trim()) return;
-        if (!currentGuildId) return alert("Choisis un serveur !");
+        if (!currentGuildId || !currentChannelId) {
+            alert("Choisis un serveur ET un salon vocal !");
+            return;
+        }
         fetch("/api/play", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: val, guild_id: currentGuildId })
+            body: JSON.stringify({ url: val, guild_id: currentGuildId, channel_id: currentChannelId })
         }).then(() => {
             input.value = "";
             suggestions.style.display = "none";
@@ -118,11 +122,12 @@ if (form && input && suggestions) {
     });
 }
 
-// === Sélection dynamique des salons vocaux et mémorisation serveur ===
+// === Sélection dynamique des salons vocaux et mémorisation serveur/salon ===
 const guildSelect = document.getElementById("guild-select");
 const channelSelect = document.getElementById("channel-select");
 if (guildSelect && channelSelect) {
     currentGuildId = guildSelect.value;
+    currentChannelId = channelSelect.value;
     guildSelect.addEventListener("change", function() {
         currentGuildId = guildSelect.value;
         fetch(`/api/channels?guild_id=${guildSelect.value}`)
@@ -135,7 +140,13 @@ if (guildSelect && channelSelect) {
                     opt.innerText = c.name;
                     channelSelect.appendChild(opt);
                 });
+                // Mettre à jour automatiquement le premier salon
+                if (channelSelect.options.length)
+                    currentChannelId = channelSelect.options[0].value;
             });
+    });
+    channelSelect.addEventListener("change", function() {
+        currentChannelId = channelSelect.value;
     });
 }
 

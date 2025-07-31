@@ -185,6 +185,23 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("❌ *Rien en cours. Profitez du silence, il vous va si bien.*")
 
+    async def play_for_guild_channel(self, guild_id, channel_id, url):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            print("[Music] Serveur introuvable")
+            return
+        channel = guild.get_channel(int(channel_id))
+        if not channel:
+            print("[Music] Salon vocal introuvable")
+            return
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            vc = await channel.connect()
+        # Ajoute dans la playlist côté serveur
+        pm = self.bot.get_pm(guild_id)
+        pm.add(url)
+        await self.play_next(FakeInteraction(guild))
+
     # Lecture directe d'un index dans la playlist (appelable via l'API Flask)
     async def play_at(self, guild: discord.Guild, index: int):
         pm = self.get_pm(guild.id)

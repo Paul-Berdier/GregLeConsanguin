@@ -33,9 +33,13 @@
 
         <!-- Formulaire musique avec autocomplétion -->
         <form id="play-form" autocomplete="off">
-            <input id="music-input" name="url" placeholder="Lien ou recherche…" required autocomplete="off">
-            <button type="submit">🎵 JOUER</button>
-            <div class="suggestions" id="suggestions" style="display:none;"></div>
+            <form method="post" action="/api/play" id="play-form" autocomplete="off">
+                <input id="music-input" name="url" placeholder="Lien ou recherche…" required autocomplete="off">
+                <input type="hidden" id="guild-id" name="guild_id" value="{{ selected_guild_id or '' }}">
+                <input type="hidden" id="channel-id" name="channel_id" value="{{ selected_channel_id or '' }}">
+                <button type="submit">🎵 JOUER</button>
+                <div class="suggestions" id="suggestions" style="display:none;"></div>
+            </form>
         </form>
 
         <div class="current-song">

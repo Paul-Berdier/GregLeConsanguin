@@ -58,13 +58,24 @@ def create_web_app(get_pm):  # get_pm(guild_id) retourne le bon PlaylistManager 
     @app.route("/api/play", methods=["POST"])
     def api_play():
         data = request.get_json() or request.form
-        guild_id = data.get("guild_id")
         url = data.get("url")
-        if not guild_id or not url:
-            return jsonify({"error": "missing guild_id or url"}), 400
-        pm = get_pm(guild_id)
+        guild_id = data.get("guild_id")
+        channel_id = data.get("channel_id")
+        if not (guild_id and channel_id and url):
+            return jsonify(error="missing guild/channel/url"), 400
+        pm = app.get_pm(guild_id)
         pm.add(url)
         socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
+        # -- Ici appelle le bot pour qu'il rejoigne le salon et joue --
+        # On utilise un trigger simple, par exemple via discord.ext.commands:
+        from threading import Thread
+        def discord_play():
+            import asyncio
+            coro = app.bot.get_cog("Music").play_for_guild_channel(guild_id, channel_id, url)
+            fut = asyncio.run_coroutine_threadsafe(coro, app.bot.loop)
+            fut.result()
+
+        Thread(target=discord_play).start()
         return jsonify(ok=True)
 
     @app.route("/api/skip", methods=["POST"])
