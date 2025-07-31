@@ -1,5 +1,3 @@
-# commands/music.py
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -20,7 +18,6 @@ class Music(commands.Cog):
         self.emit_fn = emit_fn
 
     def get_pm(self, guild_id):
-        """Thread-safe : récupère/crée le PlaylistManager pour ce serveur."""
         gid = str(guild_id)
         if gid not in self.managers:
             self.managers[gid] = PlaylistManager(gid)
@@ -41,14 +38,11 @@ class Music(commands.Cog):
         print("❌ Aucun ffmpeg trouvé.")
         return "ffmpeg"
 
-    # ----------- Commandes Slash Discord ----------------
-
     @app_commands.command(name="play", description="Joue un son depuis une URL ou une recherche.")
     async def play(self, interaction: discord.Interaction, query_or_url: str):
         print("[DEBUG][MUSIC] /play appelé par", interaction.user, "avec:", query_or_url)
+        pm = self.get_pm(interaction.guild.id)  # Direct, PAS dans un thread !
         loop = asyncio.get_running_loop()
-        print("[DEBUG] Récupération PlaylistManager pour guild:", interaction.guild.id)
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         print("[DEBUG] Reload playlist manager pour guild:", interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         print("[DEBUG] Defer interaction.response")
@@ -80,7 +74,6 @@ class Music(commands.Cog):
 
         print("[DEBUG] Recherche SoundCloud...")
         extractor = get_search_module("soundcloud")
-        # ⚠️ METS BIEN LE SEARCH EN THREAD POUR PAS BLOQUER DISCORD !!!
         try:
             results = await loop.run_in_executor(None, extractor.search, query_or_url)
             print(f"[DEBUG] Résultats de recherche SoundCloud pour '{query_or_url}': {results}")
@@ -103,8 +96,7 @@ class Music(commands.Cog):
 
         def check(m):
             print(f"[DEBUG][WAIT_FOR] Reçu : {m.content} de {m.author.id}")
-            return m.author.id == interaction.user.id and m.content.isdigit() and 1 <= int(m.content) <= len(
-                results[:3])
+            return m.author.id == interaction.user.id and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
 
         try:
             print("[DEBUG] Attente de la réponse de l'utilisateur pour le choix du son...")
@@ -131,8 +123,8 @@ class Music(commands.Cog):
         self.emit_playlist_update(interaction.guild.id)
 
     async def add_to_queue(self, interaction, url):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         await loop.run_in_executor(None, pm.add, url)
         await interaction.followup.send(f"🎵 Ajouté à la playlist : {url}")
@@ -141,8 +133,8 @@ class Music(commands.Cog):
             await self.play_next(interaction)
 
     async def play_next(self, interaction):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not queue:
@@ -189,8 +181,8 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Passe à la piste suivante.")
     async def skip(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         await loop.run_in_executor(None, pm.skip)
         await interaction.response.send_message("⏭ *Et que ça saute !*")
@@ -198,8 +190,8 @@ class Music(commands.Cog):
 
     @app_commands.command(name="stop", description="Stoppe tout et vide la playlist.")
     async def stop(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         await loop.run_in_executor(None, pm.stop)
         vc = interaction.guild.voice_client
@@ -228,8 +220,8 @@ class Music(commands.Cog):
 
     @app_commands.command(name="playlist", description="Affiche les morceaux en attente.")
     async def playlist(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not queue:
@@ -239,23 +231,20 @@ class Music(commands.Cog):
 
     @app_commands.command(name="current", description="Affiche le morceau actuellement joué.")
     async def current(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
         current = await loop.run_in_executor(None, pm.get_current)
         if current:
             await interaction.response.send_message(f"🎧 *Musique actuelle :* **{current}**")
         else:
             await interaction.response.send_message("❌ *Rien en cours. Profitez du silence, il vous va si bien.*")
 
-    # Appelée depuis le web, par l'API Flask
     async def play_for_user(self, guild_id, user_id, url):
-        """Méthode appelée par Flask quand un user web ajoute une musique."""
         print(f"[DEBUG][MUSIC] play_for_user: guild_id={guild_id}, user_id={user_id}, url={url}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
             print("[Music] Serveur introuvable")
             return
-        # Trouve le user
         member = guild.get_member(int(user_id))
         if not member or not member.voice or not member.voice.channel:
             print("[Music] Utilisateur non connecté en vocal ou introuvable")
@@ -263,8 +252,8 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             vc = await member.voice.channel.connect()
+        pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, guild_id)
         await loop.run_in_executor(None, pm.add, url)
         class FakeInteraction:
             def __init__(self, guild): self.guild = guild; self.followup = self
@@ -273,10 +262,9 @@ class Music(commands.Cog):
         await self.play_next(FakeInteraction(guild))
         self.emit_playlist_update(guild_id)
 
-    # Pour web: play un index direct
     async def play_at(self, guild_id, index):
+        pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
-        pm = await loop.run_in_executor(None, self.get_pm, guild_id)
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not (0 <= index < len(queue)):
