@@ -47,41 +47,74 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query_or_url: str):
         print("[DEBUG][MUSIC] /play appelé par", interaction.user, "avec:", query_or_url)
         loop = asyncio.get_running_loop()
+        print("[DEBUG] Récupération PlaylistManager pour guild:", interaction.guild.id)
         pm = await loop.run_in_executor(None, self.get_pm, interaction.guild.id)
+        print("[DEBUG] Reload playlist manager pour guild:", interaction.guild.id)
         await loop.run_in_executor(None, pm.reload)
+        print("[DEBUG] Defer interaction.response")
         await interaction.response.defer()
 
+        print("[DEBUG] Vérification de la connexion vocale...")
         if interaction.guild.voice_client is None:
+            print("[DEBUG] Greg n'est PAS dans le vocal.")
             if interaction.user.voice and interaction.user.voice.channel:
+                print("[DEBUG] L'utilisateur est en vocal dans :", interaction.user.voice.channel.name)
                 await interaction.user.voice.channel.connect()
-                await interaction.followup.send(f"🎤 *Greg rejoint le canal vocal :* {interaction.user.voice.channel.name}")
+                print("[DEBUG] Greg vient de rejoindre le canal vocal.")
+                await interaction.followup.send(
+                    f"🎤 *Greg rejoint le canal vocal :* {interaction.user.voice.channel.name}")
             else:
+                print("[DEBUG] L'utilisateur N'EST PAS en vocal.")
                 return await interaction.followup.send("❌ *Tu n'es même pas en vocal, vermine...*")
+        else:
+            print("[DEBUG] Greg est déjà connecté au vocal.")
 
+        print("[DEBUG] Envoi du message de supplice à Sa Majesté.")
         await interaction.followup.send("🎵 *Encore une demande musicale, Majesté ? Quel supplice...*")
 
+        print("[DEBUG] Test si l'entrée est une URL directe...")
         if "http://" in query_or_url or "https://" in query_or_url:
+            print("[DEBUG] Ajout direct à la queue :", query_or_url)
             await self.add_to_queue(interaction, query_or_url)
             return
 
+        print("[DEBUG] Recherche SoundCloud...")
         extractor = get_search_module("soundcloud")
-        results = extractor.search(query_or_url)
+        # ⚠️ METS BIEN LE SEARCH EN THREAD POUR PAS BLOQUER DISCORD !!!
+        try:
+            results = await loop.run_in_executor(None, extractor.search, query_or_url)
+            print(f"[DEBUG] Résultats de recherche SoundCloud pour '{query_or_url}': {results}")
+        except Exception as e:
+            print(f"[DEBUG][ERREUR] Recherche SoundCloud plantée : {e}")
+            return await interaction.followup.send(f"❌ *Erreur lors de la recherche :* `{e}`")
+
         if not results:
+            print("[DEBUG] Aucun résultat trouvé sur SoundCloud.")
             return await interaction.followup.send("❌ *Rien trouvé, même les rats ont fui cette piste...*")
+
         self.search_results[interaction.user.id] = results
         msg = "**🔍 Résultats Soundcloud :**\n"
         for i, item in enumerate(results[:3], 1):
+            print(f"[DEBUG] Option {i} : {item['title']} ({item['url']})")
             msg += f"**{i}.** [{item['title']}]({item['url']})\n"
         msg += "\n*Choisissez un chiffre (1-3) en réponse.*"
+        print("[DEBUG] Envoi du message de sélection à l'utilisateur.")
         await interaction.followup.send(msg)
 
         def check(m):
-            return m.author.id == interaction.user.id and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
+            print(f"[DEBUG][WAIT_FOR] Reçu : {m.content} de {m.author.id}")
+            return m.author.id == interaction.user.id and m.content.isdigit() and 1 <= int(m.content) <= len(
+                results[:3])
+
         try:
+            print("[DEBUG] Attente de la réponse de l'utilisateur pour le choix du son...")
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
+            print(f"[DEBUG] L'utilisateur a choisi : {reply.content}")
             selected_url = results[int(reply.content) - 1]["url"]
+            print(f"[DEBUG] Appel de ask_play_mode avec l'URL : {selected_url}")
             await self.ask_play_mode(interaction, selected_url)
         except asyncio.TimeoutError:
+            print("[DEBUG] Timeout d'attente du choix utilisateur.")
             await interaction.followup.send("⏳ *Trop lent. Greg retourne râler dans sa crypte...*")
 
     async def ask_play_mode(self, interaction, url):
