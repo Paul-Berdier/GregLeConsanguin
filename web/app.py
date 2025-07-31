@@ -1,9 +1,8 @@
-# web/app.py
-
 from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
 from web.oauth import oauth_bp
 import os
+import asyncio
 
 def create_web_app(get_pm):
     app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -65,21 +64,22 @@ def create_web_app(get_pm):
             pm = app.get_pm(guild_id)
             print(f"[DEBUG][/panel] PlaylistManager = {pm}", flush=True)
 
-            playlist = pm.get_queue()
+            # ⚡️ Version corrigée : utilise asyncio.run pour récupérer la playlist et le morceau courant (async -> sync)
+            playlist = asyncio.run(pm.get_queue())
             print(f"[DEBUG][/panel] Playlist récupérée = {playlist}", flush=True)
 
-            current = pm.get_current()
+            current = asyncio.run(pm.get_current())
             print(f"[DEBUG][/panel] Morceau en cours = {current}", flush=True)
             print("[DEBUG][/panel] RENDER panel.html", flush=True)
-            return render_template("panel.html",
-                                   guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in
-                                           bot_guilds],
-                                   user=user,
-                                   guild_id=guild_id,
-                                   channel_id=channel_id,
-                                   playlist=playlist,
-                                   current=current
-                                   )
+            return render_template(
+                "panel.html",
+                guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in bot_guilds],
+                user=user,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                playlist=playlist,
+                current=current
+            )
         except Exception as e:
             import traceback
             print("[FATAL][panel]", e, flush=True)
@@ -111,7 +111,8 @@ def create_web_app(get_pm):
             return jsonify(error=str(e)), 500
         # MAJ playlist côté web
         pm = app.get_pm(guild_id)
-        socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
+        # ⚡️ Correction : utiliser asyncio.run pour appeler la méthode async
+        socketio.emit("playlist_update", asyncio.run(pm.to_dict()), broadcast=True)
         print("[DEBUG][API/PLAY] playlist_update emit envoyé")
         return jsonify(ok=True)
 
@@ -178,7 +179,8 @@ def create_web_app(get_pm):
         pm = app.get_pm(guild_id) if guild_id else None
         if not pm:
             return jsonify(queue=[], current=None)
-        return jsonify(pm.to_dict())
+        # ⚡️ Correction : appelle la méthode async de manière synchrone
+        return jsonify(asyncio.run(pm.to_dict()))
 
     # --- AUTOCOMPLETE ---
     @app.route("/autocomplete", methods=["GET"])
@@ -213,7 +215,7 @@ def create_web_app(get_pm):
         guilds = app.bot.guilds
         if guilds:
             pm = app.get_pm(guilds[0].id)
-            emit("playlist_update", pm.to_dict())
+            emit("playlist_update", asyncio.run(pm.to_dict()))
         print("[DEBUG][SocketIO] Nouvelle connexion web. Playlist envoyée !")
 
     return app, socketio
