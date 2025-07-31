@@ -55,12 +55,21 @@ def create_web_app(get_pm):
             bot_guilds = app.bot.guilds
             print("[DEBUG][/panel] bot_guilds:", bot_guilds, flush=True)
             guild = next((g for g in bot_guilds if str(g.id) == str(guild_id)), None)
+            print(f"[DEBUG][/panel] Résultat recherche guild : {guild}", flush=True)
             if not guild:
                 print("[DEBUG][/panel] GUILD INTROUVABLE", flush=True)
                 return "Serveur introuvable ou Greg n'est pas dessus.", 400
+
+            # PlaylistManager, queue et current song
+            print(f"[DEBUG][/panel] Récupération PlaylistManager pour guild {guild_id}", flush=True)
             pm = app.get_pm(guild_id)
+            print(f"[DEBUG][/panel] PlaylistManager = {pm}", flush=True)
+
             playlist = pm.get_queue()
+            print(f"[DEBUG][/panel] Playlist récupérée = {playlist}", flush=True)
+
             current = pm.get_current()
+            print(f"[DEBUG][/panel] Morceau en cours = {current}", flush=True)
             print("[DEBUG][/panel] RENDER panel.html", flush=True)
             return render_template("panel.html",
                                    guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in
