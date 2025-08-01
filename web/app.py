@@ -78,7 +78,7 @@ def create_web_app(get_pm):
         data = request.json or request.form
         url = data.get("url")
         guild_id = data.get("guild_id")
-        channel_id = data.get("channel_id")
+        user_id = data.get("user_id")  # <- c'est LUI qu'il faut passer
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return jsonify(error="music_cog missing"), 500
@@ -86,7 +86,7 @@ def create_web_app(get_pm):
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(music_cog.play_for_user(guild_id, channel_id, url))
+            loop.run_until_complete(music_cog.play_for_user(guild_id, user_id, url))
             pm = app.get_pm(guild_id)
             socketio.emit("playlist_update", loop.run_until_complete(pm.to_dict()), broadcast=True)
             loop.close()
