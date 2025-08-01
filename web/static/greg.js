@@ -1,14 +1,29 @@
 // === GREG LE CONSANGUIN - JS Web Panel Dynamique ===
 
+function dbg(...args) { console.log("[GREG.js]", ...args); }
+
+// === Récupère l'ID Discord de l'utilisateur connecté, injecté dans la page HTML ===
+let currentUserId = null;
+if (window.USER_ID) {
+    currentUserId = window.USER_ID;
+    dbg("User Discord connecté (USER_ID):", currentUserId);
+} else {
+    dbg("⚠️ USER_ID non défini dans la page HTML !");
+}
+
+// === Récupère guild_id et channel_id depuis l'URL sur le panel ===
+function getUrlParam(name) {
+    return new URLSearchParams(window.location.search).get(name);
+}
+let currentGuildId = getUrlParam("guild_id");
+let currentChannelId = getUrlParam("channel_id");
+dbg("Init via URL params:", currentGuildId, currentChannelId);
+
+// === Autocomplétion dynamique ===
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
 let debounce = null;
-let currentGuildId = null;
-let currentChannelId = null;
 
-function dbg(...args) { console.log("[GREG.js]", ...args); }
-
-// === Autocomplétion dynamique ===
 if (input && suggestions) {
     input.addEventListener("input", function() {
         const val = this.value;
@@ -52,46 +67,6 @@ if (input && suggestions) {
     });
 }
 
-// === Sélection dynamique des serveurs et salons textuels ===
-const guildSelect = document.getElementById("guild-select");
-const channelSelect = document.getElementById("channel-select");
-
-if (guildSelect && channelSelect) {
-    currentGuildId = guildSelect.value;
-    dbg("Init currentGuildId:", currentGuildId);
-
-    // Charger salons textuels au démarrage
-    loadTextChannels(currentGuildId);
-
-    guildSelect.addEventListener("change", function() {
-        currentGuildId = guildSelect.value;
-        dbg("Changement de serveur:", currentGuildId);
-        loadTextChannels(currentGuildId);
-    });
-
-    channelSelect.addEventListener("change", function() {
-        currentChannelId = channelSelect.value;
-        dbg("Changement de salon textuel:", currentChannelId);
-    });
-}
-
-function loadTextChannels(guildId) {
-    fetch(`/api/text_channels?guild_id=${guildId}`)
-        .then(r => r.json())
-        .then(chans => {
-            channelSelect.innerHTML = "";
-            chans.forEach(c => {
-                const opt = document.createElement("option");
-                opt.value = c.id;
-                opt.innerText = c.name;
-                channelSelect.appendChild(opt);
-            });
-            if (channelSelect.options.length)
-                currentChannelId = channelSelect.options[0].value;
-            dbg("Salons textuels chargés:", chans, "currentChannelId:", currentChannelId);
-        });
-}
-
 // === Contrôles AJAX (Play, Pause, etc.) ===
 document.querySelectorAll(".controls button").forEach(btn => {
     btn.addEventListener("click", function(e) {
@@ -103,7 +78,11 @@ document.querySelectorAll(".controls button").forEach(btn => {
         fetch(`/api/${action}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ guild_id: currentGuildId, channel_id: currentChannelId })
+            body: JSON.stringify({
+                guild_id: currentGuildId,
+                channel_id: currentChannelId,
+                user_id: currentUserId // <-- Ajoute le user_id partout pour plus de robustesse si besoin plus tard
+            })
         });
     });
 });
@@ -150,15 +129,20 @@ if (form && input && suggestions) {
         e.preventDefault();
         const val = input.value;
         if (!val.trim()) return;
-        if (!currentGuildId || !currentChannelId) {
-            alert("Choisis un serveur ET un salon textuel !");
+        if (!currentGuildId || !currentChannelId || !currentUserId) {
+            alert("Choisis un serveur ET un salon textuel, et connecte-toi avec ton compte Discord !");
             return;
         }
-        dbg("Formulaire play submit :", val, "guild:", currentGuildId, "channel:", currentChannelId);
+        dbg("Formulaire play submit :", val, "guild:", currentGuildId, "channel:", currentChannelId, "user_id:", currentUserId);
         fetch("/api/play", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: val, guild_id: currentGuildId, channel_id: currentChannelId })
+            body: JSON.stringify({
+                url: val,
+                guild_id: currentGuildId,
+                channel_id: currentChannelId,
+                user_id: currentUserId   // <= CRUCIAL pour que le bot te trouve
+            })
         }).then(() => {
             input.value = "";
             suggestions.style.display = "none";
