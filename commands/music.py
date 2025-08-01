@@ -242,16 +242,18 @@ class Music(commands.Cog):
     async def play_for_user(self, guild_id, user_id, url):
         print(f"[DEBUG][MUSIC] play_for_user: guild_id={guild_id}, user_id={user_id}, url={url}")
         guild = self.bot.get_guild(int(guild_id))
+        print(f"[DEBUG][MUSIC] Guild récupéré: {guild} (ID: {guild_id})")
         if not guild:
             print("[Music] Serveur introuvable")
             return
+        print(f"[DEBUG][MUSIC] Membres du serveur: {[m.id for m in guild.members]}")
         member = guild.get_member(int(user_id))
+        print(f"[DEBUG][MUSIC] Member: {member} (ID: {user_id})")
+        if member:
+            print(f"[DEBUG][MUSIC] member.voice: {member.voice}, channel: {getattr(member.voice, 'channel', None)}")
         if not member or not member.voice or not member.voice.channel:
             print("[Music] Utilisateur non connecté en vocal ou introuvable")
             return
-        vc = guild.voice_client
-        if not vc or not vc.is_connected():
-            vc = await member.voice.channel.connect()
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.add, url)
