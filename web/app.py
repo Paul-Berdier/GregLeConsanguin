@@ -17,7 +17,7 @@ def create_web_app(get_pm):
         user = session.get("user")
         return render_template("index.html", user=user)
 
-    # LOGOUT (dégage)
+    # LOGOUT
     @app.route("/logout")
     def logout():
         session.clear()
@@ -31,7 +31,6 @@ def create_web_app(get_pm):
             return redirect("/login")
         user_guild_ids = set(g['id'] for g in user['guilds'])
         bot_guilds = app.bot.guilds
-        # Affiche seulement les serveurs où Greg est
         common_guilds = [g for g in bot_guilds if str(g.id) in user_guild_ids]
         guilds_fmt = [{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in common_guilds]
         return render_template("select.html", guilds=guilds_fmt, user=user)
@@ -40,37 +39,26 @@ def create_web_app(get_pm):
     @app.route("/panel")
     def panel():
         try:
-            print("[DEBUG][/panel] CALL", flush=True)
             user = session.get("user")
             guild_id = request.args.get("guild_id")
             channel_id = request.args.get("channel_id")
-            print("[DEBUG][/panel] user:", user, "guild_id:", guild_id, "channel_id:", channel_id, flush=True)
             if not user:
-                print("[DEBUG][/panel] PAS DE USER, REDIRECT LOGIN", flush=True)
                 return redirect("/login")
             if not guild_id or not channel_id:
-                print("[DEBUG][/panel] MISSING guild/channel, REDIRECT /select", flush=True)
                 return redirect("/select")
             bot_guilds = app.bot.guilds
-            print("[DEBUG][/panel] bot_guilds:", bot_guilds, flush=True)
             guild = next((g for g in bot_guilds if str(g.id) == str(guild_id)), None)
-            print(f"[DEBUG][/panel] Résultat recherche guild : {guild}", flush=True)
             if not guild:
-                print("[DEBUG][/panel] GUILD INTROUVABLE", flush=True)
                 return "Serveur introuvable ou Greg n'est pas dessus.", 400
-
-            # PlaylistManager, queue et current song
-            print(f"[DEBUG][/panel] Récupération PlaylistManager pour guild {guild_id}", flush=True)
             pm = app.get_pm(guild_id)
-            print(f"[DEBUG][/panel] PlaylistManager = {pm}", flush=True)
 
-            # ⚡️ Version corrigée : utilise asyncio.run pour récupérer la playlist et le morceau courant (async -> sync)
-            playlist = asyncio.run(pm.get_queue())
-            print(f"[DEBUG][/panel] Playlist récupérée = {playlist}", flush=True)
+            # Correction ici : Création d'une event loop pour chaque accès async
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            playlist = loop.run_until_complete(pm.get_queue())
+            current = loop.run_until_complete(pm.get_current())
+            loop.close()
 
-            current = asyncio.run(pm.get_current())
-            print(f"[DEBUG][/panel] Morceau en cours = {current}", flush=True)
-            print("[DEBUG][/panel] RENDER panel.html", flush=True)
             return render_template(
                 "panel.html",
                 guilds=[{"id": str(g.id), "name": g.name, "icon": getattr(g, "icon", None)} for g in bot_guilds],
@@ -82,11 +70,7 @@ def create_web_app(get_pm):
             )
         except Exception as e:
             import traceback
-            print("[FATAL][panel]", e, flush=True)
-            print(traceback.format_exc(), flush=True)
             return f"Erreur interne côté Greg :<br><pre>{e}\n{traceback.format_exc()}</pre>", 500
-
-    # === ROUTES API SYNCHRONES DISCORD + WEB ===
 
     # --- PLAY ---
     @app.route("/api/play", methods=["POST"])
@@ -95,25 +79,21 @@ def create_web_app(get_pm):
         url = data.get("url")
         guild_id = data.get("guild_id")
         channel_id = data.get("channel_id")
-        print("[DEBUG][API/PLAY] Appel reçu :", url, guild_id, channel_id)
         music_cog = app.bot.get_cog("Music")
-        print("[DEBUG][API/PLAY] Music cog :", music_cog)
         if not music_cog:
-            print("[FATAL][API/PLAY] Music cog introuvable !")
             return jsonify(error="music_cog missing"), 500
-        import asyncio
-        loop = asyncio.get_event_loop()
+
         try:
-            loop.create_task(music_cog.play_for_user(guild_id, channel_id, url))
-            print("[DEBUG][API/PLAY] play_for_user lancé en tâche asynchrone")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(music_cog.play_for_user(guild_id, channel_id, url))
+            pm = app.get_pm(guild_id)
+            socketio.emit("playlist_update", loop.run_until_complete(pm.to_dict()), broadcast=True)
+            loop.close()
         except Exception as e:
-            print("[FATAL][API/PLAY] Erreur dans create_task :", e)
-            return jsonify(error=str(e)), 500
-        # MAJ playlist côté web
-        pm = app.get_pm(guild_id)
-        # ⚡️ Correction : utiliser asyncio.run pour appeler la méthode async
-        socketio.emit("playlist_update", asyncio.run(pm.to_dict()), broadcast=True)
-        print("[DEBUG][API/PLAY] playlist_update emit envoyé")
+            import traceback
+            return jsonify(error=str(e), trace=traceback.format_exc()), 500
+
         return jsonify(ok=True)
 
     # --- PAUSE ---
@@ -124,10 +104,13 @@ def create_web_app(get_pm):
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return jsonify({"error": "Music cog not loaded"}), 500
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.create_task(music_cog.pause_for_web(guild_id))
-        print(f"[DEBUG][API] pause_for_web({guild_id}) demandé via web.")
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(music_cog.pause_for_web(guild_id))
+            loop.close()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
 
     # --- RESUME ---
@@ -138,10 +121,13 @@ def create_web_app(get_pm):
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return jsonify({"error": "Music cog not loaded"}), 500
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.create_task(music_cog.resume_for_web(guild_id))
-        print(f"[DEBUG][API] resume_for_web({guild_id}) demandé via web.")
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(music_cog.resume_for_web(guild_id))
+            loop.close()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
 
     # --- STOP ---
@@ -152,10 +138,13 @@ def create_web_app(get_pm):
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return jsonify({"error": "Music cog not loaded"}), 500
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.create_task(music_cog.stop_for_web(guild_id))
-        print(f"[DEBUG][API] stop_for_web({guild_id}) demandé via web.")
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(music_cog.stop_for_web(guild_id))
+            loop.close()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
 
     # --- SKIP ---
@@ -166,10 +155,13 @@ def create_web_app(get_pm):
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return jsonify({"error": "Music cog not loaded"}), 500
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.create_task(music_cog.skip_for_web(guild_id))
-        print(f"[DEBUG][API] skip_for_web({guild_id}) demandé via web.")
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(music_cog.skip_for_web(guild_id))
+            loop.close()
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
 
     # --- PLAYLIST GET ---
@@ -179,8 +171,11 @@ def create_web_app(get_pm):
         pm = app.get_pm(guild_id) if guild_id else None
         if not pm:
             return jsonify(queue=[], current=None)
-        # ⚡️ Correction : appelle la méthode async de manière synchrone
-        return jsonify(asyncio.run(pm.to_dict()))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(pm.to_dict())
+        loop.close()
+        return jsonify(result)
 
     # --- AUTOCOMPLETE ---
     @app.route("/autocomplete", methods=["GET"])
@@ -205,17 +200,18 @@ def create_web_app(get_pm):
         if not guild:
             return jsonify({"error": "guild not found"}), 404
         channels = [{"id": c.id, "name": c.name} for c in guild.text_channels]
-        print(f"[DEBUG][API] Text channels pour {guild.name}: {channels}")
         return jsonify(channels)
 
     # --- SOCKET.IO ---
     @socketio.on("connect")
     def ws_connect(auth=None):
-        # À la connexion, balance la playlist du 1er serveur (optionnel)
         guilds = app.bot.guilds
         if guilds:
             pm = app.get_pm(guilds[0].id)
-            emit("playlist_update", asyncio.run(pm.to_dict()))
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            emit("playlist_update", loop.run_until_complete(pm.to_dict()))
+            loop.close()
         print("[DEBUG][SocketIO] Nouvelle connexion web. Playlist envoyée !")
 
     return app, socketio
