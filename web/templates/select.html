@@ -30,6 +30,61 @@
         </form>
         <a href="/logout"><button>Déconnexion</button></a>
     </div>
+    <script>
+const guildSelect = document.getElementById("guild-select");
+const channelSelect = document.getElementById("channel-select");
+
+function dbg(...args) { console.log("[GREG.js][SELECT]", ...args); }
+
+function loadTextChannels(guildId) {
+    fetch(`/api/text_channels?guild_id=${guildId}`)
+        .then(r => r.json())
+        .then(chans => {
+            channelSelect.innerHTML = "";
+            chans.forEach(c => {
+                const opt = document.createElement("option");
+                opt.value = c.id;
+                opt.innerText = c.name;
+                channelSelect.appendChild(opt);
+            });
+            if (channelSelect.options.length)
+                channelSelect.selectedIndex = 0;
+            dbg("Salons textuels chargés:", chans);
+        });
+}
+
+if (guildSelect && channelSelect) {
+    guildSelect.addEventListener("change", function() {
+        loadTextChannels(guildSelect.value);
+    });
+    // Chargement initial pour la valeur par défaut (premier serveur)
+    if (guildSelect.value) {
+        loadTextChannels(guildSelect.value);
+    }
+}
+const submitBtn = document.querySelector("#select-form button[type='submit']");
+if (submitBtn) submitBtn.disabled = true;
+
+function loadTextChannels(guildId) {
+    fetch(`/api/text_channels?guild_id=${guildId}`)
+        .then(r => r.json())
+        .then(chans => {
+            channelSelect.innerHTML = "";
+            chans.forEach(c => {
+                const opt = document.createElement("option");
+                opt.value = c.id;
+                opt.innerText = c.name;
+                channelSelect.appendChild(opt);
+            });
+            submitBtn.disabled = !channelSelect.options.length;
+            if (channelSelect.options.length)
+                channelSelect.selectedIndex = 0;
+            dbg("Salons textuels chargés:", chans);
+        });
+}
+
+</script>
+
     <script src="{{ url_for('static', filename='greg.js') }}"></script>
 </body>
 </html>

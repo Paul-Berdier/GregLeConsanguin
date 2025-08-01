@@ -19,6 +19,8 @@ let currentGuildId = getUrlParam("guild_id");
 let currentChannelId = getUrlParam("channel_id");
 dbg("Init via URL params:", currentGuildId, currentChannelId);
 
+
+
 // === Autocomplétion dynamique ===
 const input = document.getElementById("music-input");
 const suggestions = document.getElementById("suggestions");
