@@ -55,8 +55,8 @@ def create_web_app(get_pm):
             # Correction ici : Création d'une event loop pour chaque accès async
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            playlist = loop.run_until_complete(pm.get_queue())
-            current = loop.run_until_complete(pm.get_current())
+            playlist = pm.get_queue()  # direct
+            current = pm.get_current()  # direct
             loop.close()
 
             return render_template(
