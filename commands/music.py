@@ -216,10 +216,18 @@ class Music(commands.Cog):
         if not guild:
             print("[Music] Serveur introuvable")
             return
+        guild = self.bot.get_guild(int(guild_id))
         member = guild.get_member(int(user_id))
+
         if not member or not member.voice or not member.voice.channel:
             print("[Music] Utilisateur non connecté en vocal ou introuvable")
             return
+
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            await member.voice.channel.connect()
+            print(f"[Music] Greg vient de rejoindre le vocal {member.voice.channel.name}")
+
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
         # Tu devrais pouvoir retrouver le titre à partir de l'URL (ou demander un titre côté web)
