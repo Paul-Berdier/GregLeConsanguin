@@ -3,6 +3,7 @@
 from flask import Blueprint, redirect, request, session, url_for
 import os
 import requests
+import sys
 
 oauth_bp = Blueprint('oauth', __name__)
 
@@ -24,10 +25,6 @@ def login():
     client_id = get_discord_client_id()
     redirect_uri = get_discord_redirect_uri()
 
-    # DEBUG
-    import sys
-    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")), file=sys.stderr)
-
     discord_auth_url = (
         f"{DISCORD_API_BASE_URL}/oauth2/authorize"
         f"?client_id={client_id}"
@@ -48,10 +45,6 @@ def callback():
     client_secret = get_discord_client_secret()
     redirect_uri = get_discord_redirect_uri()
 
-    # DEBUG
-    import sys
-    print("DEBUG ENV DISCORD_CLIENT_SECRET:", repr(os.environ.get("DISCORD_CLIENT_SECRET")), file=sys.stderr)
-    print("DEBUG PY DISCORD_CLIENT_SECRET:", repr(client_secret), file=sys.stderr)
 
     data = {
         "client_id": client_id,
