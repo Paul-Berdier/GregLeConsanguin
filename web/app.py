@@ -210,10 +210,7 @@ def create_web_app(get_pm):
         guilds = app.bot.guilds
         if guilds:
             pm = app.get_pm(guilds[0].id)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            emit("playlist_update", loop.run_until_complete(pm.to_dict()))
-            loop.close()
+            emit("playlist_update", pm.to_dict())  # <-- Plus de run_until_complete, c’est synchrone !
         print("[DEBUG][SocketIO] Nouvelle connexion web. Playlist envoyée !")
 
     return app, socketio
