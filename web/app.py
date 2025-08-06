@@ -99,7 +99,7 @@ def create_web_app(get_pm):
             loop.run_until_complete(music_cog.play_for_user(guild_id, user_id, {"title": title, "url": url}))
             pm = app.get_pm(guild_id)
             print("[DEBUG][API_PLAY] Emission de la playlist via socketio.emit")
-            socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
+            socketio.emit("playlist_update", pm.to_dict())
             loop.close()
             print("[DEBUG][API_PLAY] Succès /api/play")
         except Exception as e:

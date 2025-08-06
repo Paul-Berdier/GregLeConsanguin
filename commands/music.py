@@ -27,7 +27,7 @@ class Music(commands.Cog):
         if self.emit_fn:
             pm = self.get_pm(guild_id)
             print(f"[Music][EMIT] Emission playlist_update pour {guild_id}")
-            self.emit_fn("playlist_update", pm.to_dict(), broadcast=True)
+            self.emit_fn("playlist_update", pm.to_dict())
 
     def detect_ffmpeg(self):
         FFMPEG_PATHS = [
