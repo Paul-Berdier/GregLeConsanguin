@@ -1,3 +1,5 @@
+# web/app.py
+
 from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
 from web.oauth import oauth_bp

@@ -1,8 +1,8 @@
+# playlist_manager.py
+
 import os
 import json
-from threading import Lock
-
-playlist_lock = Lock()
+from threading import RLock  # <--- AU LIEU DE Lock
 
 class PlaylistManager:
     """
@@ -15,10 +15,11 @@ class PlaylistManager:
         self.guild_id = str(guild_id)
         self.file = os.path.join(os.path.dirname(__file__), f"playlist_{self.guild_id}.json")
         self.queue = []
+        self.lock = RLock()  # <--- ICI !!!
         self.reload()
 
     def reload(self):
-        with playlist_lock:
+        with self.lock:
             if not os.path.exists(self.file):
                 self.queue = []
                 self.save()
@@ -32,40 +33,40 @@ class PlaylistManager:
                     self.queue = []
 
     def save(self):
-        with playlist_lock:
+        with self.lock:
             with open(self.file, "w") as f:
                 json.dump(self.queue, f)
             print(f"[PlaylistManager {self.guild_id}] Playlist sauvegardée ({len(self.queue)} sons)")
 
     def add(self, url):
-        with playlist_lock:
+        with self.lock:
             self.queue.append(url)
             self.save()
             print(f"[PlaylistManager {self.guild_id}] Ajouté: {url}")
 
     def skip(self):
-        with playlist_lock:
+        with self.lock:
             if self.queue:
                 skipped = self.queue.pop(0)
                 print(f"[PlaylistManager {self.guild_id}] Skip: {skipped}")
             self.save()
 
     def stop(self):
-        with playlist_lock:
+        with self.lock:
             self.queue = []
             self.save()
             print(f"[PlaylistManager {self.guild_id}] Playlist vidée (stop)")
 
     def get_queue(self):
-        with playlist_lock:
+        with self.lock:
             return list(self.queue)
 
     def get_current(self):
-        with playlist_lock:
+        with self.lock:
             return self.queue[0] if self.queue else None
 
     def to_dict(self):
-        with playlist_lock:
+        with self.lock:
             return {
                 "queue": list(self.queue),
                 "current": self.queue[0] if self.queue else None

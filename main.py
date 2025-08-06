@@ -1,3 +1,5 @@
+# main.py
+
 print("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
 import os

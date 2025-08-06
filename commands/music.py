@@ -1,3 +1,5 @@
+# commands/music.py
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -30,7 +32,7 @@ class Music(commands.Cog):
             self.emit_fn("playlist_update", pm.to_dict(), broadcast=True)
 
     def detect_ffmpeg(self):
-        FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "ffmpeg"]
+        FFMPEG_PATHS = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "ffmpeg", r"D:\Paul Berdier\ffmpeg\bin\ffmpeg.exe"]
         for path in FFMPEG_PATHS:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 print(f"🔥 FFmpeg détecté : {path}")
