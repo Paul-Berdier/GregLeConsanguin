@@ -21,20 +21,19 @@
             <a href="/select"><button>⇦ Changer de serveur/salon</button></a>
         </div>
 
-        <form id="play-form" autocomplete="off" style="margin-top:18px;">
+        <form id="play-form" autocomplete="off" style="margin-top:18px; position:relative;">
             <input id="music-input" type="text" placeholder="Colle une URL ou cherche un son..." autocomplete="off" />
             <div id="suggestions" class="suggestions"></div>
-            <button type="submit" id="play-btn">🎵 Joue ça, Greg</button>
+            <button type="submit" id="play-btn" title="Ajouter dans la playlist"><span>🎵</span> Joue ça, Greg</button>
         </form>
 
         <div id="play-error" style="color:#e84c4c;display:none;margin:8px 0;"></div>
 
         <div class="controls">
-            <button data-action="play">Play</button>
-            <button data-action="pause">Pause</button>
-            <button data-action="resume">Resume</button>
-            <button data-action="skip">Skip</button>
-            <button data-action="stop">Stop</button>
+            <button data-action="play" title="Rejouer la dernière musique"><span>▶️</span></button>
+            <button id="pause-resume-btn" data-action="pause" title="Pause"><span>⏸️</span></button>
+            <button data-action="skip" title="Musique suivante"><span>⏭️</span></button>
+            <button data-action="stop" title="Arrêter la musique"><span>⏹️</span></button>
         </div>
 
         <div class="current-song" id="current-song"></div>
@@ -55,101 +54,6 @@
         <a href="/logout"><button>Déconnexion</button></a>
     </div>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script>
-    // == JS gestion panel Greg ==
-    const playForm = document.getElementById('play-form');
-    const playBtn = document.getElementById('play-btn');
-    const input = document.getElementById('music-input');
-    const playlistUl = document.getElementById('playlist-ul');
-    const playError = document.getElementById('play-error');
-
-    // Utilisé pour empêcher le spam Play
-    let isPlayingRequest = false;
-
-    playForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        if (isPlayingRequest) return;
-        const value = input.value.trim();
-        if (!value) return;
-
-        playError.style.display = "none";
-        playBtn.disabled = true;
-        isPlayingRequest = true;
-
-        // On tente d’autocompléter pour récupérer titre + url
-        let item = {title: value, url: value}; // fallback : si c’est une URL
-        try {
-            const res = await fetch(`/autocomplete?q=${encodeURIComponent(value)}`);
-            const json = await res.json();
-            if (json.results && json.results.length > 0) {
-                item = json.results[0]; // On prend le meilleur résultat
-            }
-        } catch {}
-
-        // Optimiste : on affiche direct dans la playlist (sera refresh ensuite via socket)
-        addTrackToPlaylist(item);
-
-        try {
-            const payload = {
-                title: item.title,
-                url: item.url,
-                guild_id: window.GUILD_ID,
-                user_id: window.USER_ID
-            };
-            const res = await fetch("/api/play", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(payload)
-            });
-            const resp = await res.json();
-            if (!res.ok) throw resp.error || "Erreur API";
-
-        } catch (err) {
-            playError.style.display = "";
-            playError.innerText = "Erreur : " + (err || "Impossible d’ajouter ce son");
-        }
-
-        input.value = "";
-        playBtn.disabled = false;
-        isPlayingRequest = false;
-    });
-
-    // Ajoute un morceau à la playlist affichée (optimiste)
-    function addTrackToPlaylist(item) {
-        const li = document.createElement("li");
-        li.innerHTML = `<a href="${item.url}" target="_blank">${item.title}</a>`;
-        playlistUl.appendChild(li);
-    }
-
-    // Mets à jour la playlist depuis le serveur (via socket)
-    function updatePlaylist(tracks) {
-        playlistUl.innerHTML = "";
-        if (!tracks || tracks.length === 0) {
-            playlistUl.innerHTML = `<p><em>La playlist est vide. Comme votre inspiration.</em></p>`;
-            return;
-        }
-        for (const item of tracks) {
-            addTrackToPlaylist(item);
-        }
-    }
-
-    // Mets à jour le morceau en cours
-    function updateCurrent(current) {
-        const div = document.getElementById("current-song");
-        if (current) {
-            div.innerHTML = `🎧 En lecture : <a href="${current.url}" target="_blank">${current.title}</a>`;
-        } else {
-            div.innerHTML = "";
-        }
-    }
-
-    // == Socket.IO ==
-    const socket = io();
-    socket.on("playlist_update", function(data) {
-        updatePlaylist(data.queue || []);
-        updateCurrent(data.current);
-    });
-
-    </script>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
 </body>
 </html>
