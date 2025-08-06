@@ -1,3 +1,5 @@
+# commands/music.py
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -87,7 +89,6 @@ class Music(commands.Cog):
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
             idx = int(reply.content) - 1
             selected = results[idx]
-            # La plupart du temps, 'webpage_url' est l'URL à ouvrir/publique, 'url' est l'API stream.
             await self.add_to_queue(interaction, {
                 "title": selected.get("title", "Titre inconnu"),
                 "url": selected.get("webpage_url", selected.get("url"))
@@ -210,15 +211,13 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("❌ *Rien en cours. Profitez du silence, il vous va si bien.*")
 
-    async def play_for_user(self, guild_id, user_id, url):
-        print(f"[DEBUG][MUSIC] play_for_user: guild_id={guild_id}, user_id={user_id}, url={url}")
+    async def play_for_user(self, guild_id, user_id, item):
+        print(f"[DEBUG][MUSIC] play_for_user: guild_id={guild_id}, user_id={user_id}, item={item}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
             print("[Music] Serveur introuvable")
             return
-        guild = self.bot.get_guild(int(guild_id))
         member = guild.get_member(int(user_id))
-
         if not member or not member.voice or not member.voice.channel:
             print("[Music] Utilisateur non connecté en vocal ou introuvable")
             return
@@ -230,8 +229,7 @@ class Music(commands.Cog):
 
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
-        # Tu devrais pouvoir retrouver le titre à partir de l'URL (ou demander un titre côté web)
-        await loop.run_in_executor(None, pm.add, {"title": url, "url": url})
+        await loop.run_in_executor(None, pm.add, item)  # Ajoute le bon dict {title, url}
         class FakeInteraction:
             def __init__(self, guild): self.guild = guild; self.followup = self
             async def send(self, msg): print("[FakeInteraction]", msg)
