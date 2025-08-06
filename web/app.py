@@ -1,5 +1,3 @@
-# web/app.py
-
 from flask import Flask, render_template, request, redirect, jsonify, session
 from flask_socketio import SocketIO, emit
 from web.oauth import oauth_bp
@@ -57,8 +55,8 @@ def create_web_app(get_pm):
             # Correction ici : Création d'une event loop pour chaque accès async
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            playlist = pm.get_queue()  # direct
-            current = pm.get_current()  # direct
+            playlist = pm.get_queue()  # direct, pas async
+            current = pm.get_current()  # direct, pas async
             loop.close()
 
             return render_template(
@@ -74,26 +72,39 @@ def create_web_app(get_pm):
             import traceback
             return f"Erreur interne côté Greg :<br><pre>{e}\n{traceback.format_exc()}</pre>", 500
 
-    # --- PLAY ---
+    # --- PLAY (corrigé) ---
     @app.route("/api/play", methods=["POST"])
     def api_play():
         data = request.json or request.form
-        url = data.get("url")
+        title = data.get("title")  # <-- On récupère bien le titre
+        url = data.get("url")      # <-- ... et l'URL
         guild_id = data.get("guild_id")
-        user_id = data.get("user_id")  # <- c'est LUI qu'il faut passer
+        user_id = data.get("user_id")
+        print(f"[DEBUG][API_PLAY] Reçu : title={title}, url={url}, guild_id={guild_id}, user_id={user_id}")
+
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
+            print("[ERROR] Music cog non chargé")
             return jsonify(error="music_cog missing"), 500
+
+        if not url or not title:
+            print("[ERROR] Titre ou URL manquants")
+            return jsonify(error="url or title missing"), 400
 
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(music_cog.play_for_user(guild_id, user_id, url))
+            # Passe un dict {"title": ..., "url": ...} à play_for_user
+            print(f"[DEBUG][API_PLAY] Appel à play_for_user avec track={{'title': '{title}', 'url': '{url}'}}")
+            loop.run_until_complete(music_cog.play_for_user(guild_id, user_id, {"title": title, "url": url}))
             pm = app.get_pm(guild_id)
-            socketio.emit("playlist_update", loop.run_until_complete(pm.to_dict()), broadcast=True)
+            print("[DEBUG][API_PLAY] Emission de la playlist via socketio.emit")
+            socketio.emit("playlist_update", pm.to_dict(), broadcast=True)
             loop.close()
+            print("[DEBUG][API_PLAY] Succès /api/play")
         except Exception as e:
             import traceback
+            print(f"[ERROR][API_PLAY] Exception : {e}")
             return jsonify(error=str(e), trace=traceback.format_exc()), 500
 
         return jsonify(ok=True)
@@ -175,7 +186,7 @@ def create_web_app(get_pm):
             return jsonify(queue=[], current=None)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(pm.to_dict())
+        result = pm.to_dict()  # Sûr, car to_dict n'est pas async !
         loop.close()
         return jsonify(result)
 
@@ -188,7 +199,8 @@ def create_web_app(get_pm):
         from extractors import get_search_module
         extractor = get_search_module("soundcloud")
         results = extractor.search(query)
-        suggestions = [{"title": r["title"], "url": r["url"]} for r in results][:5]
+        # On propose un dict avec titre et url
+        suggestions = [{"title": r["title"], "url": r.get("webpage_url") or r.get("url")} for r in results][:5]
         return {"results": suggestions}
 
     # --- TEXT CHANNELS POUR SELECT ---
@@ -210,7 +222,7 @@ def create_web_app(get_pm):
         guilds = app.bot.guilds
         if guilds:
             pm = app.get_pm(guilds[0].id)
-            emit("playlist_update", pm.to_dict())  # <-- Plus de run_until_complete, c’est synchrone !
+            emit("playlist_update", pm.to_dict())
         print("[DEBUG][SocketIO] Nouvelle connexion web. Playlist envoyée !")
 
     return app, socketio
