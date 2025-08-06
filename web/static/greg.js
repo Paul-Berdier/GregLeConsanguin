@@ -10,6 +10,7 @@ const playBtn = document.getElementById('play-btn');
 const playlistUl = document.getElementById('playlist-ul');
 const playError = document.getElementById('play-error');
 const currentSongDiv = document.getElementById('current-song');
+const pauseResumeBtn = document.getElementById("pause-resume-btn");
 
 const currentUserId = window.USER_ID;
 const currentGuildId = window.GUILD_ID;
@@ -160,7 +161,7 @@ function updatePlaylist(tracks) {
 
 // Mets à jour le morceau en cours
 function updateCurrent(current) {
-    if (current) {
+    if (current && current.url) {
         currentSongDiv.innerHTML = `🎧 En lecture : <a href="${current.url}" target="_blank">${current.title}</a>`;
         document.querySelector('.greg-face')?.classList.add('playing');
     } else {
@@ -169,54 +170,57 @@ function updateCurrent(current) {
     }
 }
 
-const pauseResumeBtn = document.getElementById("pause-resume-btn");
-let isPaused = false; // état local du player (a synchroniser si besoin avec le bot !)
+// --- Pause/Resume bouton unique ---
+let isPaused = false; // local state
 
-pauseResumeBtn.addEventListener("click", function(e) {
-    e.preventDefault();
-    if (!currentGuildId) return alert("Choisis un serveur !");
-    pauseResumeBtn.disabled = true;
+if (pauseResumeBtn) {
+    pauseResumeBtn.addEventListener("click", function(e) {
+        e.preventDefault();
+        if (!currentGuildId) return alert("Choisis un serveur !");
+        pauseResumeBtn.disabled = true;
 
-    const action = isPaused ? "resume" : "pause";
-    fetch(`/api/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            guild_id: currentGuildId,
-            user_id: currentUserId
-        })
-    }).finally(() => setTimeout(() => { pauseResumeBtn.disabled = false; }, 500));
+        const action = isPaused ? "resume" : "pause";
+        fetch(`/api/${action}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                guild_id: currentGuildId,
+                user_id: currentUserId
+            })
+        }).finally(() => setTimeout(() => { pauseResumeBtn.disabled = false; }, 500));
 
-    // Switch local
-    isPaused = !isPaused;
-    updatePauseResumeBtn();
-});
+        // Switch local (MAIS idéalement, on attend le retour socket pour le vrai état)
+        isPaused = !isPaused;
+        updatePauseResumeBtn();
+    });
 
-function updatePauseResumeBtn() {
-    if (isPaused) {
-        pauseResumeBtn.setAttribute("data-action", "resume");
-        pauseResumeBtn.title = "Reprendre";
-        pauseResumeBtn.innerHTML = "<span>▶️</span>";
-    } else {
-        pauseResumeBtn.setAttribute("data-action", "pause");
-        pauseResumeBtn.title = "Pause";
-        pauseResumeBtn.innerHTML = "<span>⏸️</span>";
+    function updatePauseResumeBtn() {
+        if (isPaused) {
+            pauseResumeBtn.setAttribute("data-action", "resume");
+            pauseResumeBtn.title = "Reprendre";
+            pauseResumeBtn.innerHTML = "<span>▶️</span>";
+        } else {
+            pauseResumeBtn.setAttribute("data-action", "pause");
+            pauseResumeBtn.title = "Pause";
+            pauseResumeBtn.innerHTML = "<span>⏸️</span>";
+        }
     }
 }
-
-
 
 // == Socket.IO ==
 const socket = io();
 socket.on("playlist_update", function(data) {
     updatePlaylist(data.queue || []);
     updateCurrent(data.current);
-    isPaused = !!data.is_paused; // <-- à condition que ton backend l'envoie !
-    updatePauseResumeBtn();
+    if (typeof data.is_paused !== "undefined") {
+        isPaused = !!data.is_paused;
+        if (pauseResumeBtn) updatePauseResumeBtn();
+    }
 });
 
 // --- Contrôles AJAX musicaux, ergonomiques ---
 document.querySelectorAll(".controls button").forEach(btn => {
+    if (btn.id === "pause-resume-btn") return; // délégué plus haut
     btn.addEventListener("click", function(e) {
         e.preventDefault();
         const action = this.dataset.action;

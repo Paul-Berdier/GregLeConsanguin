@@ -272,6 +272,61 @@ class Music(commands.Cog):
         self.emit_playlist_update(guild_id)
         return True
 
+    async def skip_for_web(self, guild_id):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            print("[Music] Guild introuvable pour skip")
+            return
+
+        class FakeInteraction:
+            def __init__(self, guild): self.guild = guild; self.followup = self
+
+            async def send(self, msg): print("[FakeInteraction]", msg)
+
+            async def response(self): pass
+
+        await self.skip(FakeInteraction(guild))
+
+    async def stop_for_web(self, guild_id):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            print("[Music] Guild introuvable pour stop")
+            return
+
+        class FakeInteraction:
+            def __init__(self, guild): self.guild = guild; self.followup = self
+
+            async def send(self, msg): print("[FakeInteraction]", msg)
+
+            async def response(self): pass
+
+        await self.stop(FakeInteraction(guild))
+
+    async def pause_for_web(self, guild_id):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            print("[Music] Guild introuvable pour pause")
+            return
+        vc = guild.voice_client
+        if vc and vc.is_playing():
+            vc.pause()
+            print("[Music] Pause demandée par le webpanel.")
+        else:
+            print("[Music] Rien à pause en vocal.")
+
+    async def resume_for_web(self, guild_id):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            print("[Music] Guild introuvable pour resume")
+            return
+        vc = guild.voice_client
+        if vc and vc.is_paused():
+            vc.resume()
+            print("[Music] Resume demandée par le webpanel.")
+        else:
+            print("[Music] Rien à resume en vocal.")
+
+
 async def setup(bot, emit_fn=None):
     await bot.add_cog(Music(bot, emit_fn))
     print("✅ Cog 'Music' chargé avec slash commands.")
