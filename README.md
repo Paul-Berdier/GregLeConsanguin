@@ -57,23 +57,22 @@ Voici la liste de toutes les tortures sonores et autres joyeusetés que Greg est
 
 GregLeConsanguin/
 │
-├── main.py                   # Point d'entrée (démarre Discord + serveur web/socketio)
-├── playlist\_manager.py       # Logique centralisée de playlist (thread-safe)
-├── bot\_socket.py             # Client SocketIO du bot Discord (synchro temps réel)
+├── main.py                   # Point d'entrée : lance Discord et le serveur web/SocketIO
+├── playlist_manager.py       # Gestion centralisée de la playlist (thread‑safe)
 │
 ├── commands/                 # Toutes les cogs Discord
 │   ├── music.py
 │   ├── voice.py
-│   └── ...
+│   └── …
 │
-├── extractors/               # Modules pour chaque source musicale (SoundCloud…)
+├── extractors/               # Modules pour chaque source musicale
 │   ├── soundcloud.py
-│   └── ...
-│
-├── playlist.json             # Playlist unique (la vérité !)
+│   ├── youtube.py            # Peut être temporairement indisponible selon les restrictions YouTube
+│   └── …
 │
 ├── web/
 │   ├── app.py                # Flask + SocketIO (API et interface web)
+│   ├── oauth.py              # Authentification OAuth2 avec Discord
 │   ├── static/
 │   │   ├── style.css
 │   │   ├── greg.js
@@ -81,10 +80,13 @@ GregLeConsanguin/
 │   │       └── greg.jpg
 │   └── templates/
 │       ├── index.html
-│       └── search\_results.html
+│       ├── select.html
+│       ├── panel.html
+│       └── search_results.html
 │
-├── .env                      # (optionnel) Token Discord & autres secrets
-├── requirements.txt          # Toutes les dépendances Python
+├── config.py                 # Charge les variables d’environnement (via dotenv)
+├── requirements.txt          # Dépendances Python épinglées
+├── youtube.com_cookies.txt   # (optionnel) Cookies bruts pour YouTube (voir section dédiée)
 └── README.md                 # Ce fichier
 
 ```
@@ -195,27 +197,32 @@ Chaque source musicale (SoundCloud…) a son propre module Python :
 
 ## 🧑‍💻 Dépendances requises
 
-Dans `requirements.txt` :
+Le fichier `requirements.txt` contient des versions **épinglées** afin de garantir
+une installation reproductible. Par exemple, au 4 mars 2025, `discord.py` en
+version 2.5.2 est le dernier SDK stable publié sur PyPI et supporte la voix.
 
+Pour installer toutes les dépendances, exécutez :
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
-discord.py==2.5.2 # petit probleme sur la derniére maj, il faut le git clone
-openai
-yt-dlp
-ffmpeg-python
-numpy>=2.2.0
-gtts
-python-dotenv
-transformers
-huggingface\_hub
-torch
-PyNaCl
-flask
-flask-socketio
-python-socketio\[client]
-requests
+Les principales dépendances sont :
 
-```
+- **`discord.py[voice]`** : wrapper Discord asynchrone utilisé par le bot ;
+- **`flask`** et **`flask-socketio`** : API et interface web en temps réel ;
+- **`python-socketio[client]`** : client Socket.IO du côté bot pour écouter les
+  mises à jour du serveur web ;
+- **`yt-dlp`** et **`ffmpeg-python`** : extraction et conversion des flux audio ;
+- **`numpy`**, **`gtts`**, **`transformers`**, **`huggingface_hub`**, **`torch`** :
+  dépendances pour les extensions IA et la commande vocale `!ask` (facultatif) ;
+- **`python-dotenv`** : chargement des variables d’environnement à partir d’un
+  fichier `.env` ;
+- **`requests`** : requêtes HTTP pour l’authentification OAuth2 et les APIs.
+
+Le fichier `requirements.txt` spécifie les versions recommandées de chaque
+package. Pensez à le mettre à jour régulièrement et à tester après chaque
+upgrade.
 
 ---
 

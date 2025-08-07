@@ -9,6 +9,7 @@ import socket
 import discord
 from discord.ext import commands
 from playlist_manager import PlaylistManager
+from pathlib import Path
 
 from web.app import create_web_app
 import config
@@ -22,6 +23,25 @@ def get_pm(guild_id):
         playlist_managers[guild_id] = PlaylistManager(guild_id)
         print(f"[DEBUG][main.py] Nouvelle instance PlaylistManager pour guild {guild_id}")
     return playlist_managers[guild_id]
+
+# -------------------------------------------------------------
+# Setup of runtime directories
+#
+# As a convenience for development and deployment, we ensure
+# that commonly used filesystem locations exist before the bot
+# starts.  In particular the extractors write downloaded media
+# files into a `downloads/` directory.  Without creating this
+# directory ahead of time, yt-dlp will raise an exception when
+# attempting to write files (e.g. ``FileNotFoundError: [Errno 2]
+# No such file or directory: 'downloads/greg_audio.mp3'``).  A
+# senior developer would ensure that such prerequisites are
+# satisfied at startup rather than relying on implicit
+# behaviour deep in third‑party libraries.
+# -------------------------------------------------------------
+
+# Create a downloads directory if it does not already exist.
+DOWNLOADS_DIR = Path(__file__).parent / "downloads"
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
