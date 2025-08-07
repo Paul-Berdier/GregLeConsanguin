@@ -1,0 +1,6 @@
+discord.py[voice]
+Flask
+Flask-SocketIO
+eventlet
+yt-dlp
+python-dotenv

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Panneau – Greg le Consanguin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script>
+      // Inject context variables for the JS
+      window.USER_ID = "{{ user['id'] }}";
+      window.GUILD_ID = "{{ guild_id }}";
+      window.CHANNEL_ID = "{{ channel_id }}";
+    </script>
+</head>
+<body>
+    <div class="container">
+        <!-- Use a dark abstract placeholder image for Greg. -->
+        <img src="{{ url_for('static', filename='assets/greg.png') }}" alt="Greg le Consanguin" class="greg-face">
+        <h1>Panneau de Greg le Consanguin</h1>
+        <p class="sarcasme">
+            Vous voilà ici... on ne vous a jamais dit d’avoir meilleur goût ?
+        </p>
+        <div style="text-align: right;">
+            <a href="/select"><button>⇦ Changer de serveur/salon</button></a>
+        </div>
+
+        <form id="play-form" autocomplete="off" style="margin-top:18px; position:relative;">
+            <input id="music-input" type="text" placeholder="Colle une URL ou cherche un son..." autocomplete="off" />
+            <div id="suggestions" class="suggestions"></div>
+            <button type="submit" id="play-btn" title="Ajouter dans la playlist"><span>🎵</span> Joue ça, Greg</button>
+        </form>
+
+        <div id="play-error" style="color:#e84c4c;display:none;margin:8px 0;"></div>
+
+        <div class="controls">
+            <button data-action="play" title="Rejouer la dernière musique"><span>▶️</span></button>
+            <button id="pause-resume-btn" data-action="pause" title="Pause"><span>⏸️</span></button>
+            <button data-action="skip" title="Musique suivante"><span>⏭️</span></button>
+            <button data-action="stop" title="Arrêter la musique"><span>⏹️</span></button>
+        </div>
+
+        <div class="current-song" id="current-song">
+            {% if current %}
+                🎧 En lecture : <a href="{{ current.url }}" target="_blank">{{ current.title }}</a>
+            {% endif %}
+        </div>
+        <div class="playlist">
+            <h2>Playlist en attente</h2>
+            <ul id="playlist-ul">
+                {% if playlist %}
+                    {% for song in playlist %}
+                        <li>
+                            <a href="{{ song.url }}" target="_blank">{{ song.title }}</a>
+                        </li>
+                    {% endfor %}
+                {% else %}
+                    <p><em>La playlist est vide. Comme votre inspiration.</em></p>
+                {% endif %}
+            </ul>
+        </div>
+        <a href="/logout"><button>Déconnexion</button></a>
+    </div>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
+</body>
+</html>

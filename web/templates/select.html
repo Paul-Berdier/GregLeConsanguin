@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Choisir un serveur – Greg le Consanguin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <img src="{{ url_for('static', filename='assets/greg.jpg') }}" alt="Greg le Consanguin" class="greg-face">
+        <h1>Sélectionnez un serveur et un salon</h1>
+        {% if not guilds %}
+            <p>Aucun serveur disponible.</p>
+        {% else %}
+            <form id="select-form">
+                <label for="guild-select">Serveur :</label><br>
+                <select id="guild-select" name="guild_id" required>
+                    <option value="" disabled selected>Choisir…</option>
+                    {% for g in guilds %}
+                        <option value="{{ g.id }}">{{ g.name }}</option>
+                    {% endfor %}
+                </select><br><br>
+                <label for="channel-select">Salon texte :</label><br>
+                <select id="channel-select" name="channel_id" required>
+                    <option value="" disabled selected>Choisir…</option>
+                </select><br><br>
+                <button type="submit">Continuer</button>
+            </form>
+        {% endif %}
+    </div>
+    <script src="{{ url_for('static', filename='greg.js') }}"></script>
+    <script>
+        // Load channels when a guild is selected
+        const guildSelect = document.getElementById('guild-select');
+        const channelSelect = document.getElementById('channel-select');
+        if (guildSelect) {
+            guildSelect.addEventListener('change', () => {
+                const gid = guildSelect.value;
+                fetch(`/api/text_channels?guild_id=${gid}`)
+                    .then(res => res.json())
+                    .then(channels => {
+                        channelSelect.innerHTML = '<option value="" disabled selected>Choisir…</option>';
+                        channels.forEach(ch => {
+                            const opt = document.createElement('option');
+                            opt.value = ch.id;
+                            opt.textContent = ch.name;
+                            channelSelect.appendChild(opt);
+                        });
+                    });
+            });
+        }
+        // Submit form to panel page
+        const form = document.getElementById('select-form');
+        if (form) {
+            form.addEventListener('submit', e => {
+                e.preventDefault();
+                const gid = guildSelect.value;
+                const cid = channelSelect.value;
+                if (gid && cid) {
+                    window.location.href = `/panel?guild_id=${gid}&channel_id=${cid}`;
+                }
+            });
+        }
+    </script>
+</body>
+</html>
