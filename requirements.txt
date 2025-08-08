@@ -1,15 +1,10 @@
 # discord.py==2.5.2  Pas encore à jour
-openai
 yt-dlp
 ffmpeg-python
 numpy>=2.2.0
 gtts
 python-dotenv
-transformers
-huggingface_hub
-torch
 PyNaCl
-flask
-flask-socketio       # <--- Ajoute-le !
 python-socketio[client]  # <--- Et celui-là aussi !
 requests
+PySide6

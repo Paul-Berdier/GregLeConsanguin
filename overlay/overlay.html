@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Greg Overlay</title>
+<link rel="stylesheet" href="/static/overlay.css">
+</head>
+<body>
+    <div id="current">Chargement...</div>
+    <div id="controls">
+        <button onclick="sendCmd('skip')">⏭</button>
+        <button onclick="sendCmd('pause')">⏸</button>
+        <button onclick="sendCmd('resume')">▶️</button>
+        <button onclick="sendCmd('stop')">⏹</button>
+    </div>
+<script>
+const ws = new WebSocket(`ws://${location.host}/ws`);
+
+ws.onmessage = (msg) => {
+    const data = JSON.parse(msg.data);
+    if(data.event === "playlist_update") {
+        document.getElementById("current").textContent =
+            data.data.current ? data.data.current.title : "Rien en lecture";
+    }
+};
+
+function sendCmd(cmd) {
+    ws.send(JSON.stringify({command: cmd}));
+}
+</script>
+</body>
+</html>

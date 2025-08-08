@@ -1,77 +1,62 @@
 # main.py
-
-print("=== DÉMARRAGE GREG LE CONSANGUIN ===")
-
 import os
-import threading
-import time
-import socket
+import asyncio
 import discord
 from discord.ext import commands
-from playlist_manager import PlaylistManager
 
-from web.app import create_web_app
-import config
+import config  # doit contenir DISCORD_TOKEN
+from overlay.server import OverlayServer
 
-# --------- PlaylistManager multi-serveur (la seule source de vérité) -----------
-playlist_managers = {}  # {guild_id: PlaylistManager}
-
-def get_pm(guild_id):
-    guild_id = str(guild_id)
-    if guild_id not in playlist_managers:
-        playlist_managers[guild_id] = PlaylistManager(guild_id)
-        print(f"[DEBUG][main.py] Nouvelle instance PlaylistManager pour guild {guild_id}")
-    return playlist_managers[guild_id]
-
-# ===== Discord bot setup =====
+# ========= Discord setup =========
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== Crée l'app Flask + SocketIO, lie l'accès à get_pm et le bot =====
-app, socketio = create_web_app(get_pm)
-app.bot = bot
+overlay = OverlayServer()  # HTTP + WebSocket overlay
 
-def run_web():
-    print("[DEBUG][main.py] Lancement du serveur Flask/SocketIO…")
-    socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+async def load_basic_cogs():
+    """
+    Charge les cogs standards via l'extension loader.
+    On NE charge PAS music ici, car on doit lui passer overlay.broadcast.
+    """
+    for ext in ("commands.general", "commands.voice"):
+        try:
+            await bot.load_extension(ext)
+            print(f"✅ Extension chargée : {ext}")
+        except Exception as e:
+            print(f"❌ Erreur chargement {ext} : {e}")
 
-# ===== Chargement dynamique des Cogs Discord =====
-async def load_cogs():
-    print("[DEBUG][main.py] Chargement des Cogs…")
-    for filename in os.listdir("./commands"):
-        if filename.endswith(".py") and filename != "__init__.py":
-            extension = f"commands.{filename[:-3]}"
-            try:
-                await bot.load_extension(extension)
-                print(f"✅ Cog chargé : {extension}")
-            except Exception as e:
-                print(f"❌ Erreur chargement {extension} : {e}")
+async def load_music_cog():
+    """
+    Charge la cog Music en lui injectant la fonction d'émission overlay.
+    """
+    from commands.music import Music
+    try:
+        await bot.add_cog(Music(bot, overlay_emit=overlay.broadcast))
+        print("✅ Cog 'Music' chargée (overlay connecté).")
+    except Exception as e:
+        print(f"❌ Erreur chargement cog Music : {e}")
 
 @bot.event
 async def on_ready():
-    print("====== EVENT on_ready() ======")
-    print("Utilisateur bot :", bot.user)
-    print("Serveurs :", [g.name for g in bot.guilds])
-    print("Slash commands globales :", [cmd.name for cmd in await bot.tree.fetch_commands()])
-    await load_cogs()
+    # Démarre l'overlay server (Railway fournit $PORT)
+    port = int(os.getenv("PORT", "8080"))
+    asyncio.create_task(overlay.start(host="0.0.0.0", port=port))
+
+    await load_basic_cogs()
+    await load_music_cog()
+
     await bot.tree.sync()
-    print("Slash commands sync DONE !")
+    print(f"👑 Greg le Consanguin est en ligne en tant que {bot.user} — prêt à gémir.")
 
+def ensure_dirs():
+    os.makedirs("downloads", exist_ok=True)
 
-# ===== Attente que le serveur web réponde =====
-def wait_for_web():
-    for i in range(15):
-        try:
-            s = socket.create_connection(("localhost", 3000), 1)
-            s.close()
-            print("[DEBUG][main.py] Serveur web prêt, on peut lancer Greg.")
-            return
-        except Exception:
-            time.sleep(1)
-    raise SystemExit("[FATAL] Serveur web jamais prêt !")
-
-# ===== Lancement combiné Discord + Web =====
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
-    wait_for_web()
-    bot.run(config.DISCORD_TOKEN)
+    ensure_dirs()
+
+    token = getattr(config, "DISCORD_TOKEN", None) or os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN manquant (config.py ou variable d'env).")
+
+    # Railway: pas d’apt-get ici, tu installes ffmpeg dans l’image/Dockerfile si besoin.
+    bot.run(token)
