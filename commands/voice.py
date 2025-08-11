@@ -27,11 +27,13 @@ class Voice(commands.Cog):
             if interaction.guild.voice_client is None:
                 await channel.connect(timeout=10)
                 await interaction.response.send_message(
-                    f"👑 *Greg le Consanguin daigne honorer **{channel.name}** de sa présence...* Que ce lieu miteux soit à la hauteur de mon noble mépris.")
+                    f"👑 *Greg le Consanguin daigne honorer **{channel.name}** de sa présence...* Que ce lieu miteux soit à la hauteur de mon noble mépris."
+                )
             else:
                 await interaction.guild.voice_client.move_to(channel)
                 await interaction.response.send_message(
-                    f"👑 *Majesté, Greg est à vos pieds et change de crasseux taudis pour **{channel.name}**. Que le destin me vienne en aide...*")
+                    f"👑 *Majesté, Greg est à vos pieds et change de crasseux taudis pour **{channel.name}**. Que le destin me vienne en aide...*"
+                )
             if self.emit_fn:
                 self.emit_fn("vocal_event", {"guild_id": interaction.guild.id, "action": "join", "channel": channel.name})
         except asyncio.TimeoutError:

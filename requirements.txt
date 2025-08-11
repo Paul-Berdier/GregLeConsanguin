@@ -12,3 +12,4 @@ requests
 
 # Utilisé uniquement pour les tests unitaires et l'automatisation CI
 pytest
+pytest-asyncio

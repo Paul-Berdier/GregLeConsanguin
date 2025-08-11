@@ -1,5 +1,3 @@
-# main.py
-
 import logging
 import os
 import threading
@@ -8,15 +6,11 @@ import socket
 import discord
 from discord.ext import commands
 from playlist_manager import PlaylistManager
-from web.app import create_web_app
+from connect.app import create_web_app
 import config
 
 # ---------------------------------------------------------------------------
 # Configuration du logging
-#
-# Utilise le module logging pour centraliser les sorties de debug.  Les
-# messages sont affichés en console et enregistrés dans un fichier ``greg.log``.
-# La verbosité peut être ajustée via la variable d'environnement ``LOG_LEVEL``.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -27,10 +21,9 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
-
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-# --------- PlaylistManager multi-serveur (la seule source de vérité) -----------
+# --------- PlaylistManager multi-serveur -----------
 playlist_managers = {}  # {guild_id: PlaylistManager}
 
 def get_pm(guild_id):
@@ -42,9 +35,9 @@ def get_pm(guild_id):
 
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(intents=intents)  # ← pas de command_prefix, on est full slash commands
 
-# ===== Crée l'app Flask + SocketIO, lie l'accès à get_pm et le bot =====
+# ===== Crée l'app Flask + SocketIO =====
 app, socketio = create_web_app(get_pm)
 app.bot = bot
 
@@ -74,22 +67,17 @@ async def on_ready():
     await bot.tree.sync()
     logger.info("Slash commands sync DONE !")
 
-    # Connect the music/voice cogs to the web SocketIO for real‑time playlist updates.
-    # When the Music cog calls emit_playlist_update, it will use this emit_fn.
     try:
         music_cog = bot.get_cog("Music")
         voice_cog = bot.get_cog("Voice")
         if music_cog:
             def emit(event: str, data: dict):
-                # Use the socketio instance created by create_web_app to emit events
                 socketio.emit(event, data)
             music_cog.emit_fn = emit
         if voice_cog:
-            # Voice cog also uses emit_fn for vocal_event notifications
             voice_cog.emit_fn = lambda event, data: socketio.emit(event, data)
     except Exception as e:
-        print(f"[ERROR][main.py] Impossible de connecter emit_fn: {e}")
-
+        logger.error("Impossible de connecter emit_fn: %s", e)
 
 # ===== Attente que le serveur web réponde =====
 def wait_for_web():
