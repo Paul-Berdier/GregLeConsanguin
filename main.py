@@ -35,7 +35,7 @@ def get_pm(guild_id):
 
 # ===== Discord bot setup =====
 intents = discord.Intents.all()
-bot = commands.Bot(intents=intents)  # ← pas de command_prefix, on est full slash commands
+bot = commands.Bot(command_prefix="!", intents=intents)  # préfixe inutile mais requis
 
 # ===== Crée l'app Flask + SocketIO =====
 app, socketio = create_web_app(get_pm)
