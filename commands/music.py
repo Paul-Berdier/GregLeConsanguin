@@ -87,12 +87,16 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Passe au morceau suivant.")
     async def skip(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
+        pm.pop_first()  # ← avance la queue
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
-            vc.stop()
+            vc.stop()  # déclenche play_next()
             await interaction.response.send_message("⏭ *Prochain supplice…*")
         else:
-            await interaction.response.send_message("❌ Rien à skip.")
+            # rien ne joue : lance directement
+            await self.play_next(interaction)
+            await interaction.response.send_message("⏭ *On avance.*")
 
     @app_commands.command(name="stop", description="Arrête la lecture et vide la playlist.")
     async def stop(self, interaction: discord.Interaction):
@@ -142,15 +146,14 @@ class Music(commands.Cog):
     # ---------- LECTURE ----------
     async def play_next(self, interaction):
         pm = self.get_pm(interaction.guild.id)
-        queue = pm.get_queue()
-        if not queue:
+
+        item = pm.pop_first()  # ← retire de la playlist réelle
+        if not item:
             self.is_playing[str(interaction.guild.id)] = False
             self.emit_overlay(interaction.guild.id)
             return
-        self.is_playing[str(interaction.guild.id)] = True
-        item = queue.pop(0)
-        pm.save()
 
+        self.is_playing[str(interaction.guild.id)] = True
         extractor = get_extractor(item["url"])
         if not extractor:
             await interaction.followup.send(f"❌ Impossible de lire : {item['title']}")

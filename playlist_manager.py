@@ -18,6 +18,14 @@ class PlaylistManager:
         self.lock = RLock()  # <--- ICI !!!
         self.reload()
 
+    def pop_first(self):
+        with self.lock:
+            if not self.queue:
+                return None
+            item = self.queue.pop(0)
+            self.save()
+            return item
+
     def reload(self):
         with self.lock:
             if not os.path.exists(self.file):
