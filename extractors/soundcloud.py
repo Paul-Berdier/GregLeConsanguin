@@ -34,6 +34,9 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     Convertit .opus en .mp3 si nécessaire.
     Retourne (chemin du fichier, titre, durée).
     """
+    # Assure que le dossier de destination existe
+    os.makedirs('downloads', exist_ok=True)
+
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[abr>0]/bestaudio/best',
         'outtmpl': 'downloads/greg_audio.%(ext)s',

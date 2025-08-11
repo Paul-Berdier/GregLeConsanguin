@@ -112,11 +112,15 @@ def create_web_app(get_pm):
         if not music_cog:
             return jsonify({"error": "Music cog not loaded"}), 500
         try:
+            # Lancer la coroutine pause_for_web sur la boucle du bot
             fut = asyncio.run_coroutine_threadsafe(
                 music_cog.pause_for_web(guild_id),
                 app.bot.loop
             )
             fut.result(timeout=30)
+            # Émet un update de playlist après la pause
+            pm = app.get_pm(guild_id)
+            socketio.emit("playlist_update", pm.to_dict())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
@@ -135,6 +139,8 @@ def create_web_app(get_pm):
                 app.bot.loop
             )
             fut.result(timeout=30)
+            pm = app.get_pm(guild_id)
+            socketio.emit("playlist_update", pm.to_dict())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
@@ -153,6 +159,8 @@ def create_web_app(get_pm):
                 app.bot.loop
             )
             fut.result(timeout=30)
+            pm = app.get_pm(guild_id)
+            socketio.emit("playlist_update", pm.to_dict())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)
@@ -171,6 +179,8 @@ def create_web_app(get_pm):
                 app.bot.loop
             )
             fut.result(timeout=30)
+            pm = app.get_pm(guild_id)
+            socketio.emit("playlist_update", pm.to_dict())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         return jsonify(ok=True)

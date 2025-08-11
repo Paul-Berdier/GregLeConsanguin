@@ -6,22 +6,29 @@
 
 ## 👑 Présentation
 
-Greg est un bot Discord **et** une interface web moderne qui :
-- Rejoint un salon vocal (à contrecœur)
-- Joue des musiques SoundCloud (YouTube non supporté actuellement)
-- Se synchronise avec un site web pour contrôler la playlist, même à distance
-- Vous méprise en musique et en silence, sur Discord comme sur le web
-- Supporte un système modulaire (`extractors/`) pour supporter d’autres sources à venir
-- Gère la playlist de façon centralisée et synchrone (bot + web → 1 seule vérité)
+Greg est un bot Discord **et** une interface de contrôle moderne qui peut être utilisée
+depuis un site web **ou** via un **overlay flottant**. Il :
+    - Rejoint un salon vocal (à contrecœur)
+    - Joue des musiques SoundCloud et, grâce à l’extension YouTube réactivée,
+      peut à nouveau lire des vidéos YouTube via le module `extractors/youtube.py`
+    - Se synchronise avec un site web **ou l’overlay** pour contrôler la playlist,
+      même à distance, en conservant **une seule vérité**
+    - Vous méprise en musique et en silence, sur Discord comme sur l’overlay
+    - Supporte un système modulaire (`extractors/`) pour supporter d’autres sources à venir
+    - Gère la playlist de façon centralisée et synchrone (bot + web/overlay → 1 seule vérité)
 
 ---
 
-## 🎵 À propos de la musique : SoundCloud only
+## 🎵 À propos de la musique : SoundCloud et YouTube
 
-**⚠️ La sécurité YouTube s’est renforcée mi-2024.**
-- L’extraction via `yt-dlp` est instable, la plupart des morceaux ne fonctionnent plus correctement (restriction, cookies, login obligatoire…)
-- **Greg ne supporte actuellement que SoundCloud pour la recherche et la lecture.**
-- Dès que possible, l’extraction YouTube sera réactivée via une mise à jour d’extractors/youtube.py
+Pendant l’été 2024, YouTube a renforcé ses mécanismes anti‑bots et
+l’extraction de pistes avait été temporairement désactivée.  Cette
+version réactive la prise en charge de YouTube en s’appuyant sur
+`yt‑dlp` (un fork moderne de youtube‑dl) et en permettant
+l’utilisation d’un fichier de cookies pour contourner les vérifications
+anti‑robot.  Si une vidéo échoue, consultez la section « Cookies
+YouTube » pour générer et fournir vos cookies.  SoundCloud reste bien
+entendu supporté comme source principale.
 
 ---
 
@@ -58,33 +65,41 @@ Voici la liste de toutes les tortures sonores et autres joyeusetés que Greg est
 GregLeConsanguin/
 │
 ├── main.py                   # Point d'entrée (démarre Discord + serveur web/socketio)
-├── playlist\_manager.py       # Logique centralisée de playlist (thread-safe)
-├── bot\_socket.py             # Client SocketIO du bot Discord (synchro temps réel)
+├── playlist_manager.py        # Logique centralisée de playlist (thread‑safe) ; une vérité
 │
-├── commands/                 # Toutes les cogs Discord
-│   ├── music.py
-│   ├── voice.py
-│   └── ...
+├── commands/                 # Toutes les cogs Discord (slash commands)
+│   ├── music.py              # Commandes /play, /skip, /stop, etc.
+│   ├── voice.py              # Commandes /join, /leave, /restart
+│   └── general.py            # Commandes diverses (/ping, /greg, /help)
 │
-├── extractors/               # Modules pour chaque source musicale (SoundCloud…)
-│   ├── soundcloud.py
-│   └── ...
+├── extractors/               # Modules pour chaque source musicale
+│   ├── soundcloud.py         # Recherche, extraction et stream SoundCloud
+│   ├── youtube.py            # (Réactivé) Extraction/stream YouTube via yt‑dlp
+│   └── __init__.py
 │
-├── playlist.json             # Playlist unique (la vérité !)
+├── overlay/                 # Mini‑interface en overlay pour contrôle in‑game
+│   ├── overlay.py           # Tkinter + Socket.IO, always‑on‑top
+│   └── __init__.py
 │
-├── web/
-│   ├── app.py                # Flask + SocketIO (API et interface web)
-│   ├── static/
+├── web/                     # Site web de contrôle (Flask + SocketIO)
+│   ├── app.py               # API REST + Socket.IO + OAuth
+│   ├── oauth.py             # Authentification Discord
+│   ├── static/              # CSS/JS/Assets
 │   │   ├── style.css
 │   │   ├── greg.js
 │   │   └── assets/
 │   │       └── greg.jpg
 │   └── templates/
-│       ├── index.html
-│       └── search\_results.html
+│       ├── index.html       # Accueil et authentification
+│       ├── select.html      # Sélection du serveur/canal
+│       └── panel.html       # Panel principal de gestion
 │
-├── .env                      # (optionnel) Token Discord & autres secrets
-├── requirements.txt          # Toutes les dépendances Python
+├── tests/                   # Suite de tests unitaires (pytest)
+│   ├── test_playlist_manager.py
+│   └── test_extractors.py
+│
+├── .env (optionnel)         # Token Discord & autres secrets
+├── requirements.txt          # Toutes les dépendances Python (inclut pytest)
 └── README.md                 # Ce fichier
 
 ```
@@ -168,11 +183,32 @@ Si certaines vidéos YouTube échouent à cause de vérifications (âge, bot, et
 ## 🖥️ Interface Web
 
 Votre site web (Flask + SocketIO) permet de :
-- Voir la playlist actuelle (mise à jour en temps réel)
-- Ajouter une musique (autocomplétion SoundCloud incluse)
-- Skip, Pause ou Stop via boutons (API REST)
-- Synchronisation immédiate avec les commandes Discord (`/play`, `/skip`, etc.)
-- Image de Greg qui tourne pendant la lecture (animation CSS)
+    - Voir la playlist actuelle (mise à jour en temps réel)
+    - Ajouter une musique (autocomplétion SoundCloud incluse)
+    - Skip, Pause ou Stop via boutons (API REST)
+    - Synchronisation immédiate avec les commandes Discord (`/play`, `/skip`, etc.)
+    - Image de Greg qui tourne pendant la lecture (animation CSS)
+
+### 🕶️ Overlay in‑game
+
+Pour les joueurs qui souhaitent contrôler Greg sans quitter leur
+jeu en plein écran, un **overlay léger** est fourni.  L’overlay
+apparaît comme une petite fenêtre en haut à gauche de l’écran, à la
+manière du mini‑overlay de Discord.  Il se connecte à votre serveur
+local via Socket.IO pour recevoir les mises à jour de playlist et
+permet d’ajouter, mettre en pause, reprendre, skip ou stopper une
+musique.  Il se lance ainsi :
+
+```bash
+python -m overlay.overlay
+```
+
+Lors du démarrage, l’overlay vous demande le `guild_id` et votre
+`user_id` Discord afin de savoir sur quel serveur et pour quel
+utilisateur envoyer les commandes.  La fenêtre est déplaçable à la
+souris, semi‑transparente et toujours au premier plan.  Les messages
+d’erreur et de connexion apparaissent dans la console afin de ne pas
+interrompre votre partie.
 
 ---
 
