@@ -168,7 +168,11 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         url = (data or {}).get("url")
         guild_id = (data or {}).get("guild_id")
         user_id = (data or {}).get("user_id")
-        _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
+        provider = (data or {}).get("provider", "auto")  # NEW
+        mode = (data or {}).get("mode", "auto")  # NEW
+
+        _dbg(
+            f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}, provider={provider}, mode={mode}")
 
         if not all([title, url, guild_id, user_id]):
             return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
@@ -178,7 +182,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return err
 
         try:
-            _dispatch(music_cog.play_for_user(guild_id, user_id, {"title": title, "url": url}), timeout=90)
+            payload = {"title": title, "url": url, "provider": provider, "mode": mode}  # NEW
+            _dispatch(music_cog.play_for_user(guild_id, user_id, payload), timeout=90)
             _emit_playlist(guild_id)
             _dbg("POST /api/play — succès. On ajoute, on souffle, on subit.")
             return jsonify(ok=True)

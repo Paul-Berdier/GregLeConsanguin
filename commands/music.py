@@ -4,7 +4,7 @@
 # - Slash commands ET commandes texte (prefix: "!")
 # - Intégration overlay/web via emit_fn (fourni par main.py)
 # - Émissions Socket.IO: état enrichi (queue, current, is_paused)
-# - Recherche SoundCloud si on donne du texte, sinon URL directe
+# - Recherche YouTube/SoundCloud selon le provider choisi
 #
 # 🎭 VOIX DE GREG DANS LES PRINTS :
 #    Un larbin insupportable, sarcastique, qui obéit en soufflant.
@@ -14,14 +14,23 @@ from discord import app_commands
 from discord.ext import commands
 import os
 import asyncio
+from typing import Optional
 
 from extractors import get_extractor, get_search_module
 from playlist_manager import PlaylistManager
 
 
 def _greg_print(msg: str):
-    # Petits logs uniformes pour bien retrouver Greg dans la console
     print(f"[GREG/Music] {msg}")
+
+
+def _infer_provider_from_url(url: str) -> Optional[str]:
+    u = url.lower()
+    if "youtube.com" in u or "youtu.be" in u or "music.youtube" in u:
+        return "youtube"
+    if "soundcloud.com" in u:
+        return "soundcloud"
+    return None
 
 
 class Music(commands.Cog):
@@ -52,27 +61,18 @@ class Music(commands.Cog):
         return self.managers[gid]
 
     def _overlay_payload(self, guild_id: int) -> dict:
-        """
-        Construit l'état envoyé au web/overlay.
-        Contient: queue (PM), current (selon notre suivi), is_paused (voice_client).
-        """
         pm = self.get_pm(guild_id)
-        data = pm.to_dict()  # queue + current (premier de la file)
-        vc = None
+        data = pm.to_dict()
         try:
             g = self.bot.get_guild(int(guild_id))
             vc = g.voice_client if g else None
         except Exception:
             vc = None
-        # On préfère la vérité du lecteur courant si connue:
         current = self.current_song.get(guild_id) or data.get("current")
         is_paused = bool(vc and vc.is_paused())
         return {"queue": data.get("queue", []), "current": current, "is_paused": is_paused}
 
     def emit_playlist_update(self, guild_id):
-        """
-        Émet un événement 'playlist_update' vers Socket.IO si emit_fn est branchée.
-        """
         if self.emit_fn:
             payload = self._overlay_payload(guild_id)
             _greg_print(f"[EMIT] playlist_update → guild={guild_id} — paused={payload.get('is_paused')}")
@@ -96,9 +96,38 @@ class Music(commands.Cog):
     #                           SLASH COMMANDS
     # =====================================================================
 
-    @app_commands.command(name="play", description="Joue un son depuis une URL ou une recherche.")
-    async def play(self, interaction: discord.Interaction, query_or_url: str):
-        _greg_print(f"/play par {interaction.user} — arg='{query_or_url}'")
+    @app_commands.describe(
+        provider="Source: youtube / soundcloud / auto",
+        mode="Mode: stream / download / auto",
+        query_or_url="Recherche (titre/artiste) ou URL directe",
+    )
+    @app_commands.choices(
+        provider=[
+            app_commands.Choice(name="auto", value="auto"),
+            app_commands.Choice(name="youtube", value="youtube"),
+            app_commands.Choice(name="soundcloud", value="soundcloud"),
+        ],
+        mode=[
+            app_commands.Choice(name="auto", value="auto"),
+            app_commands.Choice(name="stream", value="stream"),
+            app_commands.Choice(name="download", value="download"),
+        ],
+    )
+    @app_commands.command(
+        name="play",
+        description="Joue un son en choisissant la source (YouTube/SoundCloud) et le mode (stream/download)."
+    )
+    async def play(
+        self,
+        interaction: discord.Interaction,
+        query_or_url: str,
+        provider: app_commands.Choice[str] = None,
+        mode: app_commands.Choice[str] = None,
+    ):
+        prov = (provider.value if provider else "auto").lower()
+        play_mode = (mode.value if mode else "auto").lower()
+        _greg_print(f"/play par {interaction.user} — arg='{query_or_url}', provider={prov}, mode={play_mode}")
+
         pm = self.get_pm(interaction.guild.id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
@@ -114,26 +143,50 @@ class Music(commands.Cog):
             else:
                 return await interaction.followup.send("❌ *Tu n'es même pas en vocal, vermine…*")
 
-        await interaction.followup.send("🎵 *Encore une supplique musicale ? Soupir…*")
-
-        # URL directe → on pousse
-        if "http://" in query_or_url or "https://" in query_or_url:
-            await self.add_to_queue(interaction, {"title": query_or_url, "url": query_or_url})
+        # Détermine si URL directe
+        if query_or_url.startswith(("http://", "https://")):
+            inferred = _infer_provider_from_url(query_or_url)
+            chosen_provider = inferred or (prov if prov != "auto" else None)
+            await self.add_to_queue(
+                interaction,
+                {"title": query_or_url, "url": query_or_url, "provider": chosen_provider, "mode": play_mode},
+            )
             return
 
-        # Sinon recherche SoundCloud
-        extractor = get_search_module("soundcloud")
+        # Recherche selon provider demandé (ou auto→SoundCloud d’abord)
+        chosen = prov
+        if chosen == "auto":
+            # Par défaut: SoundCloud d'abord (souvent plus permissif), sinon YouTube
+            chosen = "soundcloud"
+
         try:
-            results = await loop.run_in_executor(None, extractor.search, query_or_url)
-            _greg_print(f"Résultats SC pour '{query_or_url}': {len(results)} trouvailles misérables.")
+            searcher = get_search_module(chosen)
         except Exception as e:
-            return await interaction.followup.send(f"❌ *Recherche foirée :* `{e}`")
+            return await interaction.followup.send(f"❌ *Module de recherche indisponible ({chosen}) :* `{e}`")
+
+        try:
+            results = await loop.run_in_executor(None, searcher.search, query_or_url)
+            _greg_print(f"Résultats {chosen} pour '{query_or_url}': {len(results)} items.")
+        except Exception as e:
+            return await interaction.followup.send(f"❌ *Recherche foirée ({chosen}) :* `{e}`")
 
         if not results:
-            return await interaction.followup.send("❌ *Rien. Même les rats ont fui cette piste…*")
+            # En auto, on tente l'autre provider
+            if prov == "auto":
+                other = "youtube" if chosen == "soundcloud" else "soundcloud"
+                try:
+                    other_search = get_search_module(other)
+                    results = await loop.run_in_executor(None, other_search.search, query_or_url)
+                    chosen = other
+                    _greg_print(f"[AUTO] Bascule recherche vers {other}: {len(results)} items.")
+                except Exception:
+                    results = []
+            if not results:
+                return await interaction.followup.send("❌ *Rien. Même les rats ont fui cette piste…*")
 
-        self.search_results[interaction.user.id] = results
-        msg = "**🔍 Résultats SoundCloud :**\n"
+        # Propose 3 choix
+        self.search_results[interaction.user.id] = [{"provider": chosen, **r} for r in results]
+        msg = f"**🔍 Résultats {chosen.capitalize()} :**\n"
         for i, item in enumerate(results[:3], 1):
             title = item.get("title", "Titre inconnu")
             url = item.get("webpage_url") or item.get("url") or ""
@@ -147,10 +200,12 @@ class Music(commands.Cog):
         try:
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
             idx = int(reply.content) - 1
-            selected = results[idx]
+            selected = self.search_results[interaction.user.id][idx]
             await self.add_to_queue(interaction, {
                 "title": selected.get("title", "Titre inconnu"),
-                "url": selected.get("webpage_url", selected.get("url"))
+                "url": selected.get("webpage_url", selected.get("url")),
+                "provider": selected.get("provider"),
+                "mode": play_mode,
             })
         except asyncio.TimeoutError:
             await interaction.followup.send("⏳ *Trop lent. Greg retourne maugréer dans sa crypte…*")
@@ -158,22 +213,22 @@ class Music(commands.Cog):
     async def add_to_queue(self, interaction_like, item):
         """
         Ajoute à la file et démarre la lecture si rien ne tourne.
-        interaction_like: doit exposer .guild et .followup.send(str)
+        item = {title, url, provider?, mode?}
         """
         pm = self.get_pm(interaction_like.guild.id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
-        await loop.run_in_executor(None, pm.add, item)  # item = {title, url}
-        await interaction_like.followup.send(f"🎵 Ajouté : **{item['title']}** ({item['url']})")
+        await loop.run_in_executor(None, pm.add, item)
+        await interaction_like.followup.send(
+            f"🎵 Ajouté : **{item['title']}** ({item['url']}) — "
+            f"{(item.get('provider') or 'auto')}/{(item.get('mode') or 'auto')}"
+        )
         self.emit_playlist_update(interaction_like.guild.id)
         if not self.is_playing.get(str(interaction_like.guild.id), False):
             await self.play_next(interaction_like)
 
     async def play_next(self, interaction_like):
-        """
-        Démarre ou passe au morceau suivant.
-        interaction_like: doit exposer .guild et .followup.send(str)
-        """
+        """Démarre ou passe au morceau suivant."""
         guild_id = interaction_like.guild.id
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
@@ -183,7 +238,7 @@ class Music(commands.Cog):
         if not queue:
             self.is_playing[str(guild_id)] = False
             await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
-            self.current_song.pop(guild_id, None)  # plus de courant
+            self.current_song.pop(guild_id, None)
             self.emit_playlist_update(guild_id)
             return
 
@@ -192,99 +247,73 @@ class Music(commands.Cog):
         pm.queue = queue
         await loop.run_in_executor(None, pm.save)
 
-        extractor = get_extractor(item['url'])
+        url = item['url']
+        mode = (item.get("mode") or "auto").lower()
+        # L’extractor est sélectionné par URL. Le provider sert surtout à la recherche en amont.
+        extractor = get_extractor(url)
         if extractor is None:
             await interaction_like.followup.send("❌ *Aucun extracteur ne veut de ta soupe…*")
             return
 
         vc = interaction_like.guild.voice_client
 
-        # Préférence: stream direct quand possible
-        if hasattr(extractor, "stream"):
+        # STREAM si demandé/autorisé
+        if mode in ("auto", "stream") and hasattr(extractor, "stream"):
             try:
-                source, title = await extractor.stream(item['url'], self.ffmpeg_path)
-                self.current_song[guild_id] = {"title": title, "url": item['url']}
+                source, title = await extractor.stream(url, self.ffmpeg_path)
+                self.current_song[guild_id] = {"title": title, "url": url}
                 if vc.is_playing():
                     vc.stop()
-                vc.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(interaction_like)))
+                # cleanup source à la fin + enchaînement
+                def _after(e):
+                    try:
+                        getattr(source, "cleanup", lambda: None)()
+                    finally:
+                        self.bot.loop.create_task(self.play_next(interaction_like))
+                vc.play(source, after=_after)
                 await interaction_like.followup.send(f"▶️ *Streaming :* **{title}**")
                 self.emit_playlist_update(guild_id)
                 return
             except Exception as e:
-                await interaction_like.followup.send(f"⚠️ *Échec stream, on télécharge…* `{e}`")
+                if mode == "stream":
+                    await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`")
+                # si mode=auto → on tombera en download ci‑dessous
 
-        # Fallback: téléchargement puis lecture
+        # DOWNLOAD (fallback ou explicit)
         try:
             filename, title, duration = await extractor.download(
-                item['url'],
+                url,
                 ffmpeg_path=self.ffmpeg_path,
                 cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
             )
-            self.current_song[guild_id] = {"title": title, "url": item['url']}
-            vc.play(
-                discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path),
-                after=lambda e: self.bot.loop.create_task(self.play_next(interaction_like))
-            )
+            self.current_song[guild_id] = {"title": title, "url": url}
+            source = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
+            def _after(e):
+                try:
+                    getattr(source, "cleanup", lambda: None)()
+                finally:
+                    self.bot.loop.create_task(self.play_next(interaction_like))
+            vc.play(source, after=_after)
             await interaction_like.followup.send(f"🎶 *Téléchargé & joué :* **{title}** (`{duration}`s)")
             self.emit_playlist_update(guild_id)
         except Exception as e:
             await interaction_like.followup.send(f"❌ *Même le téléchargement s’écroule…* `{e}`")
 
-    @app_commands.command(name="skip", description="Passe à la piste suivante.")
-    async def slash_skip(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self._do_skip(interaction.guild, lambda m: interaction.followup.send(m))
-
-    @app_commands.command(name="stop", description="Stoppe tout et vide la playlist.")
-    async def slash_stop(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self._do_stop(interaction.guild, lambda m: interaction.followup.send(m))
-
-    @app_commands.command(name="pause", description="Met en pause la musique actuelle.")
-    async def slash_pause(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self._do_pause(interaction.guild, lambda m: interaction.followup.send(m))
-
-    @app_commands.command(name="resume", description="Reprend la lecture après une pause.")
-    async def slash_resume(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self._do_resume(interaction.guild, lambda m: interaction.followup.send(m))
-
-    @app_commands.command(name="playlist", description="Affiche les morceaux en attente.")
-    async def slash_playlist(self, interaction: discord.Interaction):
-        pm = self.get_pm(interaction.guild.id)
-        queue = await asyncio.get_running_loop().run_in_executor(None, pm.get_queue)
-        if not queue:
-            return await interaction.response.send_message("📋 *Playlist vide. Rien. Nada.*")
-        lines = "\n".join([f"**{i+1}.** [{it['title']}]({it['url']})" for i, it in enumerate(queue)])
-        await interaction.response.send_message(f"🎶 *Votre précieuse sélection :*\n{lines}")
-
-    @app_commands.command(name="current", description="Affiche le morceau actuellement joué.")
-    async def slash_current(self, interaction: discord.Interaction):
-        song = self.current_song.get(interaction.guild.id)
-        if song:
-            await interaction.response.send_message(f"🎧 **[{song['title']}]({song['url']})**")
-        else:
-            await interaction.response.send_message("❌ *Rien en cours. Savourez le silence.*")
-
     # =====================================================================
     #                         COMMANDES TEXTE (!)
     # =====================================================================
 
-    # Adaptateur minimal pour réutiliser les mêmes méthodes que les slash
     class _CtxProxy:
         def __init__(self, ctx):
             self.guild = ctx.guild
             self._ctx = ctx
-            self.followup = self  # on expose send()
-
+            self.followup = self
         async def send(self, msg):
             await self._ctx.reply(msg)
 
-    @commands.command(name="play", help="!play <url|recherche> — Joue un son (SoundCloud si recherche).")
+    @commands.command(name="play", help="!play <url|recherche> — Joue un son (SC/YT auto).")
     async def text_play(self, ctx: commands.Context, *, query_or_url: str):
         _greg_print(f"!play par {ctx.author} — arg='{query_or_url}'")
-        # Connexion vocale si nécessaire
         if ctx.guild.voice_client is None:
             if ctx.author.voice and ctx.author.voice.channel:
                 await ctx.author.voice.channel.connect()
@@ -292,25 +321,28 @@ class Music(commands.Cog):
             else:
                 return await ctx.reply("❌ *T’es même pas en vocal, microbe…*")
 
-        # URL directe ?
-        if "http://" in query_or_url or "https://" in query_or_url:
-            return await self.add_to_queue(Music._CtxProxy(ctx), {"title": query_or_url, "url": query_or_url})
+        # URL → file directe
+        if query_or_url.startswith(("http://", "https://")):
+            return await self.add_to_queue(Music._CtxProxy(ctx), {
+                "title": query_or_url, "url": query_or_url,
+                "provider": _infer_provider_from_url(query_or_url), "mode": "auto"
+            })
 
-        # Sinon recherche SoundCloud (top 1 direct pour la commande texte, plus rapide)
-        extractor = get_search_module("soundcloud")
-        try:
-            results = await asyncio.get_running_loop().run_in_executor(None, extractor.search, query_or_url)
-        except Exception as e:
-            return await ctx.reply(f"❌ *Recherche foirée :* `{e}`")
-
-        if not results:
-            return await ctx.reply("❌ *Rien trouvé. Même pas un bootleg moisi.*")
-
-        top = results[0]
-        await self.add_to_queue(Music._CtxProxy(ctx), {
-            "title": top.get("title", "Titre inconnu"),
-            "url": top.get("webpage_url", top.get("url"))
-        })
+        # Texte → on tente SC puis YT
+        for prov in ("soundcloud", "youtube"):
+            try:
+                searcher = get_search_module(prov)
+                results = await asyncio.get_running_loop().run_in_executor(None, searcher.search, query_or_url)
+                if results:
+                    top = results[0]
+                    return await self.add_to_queue(Music._CtxProxy(ctx), {
+                        "title": top.get("title", "Titre inconnu"),
+                        "url": top.get("webpage_url", top.get("url")),
+                        "provider": prov, "mode": "auto"
+                    })
+            except Exception:
+                continue
+        await ctx.reply("❌ *Rien trouvé. Même pas un bootleg moisi.*")
 
     @commands.command(name="skip", help="!skip — Passe au suivant.")
     async def text_skip(self, ctx: commands.Context):
@@ -394,10 +426,6 @@ class Music(commands.Cog):
     # =====================================================================
 
     async def play_for_user(self, guild_id, user_id, item):
-        """
-        Appelée par l'API web (/api/play) depuis app.py via run_coroutine_threadsafe.
-        Rejoint le vocal de l'utilisateur si besoin, pousse dans la file et lance la lecture.
-        """
         _greg_print(f"API play_for_user(guild={guild_id}, user={user_id}) — {item}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
@@ -417,7 +445,6 @@ class Music(commands.Cog):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.add, item)
 
-        # Interaction factice pour réutiliser play_next
         class FakeInteraction:
             def __init__(self, g):
                 self.guild = g
@@ -428,10 +455,6 @@ class Music(commands.Cog):
         self.emit_playlist_update(guild_id)
 
     async def play_at(self, guild_id, index):
-        """
-        Force la piste 'index' à passer en tête, puis enchaîne play_next.
-        Utilisé par le webpanel si besoin.
-        """
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)

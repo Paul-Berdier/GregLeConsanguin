@@ -48,14 +48,17 @@ class Voice(commands.Cog):
 
     @app_commands.command(name="leave", description="Fait quitter Greg du vocal, enfin libéré de vous.")
     async def leave(self, interaction: discord.Interaction):
-        """Slash command pour quitter le vocal."""
         print(f"[Voice] leave() appelé par {interaction.user.display_name} sur {interaction.guild.name}")
         vc = interaction.guild.voice_client
         if vc:
+            # Stoppe proprement la lecture avant de quitter
+            try:
+                if vc.is_playing() or vc.is_paused():
+                    vc.stop()  # tue le player FFmpeg immédiatement
+            except Exception:
+                pass
             await vc.disconnect()
-            await interaction.response.send_message(
-                "👋 *Greg s’en va... Enfin un instant de répit loin de votre cacophonie barbare.*"
-            )
+            await interaction.response.send_message("👋 *Greg s’en va... Enfin un instant de répit.*")
             if self.emit_fn:
                 self.emit_fn("vocal_event", {"guild_id": interaction.guild.id, "action": "leave"})
         else:
