@@ -20,6 +20,14 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     if oauth_bp:
         app.register_blueprint(oauth_bp)
 
+    # --- Debug : afficher toutes les routes enregistrées ---
+    print("\n📜 Routes Flask enregistrées :")
+    for rule in app.url_map.iter_rules():
+        methods = ",".join(rule.methods - {"HEAD", "OPTIONS"})
+        print(f"  {methods:10s} {rule.rule}")
+    print()
+
+
     # ------------------------ Helpers ----------------------------
     def _dbg(msg: str): print(f"🤦‍♂️ [WEB] {msg}")
     def _bad_request(msg: str, code: int = 400):
