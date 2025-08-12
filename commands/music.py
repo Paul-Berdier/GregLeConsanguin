@@ -3,17 +3,15 @@
 # Greg le Consanguin — Cog "Music"
 # - Slash commands ET commandes texte (prefix: "!")
 # - Intégration overlay/web via emit_fn (fourni par main.py)
-# - Émissions Socket.IO: état enrichi (queue, current, is_paused)
+# - Émissions Socket.IO: état enrichi (queue, current, is_paused, progress, thumbnail, repeat_all)
 # - Recherche YouTube/SoundCloud selon le provider choisi
-#
-# 🎭 VOIX DE GREG DANS LES PRINTS :
-#    Un larbin insupportable, sarcastique, qui obéit en soufflant.
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 import os
 import asyncio
+import time
 from typing import Optional
 
 from extractors import get_extractor, get_search_module
@@ -49,6 +47,14 @@ class Music(commands.Cog):
         self.ffmpeg_path = self.detect_ffmpeg()
         self.emit_fn = emit_fn    # set par main.py au démarrage
 
+        # --- Suivi overlay ---
+        self.play_start = {}      # {guild_id: monotonic()}
+        self.paused_since = {}    # {guild_id: monotonic() | None}
+        self.paused_total = {}    # {guild_id: float}
+        self.ticker_tasks = {}    # {guild_id: asyncio.Task}
+        self.current_meta = {}    # {guild_id: {"duration": int|None, "thumbnail": str|None}}
+        self.repeat_all = {}      # {guild_id: bool}
+
         _greg_print("Initialisation du cog Music… *Quelle joie contenue…*")
 
     # ---------- Utilitaires état / overlay ----------
@@ -63,6 +69,7 @@ class Music(commands.Cog):
     def _overlay_payload(self, guild_id: int) -> dict:
         pm = self.get_pm(guild_id)
         data = pm.to_dict()
+        vc = None
         try:
             g = self.bot.get_guild(int(guild_id))
             vc = g.voice_client if g else None
@@ -70,12 +77,39 @@ class Music(commands.Cog):
             vc = None
         current = self.current_song.get(guild_id) or data.get("current")
         is_paused = bool(vc and vc.is_paused())
-        return {"queue": data.get("queue", []), "current": current, "is_paused": is_paused}
+
+        # Progression
+        start = self.play_start.get(guild_id)
+        paused_since = self.paused_since.get(guild_id)
+        paused_total = self.paused_total.get(guild_id, 0.0)
+        elapsed = 0
+        if start:
+            base = time.monotonic()
+            if paused_since:
+                base = paused_since
+            elapsed = max(0, int(base - start - paused_total))
+
+        meta = self.current_meta.get(guild_id, {})
+        duration = meta.get("duration")
+        thumb = meta.get("thumbnail")
+
+        return {
+            "queue": data.get("queue", []),
+            "current": current,
+            "is_paused": is_paused,
+            "progress": {"elapsed": elapsed, "duration": int(duration) if duration else None},
+            "thumbnail": thumb,
+            "repeat_all": bool(self.repeat_all.get(guild_id, False)),
+        }
 
     def emit_playlist_update(self, guild_id):
         if self.emit_fn:
             payload = self._overlay_payload(guild_id)
-            _greg_print(f"[EMIT] playlist_update → guild={guild_id} — paused={payload.get('is_paused')}")
+            _greg_print(
+                f"[EMIT] playlist_update → guild={guild_id} — "
+                f"paused={payload.get('is_paused')} "
+                f"elapsed={payload.get('progress',{}).get('elapsed')}"
+            )
             self.emit_fn("playlist_update", payload)
 
     # ---------- Détection ffmpeg ----------
@@ -143,7 +177,7 @@ class Music(commands.Cog):
             else:
                 return await interaction.followup.send("❌ *Tu n'es même pas en vocal, vermine…*")
 
-        # Détermine si URL directe
+        # URL directe
         if query_or_url.startswith(("http://", "https://")):
             inferred = _infer_provider_from_url(query_or_url)
             chosen_provider = inferred or (prov if prov != "auto" else None)
@@ -153,10 +187,9 @@ class Music(commands.Cog):
             )
             return
 
-        # Recherche selon provider demandé (ou auto→SoundCloud d’abord)
+        # Recherche selon provider (auto -> SC d'abord)
         chosen = prov
         if chosen == "auto":
-            # Par défaut: SoundCloud d'abord (souvent plus permissif), sinon YouTube
             chosen = "soundcloud"
 
         try:
@@ -171,7 +204,6 @@ class Music(commands.Cog):
             return await interaction.followup.send(f"❌ *Recherche foirée ({chosen}) :* `{e}`")
 
         if not results:
-            # En auto, on tente l'autre provider
             if prov == "auto":
                 other = "youtube" if chosen == "soundcloud" else "soundcloud"
                 try:
@@ -239,17 +271,28 @@ class Music(commands.Cog):
             self.is_playing[str(guild_id)] = False
             await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
             self.current_song.pop(guild_id, None)
+            # reset chrono/meta
+            self.play_start.pop(guild_id, None)
+            self.paused_since.pop(guild_id, None)
+            self.paused_total.pop(guild_id, None)
+            self.current_meta.pop(guild_id, None)
             self.emit_playlist_update(guild_id)
             return
 
         self.is_playing[str(guild_id)] = True
         item = queue.pop(0)
+
+        # Repeat ALL: remet le morceau joué en fin de file
+        if self.repeat_all.get(guild_id):
+            queue.append(item)
+
         pm.queue = queue
         await loop.run_in_executor(None, pm.save)
 
         url = item['url']
-        mode = (item.get("mode") or "auto").lower()
-        # L’extractor est sélectionné par URL. Le provider sert surtout à la recherche en amont.
+        play_mode = (item.get("mode") or "auto").lower()
+
+        # Choix extracteur par URL
         extractor = get_extractor(url)
         if extractor is None:
             await interaction_like.followup.send("❌ *Aucun extracteur ne veut de ta soupe…*")
@@ -257,29 +300,38 @@ class Music(commands.Cog):
 
         vc = interaction_like.guild.voice_client
 
-        # STREAM si demandé/autorisé
-        if mode in ("auto", "stream") and hasattr(extractor, "stream"):
+        # Préférence: stream direct quand possible
+        if play_mode in ("auto", "stream") and hasattr(extractor, "stream"):
             try:
                 source, title = await extractor.stream(url, self.ffmpeg_path)
                 self.current_song[guild_id] = {"title": title, "url": url}
+                self.current_meta[guild_id] = {"duration": None, "thumbnail": item.get("thumb")}
                 if vc.is_playing():
                     vc.stop()
-                # cleanup source à la fin + enchaînement
+
                 def _after(e):
                     try:
                         getattr(source, "cleanup", lambda: None)()
                     finally:
                         self.bot.loop.create_task(self.play_next(interaction_like))
+
                 vc.play(source, after=_after)
+
+                # Chrono
+                self.play_start[guild_id] = time.monotonic()
+                self.paused_total[guild_id] = 0.0
+                self.paused_since.pop(guild_id, None)
+                self._ensure_ticker(guild_id)
+
                 await interaction_like.followup.send(f"▶️ *Streaming :* **{title}**")
                 self.emit_playlist_update(guild_id)
                 return
             except Exception as e:
-                if mode == "stream":
+                if play_mode == "stream":
                     await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`")
-                # si mode=auto → on tombera en download ci‑dessous
+                # en auto, on tente download juste après
 
-        # DOWNLOAD (fallback ou explicit)
+        # Fallback: téléchargement puis lecture
         try:
             filename, title, duration = await extractor.download(
                 url,
@@ -287,13 +339,27 @@ class Music(commands.Cog):
                 cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
             )
             self.current_song[guild_id] = {"title": title, "url": url}
+            self.current_meta[guild_id] = {"duration": int(duration) if duration else None, "thumbnail": item.get("thumb")}
+
+            if vc.is_playing():
+                vc.stop()
+
             source = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
+
             def _after(e):
                 try:
                     getattr(source, "cleanup", lambda: None)()
                 finally:
                     self.bot.loop.create_task(self.play_next(interaction_like))
+
             vc.play(source, after=_after)
+
+            # Chrono
+            self.play_start[guild_id] = time.monotonic()
+            self.paused_total[guild_id] = 0.0
+            self.paused_since.pop(guild_id, None)
+            self._ensure_ticker(guild_id)
+
             await interaction_like.followup.send(f"🎶 *Téléchargé & joué :* **{title}** (`{duration}`s)")
             self.emit_playlist_update(guild_id)
         except Exception as e:
@@ -400,6 +466,11 @@ class Music(commands.Cog):
             vc.stop()
         self.current_song.pop(guild.id, None)
         self.is_playing[str(guild.id)] = False
+        # reset chrono/meta
+        self.play_start.pop(guild.id, None)
+        self.paused_since.pop(guild.id, None)
+        self.paused_total.pop(guild.id, None)
+        self.current_meta.pop(guild.id, None)
         await send_fn("⏹ *Débranché. Tout s’arrête ici…*")
         self.emit_playlist_update(guild.id)
 
@@ -407,6 +478,8 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
+            if guild.id not in self.paused_since:
+                self.paused_since[guild.id] = time.monotonic()
             await send_fn("⏸ *Enfin une pause…*")
             self.emit_playlist_update(guild.id)
         else:
@@ -416,6 +489,9 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
+            ps = self.paused_since.pop(guild.id, None)
+            if ps:
+                self.paused_total[guild.id] = self.paused_total.get(guild.id, 0.0) + (time.monotonic() - ps)
             await send_fn("▶️ *Reprenons ce calvaire sonore…*")
             self.emit_playlist_update(guild.id)
         else:
@@ -456,23 +532,20 @@ class Music(commands.Cog):
 
     async def play_at(self, guild_id, index):
         pm = self.get_pm(guild_id)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, pm.reload)
-        queue = await loop.run_in_executor(None, pm.get_queue)
+        loop = asyncio.get_running_loop().run_in_executor
+        await asyncio.get_running_loop().run_in_executor(None, self.get_pm(guild_id).reload)
+        queue = await asyncio.get_running_loop().run_in_executor(None, self.get_pm(guild_id).get_queue)
         if not (0 <= index < len(queue)):
             _greg_print("Index hors playlist. *Viser, ça s’apprend.*")
             return False
         item = queue.pop(index)
         queue.insert(0, item)
-        pm.queue = queue
-        await loop.run_in_executor(None, pm.save)
+        self.get_pm(guild_id).queue = queue
+        await asyncio.get_running_loop().run_in_executor(None, self.get_pm(guild_id).save)
 
         guild = self.bot.get_guild(int(guild_id))
-
         class FakeInteraction:
-            def __init__(self, g):
-                self.guild = g
-                self.followup = self
+            def __init__(self, g): self.guild = g; self.followup = self
             async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
 
         await self.play_next(FakeInteraction(guild))
@@ -507,7 +580,76 @@ class Music(commands.Cog):
             return
         await self._do_resume(guild, lambda m: _greg_print(f"[WEB resume] {m}"))
 
+    async def toggle_pause_for_web(self, guild_id):
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            _greg_print("Guild introuvable pour toggle_pause (web).")
+            return
+        vc = guild.voice_client
+        if vc and vc.is_paused():
+            await self._do_resume(guild, lambda m: _greg_print(f"[WEB toggle -> resume] {m}"))
+        else:
+            await self._do_pause(guild, lambda m: _greg_print(f"[WEB toggle -> pause] {m}"))
+
+    async def restart_current_for_web(self, guild_id):
+        """Replace la piste courante en tête et redémarre (previous simple)."""
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            _greg_print("Guild introuvable pour restart (web).")
+            return
+        song = self.current_song.get(guild.id)
+        if not song:
+            _greg_print("Aucun morceau courant à redémarrer.")
+            return
+        pm = self.get_pm(guild_id)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, pm.reload)
+        q = await loop.run_in_executor(None, pm.get_queue)
+        q.insert(0, {"title": song.get("title"), "url": song.get("url")})
+        pm.queue = q
+        await loop.run_in_executor(None, pm.save)
+
+        vc = guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()  # déclenche play_next → va relire la même piste
+        else:
+            class FakeInteraction:
+                def __init__(self, g): self.guild = g; self.followup = self
+                async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
+            await self.play_next(FakeInteraction(guild))
+
+        self.emit_playlist_update(guild_id)
+
+    async def repeat_for_web(self, guild_id, mode: Optional[str]):
+        """mode: None -> toggle, 'on' -> True, 'off' -> False. Renvoie l'état final."""
+        cur = bool(self.repeat_all.get(guild_id, False))
+        if mode is None:
+            cur = not cur
+        else:
+            cur = True if mode == "on" else False
+        self.repeat_all[guild_id] = cur
+        self.emit_playlist_update(guild_id)
+        return cur
+
+    # ---------- Ticker ----------
+    def _ensure_ticker(self, guild_id: int):
+        if self.ticker_tasks.get(guild_id):
+            return
+        self.ticker_tasks[guild_id] = self.bot.loop.create_task(self._ticker(guild_id))
+
+    async def _ticker(self, guild_id: int):
+        try:
+            while True:
+                g = self.bot.get_guild(int(guild_id))
+                vc = g.voice_client if g else None
+                if not vc or (not vc.is_playing() and not vc.is_paused()):
+                    break
+                self.emit_playlist_update(guild_id)
+                await asyncio.sleep(1)
+        finally:
+            self.ticker_tasks.pop(guild_id, None)
+
 
 async def setup(bot, emit_fn=None):
     await bot.add_cog(Music(bot, emit_fn))
-    _greg_print("✅ Cog 'Music' chargé — slash + texte. *Vous allez encore m’user…*")
+    _greg_print("✅ Cog 'Music' chargé — overlay enrichi + provider/mode.")
