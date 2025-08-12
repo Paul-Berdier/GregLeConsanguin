@@ -62,7 +62,7 @@ def login():
     return redirect(f"{DISCORD_API_BASE}/oauth2/authorize?{urlencode(params)}")
 
 
-@oauth_bp.route("/oauth/callback")
+@oauth_bp.route("/callback")
 def callback():
     """Réception du code d'auth, échange contre access_token, puis récupération du profil."""
     code = request.args.get("code")
