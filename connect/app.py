@@ -5,11 +5,7 @@ from typing import Callable, Any, Dict
 from flask import Flask, render_template, request, jsonify, session, redirect
 from flask_socketio import SocketIO, emit
 
-# --- OAuth blueprint ---
-try:
-    from oauth import oauth_bp
-except Exception:
-    oauth_bp = None
+from .oauth import oauth_bp
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -19,8 +15,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     if oauth_bp:
         app.register_blueprint(oauth_bp)
-
-
 
 
     # ------------------------ Helpers ----------------------------

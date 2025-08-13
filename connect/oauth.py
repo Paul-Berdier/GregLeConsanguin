@@ -26,6 +26,8 @@ from urllib.parse import urlencode
 import requests
 from flask import Blueprint, request, redirect, session, url_for
 
+
+
 DISCORD_API_BASE = "https://discord.com/api"
 CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")

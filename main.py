@@ -6,7 +6,7 @@ import socket
 import discord
 from discord.ext import commands
 from playlist_manager import PlaylistManager
-from connect.app import create_web_app
+from connect import create_web_app   # ← vient de connect/__init__.py
 import config
 
 # ---------------------------------------------------------------------------
