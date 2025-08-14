@@ -1,6 +1,6 @@
 # extractors/soundcloud.py
 
-import asyncio
+import asyncio, discord
 import functools
 import os
 import re
@@ -154,53 +154,60 @@ def _pick_best_audio_url(info: dict) -> Optional[str]:
     return url if isinstance(url, str) else None
 
 
-# extractors/soundcloud.py
-
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
-    Retourne (source, title). url_or_query peut être une URL de page SC
-    ou un texte de recherche; yt-dlp trouve le bon flux.
+    Résout une page/terme SoundCloud et lit le flux via FFmpegPCMAudio.
+    Retourne (source, title).
     """
+
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'scsearch3',
-        'nocheckcertificate': True,
-        'ignoreerrors': True,
-        'extract_flat': False,  # important pour obtenir l'URL de flux résolue
-        'geo_bypass': True,
+        "format": "bestaudio/best",
+        "quiet": True,
+        "default_search": "scsearch3",   # garde ton scsearch3
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+        "extract_flat": False,           # important pour avoir l'URL HLS réelle
     }
 
     loop = asyncio.get_event_loop()
 
     def extract():
-        from yt_dlp import YoutubeDL
         with YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url_or_query, download=False)
+            info = ydl.extract_info(url_or_query, download=False)
+            # si résultat de recherche → prendre le premier
+            return info["entries"][0] if isinstance(info, dict) and "entries" in info else info
 
     try:
-        data = await loop.run_in_executor(None, extract)
-        info = data['entries'][0] if isinstance(data, dict) and 'entries' in data else data
-        stream_url = info.get('url') or info.get('webpage_url')
-        title = info.get('title', 'Son inconnu')
+        info = await loop.run_in_executor(None, extract)
+        if not info:
+            raise RuntimeError("Aucun résultat SoundCloud.")
 
+        stream_url = info.get("url")
         if not stream_url:
-            raise RuntimeError("Flux introuvable (yt-dlp n'a pas résolu l'URL).")
+            raise RuntimeError("Flux HLS introuvable pour cette piste.")
 
-        import discord
-        before = (
-            "-nostdin "
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            "-protocol_whitelist file,http,https,tcp,tls,crypto "
-            "-allowed_extensions ALL"
+        title = info.get("title", "Son inconnu")
+
+        # Clef: options HLS/Opus pour éviter "ogg mismatches allowed extensions"
+        before_opts = (
+            "-reconnect 1 "
+            "-reconnect_streamed 1 "
+            "-reconnect_delay_max 5 "
+            "-user_agent 'Mozilla/5.0' "
+            "-headers 'Referer: https://soundcloud.com\\r\\nOrigin: https://soundcloud.com' "
+            "-protocol_whitelist 'file,http,https,tcp,tls,crypto' "
+            "-allowed_extensions ALL "
+            "-loglevel warning"
         )
+
         source = discord.FFmpegPCMAudio(
             stream_url,
-            before_options=before,
+            before_options=before_opts,
             options="-vn",
-            executable=ffmpeg_path
+            executable=ffmpeg_path,
         )
         return source, title
 
     except Exception as e:
         raise RuntimeError(f"Échec de l'extraction SoundCloud : {e}")
+
