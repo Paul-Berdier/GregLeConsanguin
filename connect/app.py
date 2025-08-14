@@ -1,21 +1,16 @@
+# web/app.py
 from __future__ import annotations
 import os
 import asyncio
 from typing import Callable, Any, Dict
-from flask import Flask, render_template, request, jsonify, session, redirect
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
-
-from .oauth import oauth_bp
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
     socketio = SocketIO(app, cors_allowed_origins="*")
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.get_pm = get_pm
-
-    if oauth_bp:
-        app.register_blueprint(oauth_bp)
-
 
     # ------------------------ Helpers ----------------------------
     def _dbg(msg: str): print(f"🤦‍♂️ [WEB] {msg}")
@@ -41,7 +36,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/")
     def index():
         # Sert l’overlay (templates/index.html)
-        return render_template("index.html", user=session.get("user"))
+        # Pas d’auth: l’overlay renseigne lui-même guild_id + user_id côté client
+        return render_template("index.html")
 
     # ------------------------ API JSON ---------------------------
     @app.route("/api/health")
@@ -49,35 +45,15 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         _dbg("GET /api/health — oui ça tourne, quelle surprise.")
         return jsonify(ok=True)
 
-    @app.route("/api/me")
-    def api_me():
-        u = session.get("user")
-        if not u:
-            return jsonify(auth=False), 200
-        return jsonify(auth=True, id=u.get("id"), username=u.get("username"), avatar=u.get("avatar"))
-
     @app.route("/api/guilds", methods=["GET"])
     def api_guilds():
-        """Retourne les serveurs ciblables.
-        - Si user connecté : intersection (user∩bot)
-        - Sinon : guilds du bot (fallback)
-        """
+        """Retourne simplement les serveurs où le bot est présent."""
         err = _bot_required()
         if err: return err
-
         bot_guilds = getattr(app.bot, "guilds", [])
-        bot_map = {str(g.id): {"id": str(g.id), "name": g.name} for g in bot_guilds}
-
-        user = session.get("user")
-        if user and user.get("guilds"):
-            ids = {str(g["id"]) for g in user["guilds"]}
-            common = [bot_map[i] for i in ids if i in bot_map]
-            _dbg(f"GET /api/guilds — user logged, common={len(common)}")
-            return jsonify(common)
-
-        # Non loggé → renvoyer la liste du bot
-        _dbg(f"GET /api/guilds — no user, bot_guilds={len(bot_map)}")
-        return jsonify(list(bot_map.values()))
+        payload = [{"id": str(g.id), "name": g.name} for g in bot_guilds]
+        _dbg(f"GET /api/guilds — bot_guilds={len(payload)}")
+        return jsonify(payload)
 
     @app.route("/api/playlist", methods=["GET"])
     def api_playlist():
@@ -92,17 +68,14 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/play", methods=["POST"])
     def api_play():
         data = request.get_json(silent=True) or request.form
-        title   = (data or {}).get("title")
-        url     = (data or {}).get("url")
-        guild_id= (data or {}).get("guild_id")
-        # user_id prioritaire si fourni, sinon session
-        user_id = (data or {}).get("user_id") or (session.get("user") or {}).get("id")
+        title    = (data or {}).get("title")
+        url      = (data or {}).get("url")
+        guild_id = (data or {}).get("guild_id")
+        user_id  = (data or {}).get("user_id")  # ⚠️ OBLIGATOIRE côté client désormais
 
         _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
-        if not all([title, url, guild_id]):
-            return _bad_request("Paramètres manquants : title, url, guild_id")
-        if not user_id:
-            return _bad_request("user_id absent et aucun utilisateur connecté via OAuth.")
+        if not all([title, url, guild_id, user_id]):
+            return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
 
         music_cog, err = _music_cog_required()
         if err: return err
