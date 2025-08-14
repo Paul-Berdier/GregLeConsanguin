@@ -5,9 +5,12 @@ import asyncio
 from typing import Callable, Any, Dict
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
+from flask_cors import CORS
+
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
+    CORS(app)  # 🔥 ajoute ça pour autoriser les fetch cross-origin
     socketio = SocketIO(app, cors_allowed_origins="*")
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.get_pm = get_pm

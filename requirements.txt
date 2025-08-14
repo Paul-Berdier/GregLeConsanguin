@@ -9,6 +9,7 @@ flask
 flask-socketio       # <--- Ajoute-le !
 python-socketio[client]  # <--- Et celui-là aussi !
 requests
+flask_cors
 
 # Utilisé uniquement pour les tests unitaires et l'automatisation CI
 pytest
