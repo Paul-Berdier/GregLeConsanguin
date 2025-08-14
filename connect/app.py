@@ -356,13 +356,13 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
-        Recherche (3 résultats max) et renvoie des métadonnées utiles pour l'UI :
+        Recherche (3 max) + métadonnées pour l'UI :
         { results: [{title, url, artist, duration, thumb, provider}] }
-        - duration en secondes (peut être None si inconnu)
-        - provider: "soundcloud" | "youtube" | "unknown"
+        - url = URL DE PAGE (webpage_url) — pas de HLS/CDN
+        - duration en secondes (si connue)
+        - provider: "soundcloud" | "youtube"
         """
-        import re, requests
-
+        import re
         q = (request.args.get("q") or "").strip()
         provider = (request.args.get("provider") or "auto").lower().strip()
         if len(q) < 2:
@@ -374,19 +374,12 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             try:
                 from extractors import get_search_module
                 searcher = get_search_module(p)
-                return searcher.search(query)
+                return searcher.search(query) or []
             except Exception as e:
                 _dbg(f"extractors search({p}) failed: {e}")
                 return []
 
-        def _best(val, *alts):
-            for v in (val, *alts):
-                if v:
-                    return v
-            return None
-
         def _to_seconds(v):
-            # int (s ou ms) ou "MM:SS" ou "HH:MM:SS"
             if v is None:
                 return None
             try:
@@ -394,107 +387,45 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 return iv // 1000 if iv > 86400 else iv
             except Exception:
                 pass
-            if isinstance(v, str):
-                # HH:MM:SS ou MM:SS
-                if re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", v):
-                    parts = [int(p) for p in v.split(":")]
-                    if len(parts) == 2:  # MM:SS
-                        m, s = parts
-                        return m * 60 + s
-                    if len(parts) == 3:  # HH:MM:SS
-                        h, m, s = parts
-                        return h * 3600 + m * 60 + s
+            if isinstance(v, str) and re.match(r"^\d+:\d{2}$", v):
+                m, s = v.split(":")
+                return int(m) * 60 + int(s)
             return None
 
-        def _safe_json(r):
-            try:
-                return r.json()
-            except Exception:
-                return {}
-
-        def _force_https(url: str | None) -> str | None:
-            if not url:
-                return None
-            return re.sub(r"^http://", "https://", url)
-
-        def _oembed_enrich(page_url: str):
-            """Retourne (title, author_name, thumbnail_url) si trouvé, sinon (None, None, None)."""
-            try:
-                host = re.sub(r"^www\.", "", requests.utils.urlparse(page_url).hostname or "")
-                if "soundcloud.com" in host:
-                    r = requests.get(
-                        "https://soundcloud.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4,
-                    )
-                    oe = _safe_json(r)
-                    return (
-                        oe.get("title"),
-                        oe.get("author_name"),
-                        _force_https(oe.get("thumbnail_url")),
-                    )
-                if "youtube.com" in host or "youtu.be" in host:
-                    r = requests.get(
-                        "https://www.youtube.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4,
-                    )
-                    oe = _safe_json(r)
-                    return (
-                        oe.get("title"),
-                        oe.get("author_name"),
-                        _force_https(oe.get("thumbnail_url")),
-                    )
-            except Exception:
-                pass
-            return None, None, None
-
-        def _normalize_item(raw: dict, chosen: str | None):
-            # inputs possibles : title, webpage_url, url, uploader/artist/channel/author,
-            # duration/duration_ms, thumbnail
-            page_url = (raw.get("webpage_url") or raw.get("url") or "").strip()
-            title = raw.get("title") or None
-            artist = _best(raw.get("uploader"), raw.get("artist"), raw.get("channel"), raw.get("author"))
-            duration = _to_seconds(_best(raw.get("duration"), raw.get("duration_ms")))
-            thumb = _force_https(raw.get("thumbnail"))
-
-            if (not thumb or not artist or not title) and page_url:
-                t2, a2, th2 = _oembed_enrich(page_url)
-                title = title or t2
-                artist = artist or a2
-                thumb = thumb or th2
-
-            prov = (chosen or "unknown").lower()
-            return {
-                "title": title or page_url or "Sans titre",
-                "url": page_url,  # <= la page, pas le flux CDN
-                "page_url": page_url,  # duplicate pour le client, pratique
-                "artist": artist,
-                "duration": duration,
-                "thumb": thumb,
-                "provider": chosen or "unknown",
-            }
+        def _norm(rows, chosen):
+            out = []
+            for r in rows[:3]:
+                # IMPORTANT: privilégier la page officielle (webpage_url)
+                page_url = r.get("webpage_url") or r.get("url") or ""
+                out.append({
+                    "title": r.get("title") or page_url or "Sans titre",
+                    "url": page_url,  # <- URL DE PAGE (clé pour le stream côté bot)
+                    "artist": r.get("uploader") or r.get("artist") or r.get("channel") or r.get("author"),
+                    "duration": _to_seconds(r.get("duration") or r.get("duration_ms")),
+                    "thumb": r.get("thumbnail"),
+                    "provider": chosen,
+                })
+            return out
 
         try:
             results = []
             chosen = None
 
-            def _search(p):
+            def _run(p):
                 nonlocal results, chosen
-                rows = _search_sync(p, q) or []
+                rows = _search_sync(p, q)
                 if rows and not results:
-                    chosen = p
                     results = rows
+                    chosen = p
 
             if provider == "auto":
-                _search("soundcloud")
+                _run("soundcloud")
                 if not results:
-                    _search("youtube")
+                    _run("youtube")
             else:
-                _search("youtube" if provider == "youtube" else "soundcloud")
+                _run("youtube" if provider == "youtube" else "soundcloud")
 
-            out = [_normalize_item(r, chosen) for r in (results or [])[:3]]
-            return jsonify(results=out)
+            return jsonify(results=_norm(results, chosen or "soundcloud"))
         except Exception as e:
             _dbg(f"/api/autocomplete — 💥 {e}")
             return jsonify(results=[])
