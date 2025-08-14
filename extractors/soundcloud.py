@@ -3,30 +3,56 @@
 import asyncio
 import functools
 import os
+import re
 import subprocess
-from yt_dlp import YoutubeDL
 from pathlib import Path
+from typing import Optional, Tuple
+
+from yt_dlp import YoutubeDL
+
+
+# --- Détection d'URL SoundCloud / streams SoundCloud ------------------------
+
+_SCDN_RX = re.compile(
+    r"(?:^|://)(?:www\.)?(?:soundcloud\.com|sndcdn\.com|cf-(?:hls-)?media\.sndcdn\.com)",
+    re.I,
+)
+_STREAM_EXT_RX = re.compile(r"\.(?:m3u8|mp3)(?:\?|$)", re.I)
 
 
 def is_valid(url: str) -> bool:
-    """Vérifie si l'URL vient de SoundCloud."""
-    return "soundcloud.com" in url
+    """
+    Vrai si l'URL est une page SoundCloud OU un stream CDN SoundCloud (.m3u8/.mp3).
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    if _SCDN_RX.search(url):
+        return True
+    if _STREAM_EXT_RX.search(url):
+        return True
+    return False
 
+
+# --- Recherche (page/permalink) ---------------------------------------------
 
 def search(query: str):
-    """Recherche des pistes SoundCloud correspondant au texte `query`."""
+    """
+    Recherche des pistes SoundCloud correspondant à `query`.
+    Retourne des entrées "flat" (rapides) via yt-dlp (scsearch3).
+    """
     ydl_opts = {
-        'quiet': True,
-        'default_search': 'scsearch3',
-        'nocheckcertificate': True,
-        'ignoreerrors': True,
-        'extract_flat': True,
+        "quiet": True,
+        "default_search": "scsearch3",
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+        "extract_flat": True,  # plus rapide, pas de résolution détaillée
     }
-
     with YoutubeDL(ydl_opts) as ydl:
         results = ydl.extract_info(f"scsearch3:{query}", download=False)
         return results.get("entries", []) if results else []
 
+
+# --- Téléchargement (mp3) ---------------------------------------------------
 
 async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     """
@@ -34,24 +60,23 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     Convertit .opus en .mp3 si nécessaire.
     Retourne (chemin du fichier, titre, durée).
     """
-    # Assure que le dossier de destination existe
-    os.makedirs('downloads', exist_ok=True)
+    os.makedirs("downloads", exist_ok=True)
 
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[abr>0]/bestaudio/best',
-        'outtmpl': 'downloads/greg_audio.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[abr>0]/bestaudio/best",
+        "outtmpl": "downloads/greg_audio.%(ext)s",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
         }],
-        'ffmpeg_location': ffmpeg_path,
-        'quiet': False,
-        'nocheckcertificate': True,
-        'ratelimit': 5.0,
-        'sleep_interval_requests': 1,
-        'prefer_ffmpeg': True,
-        'force_generic_extractor': False
+        "ffmpeg_location": ffmpeg_path,
+        "quiet": False,
+        "nocheckcertificate": True,
+        "ratelimit": 5.0,
+        "sleep_interval_requests": 1,
+        "prefer_ffmpeg": True,
+        "force_generic_extractor": False,
     }
 
     print(f"🎧 Extraction SoundCloud : {url}")
@@ -59,7 +84,9 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
     with YoutubeDL(ydl_opts) as ydl:
         # Métadonnées
-        info = await loop.run_in_executor(None, functools.partial(ydl.extract_info, url, False))
+        info = await loop.run_in_executor(
+            None, functools.partial(ydl.extract_info, url, False)
+        )
         title = info.get("title", "Son inconnu")
         duration = info.get("duration", 0)
         print(f"[DEBUG] Format choisi : {info.get('ext')} ({info.get('format_id')})")
@@ -74,8 +101,11 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
             subprocess.run([
                 ffmpeg_path, "-y", "-i", original_filename,
                 "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", converted
-            ])
-            os.remove(original_filename)
+            ], check=False)
+            try:
+                os.remove(original_filename)
+            except Exception:
+                pass
             filename = converted
         else:
             filename = Path(original_filename).with_suffix(".mp3")
@@ -85,16 +115,61 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
     return filename, title, duration
 
+
+# --- Lecture en flux (prioritaire) ------------------------------------------
+
+def _pick_best_audio_url(info: dict) -> Optional[str]:
+    """
+    Essaie de sélectionner la meilleure URL audio :
+    - si info['url'] est déjà un flux direct -> OK
+    - sinon, regarder dans info['formats'] et prendre un HLS/AAC/MP3 correct.
+    """
+    # URL directe ?
+    url = (info or {}).get("url")
+    if isinstance(url, str) and ( _STREAM_EXT_RX.search(url) or "sndcdn.com" in url ):
+        return url
+
+    # Chercher dans formats
+    for prefer_hls in (True, False):
+        fmts = (info or {}).get("formats") or []
+        # tri simple: bitrate/abr/height
+        fmts = sorted(
+            fmts,
+            key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0, f.get("asr") or 0),
+            reverse=True,
+        )
+        for f in fmts:
+            furl = f.get("url")
+            if not isinstance(furl, str):
+                continue
+            is_hls = ".m3u8" in furl
+            if prefer_hls and not is_hls:
+                continue
+            if not prefer_hls and is_hls:
+                continue
+            if "sndcdn.com" in furl or _STREAM_EXT_RX.search(furl):
+                return furl
+
+    # fallback final
+    return url if isinstance(url, str) else None
+
+
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
     Récupère les infos nécessaires pour lire un flux audio SoundCloud avec FFmpegPCMAudio.
+    Accepte :
+      - une requête texte ("damso - ...")
+      - une URL de page soundcloud.com
+      - une URL de stream sndcdn.com (.m3u8/.mp3)
     Retourne (source, titre).
     """
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'scsearch3',
-        'nocheckcertificate': True,
+        "format": "bestaudio/best",
+        "quiet": True,
+        "default_search": "scsearch3",
+        "nocheckcertificate": True,
+        # Important pour récupérer les 'formats' quand on donne une page :
+        "extract_flat": False,
     }
 
     loop = asyncio.get_event_loop()
@@ -105,16 +180,23 @@ async def stream(url_or_query: str, ffmpeg_path: str):
 
     try:
         data = await loop.run_in_executor(None, extract)
-        info = data['entries'][0] if 'entries' in data else data
-        stream_url = info['url']
-        title = info.get('title', 'Son inconnu')
+        # si recherche renvoie une liste
+        info = data["entries"][0] if isinstance(data, dict) and "entries" in data else data
+
+        # choisir une URL audio exploitable
+        stream_url = _pick_best_audio_url(info)
+        if not stream_url:
+            raise RuntimeError("Aucun flux audio exploitable trouvé.")
+
+        title = info.get("title", "Son inconnu")
 
         import discord
+        # Options FFmpeg pour robustesse HLS (reconnect)
         source = discord.FFmpegPCMAudio(
             stream_url,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             options="-vn",
-            executable=ffmpeg_path
+            executable=ffmpeg_path,
         )
 
         return source, title

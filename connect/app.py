@@ -352,42 +352,150 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     # ------------------------ Autocomplete (GET) ------------------
     # Compat : on expose /autocomplete ET /api/autocomplete
+    # --- remplace ENTIEREMENT ta route /api/autocomplete par ceci ---
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
-        Autocomplete SoundCloud (3 résultats max).
-        Requiert l'env SOUNDCLOUD_CLIENT_ID (SoundCloud web client_id).
-        Réponse JSON:
-          { "results": [
-              { "title": "...",
-                "url": "<URL STREAM direct si possible, sinon permalink>",
-                "provider": "soundcloud",
-                "permalink_url": "<toujours fourni>",
-                "stream_url": "<si trouvé>",
-                "duration": <sec>,
-                "author": "<username>"
-              }, ...
-            ]
-          }
+        Recherche (3 résultats max) et renvoie des métadonnées utiles pour l'UI :
+        { results: [{title, url, artist, duration, thumb, provider}] }
+        - duration en secondes (peut être None si inconnu)
+        - provider: "soundcloud" | "youtube" | "unknown"
         """
+        import re, requests
+
         q = (request.args.get("q") or "").strip()
+        provider = (request.args.get("provider") or "auto").lower().strip()
         if len(q) < 2:
             return jsonify(results=[])
 
-        client_id = os.getenv("SOUNDCLOUD_CLIENT_ID", "").strip()
-        if not client_id:
-            # Sans client_id, on ne peut pas aller chercher les transcodings → on renvoie vide
-            return jsonify(results=[])
+        _dbg(f"GET /api/autocomplete — q={q!r}, provider={provider}")
 
-        limit = int(request.args.get("limit") or 3)
-        limit = max(1, min(limit, 5))
+        def _search_sync(p: str, query: str):
+            try:
+                from extractors import get_search_module
+                searcher = get_search_module(p)
+                return searcher.search(query)
+            except Exception as e:
+                _dbg(f"extractors search({p}) failed: {e}")
+                return []
+
+        def _best(val, *alts):
+            for v in (val, *alts):
+                if v:
+                    return v
+            return None
+
+        def _to_seconds(v):
+            # int (s ou ms) ou "MM:SS" ou "HH:MM:SS"
+            if v is None:
+                return None
+            try:
+                iv = int(v)
+                return iv // 1000 if iv > 86400 else iv
+            except Exception:
+                pass
+            if isinstance(v, str):
+                # HH:MM:SS ou MM:SS
+                if re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", v):
+                    parts = [int(p) for p in v.split(":")]
+                    if len(parts) == 2:  # MM:SS
+                        m, s = parts
+                        return m * 60 + s
+                    if len(parts) == 3:  # HH:MM:SS
+                        h, m, s = parts
+                        return h * 3600 + m * 60 + s
+            return None
+
+        def _safe_json(r):
+            try:
+                return r.json()
+            except Exception:
+                return {}
+
+        def _force_https(url: str | None) -> str | None:
+            if not url:
+                return None
+            return re.sub(r"^http://", "https://", url)
+
+        def _oembed_enrich(page_url: str):
+            """Retourne (title, author_name, thumbnail_url) si trouvé, sinon (None, None, None)."""
+            try:
+                host = re.sub(r"^www\.", "", requests.utils.urlparse(page_url).hostname or "")
+                if "soundcloud.com" in host:
+                    r = requests.get(
+                        "https://soundcloud.com/oembed",
+                        params={"format": "json", "url": page_url},
+                        timeout=4,
+                    )
+                    oe = _safe_json(r)
+                    return (
+                        oe.get("title"),
+                        oe.get("author_name"),
+                        _force_https(oe.get("thumbnail_url")),
+                    )
+                if "youtube.com" in host or "youtu.be" in host:
+                    r = requests.get(
+                        "https://www.youtube.com/oembed",
+                        params={"format": "json", "url": page_url},
+                        timeout=4,
+                    )
+                    oe = _safe_json(r)
+                    return (
+                        oe.get("title"),
+                        oe.get("author_name"),
+                        _force_https(oe.get("thumbnail_url")),
+                    )
+            except Exception:
+                pass
+            return None, None, None
+
+        def _normalize_item(raw: dict, chosen: str | None):
+            # inputs possibles : title, webpage_url, url, uploader/artist/channel/author,
+            # duration/duration_ms, thumbnail
+            page_url = _best(raw.get("webpage_url"), raw.get("url"))
+            title = raw.get("title") or None
+            artist = _best(raw.get("uploader"), raw.get("artist"), raw.get("channel"), raw.get("author"))
+            duration = _to_seconds(_best(raw.get("duration"), raw.get("duration_ms")))
+            thumb = _force_https(raw.get("thumbnail"))
+
+            if (not thumb or not artist or not title) and page_url:
+                t2, a2, th2 = _oembed_enrich(page_url)
+                title = title or t2
+                artist = artist or a2
+                thumb = thumb or th2
+
+            prov = (chosen or "unknown").lower()
+            return {
+                "title": title or page_url or "Sans titre",
+                "url": page_url or raw.get("url") or "",
+                "artist": artist,
+                "duration": duration,  # en secondes ou None
+                "thumb": thumb,
+                "provider": "youtube" if "you" in prov else ("soundcloud" if "sound" in prov else "unknown"),
+            }
 
         try:
-            results = _sc_search_with_streams(client_id, q, limit=limit, timeout=8.0)
-            return jsonify(results=results)
+            results = []
+            chosen = None
+
+            def _search(p):
+                nonlocal results, chosen
+                rows = _search_sync(p, q) or []
+                if rows and not results:
+                    chosen = p
+                    results = rows
+
+            if provider == "auto":
+                _search("soundcloud")
+                if not results:
+                    _search("youtube")
+            else:
+                _search("youtube" if provider == "youtube" else "soundcloud")
+
+            out = [_normalize_item(r, chosen) for r in (results or [])[:3]]
+            return jsonify(results=out)
         except Exception as e:
-            # On log et on renvoie vide (le front est tolérant)
-            print(f"🤦‍♂️ [WEB] /autocomplete — 💥 {e}")
+            _dbg(f"/api/autocomplete — 💥 {e}")
             return jsonify(results=[])
 
     # ------------------------ WebSocket ---------------------------

@@ -22,13 +22,15 @@ def _greg_print(msg: str):
     print(f"[GREG/Music] {msg}")
 
 
-def _infer_provider_from_url(url: str) -> Optional[str]:
-    u = url.lower()
-    if "youtube.com" in u or "youtu.be" in u or "music.youtube" in u:
-        return "youtube"
-    if "soundcloud.com" in u:
+def _infer_provider_from_url(u: str) -> Optional[str]:
+    if not isinstance(u, str):
+        return None
+    if "soundcloud.com" in u or "sndcdn.com" in u:
         return "soundcloud"
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
     return None
+
 
 
 class Music(commands.Cog):
