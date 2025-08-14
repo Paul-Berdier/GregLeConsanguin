@@ -1,7 +1,7 @@
 # commands/music.py
 #
 # Greg le Consanguin — Cog "Music"
-# - Slash commands ET commandes texte (prefix: "!")
+# - Slash commands UNIQUEMENT
 # - Intégration overlay/web via emit_fn (fourni par main.py)
 # - Émissions Socket.IO: état enrichi (queue, current, is_paused, progress, thumbnail, repeat_all)
 # - Recherche YouTube/SoundCloud selon le provider choisi
@@ -118,6 +118,17 @@ class Music(commands.Cog):
             )
             self.emit_fn("playlist_update", payload)
 
+    async def _i_send(self, interaction: discord.Interaction, msg: str):
+        """Envoi correct selon l'état (response/followup)."""
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg)
+            else:
+                await interaction.response.send_message(msg)
+        except Exception:
+            # Fallback silencieux console
+            _greg_print(f"[WARN] _i_send fallback: {msg}")
+
     # ---------- Détection ffmpeg ----------
 
     def detect_ffmpeg(self):
@@ -157,12 +168,12 @@ class Music(commands.Cog):
         name="play",
         description="Joue un son en choisissant la source (YouTube/SoundCloud) et le mode (stream/download)."
     )
-    async def play(
+    async def slash_play(
         self,
         interaction: discord.Interaction,
         query_or_url: str,
-        provider: app_commands.Choice[str] = None,
-        mode: app_commands.Choice[str] = None,
+        provider: Optional[app_commands.Choice[str]] = None,
+        mode: Optional[app_commands.Choice[str]] = None,
     ):
         prov = (provider.value if provider else "auto").lower()
         play_mode = (mode.value if mode else "auto").lower()
@@ -229,11 +240,16 @@ class Music(commands.Cog):
             title = item.get("title", "Titre inconnu")
             url = item.get("webpage_url") or item.get("url") or ""
             msg += f"**{i}.** [{title}]({url})\n"
-        msg += "\n*Réponds avec un chiffre (1-3).*"
+        msg += "\n*Réponds avec un chiffre (1-3) dans le chat.*"
         await interaction.followup.send(msg)
 
         def check(m):
-            return m.author.id == interaction.user.id and m.content.isdigit() and 1 <= int(m.content) <= len(results[:3])
+            return (
+                m.author.id == interaction.user.id
+                and m.channel.id == interaction.channel.id
+                and m.content.isdigit()
+                and 1 <= int(m.content) <= len(results[:3])
+            )
 
         try:
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
@@ -247,6 +263,52 @@ class Music(commands.Cog):
             })
         except asyncio.TimeoutError:
             await interaction.followup.send("⏳ *Trop lent. Greg retourne maugréer dans sa crypte…*")
+
+    @app_commands.command(name="skip", description="Passe au morceau suivant.")
+    async def slash_skip(self, interaction: discord.Interaction):
+        await self._do_skip(interaction.guild, lambda m: self._i_send(interaction, m))
+
+    @app_commands.command(name="stop", description="Vide la playlist et stoppe la lecture.")
+    async def slash_stop(self, interaction: discord.Interaction):
+        await self._do_stop(interaction.guild, lambda m: self._i_send(interaction, m))
+
+    @app_commands.command(name="pause", description="Met la musique en pause.")
+    async def slash_pause(self, interaction: discord.Interaction):
+        await self._do_pause(interaction.guild, lambda m: self._i_send(interaction, m))
+
+    @app_commands.command(name="resume", description="Reprend la musique.")
+    async def slash_resume(self, interaction: discord.Interaction):
+        await self._do_resume(interaction.guild, lambda m: self._i_send(interaction, m))
+
+    @app_commands.command(name="playlist", description="Affiche la file d’attente.")
+    async def slash_playlist(self, interaction: discord.Interaction):
+        pm = self.get_pm(interaction.guild.id)
+        queue = await asyncio.get_running_loop().run_in_executor(None, pm.get_queue)
+        if not queue:
+            return await self._i_send(interaction, "📋 *Playlist vide. Comme ton âme.*")
+        lines = "\n".join([f"**{i+1}.** [{it.get('title','?')}]({it.get('url','')})" for i, it in enumerate(queue)])
+        await self._i_send(interaction, f"🎶 *Sélection actuelle :*\n{lines}")
+
+    @app_commands.command(name="current", description="Montre le morceau en cours.")
+    async def slash_current(self, interaction: discord.Interaction):
+        song = self.current_song.get(interaction.guild.id)
+        if song:
+            await self._i_send(interaction, f"🎧 **[{song['title']}]({song['url']})**")
+        else:
+            await self._i_send(interaction, "❌ *Rien en cours. Le néant musical.*")
+
+    @app_commands.describe(mode="on/off (vide pour basculer)")
+    @app_commands.command(name="repeat", description="Active/désactive le repeat ALL (toute la file).")
+    async def slash_repeat(self, interaction: discord.Interaction, mode: Optional[str] = None):
+        mode = (mode or "").lower().strip()
+        if mode not in ("", "on", "off"):
+            return await self._i_send(interaction, "⚠️ Utilisation: `/repeat` (toggle) ou `/repeat on|off`")
+        state = await self.repeat_for_web(interaction.guild.id, mode if mode else None)
+        await self._i_send(interaction, f"🔁 Repeat ALL : **{'ON' if state else 'OFF'}**")
+
+    # =====================================================================
+    #                         Actions internes factorisées
+    # =====================================================================
 
     async def add_to_queue(self, interaction_like, item):
         """
@@ -372,88 +434,6 @@ class Music(commands.Cog):
         except Exception as e:
             await interaction_like.followup.send(f"❌ *Même le téléchargement s’écroule…* `{e}`")
 
-    # =====================================================================
-    #                         COMMANDES TEXTE (!)
-    # =====================================================================
-
-    class _CtxProxy:
-        def __init__(self, ctx):
-            self.guild = ctx.guild
-            self._ctx = ctx
-            self.followup = self
-        async def send(self, msg):
-            await self._ctx.reply(msg)
-
-    @commands.command(name="play", help="!play <url|recherche> — Joue un son (SC/YT auto).")
-    async def text_play(self, ctx: commands.Context, *, query_or_url: str):
-        _greg_print(f"!play par {ctx.author} — arg='{query_or_url}'")
-        if ctx.guild.voice_client is None:
-            if ctx.author.voice and ctx.author.voice.channel:
-                await ctx.author.voice.channel.connect()
-                await ctx.reply(f"🎤 *Greg rejoint :* **{ctx.author.voice.channel.name}**")
-            else:
-                return await ctx.reply("❌ *T’es même pas en vocal, microbe…*")
-
-        # URL → file directe
-        if query_or_url.startswith(("http://", "https://")):
-            return await self.add_to_queue(Music._CtxProxy(ctx), {
-                "title": query_or_url, "url": query_or_url,
-                "provider": _infer_provider_from_url(query_or_url), "mode": "auto"
-            })
-
-        # Texte → on tente SC puis YT
-        for prov in ("soundcloud", "youtube"):
-            try:
-                searcher = get_search_module(prov)
-                results = await asyncio.get_running_loop().run_in_executor(None, searcher.search, query_or_url)
-                if results:
-                    top = results[0]
-                    return await self.add_to_queue(Music._CtxProxy(ctx), {
-                        "title": top.get("title", "Titre inconnu"),
-                        "url": top.get("webpage_url", top.get("url")),
-                        "provider": prov, "mode": "auto"
-                    })
-            except Exception:
-                continue
-        await ctx.reply("❌ *Rien trouvé. Même pas un bootleg moisi.*")
-
-    @commands.command(name="skip", help="!skip — Passe au suivant.")
-    async def text_skip(self, ctx: commands.Context):
-        await self._do_skip(ctx.guild, lambda m: ctx.reply(m))
-
-    @commands.command(name="stop", help="!stop — Vide la playlist et stoppe la lecture.")
-    async def text_stop(self, ctx: commands.Context):
-        await self._do_stop(ctx.guild, lambda m: ctx.reply(m))
-
-    @commands.command(name="pause", help="!pause — Met la musique en pause.")
-    async def text_pause(self, ctx: commands.Context):
-        await self._do_pause(ctx.guild, lambda m: ctx.reply(m))
-
-    @commands.command(name="resume", help="!resume — Reprend la musique.")
-    async def text_resume(self, ctx: commands.Context):
-        await self._do_resume(ctx.guild, lambda m: ctx.reply(m))
-
-    @commands.command(name="playlist", help="!playlist — Affiche la file d’attente.")
-    async def text_playlist(self, ctx: commands.Context):
-        pm = self.get_pm(ctx.guild.id)
-        queue = await asyncio.get_running_loop().run_in_executor(None, pm.get_queue)
-        if not queue:
-            return await ctx.reply("📋 *Playlist vide. Comme ton âme.*")
-        lines = "\n".join([f"**{i+1}.** [{it['title']}]({it['url']})" for i, it in enumerate(queue)])
-        await ctx.reply(f"🎶 *Sélection actuelle :*\n{lines}")
-
-    @commands.command(name="current", help="!current — Montre le morceau en cours.")
-    async def text_current(self, ctx: commands.Context):
-        song = self.current_song.get(ctx.guild.id)
-        if song:
-            await ctx.reply(f"🎧 **[{song['title']}]({song['url']})**")
-        else:
-            await ctx.reply("❌ *Rien en cours. Le néant musical.*")
-
-    # =====================================================================
-    #                         Actions internes factorisées
-    # =====================================================================
-
     async def _do_skip(self, guild: discord.Guild, send_fn):
         pm = self.get_pm(guild.id)
         await asyncio.get_running_loop().run_in_executor(None, pm.reload)
@@ -562,7 +542,6 @@ class Music(commands.Cog):
             def __init__(self, g):
                 self.guild = g
                 self.followup = self
-
             async def send(self, msg):
                 _greg_print(f"[WEB->Discord] {msg}")
 
@@ -670,4 +649,4 @@ class Music(commands.Cog):
 
 async def setup(bot, emit_fn=None):
     await bot.add_cog(Music(bot, emit_fn))
-    _greg_print("✅ Cog 'Music' chargé — overlay enrichi + provider/mode.")
+    _greg_print("✅ Cog 'Music' chargé — overlay enrichi + provider/mode (slash commands only).")
