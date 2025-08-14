@@ -3,54 +3,168 @@ from __future__ import annotations
 import os
 import asyncio
 from typing import Callable, Any, Dict, Optional, List
+
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
+from flask_cors import CORS
+import os, asyncio
+from typing import List, Dict, Any
+import requests
+
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    CORS(app)  # 🔥 Autorise les requêtes cross-origin (overlay, overwolf, etc.)
+
+    # 🔧 threading: évite les problèmes websocket avec le dev server Werkzeug
+    socketio = SocketIO(
+        app,
+        cors_allowed_origins="*",
+        async_mode="threading",
+        logger=False,
+        engineio_logger=False,
+    )
+
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.get_pm = get_pm
 
     # ------------------------ Helpers ----------------------------
     def _dbg(msg: str): print(f"🤦‍♂️ [WEB] {msg}")
+
     def _bad_request(msg: str, code: int = 400):
         _dbg(f"Requête pourrie ({code}) : {msg}")
         return jsonify({"error": msg}), code
+
     def _bot_required():
-        if not getattr(app, "bot", None):
+        bot = getattr(app, "bot", None)
+        if not bot:
             return _bad_request("Bot Discord non initialisé", 500)
         return None
+
     def _music_cog_required():
         err = _bot_required()
-        if err: return None, err
+        if err:
+            return None, err
         music_cog = app.bot.get_cog("Music")
         if not music_cog:
             return None, _bad_request("Music cog manquant (encore bravo…)", 500)
         return music_cog, None
+
     def _dispatch(coro, timeout=60):
-        fut = asyncio.run_coroutine_threadsafe(coro, app.bot.loop)
-        return fut.result(timeout=timeout)
+        """
+        Exécute une coroutine sur la loop du bot si existante, sinon localement.
+        """
+        loop = getattr(getattr(app, "bot", None), "loop", None)
+        if loop and loop.is_running():
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            return fut.result(timeout=timeout)
+        # Fallback (dev) : run dans la loop courante
+        return asyncio.get_event_loop().run_until_complete(asyncio.wait_for(coro, timeout))
 
     # même structure que le payload Socket.IO
     def _overlay_payload_for(guild_id: int | str) -> Dict[str, Any]:
-        music_cog = app.bot.get_cog("Music")
+        music_cog = getattr(app, "bot", None)
+        music_cog = music_cog and app.bot.get_cog("Music")
         if music_cog:
             try:
                 return music_cog._overlay_payload(int(guild_id))
             except Exception as e:
                 _dbg(f"_overlay_payload_for — fallback (music): {e}")
+
         # Fallback minimal si pas de Music: queue/current only
         pm = app.get_pm(guild_id)
         data = pm.to_dict()
+        current = data.get("current")
+        thumb = current.get("thumb") if isinstance(current, dict) else None
         return {
             "queue": data.get("queue", []),
-            "current": data.get("current"),
+            "current": current,
             "is_paused": False,
             "progress": {"elapsed": 0, "duration": None},
-            "thumbnail": (data.get("current") or {}).get("thumb") if isinstance(data.get("current"), dict) else None,
+            "thumbnail": thumb,
             "repeat_all": False,
         }
+
+    def _sc_search_with_streams(client_id: str, query: str, limit: int = 3, timeout: float = 8.0) -> List[
+        Dict[str, Any]]:
+        """
+        Cherche des pistes SoundCloud et tente d'obtenir un stream direct:
+        - On cherche via /search/tracks
+        - Pour chaque piste, on inspecte media.transcodings
+        - On privilégie 'progressive' (MP3), fallback 'hls'
+        - Pour obtenir l'URL signée, on GET <transcoding.url>?client_id=...
+
+        Retour: liste de dicts prêts pour l'overlay.
+        """
+        ses = requests.Session()
+        ses.headers.update({
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        })
+
+        # 1) Recherche
+        # Doc non officielle: https://api-v2.soundcloud.com/search/tracks?q=...&client_id=...&limit=...
+        search_url = "https://api-v2.soundcloud.com/search/tracks"
+        params = {
+            "q": query,
+            "client_id": client_id,
+            "limit": max(1, min(limit, 10)),
+        }
+        r = ses.get(search_url, params=params, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+
+        collection = data.get("collection", []) or []
+        out: List[Dict[str, Any]] = []
+
+        for item in collection[:limit]:
+            title = item.get("title") or "Sans titre"
+            permalink_url = item.get("permalink_url") or ""
+            duration_ms = item.get("duration") or 0
+            duration = int(round(duration_ms / 1000)) if duration_ms else None
+            user = (item.get("user") or {})
+            author = user.get("username") or "Unknown"
+
+            stream_url = None
+
+            # 2) Choisir un transcoding (progressive > hls)
+            media = item.get("media") or {}
+            transcodings = media.get("transcodings") or []
+            progressive = None
+            hls = None
+            for t in transcodings:
+                fmt = (t.get("format") or {}).get("protocol")
+                if fmt == "progressive" and not progressive:
+                    progressive = t
+                elif fmt == "hls" and not hls:
+                    hls = t
+
+            chosen = progressive or hls
+            if chosen and chosen.get("url"):
+                # 3) Résoudre l'URL signée
+                resolve_url = chosen["url"]
+                # Il faut ajouter client_id en query pour obtenir {"url": "<signed_url>"}
+                rr = ses.get(resolve_url, params={"client_id": client_id}, timeout=timeout)
+                if rr.ok:
+                    j = rr.json()
+                    candidate = j.get("url")
+                    if isinstance(candidate, str) and candidate.startswith("http"):
+                        stream_url = candidate
+
+            # 4) Construire l'item
+            #   - url = stream direct si disponible, sinon le permalink (plus stable)
+            #   - on fournit toujours permalink_url et stream_url (si trouvé)
+            out.append({
+                "title": title,
+                "url": stream_url or permalink_url,  # <- le front utilisera d'abord url
+                "provider": "soundcloud",
+                "permalink_url": permalink_url,
+                "stream_url": stream_url,  # <- utile si tu veux l’exploiter plus tard
+                "duration": duration,
+                "author": author,
+            })
+
+        return out
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
@@ -68,8 +182,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def api_guilds():
         """Retourne simplement les serveurs où le bot est présent."""
         err = _bot_required()
-        if err: return err
-        bot_guilds = getattr(app, "bot", None).guilds or []
+        if err:
+            return err
+        bot = getattr(app, "bot", None)
+        bot_guilds = getattr(bot, "guilds", []) or []
         payload = [{"id": str(g.id), "name": g.name} for g in bot_guilds]
         _dbg(f"GET /api/guilds — bot_guilds={len(payload)}")
         return jsonify(payload)
@@ -78,13 +194,21 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def api_playlist():
         guild_id = request.args.get("guild_id")
         if not guild_id:
-            return jsonify({"queue": [], "current": None, "is_paused": False,
-                            "progress": {"elapsed": 0, "duration": None},
-                            "thumbnail": None, "repeat_all": False})
+            return jsonify({
+                "queue": [],
+                "current": None,
+                "is_paused": False,
+                "progress": {"elapsed": 0, "duration": None},
+                "thumbnail": None,
+                "repeat_all": False
+            })
         try:
             payload = _overlay_payload_for(guild_id)
-            _dbg(f"GET /api/playlist — guild={guild_id}, items={len(payload.get('queue', []))}, "
-                 f"elapsed={payload.get('progress',{}).get('elapsed')}")
+            _dbg(
+                f"GET /api/playlist — guild={guild_id}, "
+                f"items={len(payload.get('queue', []))}, "
+                f"elapsed={payload.get('progress',{}).get('elapsed')}"
+            )
             return jsonify(payload)
         except Exception as e:
             _dbg(f"/api/playlist — 💥 {e}")
@@ -103,7 +227,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
 
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.play_for_user(guild_id, user_id, {"title": title, "url": url}), timeout=90)
             return jsonify(ok=True)
@@ -116,7 +241,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/pause — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.pause_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -129,7 +255,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/resume — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.resume_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -142,7 +269,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/stop — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.stop_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -155,7 +283,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/skip — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.skip_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -168,7 +297,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/toggle_pause — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.toggle_pause_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -181,7 +311,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/restart — guild={guild_id}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             _dispatch(music_cog.restart_current_for_web(guild_id), timeout=30)
             return jsonify(ok=True)
@@ -195,7 +326,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         mode = (data.get("mode") or "").lower().strip() if isinstance(data, dict) else ""
         _dbg(f"POST /api/repeat — guild={guild_id}, mode={mode or 'toggle'}")
         music_cog, err = _music_cog_required()
-        if err: return err
+        if err:
+            return err
         try:
             result = _dispatch(music_cog.repeat_for_web(guild_id, mode or None), timeout=30)
             return jsonify(repeat_all=bool(result))
@@ -208,7 +340,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         guild_id = request.args.get("guild_id")
         _dbg(f"GET /api_text_channels — guild={guild_id}")
         err = _bot_required()
-        if err: return err
+        if err:
+            return err
         if not guild_id:
             return _bad_request("missing guild_id")
         guild = app.bot.get_guild(int(guild_id))
@@ -217,60 +350,44 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         channels = [{"id": c.id, "name": c.name} for c in guild.text_channels]
         return jsonify(channels)
 
-    # ------------------------ Autocomplete (GET /autocomplete) ----
-    @app.route("/autocomplete", methods=["GET"])
+    # ------------------------ Autocomplete (GET) ------------------
+    # Compat : on expose /autocomplete ET /api/autocomplete
+    @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
-        Suggère 3 résultats max depuis SoundCloud puis fallback YouTube (provider=auto),
-        ou bien forcer ?provider=youtube|soundcloud.
-        Réponse: { results: [{title, url, provider}] }
+        Autocomplete SoundCloud (3 résultats max).
+        Requiert l'env SOUNDCLOUD_CLIENT_ID (SoundCloud web client_id).
+        Réponse JSON:
+          { "results": [
+              { "title": "...",
+                "url": "<URL STREAM direct si possible, sinon permalink>",
+                "provider": "soundcloud",
+                "permalink_url": "<toujours fourni>",
+                "stream_url": "<si trouvé>",
+                "duration": <sec>,
+                "author": "<username>"
+              }, ...
+            ]
+          }
         """
         q = (request.args.get("q") or "").strip()
         if len(q) < 2:
             return jsonify(results=[])
 
-        provider = (request.args.get("provider") or "auto").lower().strip()
-        _dbg(f"GET /autocomplete — q={q!r}, provider={provider}")
+        client_id = os.getenv("SOUNDCLOUD_CLIENT_ID", "").strip()
+        if not client_id:
+            # Sans client_id, on ne peut pas aller chercher les transcodings → on renvoie vide
+            return jsonify(results=[])
 
-        # on utilisera les modules de recherche déjà présents côté extractors/
-        def _search_sync(p: str, query: str) -> List[Dict[str, Any]]:
-            from extractors import get_search_module
-            searcher = get_search_module(p)
-            return searcher.search(query)
-
-        async def _search_async(p: str, query: str) -> List[Dict[str, Any]]:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, _search_sync, p, query)
+        limit = int(request.args.get("limit") or 3)
+        limit = max(1, min(limit, 5))
 
         try:
-            results: List[Dict[str, Any]] = []
-            if provider == "auto":
-                # SC d'abord
-                try:
-                    results = _dispatch(_search_async("soundcloud", q), timeout=10)
-                    chosen = "soundcloud"
-                except Exception:
-                    results = []
-                    chosen = "soundcloud"
-                if not results:
-                    try:
-                        results = _dispatch(_search_async("youtube", q), timeout=10)
-                        chosen = "youtube"
-                    except Exception:
-                        results = []
-                        chosen = "youtube"
-            else:
-                chosen = "youtube" if provider == "youtube" else "soundcloud"
-                results = _dispatch(_search_async(chosen, q), timeout=10)
-
-            out = []
-            for r in (results or [])[:3]:
-                title = r.get("title") or r.get("webpage_url") or r.get("url") or q
-                url = r.get("webpage_url") or r.get("url") or ""
-                out.append({"title": title, "url": url, "provider": chosen})
-            return jsonify(results=out)
+            results = _sc_search_with_streams(client_id, q, limit=limit, timeout=8.0)
+            return jsonify(results=results)
         except Exception as e:
-            _dbg(f"/autocomplete — 💥 {e}")
+            # On log et on renvoie vide (le front est tolérant)
+            print(f"🤦‍♂️ [WEB] /autocomplete — 💥 {e}")
             return jsonify(results=[])
 
     # ------------------------ WebSocket ---------------------------
@@ -278,7 +395,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def ws_connect(auth: Dict[str, Any] | None = None):
         _dbg("WS connect — encore un client pendu à mes ondes.")
         try:
-            guilds = getattr(app.bot, "guilds", [])
+            guilds = getattr(getattr(app, "bot", None), "guilds", []) or []
             if guilds:
                 payload = _overlay_payload_for(guilds[0].id)
                 emit("playlist_update", payload)
@@ -295,10 +412,17 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     return app, socketio
 
+
 if __name__ == "__main__":
     def _fake_pm(_gid):
         from playlist_manager import PlaylistManager
         return PlaylistManager(_gid)
+
     app, socketio = create_web_app(_fake_pm)
     print("😒 [WEB] Démarrage 'app.py' direct.")
-    socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=3000,
+        allow_unsafe_werkzeug=True,  # dev only
+    )
