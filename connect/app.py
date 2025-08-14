@@ -452,7 +452,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         def _normalize_item(raw: dict, chosen: str | None):
             # inputs possibles : title, webpage_url, url, uploader/artist/channel/author,
             # duration/duration_ms, thumbnail
-            page_url = _best(raw.get("webpage_url"), raw.get("url"))
+            page_url = (raw.get("webpage_url") or raw.get("url") or "").strip()
             title = raw.get("title") or None
             artist = _best(raw.get("uploader"), raw.get("artist"), raw.get("channel"), raw.get("author"))
             duration = _to_seconds(_best(raw.get("duration"), raw.get("duration_ms")))
@@ -467,11 +467,12 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             prov = (chosen or "unknown").lower()
             return {
                 "title": title or page_url or "Sans titre",
-                "url": page_url or raw.get("url") or "",
+                "url": page_url,  # <= la page, pas le flux CDN
+                "page_url": page_url,  # duplicate pour le client, pratique
                 "artist": artist,
-                "duration": duration,  # en secondes ou None
+                "duration": duration,
                 "thumb": thumb,
-                "provider": "youtube" if "you" in prov else ("soundcloud" if "sound" in prov else "unknown"),
+                "provider": chosen or "unknown",
             }
 
         try:

@@ -154,51 +154,52 @@ def _pick_best_audio_url(info: dict) -> Optional[str]:
     return url if isinstance(url, str) else None
 
 
+# extractors/soundcloud.py
+
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
-    Récupère les infos nécessaires pour lire un flux audio SoundCloud avec FFmpegPCMAudio.
-    Accepte :
-      - une requête texte ("damso - ...")
-      - une URL de page soundcloud.com
-      - une URL de stream sndcdn.com (.m3u8/.mp3)
-    Retourne (source, titre).
+    Retourne (source, title). url_or_query peut être une URL de page SC
+    ou un texte de recherche; yt-dlp trouve le bon flux.
     """
     ydl_opts = {
-        "format": "bestaudio/best",
-        "quiet": True,
-        "default_search": "scsearch3",
-        "nocheckcertificate": True,
-        # Important pour récupérer les 'formats' quand on donne une page :
-        "extract_flat": False,
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'default_search': 'scsearch3',
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
+        'extract_flat': False,  # important pour obtenir l'URL de flux résolue
+        'geo_bypass': True,
     }
 
     loop = asyncio.get_event_loop()
 
     def extract():
+        from yt_dlp import YoutubeDL
         with YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url_or_query, download=False)
 
     try:
         data = await loop.run_in_executor(None, extract)
-        # si recherche renvoie une liste
-        info = data["entries"][0] if isinstance(data, dict) and "entries" in data else data
+        info = data['entries'][0] if isinstance(data, dict) and 'entries' in data else data
+        stream_url = info.get('url') or info.get('webpage_url')
+        title = info.get('title', 'Son inconnu')
 
-        # choisir une URL audio exploitable
-        stream_url = _pick_best_audio_url(info)
         if not stream_url:
-            raise RuntimeError("Aucun flux audio exploitable trouvé.")
-
-        title = info.get("title", "Son inconnu")
+            raise RuntimeError("Flux introuvable (yt-dlp n'a pas résolu l'URL).")
 
         import discord
-        # Options FFmpeg pour robustesse HLS (reconnect)
+        before = (
+            "-nostdin "
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-protocol_whitelist file,http,https,tcp,tls,crypto "
+            "-allowed_extensions ALL"
+        )
         source = discord.FFmpegPCMAudio(
             stream_url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            before_options=before,
             options="-vn",
-            executable=ffmpeg_path,
+            executable=ffmpeg_path
         )
-
         return source, title
 
     except Exception as e:
