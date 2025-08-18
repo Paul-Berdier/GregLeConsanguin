@@ -22,7 +22,7 @@ class PlaylistManager:
     def __init__(self, guild_id: str | int):
         os.makedirs("playlists", exist_ok=True)
         self.guild_id = str(guild_id)
-        self.file = os.path.join(os.path.dirname(__file__), f"playlists/playlist_{self.guild_id}.json")
+        self.file = os.path.join("playlists", f"playlist_{self.guild_id}.json")
         self.queue: List[Dict[str, Any]] = []
         self.lock = RLock()
         self.reload()

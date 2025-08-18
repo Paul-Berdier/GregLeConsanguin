@@ -6,11 +6,10 @@ import socket
 import discord
 from discord.ext import commands
 from playlist_manager import PlaylistManager
-from connect import create_web_app   # ← vient de connect/__init__.py
 import config
 
 # ---------------------------------------------------------------------------
-# Configuration du logging
+# Logging configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -23,7 +22,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-# --------- PlaylistManager multi-serveur -----------
+# ---------------------------------------------------------------------------
+# PlaylistManager multi-serveur
 playlist_managers = {}  # {guild_id: PlaylistManager}
 
 def get_pm(guild_id):
@@ -33,67 +33,86 @@ def get_pm(guild_id):
         logger.debug("Nouvelle instance PlaylistManager pour guild %s", guild_id)
     return playlist_managers[guild_id]
 
-# ===== Discord bot setup =====
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)  # préfixe inutile mais requis
+# ---------------------------------------------------------------------------
+# Discord Bot class
+class GregBot(commands.Bot):
+    def __init__(self, **kwargs):
+        intents = discord.Intents.all()
+        super().__init__(command_prefix="!", intents=intents, **kwargs)
 
-# ===== Crée l'app Flask + SocketIO =====
-app, socketio = create_web_app(get_pm)
-app.bot = bot
+    async def setup_hook(self):
+        # Charger tous les Cogs
+        logger.debug("Chargement des Cogs…")
+        for filename in os.listdir("./commands"):
+            if filename.endswith(".py") and filename != "__init__.py":
+                extension = f"commands.{filename[:-3]}"
+                try:
+                    await self.load_extension(extension)
+                    logger.info("✅ Cog chargé : %s", extension)
+                except Exception as e:
+                    logger.error("❌ Erreur chargement %s : %s", extension, e)
+
+        # Sync slash commands
+        await self.tree.sync()
+        logger.info("Slash commands sync DONE !")
+
+    async def on_ready(self):
+        logger.info("====== EVENT on_ready() ======")
+        logger.info("Utilisateur bot : %s", self.user)
+        logger.info("Serveurs : %s", [g.name for g in self.guilds])
+        logger.info("Slash commands globales : %s", [cmd.name for cmd in await self.tree.fetch_commands()])
+
+        # Injection emit_fn si overlay dispo
+        try:
+            music_cog = self.get_cog("Music")
+            voice_cog = self.get_cog("Voice")
+            if music_cog and hasattr(app, "socketio"):
+                music_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
+            if voice_cog and hasattr(app, "socketio"):
+                voice_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
+        except Exception as e:
+            logger.error("Impossible de connecter emit_fn: %s", e)
+
+# ---------------------------------------------------------------------------
+# Flask + SocketIO (overlay web)
+DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
+app = None
+socketio = None
+
+if not DISABLE_WEB:
+    try:
+        from connect import create_web_app
+        app, socketio = create_web_app(get_pm)
+        app.bot = None  # attach later
+    except ImportError:
+        logger.warning("Overlay désactivé : module 'connect' introuvable")
+        DISABLE_WEB = True
 
 def run_web():
-    logger.debug("Lancement du serveur Flask/SocketIO…")
-    socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+    if socketio and app:
+        logger.debug("Lancement du serveur Flask/SocketIO…")
+        socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
 
-# ===== Chargement dynamique des Cogs Discord =====
-async def load_cogs():
-    logger.debug("Chargement des Cogs…")
-    for filename in os.listdir("./commands"):
-        if filename.endswith(".py") and filename != "__init__.py":
-            extension = f"commands.{filename[:-3]}"
-            try:
-                await bot.load_extension(extension)
-                logger.info("✅ Cog chargé : %s", extension)
-            except Exception as e:
-                logger.error("❌ Erreur chargement %s : %s", extension, e)
-
-@bot.event
-async def on_ready():
-    logger.info("====== EVENT on_ready() ======")
-    logger.info("Utilisateur bot : %s", bot.user)
-    logger.info("Serveurs : %s", [g.name for g in bot.guilds])
-    logger.info("Slash commands globales : %s", [cmd.name for cmd in await bot.tree.fetch_commands()])
-    await load_cogs()
-    await bot.tree.sync()
-    logger.info("Slash commands sync DONE !")
-
-    try:
-        music_cog = bot.get_cog("Music")
-        voice_cog = bot.get_cog("Voice")
-        if music_cog:
-            def emit(event: str, data: dict):
-                socketio.emit(event, data)
-            music_cog.emit_fn = emit
-        if voice_cog:
-            voice_cog.emit_fn = lambda event, data: socketio.emit(event, data)
-    except Exception as e:
-        logger.error("Impossible de connecter emit_fn: %s", e)
-
-# ===== Attente que le serveur web réponde =====
 def wait_for_web():
-    for _ in range(15):
+    for i in range(30):  # 30 tentatives
         try:
             s = socket.create_connection(("localhost", 3000), 1)
             s.close()
-            logger.debug("Serveur web prêt, on peut lancer Greg.")
+            logger.debug("Serveur web prêt après %s tentatives.", i + 1)
             return
         except Exception:
             time.sleep(1)
     logger.critical("Serveur web jamais prêt !")
     raise SystemExit("[FATAL] Serveur web jamais prêt !")
 
-# ===== Lancement combiné Discord + Web =====
+# ---------------------------------------------------------------------------
+# Main
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
-    wait_for_web()
+    bot = GregBot()
+
+    if not DISABLE_WEB:
+        app.bot = bot
+        threading.Thread(target=run_web, daemon=True).start()
+        wait_for_web()
+
     bot.run(config.DISCORD_TOKEN)
