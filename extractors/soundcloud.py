@@ -96,7 +96,10 @@ async def stream(url_or_query: str, ffmpeg_path: str):
         )
         source = discord.FFmpegPCMAudio(
             stream_url,
-            before_options=before,
+            before_options=(
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+                "-protocol_whitelist file,http,https,tcp,tls,crypto "
+                "-allowed_extensions ALL"),
             options="-vn",
             executable=ffmpeg_path
         )
