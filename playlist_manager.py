@@ -17,7 +17,7 @@ class PlaylistManager:
     """
 
     # Schéma minimum attendu pour un item de playlist
-    REQUIRED_KEYS = {"title", "url"}
+    REQUIRED_KEYS = {"title", "url", "artist", "thumb", "duration"}
 
     def __init__(self, guild_id: str | int):
         os.makedirs("playlists", exist_ok=True)
