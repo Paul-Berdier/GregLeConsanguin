@@ -12,6 +12,7 @@ from discord.ext import commands
 import os
 import asyncio
 import time
+import inspect  # <-- ajouté
 from typing import Optional
 
 from extractors import get_extractor, get_search_module
@@ -130,6 +131,15 @@ class Music(commands.Cog):
         except Exception:
             # Fallback silencieux console
             _greg_print(f"[WARN] _i_send fallback: {msg}")
+
+    # Helper: accepte send_fn sync (web) ou async (slash)
+    async def _send(self, send_fn, msg: str):
+        try:
+            res = send_fn(msg)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            _greg_print(f"[WARN] send_fn failed: {e} — {msg}")
 
     # ---------- Détection ffmpeg ----------
 
@@ -443,7 +453,7 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()  # déclenche le after → play_next
-        await send_fn("⏭ *Et que ça saute !*")
+        await self._send(send_fn, "⏭ *Et que ça saute !*")  # <-- modifié
         self.emit_playlist_update(guild.id)
 
     async def _do_stop(self, guild: discord.Guild, send_fn):
@@ -460,7 +470,7 @@ class Music(commands.Cog):
         self.paused_since.pop(guild.id, None)
         self.paused_total.pop(guild.id, None)
         self.current_meta.pop(guild.id, None)
-        await send_fn("⏹ *Débranché. Tout s’arrête ici…*")
+        await self._send(send_fn, "⏹ *Débranché. Tout s’arrête ici…*")  # <-- modifié
         self.emit_playlist_update(guild.id)
 
     async def _do_pause(self, guild: discord.Guild, send_fn):
@@ -469,10 +479,10 @@ class Music(commands.Cog):
             vc.pause()
             if not self.paused_since.get(guild.id):
                 self.paused_since[guild.id] = time.monotonic()
-            await send_fn("⏸ *Enfin une pause…*")
+            await self._send(send_fn, "⏸ *Enfin une pause…*")  # <-- modifié
             self.emit_playlist_update(guild.id)
         else:
-            await send_fn("❌ *Rien à mettre en pause, hélas…*")
+            await self._send(send_fn, "❌ *Rien à mettre en pause, hélas…*")  # <-- modifié
 
     async def _do_resume(self, guild: discord.Guild, send_fn):
         vc = guild.voice_client
@@ -481,10 +491,10 @@ class Music(commands.Cog):
             ps = self.paused_since.pop(guild.id, None)
             if ps:
                 self.paused_total[guild.id] = self.paused_total.get(guild.id, 0.0) + (time.monotonic() - ps)
-            await send_fn("▶️ *Reprenons ce calvaire sonore…*")
+            await self._send(send_fn, "▶️ *Reprenons ce calvaire sonore…*")  # <-- modifié
             self.emit_playlist_update(guild.id)
         else:
-            await send_fn("❌ *Reprendre quoi ? Le silence ?*")
+            await self._send(send_fn, "❌ *Reprendre quoi ? Le silence ?*")  # <-- modifié
 
     # =====================================================================
     #                          API web (overlay/app.py)

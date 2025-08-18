@@ -7,7 +7,6 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import os, asyncio
-from typing import List, Dict, Any
 import requests
 
 
@@ -28,7 +27,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     app.get_pm = get_pm
 
     # ------------------------ Helpers ----------------------------
-    def _dbg(msg: str): print(f"🤦‍♂️ [WEB] {msg}")
+    def _dbg(msg: str) -> None:
+        print(f"🤦‍♂️ [WEB] {msg}")
 
     def _bad_request(msg: str, code: int = 400):
         _dbg(f"Requête pourrie ({code}) : {msg}")
@@ -51,14 +51,26 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     def _dispatch(coro, timeout=60):
         """
-        Exécute une coroutine sur la loop du bot si existante, sinon localement.
+        Exécute une coroutine sur la loop du bot si existante, sinon dans une
+        loop dédiée à ce thread. Remonte les exceptions Python (attrapées par
+        l'appelant et renvoyées en JSON propre).
         """
         loop = getattr(getattr(app, "bot", None), "loop", None)
         if loop and loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(coro, loop)
             return fut.result(timeout=timeout)
-        # Fallback (dev) : run dans la loop courante
-        return asyncio.get_event_loop().run_until_complete(asyncio.wait_for(coro, timeout))
+        # Fallback (dev / tests): loop dédiée et fermée proprement
+        new_loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(new_loop)
+            return new_loop.run_until_complete(asyncio.wait_for(coro, timeout))
+        finally:
+            try:
+                new_loop.run_until_complete(asyncio.sleep(0))
+            except Exception:
+                pass
+            new_loop.close()
+            asyncio.set_event_loop(None)
 
     # même structure que le payload Socket.IO
     def _overlay_payload_for(guild_id: int | str) -> Dict[str, Any]:
@@ -83,87 +95,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             "thumbnail": thumb,
             "repeat_all": False,
         }
-
-    def _sc_search_with_streams(client_id: str, query: str, limit: int = 3, timeout: float = 8.0) -> List[
-        Dict[str, Any]]:
-        """
-        Cherche des pistes SoundCloud et tente d'obtenir un stream direct:
-        - On cherche via /search/tracks
-        - Pour chaque piste, on inspecte media.transcodings
-        - On privilégie 'progressive' (MP3), fallback 'hls'
-        - Pour obtenir l'URL signée, on GET <transcoding.url>?client_id=...
-
-        Retour: liste de dicts prêts pour l'overlay.
-        """
-        ses = requests.Session()
-        ses.headers.update({
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        })
-
-        # 1) Recherche
-        # Doc non officielle: https://api-v2.soundcloud.com/search/tracks?q=...&client_id=...&limit=...
-        search_url = "https://api-v2.soundcloud.com/search/tracks"
-        params = {
-            "q": query,
-            "client_id": client_id,
-            "limit": max(1, min(limit, 10)),
-        }
-        r = ses.get(search_url, params=params, timeout=timeout)
-        r.raise_for_status()
-        data = r.json()
-
-        collection = data.get("collection", []) or []
-        out: List[Dict[str, Any]] = []
-
-        for item in collection[:limit]:
-            title = item.get("title") or "Sans titre"
-            permalink_url = item.get("permalink_url") or ""
-            duration_ms = item.get("duration") or 0
-            duration = int(round(duration_ms / 1000)) if duration_ms else None
-            user = (item.get("user") or {})
-            author = user.get("username") or "Unknown"
-
-            stream_url = None
-
-            # 2) Choisir un transcoding (progressive > hls)
-            media = item.get("media") or {}
-            transcodings = media.get("transcodings") or []
-            progressive = None
-            hls = None
-            for t in transcodings:
-                fmt = (t.get("format") or {}).get("protocol")
-                if fmt == "progressive" and not progressive:
-                    progressive = t
-                elif fmt == "hls" and not hls:
-                    hls = t
-
-            chosen = progressive or hls
-            if chosen and chosen.get("url"):
-                # 3) Résoudre l'URL signée
-                resolve_url = chosen["url"]
-                # Il faut ajouter client_id en query pour obtenir {"url": "<signed_url>"}
-                rr = ses.get(resolve_url, params={"client_id": client_id}, timeout=timeout)
-                if rr.ok:
-                    j = rr.json()
-                    candidate = j.get("url")
-                    if isinstance(candidate, str) and candidate.startswith("http"):
-                        stream_url = candidate
-
-            # 4) Construire l'item
-            #   - url = stream direct si disponible, sinon le permalink (plus stable)
-            #   - on fournit toujours permalink_url et stream_url (si trouvé)
-            out.append({
-                "title": title,
-                "url": stream_url or permalink_url,  # <- le front utilisera d'abord url
-                "provider": "soundcloud",
-                "permalink_url": permalink_url,
-                "stream_url": stream_url,  # <- utile si tu veux l’exploiter plus tard
-                "duration": duration,
-                "author": author,
-            })
-
-        return out
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
@@ -339,7 +270,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/text_channels", methods=["GET"])
     def api_text_channels():
         guild_id = request.args.get("guild_id")
-        _dbg(f"GET /api_text_channels — guild={guild_id}")
+        _dbg(f"GET /api/text_channels — guild={guild_id}")
         err = _bot_required()
         if err:
             return err
@@ -353,8 +284,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     # ------------------------ Autocomplete (GET) ------------------
     # Compat : on expose /autocomplete ET /api/autocomplete
-    # --- remplace ENTIEREMENT ta route /api/autocomplete par ceci ---
-    # web/app.py (remplace entièrement la route)
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
@@ -364,16 +293,13 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         - duration en secondes (peut être None)
         - provider: "soundcloud" | "youtube"
         """
-        import re, requests
+        import re
         from urllib.parse import urlparse
 
         q = (request.args.get("q") or "").strip()
         provider = (request.args.get("provider") or "auto").lower().strip()
         if len(q) < 2:
             return jsonify(results=[])
-
-        def _dbg(msg: str):
-            print(f"🤦‍♂️ [WEB] {msg}")
 
         _dbg(f"GET /api/autocomplete — q={q!r}, provider={provider}")
 
@@ -426,7 +352,9 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             out = []
             for r in rows[:3]:
                 # 1) Toujours une URL de page (jamais les CDN m3u8/mp3)
-                page_url = r.get("webpage_url") or r.get("url") or ""
+                page_url = (r.get("webpage_url") or r.get("url") or "").strip().strip(";")
+                if not page_url:
+                    continue
                 # 2) Métadonnées initiales
                 title = r.get("title") or None
                 artist = r.get("uploader") or r.get("artist") or r.get("channel") or r.get("author") or None
@@ -442,8 +370,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 # 4) Nettoyage simple (jamais de ';' ajoutés, pas de CDN)
                 item = {
                     "title": title or page_url or "Sans titre",
-                    "url": page_url,  # <- clé que ton front poste à /api/play
-                    "webpage_url": page_url,  # <- exposée aussi pour plus de clarté
+                    "url": page_url,                  # <- clé que ton front poste à /api/play
+                    "webpage_url": page_url,          # <- exposée aussi pour plus de clarté
                     "artist": artist,
                     "duration": duration,
                     "thumb": thumb,
