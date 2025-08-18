@@ -64,16 +64,17 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
-    Version 'qui fonctionne' : accepte une URL de page SoundCloud
-    et laisse yt_dlp résoudre le vrai flux.
-    Retourne (source, title).
+    Récupère les infos nécessaires pour lire un flux audio SoundCloud avec FFmpegPCMAudio.
+    Retourne (source, titre).
     """
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'default_search': 'scsearch3',
         'nocheckcertificate': True,
+        # IMPORTANT: pas d'extract_flat ici (on veut l'URL stream résolue)
     }
+
     loop = asyncio.get_event_loop()
 
     def extract():
@@ -83,16 +84,23 @@ async def stream(url_or_query: str, ffmpeg_path: str):
     try:
         data = await loop.run_in_executor(None, extract)
         info = data['entries'][0] if 'entries' in data else data
-        stream_url = info['url']           # résolu par yt_dlp (pas celui qu’on envoie à l’UI)
+        stream_url = info['url']  # URL de flux résolue par yt_dlp
         title = info.get('title', 'Son inconnu')
 
         import discord
+        before = (
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-nostdin "
+            "-protocol_whitelist https,tls,tcp,crypto,file "
+            "-allowed_extensions ALL"
+        )
         source = discord.FFmpegPCMAudio(
             stream_url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            before_options=before,
             options="-vn",
             executable=ffmpeg_path
         )
         return source, title
+
     except Exception as e:
         raise RuntimeError(f"Échec de l'extraction SoundCloud : {e}")
