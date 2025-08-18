@@ -9,22 +9,6 @@ from pathlib import Path
 def is_valid(url: str) -> bool:
     return "soundcloud.com" in url
 
-def search(query: str):
-    """
-    Recherche SoundCloud et renvoie des entrées 'flat' (avec 'webpage_url').
-    C'est parfait pour: UI (title/thumbnail/duration) + lecture ultérieure.
-    """
-    ydl_opts = {
-        'quiet': True,
-        'default_search': 'scsearch3',
-        'nocheckcertificate': True,
-        'ignoreerrors': True,
-        'extract_flat': True,   # <-- IMPORTANT: on veut des URL de page
-    }
-    with YoutubeDL(ydl_opts) as ydl:
-        results = ydl.extract_info(f"scsearch3:{query}", download=False)
-        return results.get("entries", []) if results else []
-
 async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     """
     Télécharge en .mp3 (fallback si stream KO).
@@ -62,17 +46,62 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
             raise FileNotFoundError(f"Fichier manquant après extraction : {filename}")
     return filename, title, duration
 
+def search(query: str):
+    """
+    Recherche SoundCloud et renvoie des entrées *normalisées* avec toujours
+    un champ 'webpage_url' (URL de page officielle), jamais une URL CDN.
+    Champs utiles pour l'UI : title, uploader, duration, thumbnail.
+    """
+    def _is_cdn(u: str) -> bool:
+        if not isinstance(u, str):
+            return False
+        return u.startswith(("https://cf-hls-media.sndcdn.com",
+                             "https://cf-media.sndcdn.com",
+                             "https://cf-hls-opus-media.sndcdn.com"))
+
+    ydl_opts = {
+        "quiet": True,
+        "default_search": "scsearch3",
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+        "extract_flat": True,  # on veut la page officielle
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
+        data = ydl.extract_info(f"scsearch3:{query}", download=False) or {}
+        entries = data.get("entries") or []
+        out = []
+        for e in entries:
+            # yt_dlp flat renvoie typiquement: {title, url, uploader, duration, thumbnail, ...}
+            url = e.get("webpage_url") or e.get("url") or ""
+            if not url or _is_cdn(url):
+                # on jette les résultats bizarres (CDN/flux)
+                continue
+
+            out.append({
+                # on laisse les noms attendus par /api/autocomplete (qui remappe ensuite)
+                "title": e.get("title") or url,
+                "webpage_url": url,
+                "url": url,  # pour compat partout : url = page
+                "uploader": e.get("uploader"),
+                "artist": e.get("uploader"),  # alias pratique
+                "duration": e.get("duration"),  # peut être None en flat
+                "thumbnail": e.get("thumbnail"),
+            })
+        return out
+
+
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
-    Récupère les infos nécessaires pour lire un flux audio SoundCloud avec FFmpegPCMAudio.
-    Retourne (source, titre).
+    Résout la page SoundCloud -> URL de flux via yt_dlp (pas l'UI),
+    puis prépare FFmpegPCMAudio avec la whitelist/protocols pour HLS .opus.
     """
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'scsearch3',
-        'nocheckcertificate': True,
-        # IMPORTANT: pas d'extract_flat ici (on veut l'URL stream résolue)
+        "format": "bestaudio/best",
+        "quiet": True,
+        "default_search": "scsearch3",
+        "nocheckcertificate": True,
+        # surtout PAS 'extract_flat' ici, on veut l'URL stream résolue
     }
 
     loop = asyncio.get_event_loop()
@@ -83,25 +112,20 @@ async def stream(url_or_query: str, ffmpeg_path: str):
 
     try:
         data = await loop.run_in_executor(None, extract)
-        info = data['entries'][0] if 'entries' in data else data
-        stream_url = info['url']  # URL de flux résolue par yt_dlp
-        title = info.get('title', 'Son inconnu')
+        info = data["entries"][0] if "entries" in data else data
+        stream_url = info["url"]
+        title = info.get("title", "Son inconnu")
 
         import discord
-        before = (
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            "-nostdin "
-            "-protocol_whitelist https,tls,tcp,crypto,file "
-            "-allowed_extensions ALL"
-        )
         source = discord.FFmpegPCMAudio(
             stream_url,
             before_options=(
                 "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
                 "-protocol_whitelist file,http,https,tcp,tls,crypto "
-                "-allowed_extensions ALL"),
+                "-allowed_extensions ALL"
+            ),
             options="-vn",
-            executable=ffmpeg_path
+            executable=ffmpeg_path,
         )
         return source, title
 
