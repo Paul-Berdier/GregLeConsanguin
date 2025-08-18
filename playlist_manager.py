@@ -5,6 +5,7 @@ import json
 import time
 import tempfile
 from threading import RLock
+import traceback
 from typing import List, Dict, Optional, Any
 
 
@@ -39,6 +40,9 @@ class PlaylistManager:
         os.replace(tmp_name, self.file)
         print(
             f"[PlaylistManager {self.guild_id}] 💾 Sauvegarde atomique effectuée ({len(payload.get('queue', []))} items).")
+        # DEBUG stack trace courte
+        stack = "".join(traceback.format_stack(limit=4))
+        print(f"[DEBUG _safe_write] len={len(payload.get('queue', []))}\n{stack}")
 
     def reload(self) -> None:
         """Recharge la playlist depuis le disque, avec migration si nécessaire."""
@@ -61,6 +65,7 @@ class PlaylistManager:
                     q = []
                 self.queue = [self._coerce_item(x) for x in q]
                 print(f"[PlaylistManager {self.guild_id}] 🔄 Playlist rechargée ({len(self.queue)} items).")
+                print(f"[DEBUG reload] Items: {[q.get('title') for q in self.queue]}")
             except Exception as e:
                 print(f"[PlaylistManager {self.guild_id}] ⚠️ ERREUR lecture JSON, reset à vide. {e}")
                 self.queue = []
@@ -69,7 +74,9 @@ class PlaylistManager:
     def save(self) -> None:
         """Sauvegarde la queue actuelle sur disque (atomique)."""
         with self.lock:
+            print(f"[DEBUG save] Avant _safe_write — len(queue)={len(self.queue)}")
             self._safe_write(self.queue)
+            print(f"[DEBUG save] Après _safe_write — len(queue)={len(self.queue)}")
 
     # ------------------------- UTILITAIRES -------------------------
 

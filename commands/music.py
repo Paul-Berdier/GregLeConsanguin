@@ -148,12 +148,14 @@ class Music(commands.Cog):
         gid = self._gid(guild_id)
         if self.emit_fn:
             payload = self._overlay_payload(gid)
+            q_titles = [it.get("title") for it in payload.get("queue", [])]
             _greg_print(
                 f"[EMIT] playlist_update → guild={gid} — "
-                f"paused={payload.get('is_paused')} "
-                f"elapsed={payload.get('progress',{}).get('elapsed')}"
+                f"paused={payload.get('is_paused')} elapsed={payload.get('progress',{}).get('elapsed')} "
+                f"queue={q_titles}"
             )
             self.emit_fn("playlist_update", payload)
+
 
     async def _i_send(self, interaction: discord.Interaction, msg: str):
         try:
@@ -354,33 +356,37 @@ class Music(commands.Cog):
     # =====================================================================
 
     async def add_to_queue(self, interaction_like, item):
-        """
-        Ajoute à la file et démarre la lecture si rien ne tourne.
-        item = {title, url, provider?, mode?, artist?, thumb?, duration?}
-        """
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
+        _greg_print(f"[DEBUG add_to_queue] AVANT reload → queue={len(pm.queue)} items")
         await loop.run_in_executor(None, pm.reload)
+        _greg_print(f"[DEBUG add_to_queue] APRES reload → queue={len(pm.queue)} items")
         await loop.run_in_executor(None, pm.add, item)
+        _greg_print(f"[DEBUG add_to_queue] AJOUTÉ: {item} → queue={len(pm.queue)} items")
+
         await interaction_like.followup.send(
             f"🎵 Ajouté : **{item['title']}** ({item['url']}) — "
             f"{(item.get('provider') or 'auto')}/{(item.get('mode') or 'auto')}"
         )
         self.emit_playlist_update(gid)
+
         if not self.is_playing.get(gid, False):
+            _greg_print(f"[DEBUG add_to_queue] Rien ne joue encore, lancement play_next…")
             await self.play_next(interaction_like)
 
     async def play_next(self, interaction_like):
-        """Démarre ou passe au morceau suivant."""
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
 
         queue = await loop.run_in_executor(None, pm.get_queue)
+        _greg_print(f"[DEBUG play_next] Queue chargée ({len(queue)} items): {[it.get('title') for it in queue]}")
+
         if not queue:
             self.is_playing[gid] = False
+            _greg_print(f"[DEBUG play_next] Queue VIDE → arrêt")
             await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
             self.current_song.pop(gid, None)
             # reset chrono/meta
@@ -394,16 +400,21 @@ class Music(commands.Cog):
 
         self.is_playing[gid] = True
         item = queue.pop(0)
+        _greg_print(f"[DEBUG play_next] ITEM sélectionné: {item}")
 
-        # Repeat ALL: remet le morceau joué en fin de file
+        # Repeat ALL
         if self.repeat_all.get(gid):
             queue.append(item)
+            _greg_print(f"[DEBUG play_next] Repeat ALL actif → remis en fin de file")
 
         pm.queue = queue
         await loop.run_in_executor(None, pm.save)
+        _greg_print(
+            f"[DEBUG play_next] Queue après pop/save ({len(pm.queue)} items): {[it.get('title') for it in pm.queue]}")
 
         url = item['url']
         play_mode = (item.get("mode") or "auto").lower()
+        _greg_print(f"[DEBUG play_next] Lecture via provider={item.get('provider')} mode={play_mode} url={url}")
 
         # Choix extracteur par URL
         extractor = get_extractor(url)
@@ -508,7 +519,9 @@ class Music(commands.Cog):
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
+        _greg_print(f"[DEBUG skip] Queue avant skip ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
         await loop.run_in_executor(None, pm.skip)
+        _greg_print(f"[DEBUG skip] Queue après skip ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()  # déclenche le after → play_next
@@ -520,7 +533,9 @@ class Music(commands.Cog):
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
+        _greg_print(f"[DEBUG stop] Queue avant STOP ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
         await loop.run_in_executor(None, pm.stop)
+        _greg_print(f"[DEBUG stop] Queue après STOP ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
@@ -582,8 +597,11 @@ class Music(commands.Cog):
             _greg_print(f"Greg rejoint le vocal {member.voice.channel.name}…")
 
         pm = self.get_pm(gid)
+        _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.add, item)
+        _greg_print(f"[DEBUG play_for_user] Queue après ajout ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
 
         class FakeInteraction:
             def __init__(self, g):
