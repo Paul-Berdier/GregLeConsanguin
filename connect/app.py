@@ -219,7 +219,9 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         title    = (data or {}).get("title")
         url      = (data or {}).get("url")
         guild_id = (data or {}).get("guild_id")
-        user_id  = (data or {}).get("user_id")  # ⚠️ OBLIGATOIRE côté client désormais
+        user_id  = (data or {}).get("user_id")
+        # ⚠️ OBLIGATOIRE côté client désormais
+        print(f"L'  URL /// {url}")
 
         _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
         if not all([title, url, guild_id, user_id]):
@@ -404,6 +406,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     "thumb": r.get("thumbnail"),
                     "provider": chosen,
                 })
+                print(f"L'  URL autocomplete /// {out}")
             return out
 
         try:
