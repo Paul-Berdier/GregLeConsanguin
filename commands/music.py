@@ -508,17 +508,17 @@ class Music(commands.Cog):
         _greg_print(f"API play_for_user(guild={guild_id}, user={user_id}) — {item}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
-            _greg_print("Serveur introuvable. *On marche les yeux fermés ici ?*")
+            _greg_print("Serveur introuvable.")
             return
         member = guild.get_member(int(user_id))
         if not member or not member.voice or not member.voice.channel:
-            _greg_print("Utilisateur pas en vocal. *Je lis dans le vide ?*")
+            _greg_print("Utilisateur pas en vocal.")
             return
 
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             await member.voice.channel.connect()
-            _greg_print(f"Greg rejoint le vocal {member.voice.channel.name} pour obéir, encore…")
+            _greg_print(f"Greg rejoint le vocal {member.voice.channel.name}…")
 
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
@@ -528,9 +528,14 @@ class Music(commands.Cog):
             def __init__(self, g):
                 self.guild = g
                 self.followup = self
-            async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
 
-        await self.play_next(FakeInteraction(guild))
+            async def send(self, msg):
+                _greg_print(f"[WEB->Discord] {msg}")
+
+        # si rien ne joue → lancer
+        if not self.is_playing.get(str(guild_id), False):
+            await self.play_next(FakeInteraction(guild))
+
         self.emit_playlist_update(guild_id)
 
     async def play_at(self, guild_id, index):
