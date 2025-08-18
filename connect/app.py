@@ -354,20 +354,26 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     # ------------------------ Autocomplete (GET) ------------------
     # Compat : on expose /autocomplete ET /api/autocomplete
     # --- remplace ENTIEREMENT ta route /api/autocomplete par ceci ---
+    # web/app.py (remplace entièrement la route)
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
-        Recherche (3 max) + métadonnées pour l'UI :
-        { results: [{title, url, artist, duration, thumb, provider}] }
-        - url = URL DE PAGE (webpage_url) — pas de HLS/CDN
-        - duration en secondes (si connue)
+        Recherche (max 3) pour l'UI :
+        { results: [{title, url, webpage_url, artist, duration, thumb, provider}] }
+        - url = URL DE PAGE (Jamais de CDN HLS)
+        - duration en secondes (peut être None)
         - provider: "soundcloud" | "youtube"
         """
-        import re
+        import re, requests
+        from urllib.parse import urlparse
+
         q = (request.args.get("q") or "").strip()
         provider = (request.args.get("provider") or "auto").lower().strip()
         if len(q) < 2:
             return jsonify(results=[])
+
+        def _dbg(msg: str):
+            print(f"🤦‍♂️ [WEB] {msg}")
 
         _dbg(f"GET /api/autocomplete — q={q!r}, provider={provider}")
 
@@ -375,7 +381,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             try:
                 from extractors import get_search_module
                 searcher = get_search_module(p)
-                return searcher.search(query) or []
+                rows = searcher.search(query) or []
+                return rows
             except Exception as e:
                 _dbg(f"extractors search({p}) failed: {e}")
                 return []
@@ -393,20 +400,56 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 return int(m) * 60 + int(s)
             return None
 
+        def _oembed_enrich(page_url: str):
+            """Retourne (title, author_name, thumbnail_url) si trouvé, sinon (None, None, None)."""
+            try:
+                host = re.sub(r"^www\.", "", urlparse(page_url).hostname or "")
+                if "soundcloud.com" in host:
+                    oe = requests.get(
+                        "https://soundcloud.com/oembed",
+                        params={"format": "json", "url": page_url},
+                        timeout=4
+                    ).json()
+                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+                if "youtube.com" in host or "youtu.be" in host:
+                    oe = requests.get(
+                        "https://www.youtube.com/oembed",
+                        params={"format": "json", "url": page_url},
+                        timeout=4
+                    ).json()
+                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+            except Exception:
+                pass
+            return None, None, None
+
         def _norm(rows, chosen):
             out = []
             for r in rows[:3]:
-                # IMPORTANT: privilégier la page officielle (webpage_url)
+                # 1) Toujours une URL de page (jamais les CDN m3u8/mp3)
                 page_url = r.get("webpage_url") or r.get("url") or ""
-                out.append({
-                    "title": r.get("title") or page_url or "Sans titre",
-                    "url": page_url,  # <- URL DE PAGE (clé pour le stream côté bot)
-                    "artist": r.get("uploader") or r.get("artist") or r.get("channel") or r.get("author"),
-                    "duration": _to_seconds(r.get("duration") or r.get("duration_ms")),
-                    "thumb": r.get("thumbnail"),
-                    "provider": chosen,
-                })
-                print(f"L'  URL autocomplete /// {out}")
+                # 2) Métadonnées initiales
+                title = r.get("title") or None
+                artist = r.get("uploader") or r.get("artist") or r.get("channel") or r.get("author") or None
+                duration = _to_seconds(r.get("duration") or r.get("duration_ms"))
+                thumb = r.get("thumbnail") or None
+                # 3) Enrichissement via oEmbed si nécessaire
+                if (not title or not artist or not thumb) and page_url:
+                    t2, a2, th2 = _oembed_enrich(page_url)
+                    title = title or t2
+                    artist = artist or a2
+                    thumb = thumb or th2
+
+                # 4) Nettoyage simple (jamais de ';' ajoutés, pas de CDN)
+                item = {
+                    "title": title or page_url or "Sans titre",
+                    "url": page_url,  # <- clé que ton front poste à /api/play
+                    "webpage_url": page_url,  # <- exposée aussi pour plus de clarté
+                    "artist": artist,
+                    "duration": duration,
+                    "thumb": thumb,
+                    "provider": chosen or "unknown",
+                }
+                out.append(item)
             return out
 
         try:
@@ -427,7 +470,9 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             else:
                 _run("youtube" if provider == "youtube" else "soundcloud")
 
-            return jsonify(results=_norm(results, chosen or "soundcloud"))
+            out = _norm(results, chosen or "soundcloud")
+            _dbg(f"autocomplete → {len(out)} résultats")
+            return jsonify(results=out)
         except Exception as e:
             _dbg(f"/api/autocomplete — 💥 {e}")
             return jsonify(results=[])
