@@ -12,7 +12,7 @@ from discord.ext import commands
 import os
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from extractors import get_extractor, get_search_module
 from playlist_manager import PlaylistManager
@@ -41,20 +41,21 @@ class Music(commands.Cog):
     """
     def __init__(self, bot, emit_fn=None):
         self.bot = bot
-        self.managers = {}        # {guild_id: PlaylistManager}
-        self.is_playing = {}      # {guild_id: bool}
-        self.current_song = {}    # {guild_id: dict(title, url)}
-        self.search_results = {}  # {user_id: last_results}
+        self.managers: Dict[str, PlaylistManager] = {}   # {guild_id_str: PlaylistManager}
+        self.is_playing: Dict[str, bool] = {}            # {guild_id_str: bool}
+        self.current_song: Dict[int, Dict[str, Any]] = {}  # {guild_id_int: {title,url}}
+        self.search_results = {}                         # {user_id: last_results}
         self.ffmpeg_path = self.detect_ffmpeg()
-        self.emit_fn = emit_fn    # set par main.py au démarrage
+        self.emit_fn = emit_fn                           # set par main.py au démarrage
 
         # --- Suivi overlay ---
-        self.play_start = {}      # {guild_id: monotonic()}
-        self.paused_since = {}    # {guild_id: monotonic() | None}
-        self.paused_total = {}    # {guild_id: float}
-        self.ticker_tasks = {}    # {guild_id: asyncio.Task}
-        self.current_meta = {}    # {guild_id: {"duration": int|None, "thumbnail": str|None}}
-        self.repeat_all = {}      # {guild_id: bool}
+        self.play_start: Dict[int, float] = {}           # {guild_id: monotonic()}
+        self.paused_since: Dict[int, Optional[float]] = {}# {guild_id: monotonic() | None}
+        self.paused_total: Dict[int, float] = {}         # {guild_id: float}
+        self.ticker_tasks: Dict[int, asyncio.Task] = {}  # {guild_id: asyncio.Task}
+        self.current_meta: Dict[int, Dict[str, Any]] = {}# {guild_id: {"duration": int|None, "thumbnail": str|None}}
+        self.repeat_all: Dict[int, bool] = {}            # {guild_id: bool}
+        self.now_playing: Dict[int, Dict[str, Any]] = {} # {guild_id: {title,url,artist,thumb,duration}}
 
         _greg_print("Initialisation du cog Music… *Quelle joie contenue…*")
 
@@ -78,7 +79,11 @@ class Music(commands.Cog):
         except Exception:
             vc = None
 
-        current = self.current_song.get(guild_id) or data.get("current")
+        # 🔒 source prioritaire = now_playing → current_song → pm.current
+        current = self.now_playing.get(guild_id) \
+                  or self.current_song.get(guild_id) \
+                  or data.get("current")
+
         is_paused = bool(vc and vc.is_paused())
 
         # Progression
@@ -94,8 +99,12 @@ class Music(commands.Cog):
         meta = self.current_meta.get(guild_id, {})
         duration = meta.get("duration")
         thumb = meta.get("thumbnail")
-        if not thumb and isinstance(current, dict):
-            thumb = current.get("thumb") or current.get("thumbnail")
+        if isinstance(current, dict):
+            # si current porte ses propres méta, on complète
+            if duration is None:
+                cdur = current.get("duration")
+                duration = int(cdur) if cdur is not None else None
+            thumb = thumb or current.get("thumb") or current.get("thumbnail")
 
         return {
             "queue": data.get("queue", []),
@@ -109,7 +118,7 @@ class Music(commands.Cog):
             "repeat_all": bool(self.repeat_all.get(guild_id, False)),
         }
 
-    def emit_playlist_update(self, guild_id):
+    def emit_playlist_update(self, guild_id: int):
         if self.emit_fn:
             payload = self._overlay_payload(guild_id)
             _greg_print(
@@ -119,6 +128,20 @@ class Music(commands.Cog):
             )
             self.emit_fn("playlist_update", payload)
 
+    def _set_now_playing(self, guild_id: int, *, title: str, url: str,
+                         artist: Optional[str] = None, thumb: Optional[str] = None,
+                         duration: Optional[int] = None):
+        """Normalise et stocke la piste courante pour l'overlay."""
+        self.current_song[guild_id] = {"title": title, "url": url}
+        self.current_meta[guild_id] = {"duration": duration, "thumbnail": thumb}
+        self.now_playing[guild_id] = {
+            "title": title,
+            "url": url,
+            "artist": artist,
+            "thumb": thumb,
+            "duration": duration,
+        }
+
     async def _i_send(self, interaction: discord.Interaction, msg: str):
         """Envoi correct selon l'état (response/followup)."""
         try:
@@ -127,15 +150,10 @@ class Music(commands.Cog):
             else:
                 await interaction.response.send_message(msg)
         except Exception:
-            # Fallback silencieux console
             _greg_print(f"[WARN] _i_send fallback: {msg}")
 
     async def _safe_send(self, send_fn, msg: str):
-        """
-        Appelle send_fn(msg). Si c'est une coroutine → await, sinon on n'await pas.
-        Évite 'object NoneType can't be used in await expression' quand l'appelant
-        passe une lambda synchrone (ex: overlay web).
-        """
+        """Appelle send_fn(msg). Coroutine-safe."""
         try:
             res = send_fn(msg)
             if asyncio.iscoroutine(res):
@@ -305,9 +323,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="current", description="Montre le morceau en cours.")
     async def slash_current(self, interaction: discord.Interaction):
-        song = self.current_song.get(interaction.guild.id)
+        song = self.now_playing.get(interaction.guild.id) or self.current_song.get(interaction.guild.id)
         if song:
-            await self._i_send(interaction, f"🎧 **[{song['title']}]({song['url']})**")
+            await self._i_send(interaction, f"🎧 **[{song.get('title','?')}]({song.get('url','')})**")
         else:
             await self._i_send(interaction, "❌ *Rien en cours. Le néant musical.*")
 
@@ -327,7 +345,7 @@ class Music(commands.Cog):
     async def add_to_queue(self, interaction_like, item):
         """
         Ajoute à la file et démarre la lecture si rien ne tourne.
-        item = {title, url, provider?, mode?}
+        item = {title, url, provider?, mode?, artist?, thumb?, duration?}
         """
         pm = self.get_pm(interaction_like.guild.id)
         loop = asyncio.get_running_loop()
@@ -352,8 +370,9 @@ class Music(commands.Cog):
         if not queue:
             self.is_playing[str(guild_id)] = False
             await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
+            # reset
             self.current_song.pop(guild_id, None)
-            # reset chrono/meta
+            self.now_playing.pop(guild_id, None)
             self.play_start.pop(guild_id, None)
             self.paused_since.pop(guild_id, None)
             self.paused_total.pop(guild_id, None)
@@ -386,8 +405,17 @@ class Music(commands.Cog):
         if play_mode in ("auto", "stream") and hasattr(extractor, "stream"):
             try:
                 source, title = await extractor.stream(url, self.ffmpeg_path)
-                self.current_song[guild_id] = {"title": title, "url": url}
-                self.current_meta[guild_id] = {"duration": None, "thumbnail": item.get("thumb")}
+
+                # meta connue ici: pas de durée, mais on a le thumb/artist du "item"
+                self._set_now_playing(
+                    guild_id,
+                    title=title,
+                    url=url,
+                    artist=item.get("artist"),
+                    thumb=item.get("thumb"),
+                    duration=None,
+                )
+
                 if vc.is_playing():
                     vc.stop()
 
@@ -421,8 +449,15 @@ class Music(commands.Cog):
                 ffmpeg_path=self.ffmpeg_path,
                 cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
             )
-            self.current_song[guild_id] = {"title": title, "url": url}
-            self.current_meta[guild_id] = {"duration": int(duration) if duration else None, "thumbnail": item.get("thumb")}
+
+            self._set_now_playing(
+                guild_id,
+                title=title,
+                url=url,
+                artist=item.get("artist"),
+                thumb=item.get("thumb"),
+                duration=int(duration) if duration else None,
+            )
 
             if vc.is_playing():
                 vc.stop()
@@ -468,6 +503,7 @@ class Music(commands.Cog):
         if vc and vc.is_playing():
             vc.stop()
         self.current_song.pop(guild.id, None)
+        self.now_playing.pop(guild.id, None)
         self.is_playing[str(guild.id)] = False
         # reset chrono/meta
         self.play_start.pop(guild.id, None)
@@ -508,17 +544,17 @@ class Music(commands.Cog):
         _greg_print(f"API play_for_user(guild={guild_id}, user={user_id}) — {item}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
-            _greg_print("Serveur introuvable.")
+            _greg_print("Serveur introuvable. *On marche les yeux fermés ici ?*")
             return
         member = guild.get_member(int(user_id))
         if not member or not member.voice or not member.voice.channel:
-            _greg_print("Utilisateur pas en vocal.")
+            _greg_print("Utilisateur pas en vocal. *Je lis dans le vide ?*")
             return
 
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             await member.voice.channel.connect()
-            _greg_print(f"Greg rejoint le vocal {member.voice.channel.name}…")
+            _greg_print(f"Greg rejoint le vocal {member.voice.channel.name} pour obéir, encore…")
 
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
@@ -528,9 +564,7 @@ class Music(commands.Cog):
             def __init__(self, g):
                 self.guild = g
                 self.followup = self
-
-            async def send(self, msg):
-                _greg_print(f"[WEB->Discord] {msg}")
+            async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
 
         # si rien ne joue → lancer
         if not self.is_playing.get(str(guild_id), False):
@@ -615,7 +649,7 @@ class Music(commands.Cog):
         if not guild:
             _greg_print("Guild introuvable pour restart (web).")
             return
-        song = self.current_song.get(guild.id)
+        song = self.current_song.get(guild.id) or self.now_playing.get(guild.id)
         if not song:
             _greg_print("Aucun morceau courant à redémarrer.")
             return
