@@ -162,7 +162,13 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if err:
             return err
         try:
-            _dispatch(music_cog.play_for_user(guild_id, user_id, {"title": title, "url": url}), timeout=90)
+            extra = {}
+            for k in ("thumb", "artist", "duration"):
+                v = (data or {}).get(k)
+                if v is not None:
+                    extra[k] = v
+            item = {"title": title, "url": url, **extra}
+            _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
             return jsonify(ok=True)
         except Exception as e:
             _dbg(f"POST /api/play — 💥 Exception : {e}")
