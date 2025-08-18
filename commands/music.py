@@ -130,6 +130,19 @@ class Music(commands.Cog):
             # Fallback silencieux console
             _greg_print(f"[WARN] _i_send fallback: {msg}")
 
+    async def _safe_send(self, send_fn, msg: str):
+        """
+        Appelle send_fn(msg). Si c'est une coroutine → await, sinon on n'await pas.
+        Évite 'object NoneType can't be used in await expression' quand l'appelant
+        passe une lambda synchrone (ex: overlay web).
+        """
+        try:
+            res = send_fn(msg)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception as e:
+            _greg_print(f"[WARN] send_fn failed: {e}")
+
     # ---------- Détection ffmpeg ----------
 
     def detect_ffmpeg(self):
@@ -437,18 +450,20 @@ class Music(commands.Cog):
 
     async def _do_skip(self, guild: discord.Guild, send_fn):
         pm = self.get_pm(guild.id)
-        await asyncio.get_running_loop().run_in_executor(None, pm.reload)
-        await asyncio.get_running_loop().run_in_executor(None, pm.skip)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, pm.reload)
+        await loop.run_in_executor(None, pm.skip)
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()  # déclenche le after → play_next
-        await send_fn("⏭ *Et que ça saute !*")
+        await self._safe_send(send_fn, "⏭ *Et que ça saute !*")
         self.emit_playlist_update(guild.id)
 
     async def _do_stop(self, guild: discord.Guild, send_fn):
         pm = self.get_pm(guild.id)
-        await asyncio.get_running_loop().run_in_executor(None, pm.reload)
-        await asyncio.get_running_loop().run_in_executor(None, pm.stop)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, pm.reload)
+        await loop.run_in_executor(None, pm.stop)
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
@@ -459,7 +474,7 @@ class Music(commands.Cog):
         self.paused_since.pop(guild.id, None)
         self.paused_total.pop(guild.id, None)
         self.current_meta.pop(guild.id, None)
-        await send_fn("⏹ *Débranché. Tout s’arrête ici…*")
+        await self._safe_send(send_fn, "⏹ *Débranché. Tout s’arrête ici…*")
         self.emit_playlist_update(guild.id)
 
     async def _do_pause(self, guild: discord.Guild, send_fn):
@@ -468,10 +483,10 @@ class Music(commands.Cog):
             vc.pause()
             if not self.paused_since.get(guild.id):
                 self.paused_since[guild.id] = time.monotonic()
-            await send_fn("⏸ *Enfin une pause…*")
+            await self._safe_send(send_fn, "⏸ *Enfin une pause…*")
             self.emit_playlist_update(guild.id)
         else:
-            await send_fn("❌ *Rien à mettre en pause, hélas…*")
+            await self._safe_send(send_fn, "❌ *Rien à mettre en pause, hélas…*")
 
     async def _do_resume(self, guild: discord.Guild, send_fn):
         vc = guild.voice_client
@@ -480,20 +495,16 @@ class Music(commands.Cog):
             ps = self.paused_since.pop(guild.id, None)
             if ps:
                 self.paused_total[guild.id] = self.paused_total.get(guild.id, 0.0) + (time.monotonic() - ps)
-            await send_fn("▶️ *Reprenons ce calvaire sonore…*")
+            await self._safe_send(send_fn, "▶️ *Reprenons ce calvaire sonore…*")
             self.emit_playlist_update(guild.id)
         else:
-            await send_fn("❌ *Reprendre quoi ? Le silence ?*")
+            await self._safe_send(send_fn, "❌ *Reprendre quoi ? Le silence ?*")
 
     # =====================================================================
     #                          API web (overlay/app.py)
     # =====================================================================
 
     async def play_for_user(self, guild_id, user_id, item):
-        """
-        API: ajoute à la file. NE PAS interrompre si quelque chose joue déjà.
-        On démarre uniquement si la guild est idle (rien ne joue/pause).
-        """
         _greg_print(f"API play_for_user(guild={guild_id}, user={user_id}) — {item}")
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
@@ -507,25 +518,12 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             await member.voice.channel.connect()
-            vc = guild.voice_client
             _greg_print(f"Greg rejoint le vocal {member.voice.channel.name} pour obéir, encore…")
 
         pm = self.get_pm(guild_id)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.add, item)
 
-        # 🔒 Ne pas couper le morceau courant: si ça joue ou c'est en pause, on s'arrête là.
-        if (vc and (vc.is_playing() or vc.is_paused())) or self.is_playing.get(str(guild_id), False):
-            _greg_print("Lecture en cours: j'ajoute simplement en file (pas de switch immédiat).")
-            # petit faux Interaction pour log cohérent si besoin
-            class _Fake:
-                def __init__(self): self.followup = self; self.guild = guild
-                async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
-            await _Fake().send(f"🎵 Ajouté à la file : **{item.get('title') or item.get('url')}**")
-            self.emit_playlist_update(guild_id)
-            return
-
-        # Sinon, démarrer la lecture (guild idle)
         class FakeInteraction:
             def __init__(self, g):
                 self.guild = g
