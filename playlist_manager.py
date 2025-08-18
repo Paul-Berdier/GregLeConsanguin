@@ -30,14 +30,15 @@ class PlaylistManager:
     # ------------------------- I/O SÉCURISÉ -------------------------
 
     def _safe_write(self, data: Any) -> None:
-        """Écrit le JSON de manière atomique pour éviter les fichiers moitié-écrits."""
         directory = os.path.dirname(self.file)
         os.makedirs(directory, exist_ok=True)
+        payload = {"queue": data} if isinstance(data, list) else data
         with tempfile.NamedTemporaryFile("w", delete=False, dir=directory, suffix=".tmp", encoding="utf-8") as tf:
-            json.dump(data, tf, ensure_ascii=False)
+            json.dump(payload, tf, ensure_ascii=False)
             tmp_name = tf.name
-        os.replace(tmp_name, self.file)  # atomic sur la plupart des FS
-        print(f"[PlaylistManager {self.guild_id}] 💾 Sauvegarde atomique effectuée ({len(data)} items).")
+        os.replace(tmp_name, self.file)
+        print(
+            f"[PlaylistManager {self.guild_id}] 💾 Sauvegarde atomique effectuée ({len(payload.get('queue', []))} items).")
 
     def reload(self) -> None:
         """Recharge la playlist depuis le disque, avec migration si nécessaire."""
@@ -52,12 +53,13 @@ class PlaylistManager:
                 with open(self.file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # Migration: ancien format [str_url, ...] -> [{title,url}, ...]
-                if isinstance(data, list):
-                    self.queue = [self._coerce_item(x) for x in data]
+                if isinstance(data, dict) and "queue" in data:
+                    q = data["queue"]
+                elif isinstance(data, list):
+                    q = data
                 else:
-                    # si jamais quelqu’un a mis {"queue": [...]}
-                    q = data.get("queue", [])
-                    self.queue = [self._coerce_item(x) for x in q]
+                    q = []
+                self.queue = [self._coerce_item(x) for x in q]
                 print(f"[PlaylistManager {self.guild_id}] 🔄 Playlist rechargée ({len(self.queue)} items).")
             except Exception as e:
                 print(f"[PlaylistManager {self.guild_id}] ⚠️ ERREUR lecture JSON, reset à vide. {e}")
