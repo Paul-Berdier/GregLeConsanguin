@@ -74,16 +74,18 @@ class PlaylistManager:
     # ------------------------- UTILITAIRES -------------------------
 
     def _coerce_item(self, x: Any) -> Dict[str, Any]:
-        """Normalise un item en dict {title,url,added_by,ts}."""
         if isinstance(x, dict):
-            # Complète les champs manquants
             item = {**x}
             if not self.REQUIRED_KEYS.issubset(item.keys()):
-                # Si un dict ne possède pas tout, on tente de deviner
                 url = item.get("url") or item.get("webpage_url") or item.get("link")
                 title = item.get("title") or url or "Titre inconnu"
                 item["title"] = title
                 item["url"] = url or "about:blank"
+
+            # ✅ conserver toutes les métadonnées si présentes
+            item.setdefault("artist", None)
+            item.setdefault("thumb", None)
+            item.setdefault("duration", None)
             item.setdefault("added_by", None)
             item.setdefault("ts", int(time.time()))
             return item

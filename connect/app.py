@@ -82,19 +82,41 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             except Exception as e:
                 _dbg(f"_overlay_payload_for — fallback (music): {e}")
 
-        # Fallback minimal si pas de Music: queue/current only
+        # 🎵 Fallback si pas de Music cog : on tente avec PlaylistManager
         pm = app.get_pm(guild_id)
         data = pm.to_dict()
         current = data.get("current")
-        thumb = current.get("thumb") if isinstance(current, dict) else None
-        return {
-            "queue": data.get("queue", []),
-            "current": current,
-            "is_paused": False,
-            "progress": {"elapsed": 0, "duration": None},
-            "thumbnail": thumb,
-            "repeat_all": False,
-        }
+
+        if isinstance(current, dict):
+            return {
+                "queue": data.get("queue", []),
+                "current": {
+                    "title": current.get("title"),
+                    "url": current.get("url"),
+                    "artist": current.get("artist"),
+                    "thumb": current.get("thumb"),
+                    "duration": current.get("duration"),
+                    "added_by": current.get("added_by"),
+                    "ts": current.get("ts"),
+                },
+                "is_paused": data.get("is_paused", False),
+                "progress": {
+                    "elapsed": data.get("elapsed", 0),
+                    "duration": current.get("duration"),
+                },
+                "thumbnail": current.get("thumb"),
+                "repeat_all": data.get("repeat_all", False),
+            }
+        else:
+            # Aucun morceau en cours
+            return {
+                "queue": data.get("queue", []),
+                "current": None,
+                "is_paused": False,
+                "progress": {"elapsed": 0, "duration": None},
+                "thumbnail": None,
+                "repeat_all": False,
+            }
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
