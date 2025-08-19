@@ -195,12 +195,21 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if err:
             return err
         try:
+            SAFE_KEYS = ("thumb", "artist", "duration")
             extra = {}
-            for k in ("thumb", "artist", "duration"):
+            for k in SAFE_KEYS:
                 v = (data or {}).get(k)
                 if v is not None:
+                    v = str(v).strip()
+                    if isinstance(v, str):
+                        v = v.rstrip(";")
                     extra[k] = v
-            item = {"title": title, "url": url, **extra}
+
+            item = {
+                "title": title,
+                "url": url,  # ta version nettoyée PRIME
+                **extra
+            }
             _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
             print(f"L'  URL api play /// {url}")
             print(f"LES ITEMS API PLAY {item}")
