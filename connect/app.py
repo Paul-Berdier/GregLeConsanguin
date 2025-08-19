@@ -202,6 +202,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     extra[k] = v
             item = {"title": title, "url": url, **extra}
             _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
+            print(f"L'  URL api play /// {url}")
             return jsonify(ok=True)
         except Exception as e:
             _dbg(f"POST /api/play — 💥 Exception : {e}")
