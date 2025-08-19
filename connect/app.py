@@ -154,14 +154,25 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 "thumbnail": None,
                 "repeat_all": False
             })
+
         try:
+            # récupération brute PlaylistManager
+            pm = get_pm(guild_id)  # ⚠️ assure-toi d’avoir cette fonction dispo comme dans main.py
+            queue_raw = getattr(pm, "queue", [])
+
+            # payload enrichi (celui renvoyé normalement)
             payload = _overlay_payload_for(guild_id)
+
+            # 🟢 Ajout debug complet
             _dbg(
                 f"GET /api/playlist — guild={guild_id}, "
-                f"items={len(payload.get('queue', []))}, "
-                f"elapsed={payload.get('progress',{}).get('elapsed')}"
+                f"raw_queue={len(queue_raw)} items {[s.get('title') for s in queue_raw]}, "
+                f"payload_queue={len(payload.get('queue', []))}, "
+                f"elapsed={payload.get('progress', {}).get('elapsed')}"
             )
+
             return jsonify(payload)
+
         except Exception as e:
             _dbg(f"/api/playlist — 💥 {e}")
             return jsonify(error=str(e)), 500
