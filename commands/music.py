@@ -384,15 +384,17 @@ class Music(commands.Cog):
             await self.play_next(interaction_like)
 
     async def play_next(self, interaction_like):
+        """Démarre ou passe au morceau suivant (met aussi à jour now_playing -> overlay)."""
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
+
+        # Toujours recharger depuis disque avant d'agir
         await loop.run_in_executor(None, pm.reload)
 
-        queue = await loop.run_in_executor(None, pm.get_queue)
-        _greg_print(f"[DEBUG play_next] Queue chargée ({len(queue)} items): {[it.get('title') for it in queue]}")
-
-        if not queue:
+        # Récupère le prochain élément ET met pm.now_playing (persisté)
+        item = await loop.run_in_executor(None, pm.pop_next)
+        if not item:
             self.is_playing[gid] = False
             _greg_print(f"[DEBUG play_next] Queue VIDE → arrêt")
             await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
@@ -406,22 +408,36 @@ class Music(commands.Cog):
             self.emit_playlist_update(gid)
             return
 
-        self.is_playing[gid] = True
-        item = queue.pop(0)
         _greg_print(f"[DEBUG play_next] ITEM sélectionné: {item}")
 
-        # Repeat ALL
+        # Repeat ALL : on remet IMMÉDIATEMENT la piste en fin de file (repeat queue)
         if self.repeat_all.get(gid):
-            queue.append(item)
-            _greg_print(f"[DEBUG play_next] Repeat ALL actif → remis en fin de file")
+            await loop.run_in_executor(None, pm.add, item)
+            _greg_print("[DEBUG play_next] Repeat ALL actif → remis en fin de file")
 
-        pm.queue = queue
-        await loop.run_in_executor(None, pm.save)
-        _greg_print(
-            f"[DEBUG play_next] Queue après pop/save ({len(pm.queue)} items): {[it.get('title') for it in pm.queue]}")
+        # Marquer "quelque chose joue"
+        self.is_playing[gid] = True
 
-        url = item['url']
+        # Préparer l'état courant (provisoire) pour l'overlay AVANT extraction
+        url = item.get("url")
         play_mode = (item.get("mode") or "auto").lower()
+        self.current_song[gid] = {"title": item.get("title", url), "url": url}
+        self.current_meta[gid] = {
+            "duration": int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None,
+            "thumbnail": item.get("thumb")
+        }
+        # now_playing enrichi pour l'UI (utilisé en priorité par _overlay_payload)
+        self.now_playing[gid] = {
+            "title": item.get("title", url),
+            "url": url,
+            "artist": item.get("artist"),
+            "thumb": item.get("thumb"),
+            "duration": self.current_meta[gid]["duration"]
+        }
+
+        # Premier emit pour que l’overlay voie tout de suite "current"
+        self.emit_playlist_update(gid)
+
         _greg_print(f"[DEBUG play_next] Lecture via provider={item.get('provider')} mode={play_mode} url={url}")
 
         # Choix extracteur par URL
@@ -431,26 +447,20 @@ class Music(commands.Cog):
             return
 
         vc = interaction_like.guild.voice_client
+        if not vc:
+            await interaction_like.followup.send("❌ *Pas de connexion vocale active.*")
+            return
 
-        # Préférence: stream direct quand possible
+        # --- Préférence: stream direct quand possible ---
         if play_mode in ("auto", "stream") and hasattr(extractor, "stream"):
             try:
-                source, title = await extractor.stream(url, self.ffmpeg_path)
+                source, real_title = await extractor.stream(url, self.ffmpeg_path)
 
-                # Etats courants
-                self.current_song[gid] = {"title": title, "url": url}
-                self.current_meta[gid] = {
-                    "duration": None,
-                    "thumbnail": item.get("thumb")
-                }
-                # now_playing enrichi pour l'UI
-                self.now_playing[gid] = {
-                    "title": title,
-                    "url": url,
-                    "artist": item.get("artist"),
-                    "thumb": item.get("thumb"),
-                    "duration": None
-                }
+                # Mettre à jour les titres/états avec le titre réel
+                self.current_song[gid] = {"title": real_title, "url": url}
+                self.now_playing[gid].update({"title": real_title})
+                # Durée inconnue en stream
+                self.current_meta[gid].update({"duration": None})
 
                 if vc.is_playing():
                     vc.stop()
@@ -469,34 +479,26 @@ class Music(commands.Cog):
                 self.paused_since.pop(gid, None)
                 self._ensure_ticker(gid)
 
-                await interaction_like.followup.send(f"▶️ *Streaming :* **{title}**")
+                await interaction_like.followup.send(f"▶️ *Streaming :* **{real_title}**")
                 self.emit_playlist_update(gid)
                 return
-
             except Exception as e:
                 if play_mode == "stream":
                     await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`")
-                # en auto, on tente download juste après
+                # en "auto", on tentera download juste après
 
-        # Fallback: téléchargement puis lecture
+        # --- Fallback: téléchargement puis lecture ---
         try:
-            filename, title, duration = await extractor.download(
+            filename, real_title, duration = await extractor.download(
                 url,
                 ffmpeg_path=self.ffmpeg_path,
                 cookies_file="youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
             )
-            self.current_song[gid] = {"title": title, "url": url}
-            self.current_meta[gid] = {
-                "duration": int(duration) if duration else None,
-                "thumbnail": item.get("thumb")
-            }
-            self.now_playing[gid] = {
-                "title": title,
-                "url": url,
-                "artist": item.get("artist"),
-                "thumb": item.get("thumb"),
-                "duration": int(duration) if duration else None
-            }
+
+            self.current_song[gid] = {"title": real_title, "url": url}
+            dur_int = int(duration) if duration else None
+            self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
+            self.now_playing[gid].update({"title": real_title, "duration": dur_int})
 
             if vc.is_playing():
                 vc.stop()
@@ -517,7 +519,7 @@ class Music(commands.Cog):
             self.paused_since.pop(gid, None)
             self._ensure_ticker(gid)
 
-            await interaction_like.followup.send(f"🎶 *Téléchargé & joué :* **{title}** (`{duration}`s)")
+            await interaction_like.followup.send(f"🎶 *Téléchargé & joué :* **{real_title}** (`{duration}`s)")
             self.emit_playlist_update(gid)
         except Exception as e:
             await interaction_like.followup.send(f"❌ *Même le téléchargement s’écroule…* `{e}`")

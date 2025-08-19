@@ -280,25 +280,22 @@ class PlaylistManager:
             return len(self.queue)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Snapshot sérialisable pour l'API/overlay."""
+        """Snapshot sérialisable pour l'API."""
         with self.lock:
             payload = {
-                # file d’attente sérialisée
+                # <-- expose the real current track, not queue[0]
+                "current": dict(self.now_playing) if isinstance(getattr(self, "now_playing", None), dict) else None,
                 "queue": [dict(it) for it in self.queue],
-                # current = tête de file comme fallback
-                "current": dict(self.queue[0]) if self.queue else None,
             }
             # DEBUG non intrusif
             try:
                 print(
-                    f"[DEBUG to_dict {self.guild_id}] "
-                    f"queue={len(payload['queue'])} "
+                    f"[DEBUG to_dict {self.guild_id}] queue={len(payload['queue'])} "
                     f"/ current={'oui' if payload['current'] else 'non'}"
                 )
             except Exception:
                 pass
             return payload
-
 
 # Test rapide (synchrone)
 if __name__ == "__main__":

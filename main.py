@@ -66,6 +66,9 @@ class GregBot(commands.Bot):
         try:
             music_cog = self.get_cog("Music")
             voice_cog = self.get_cog("Voice")
+            general_cog = self.get_cog("General")
+            if general_cog and hasattr(app, "socketio"):
+                general_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
             if music_cog and hasattr(app, "socketio"):
                 music_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
             if voice_cog and hasattr(app, "socketio"):
