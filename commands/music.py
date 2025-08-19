@@ -521,16 +521,26 @@ class Music(commands.Cog):
 
     async def _do_skip(self, guild: discord.Guild, send_fn):
         gid = self._gid(guild.id)
-        pm = self.get_pm(gid)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, pm.reload)
-        _greg_print(f"[DEBUG skip] Queue avant skip ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
-        await loop.run_in_executor(None, pm.skip)
-        _greg_print(f"[DEBUG skip] Queue après skip ({len(pm.queue)}): {[it.get('title') for it in pm.queue]}")
         vc = guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop()  # déclenche le after → play_next
+
+        # ❗ Ne manipule pas la playlist ici. play_next() lira le prochain via pm.pop_next().
         await self._safe_send(send_fn, "⏭ *Et que ça saute !*")
+
+        if vc and (vc.is_playing() or vc.is_paused()):
+            # Cela déclenche l'after → play_next() → pm.pop_next()
+            vc.stop()
+        else:
+            # Rien ne joue : on démarre simplement le prochain titre s'il y en a un.
+            class FakeInteraction:
+                def __init__(self, g):
+                    self.guild = g
+                    self.followup = self
+
+                async def send(self, msg):
+                    _greg_print(f"[WEB->Discord] {msg}")
+
+            await self.play_next(FakeInteraction(guild))
+
         self.emit_playlist_update(gid)
 
     async def _do_stop(self, guild: discord.Guild, send_fn):
