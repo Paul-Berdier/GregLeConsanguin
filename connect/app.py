@@ -179,40 +179,64 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     @app.route("/api/play", methods=["POST"])
     def api_play():
-        data = request.get_json(silent=True) or request.form
-        title    = (data or {}).get("title")
-        url = ((data or {}).get("url") or "").strip().rstrip(";")
-        guild_id = (data or {}).get("guild_id")
-        user_id  = (data or {}).get("user_id")
-        # ⚠️ OBLIGATOIRE côté client désormais
-        print(f"L'  URL /// {url}")
+        # --- lire le payload brut
+        raw = request.get_json(silent=True) or request.form or {}
 
-        _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
+        def _clean(v):
+            if isinstance(v, str):
+                return v.strip().rstrip(";")
+            return v
+
+        # --- nettoyer tout le dict
+        data = {k: _clean(v) for k, v in dict(raw).items()}
+
+        # --- extraire les champs principaux (NETTOYÉS)
+        title = data.get("title")
+        url = data.get("url") or ""
+        guild_id = data.get("guild_id")
+        user_id = data.get("user_id")
+
+        # Logs debug: brut vs nettoyé
+        print(f"[api_play] RAW url={raw.get('url')!r}, CLEAN url={url!r}")
+        _dbg(f"POST /api/play (clean) — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
+
+        # Validation minimale
         if not all([title, url, guild_id, user_id]):
             return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return _bad_request("URL invalide (doit commencer par http(s)://)")
+
+        # Champs optionnels, déjà nettoyés
+        extra = {}
+        thumb = data.get("thumb")
+        if thumb:
+            extra["thumb"] = thumb
+        artist = data.get("artist")
+        if artist:
+            extra["artist"] = artist
+        duration = data.get("duration")
+        if duration is not None and duration != "":
+            try:
+                extra["duration"] = int(duration)
+            except Exception:
+                # on laisse tomber si non convertible
+                pass
+
+        item = {
+            "title": title,
+            "url": url,
+            **extra
+        }
+
+        # trace pour vérifier l'objet final
+        print(f"[api_play] ITEM FINAL: {item}")
 
         music_cog, err = _music_cog_required()
         if err:
             return err
-        try:
-            SAFE_KEYS = ("thumb", "artist", "duration")
-            extra = {}
-            for k in SAFE_KEYS:
-                v = (data or {}).get(k)
-                if v is not None:
-                    v = str(v).strip()
-                    if isinstance(v, str):
-                        v = v.rstrip(";")
-                    extra[k] = v
 
-            item = {
-                "title": title,
-                "url": url,  # ta version nettoyée PRIME
-                **extra
-            }
+        try:
             _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
-            print(f"L'  URL api play /// {url}")
-            print(f"LES ITEMS API PLAY {item}")
             return jsonify(ok=True)
         except Exception as e:
             _dbg(f"POST /api/play — 💥 Exception : {e}")
