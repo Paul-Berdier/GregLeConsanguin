@@ -216,6 +216,32 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             _dbg(f"POST /api/play — 💥 Exception : {e}")
             return jsonify(error=str(e)), 500
 
+    # --- Play un item de la file par index (0 = prochain) ---
+    @app.route("/api/play_at", methods=["POST"])
+    def api_play_at():
+        data = request.get_json(silent=True) or request.form
+        guild_id = (data or {}).get("guild_id")
+        index_raw = (data or {}).get("index")
+
+        try:
+            index = int(index_raw)
+            if index < 0:
+                raise ValueError("index<0")
+        except Exception:
+            return _bad_request("index invalide (entier >= 0)")
+
+        music_cog, err = _music_cog_required()
+        if err:
+            return err
+
+        try:
+            _dbg(f"POST /api/play_at — guild={guild_id}, index={index}")
+            ok = _dispatch(music_cog.play_at(guild_id, index), timeout=90)
+            return jsonify(ok=bool(ok))
+        except Exception as e:
+            _dbg(f"POST /api/play_at — 💥 {e}")
+            return jsonify(error=str(e)), 500
+
     @app.route("/api/pause", methods=["POST"])
     def api_pause():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
