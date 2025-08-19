@@ -149,13 +149,8 @@ class Music(commands.Cog):
         gid = self._gid(guild_id)
         if self.emit_fn:
             payload = self._overlay_payload(gid)
-            _greg_print(
-                f"[EMIT] playlist_update → guild={gid} "
-                f"paused={payload.get('is_paused')} "
-                f"elapsed={payload.get('progress', {}).get('elapsed')} "
-                f"current={bool(payload.get('current'))} "
-                f"queue={[it.get('title') for it in payload.get('queue', [])]}"
-            )
+            print(f"[EMIT] playlist_update gid={gid} paused={payload.get('is_paused')} "
+                  f"elapsed={payload.get('progress', {}).get('elapsed')} title={(payload.get('current') or {}).get('title')}")
             self.emit_fn("playlist_update", payload)
 
     async def _i_send(self, interaction: discord.Interaction, msg: str):

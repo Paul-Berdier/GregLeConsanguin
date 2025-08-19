@@ -146,24 +146,25 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def api_playlist():
         guild_id = request.args.get("guild_id")
         if not guild_id:
-            return jsonify({
-                "queue": [],
-                "current": None,
-                "is_paused": False,
-                "progress": {"elapsed": 0, "duration": None},
-                "thumbnail": None,
-                "repeat_all": False
-            })
+            return jsonify({"queue": [], "current": None, "is_paused": False,
+                            "progress": {"elapsed": 0, "duration": None},
+                            "thumbnail": None, "repeat_all": False})
+
+        music_cog = app.bot.get_cog("Music") if hasattr(app, "bot") else None
+        if not music_cog:
+            return jsonify(error="Music cog not ready"), 503
+
         try:
-            payload = _overlay_payload_for(guild_id)
-            pm = app.get_pm(guild_id)
-            raw_q = pm.get_queue()
-            _dbg(
-                f"GET /api/playlist — guild={guild_id}, raw_queue={len(raw_q)} items {[q.get('title') for q in raw_q]}, "
-                f"payload_queue={len(payload.get('queue', []))}, elapsed={payload.get('progress', {}).get('elapsed')}")
+            gid = int(guild_id)
+            payload = music_cog._overlay_payload(gid)  # << SOURCE DE VÉRITÉ
+            qlen = len(payload.get("queue") or [])
+            cur = payload.get("current")
+            print(f"🤦‍♂️ [WEB] GET /api/playlist — guild={guild_id}, "
+                  f"payload_queue={qlen}, current={'oui' if cur else 'non'}, "
+                  f"elapsed={(payload.get('progress') or {}).get('elapsed', 0)}")
             return jsonify(payload)
         except Exception as e:
-            _dbg(f"/api/playlist — 💥 {e}")
+            print(f"/api/playlist — 💥 {e}")
             return jsonify(error=str(e)), 500
 
     def _clean_field(v):
