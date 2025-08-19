@@ -33,7 +33,10 @@ class PlaylistManager:
     def _safe_write(self, data: Any) -> None:
         directory = os.path.dirname(self.file)
         os.makedirs(directory, exist_ok=True)
-        payload = {"queue": data} if isinstance(data, list) else data
+        payload = {
+            "now_playing": getattr(self, "now_playing", None),
+            "queue": data if isinstance(data, list) else []
+        }
         with tempfile.NamedTemporaryFile("w", delete=False, dir=directory, suffix=".tmp", encoding="utf-8") as tf:
             json.dump(payload, tf, ensure_ascii=False)
             tmp_name = tf.name
@@ -56,6 +59,7 @@ class PlaylistManager:
             try:
                 with open(self.file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+
                 # Migration: ancien format [str_url, ...] -> [{title,url}, ...]
                 if isinstance(data, dict) and "queue" in data:
                     q = data["queue"]
@@ -63,9 +67,11 @@ class PlaylistManager:
                     q = data
                 else:
                     q = []
+
                 self.queue = [self._coerce_item(x) for x in q]
                 print(f"[PlaylistManager {self.guild_id}] 🔄 Playlist rechargée ({len(self.queue)} items).")
-                print(f"[DEBUG reload] Items: {[q.get('title') for q in self.queue]}")
+                print(f"[DEBUG reload] Items: {[item.get('title') for item in self.queue]}")
+
             except Exception as e:
                 print(f"[PlaylistManager {self.guild_id}] ⚠️ ERREUR lecture JSON, reset à vide. {e}")
                 self.queue = []
@@ -156,6 +162,7 @@ class PlaylistManager:
                 print(f"[PlaylistManager {self.guild_id}] 💤 pop_next sur queue vide, quelle tristesse.")
                 return None
             item = self.queue.pop(0)
+            self.now_playing = item  # ✅ garder une trace du morceau en cours
             self.save()
             print(f"[PlaylistManager {self.guild_id}] ⏭️ Prochain: {item.get('title')}")
             return item
@@ -218,8 +225,8 @@ class PlaylistManager:
     def to_dict(self) -> Dict[str, Any]:
         with self.lock:
             return {
+                "now_playing": getattr(self, "now_playing", None),
                 "queue": list(self.queue),
-                "current": self.queue[0] if self.queue else None,
             }
 
 
