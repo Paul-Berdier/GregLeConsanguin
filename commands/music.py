@@ -85,10 +85,10 @@ class Music(commands.Cog):
             dct[gid_int] = dct.pop(gid_str)
 
     def get_pm(self, guild_id):
-        gid_str = str(self._gid(guild_id))        # PlaylistManager reste en str
+        gid_str = str(self._gid(guild_id))  # PlaylistManager indexé en str
         if gid_str not in self.managers:
             self.managers[gid_str] = PlaylistManager(gid_str)
-            _greg_print(f"Nouvelle PlaylistManager pour la guild {gid_str}. *Encore du rangement…*")
+            _greg_print(f"Nouvelle PlaylistManager pour la guild {gid_str}.")
         return self.managers[gid_str]
 
     # ---------- Overlay payload ----------
@@ -96,10 +96,10 @@ class Music(commands.Cog):
     def _overlay_payload(self, guild_id: int) -> dict:
         gid = self._gid(guild_id)
 
-        # S'assurer que nos états utilisent la clé INT
+        # Unifier les clés avant de lire
         for d in (self.is_playing, self.current_song, self.play_start,
                   self.paused_since, self.paused_total, self.current_meta,
-                  self.repeat_all, self.now_playing):
+                  self.repeat_all, getattr(self, "now_playing", {})):
             self._migrate_keys_to_int(d, gid)
 
         pm = self.get_pm(gid)
@@ -112,13 +112,9 @@ class Music(commands.Cog):
         except Exception:
             vc = None
 
-        # source de vérité: now_playing > current_song > pm.current
-        current = (
-            self.now_playing.get(gid)
-            or self.current_song.get(gid)
-            or data.get("current")
-        )
-
+        # ✅ source de vérité
+        nowp = getattr(self, "now_playing", {})
+        current = nowp.get(gid) or self.current_song.get(gid) or data.get("current")
         is_paused = bool(vc and vc.is_paused())
 
         # Progression
@@ -134,21 +130,17 @@ class Music(commands.Cog):
         meta = self.current_meta.get(gid, {})
         duration = meta.get("duration")
         thumb = meta.get("thumbnail")
-
-        # Fallbacks depuis current
         if isinstance(current, dict):
             if duration is None and isinstance(current.get("duration"), (int, float)):
-                duration = int(current.get("duration"))
+                duration = int(current["duration"])
             thumb = thumb or current.get("thumb") or current.get("thumbnail")
 
         return {
             "queue": data.get("queue", []),
             "current": current,
             "is_paused": is_paused,
-            "progress": {
-                "elapsed": elapsed,
-                "duration": int(duration) if duration is not None else None,
-            },
+            "progress": {"elapsed": elapsed,
+                         "duration": int(duration) if duration is not None else None},
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
         }
@@ -157,14 +149,14 @@ class Music(commands.Cog):
         gid = self._gid(guild_id)
         if self.emit_fn:
             payload = self._overlay_payload(gid)
-            q_titles = [it.get("title") for it in payload.get("queue", [])]
             _greg_print(
-                f"[EMIT] playlist_update → guild={gid} — "
-                f"paused={payload.get('is_paused')} elapsed={payload.get('progress',{}).get('elapsed')} "
-                f"queue={q_titles}"
+                f"[EMIT] playlist_update → guild={gid} "
+                f"paused={payload.get('is_paused')} "
+                f"elapsed={payload.get('progress', {}).get('elapsed')} "
+                f"current={bool(payload.get('current'))} "
+                f"queue={[it.get('title') for it in payload.get('queue', [])]}"
             )
             self.emit_fn("playlist_update", payload)
-
 
     async def _i_send(self, interaction: discord.Interaction, msg: str):
         try:

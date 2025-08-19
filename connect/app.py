@@ -154,88 +154,61 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 "thumbnail": None,
                 "repeat_all": False
             })
-
         try:
-            # récupération brute PlaylistManager
-            pm = get_pm(guild_id)  # ⚠️ assure-toi d’avoir cette fonction dispo comme dans main.py
-            queue_raw = getattr(pm, "queue", [])
-
-            # payload enrichi (celui renvoyé normalement)
             payload = _overlay_payload_for(guild_id)
-
-            # 🟢 Ajout debug complet
+            pm = app.get_pm(guild_id)
+            raw_q = pm.get_queue()
             _dbg(
-                f"GET /api/playlist — guild={guild_id}, "
-                f"raw_queue={len(queue_raw)} items {[s.get('title') for s in queue_raw]}, "
-                f"payload_queue={len(payload.get('queue', []))}, "
-                f"elapsed={payload.get('progress', {}).get('elapsed')}"
-            )
-
+                f"GET /api/playlist — guild={guild_id}, raw_queue={len(raw_q)} items {[q.get('title') for q in raw_q]}, "
+                f"payload_queue={len(payload.get('queue', []))}, elapsed={payload.get('progress', {}).get('elapsed')}")
             return jsonify(payload)
-
         except Exception as e:
             _dbg(f"/api/playlist — 💥 {e}")
             return jsonify(error=str(e)), 500
 
+    def _clean_field(v):
+        if v is None:
+            return None
+        s = str(v).strip().strip('\'" \t\r\n')
+        while s.endswith(';'):
+            s = s[:-1]
+        return s
+
     @app.route("/api/play", methods=["POST"])
     def api_play():
-        # --- lire le payload brut
-        raw = request.get_json(silent=True) or request.form or {}
+        data = request.get_json(silent=True) or request.form
+        raw_url = (data or {}).get("url")
+        url = _clean_field(raw_url)
+        title = _clean_field((data or {}).get("title")) or url
+        guild_id = (data or {}).get("guild_id")
+        user_id = (data or {}).get("user_id")
 
-        def _clean(v):
-            if isinstance(v, str):
-                return v.strip().rstrip(";")
-            return v
-
-        # --- nettoyer tout le dict
-        data = {k: _clean(v) for k, v in dict(raw).items()}
-
-        # --- extraire les champs principaux (NETTOYÉS)
-        title = data.get("title")
-        url = data.get("url") or ""
-        guild_id = data.get("guild_id")
-        user_id = data.get("user_id")
-
-        # Logs debug: brut vs nettoyé
-        print(f"[api_play] RAW url={raw.get('url')!r}, CLEAN url={url!r}")
+        _dbg(f"[api_play] RAW url={raw_url!r}, CLEAN url={url!r}")
         _dbg(f"POST /api/play (clean) — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
 
-        # Validation minimale
         if not all([title, url, guild_id, user_id]):
             return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
-        if not (url.startswith("http://") or url.startswith("https://")):
-            return _bad_request("URL invalide (doit commencer par http(s)://)")
-
-        # Champs optionnels, déjà nettoyés
-        extra = {}
-        thumb = data.get("thumb")
-        if thumb:
-            extra["thumb"] = thumb
-        artist = data.get("artist")
-        if artist:
-            extra["artist"] = artist
-        duration = data.get("duration")
-        if duration is not None and duration != "":
-            try:
-                extra["duration"] = int(duration)
-            except Exception:
-                # on laisse tomber si non convertible
-                pass
-
-        item = {
-            "title": title,
-            "url": url,
-            **extra
-        }
-
-        # trace pour vérifier l'objet final
-        print(f"[api_play] ITEM FINAL: {item}")
 
         music_cog, err = _music_cog_required()
         if err:
             return err
 
         try:
+            extra = {}
+            for k in ("thumb", "artist", "duration"):
+                v = _clean_field((data or {}).get(k))
+                if v is None:
+                    continue
+                if k == "duration":
+                    try:
+                        v = int(float(v))
+                    except Exception:
+                        v = None
+                extra[k] = v
+
+            item = {"title": title, "url": url, **extra}
+            _dbg(f"[api_play] ITEM FINAL: {item}")
+
             _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
             return jsonify(ok=True)
         except Exception as e:
