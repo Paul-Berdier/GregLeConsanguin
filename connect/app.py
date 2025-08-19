@@ -216,31 +216,26 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             _dbg(f"POST /api/play — 💥 Exception : {e}")
             return jsonify(error=str(e)), 500
 
-    # --- Play un item de la file par index (0 = prochain) ---
     @app.route("/api/play_at", methods=["POST"])
     def api_play_at():
-        data = request.get_json(silent=True) or request.form
+        data = request.get_json(silent=True) or {}
         guild_id = (data or {}).get("guild_id")
-        index_raw = (data or {}).get("index")
-
+        index = (data or {}).get("index")
         try:
-            index = int(index_raw)
-            if index < 0:
-                raise ValueError("index<0")
-        except Exception:
-            return _bad_request("index invalide (entier >= 0)")
+            idx = int(index)
+        except:
+            return _bad_request("index invalide")
 
-        music_cog, err = _music_cog_required()
-        if err:
-            return err
+        if not guild_id:
+            return _bad_request("guild_id manquant")
 
-        try:
-            _dbg(f"POST /api/play_at — guild={guild_id}, index={index}")
-            ok = _dispatch(music_cog.play_at(guild_id, index), timeout=90)
-            return jsonify(ok=bool(ok))
-        except Exception as e:
-            _dbg(f"POST /api/play_at — 💥 {e}")
-            return jsonify(error=str(e)), 500
+        pm = get_pm(str(guild_id))
+        ok = pm.move(idx, 0)
+        if not ok:
+            return _bad_request(f"index hors bornes: {idx}")
+
+        # On ne stoppe pas ici: le client appelle ensuite /api/skip pour passer tout de suite
+        return jsonify(ok=True, moved_to=0)
 
     @app.route("/api/pause", methods=["POST"])
     def api_pause():
