@@ -80,16 +80,22 @@ class PlaylistManager:
 
     # ------------------------- UTILITAIRES -------------------------
 
+    def _clean_url_value(self, u: Any) -> str:
+        if not u:
+            return "about:blank"
+        s = str(u).strip().strip('\'"')
+        while s.endswith(';'):
+            s = s[:-1]
+        return s
+
     def _coerce_item(self, x: Any) -> Dict[str, Any]:
         if isinstance(x, dict):
             item = {**x}
-            if not self.REQUIRED_KEYS.issubset(item.keys()):
-                url = item.get("url") or item.get("webpage_url") or item.get("link")
-                title = item.get("title") or url or "Titre inconnu"
-                item["title"] = title
-                item["url"] = url or "about:blank"
-
-            # ✅ conserver toutes les métadonnées si présentes
+            url = item.get("url") or item.get("webpage_url") or item.get("link")
+            url = self._clean_url_value(url)
+            title = item.get("title") or url or "Titre inconnu"
+            item["title"] = title
+            item["url"] = url
             item.setdefault("artist", None)
             item.setdefault("thumb", None)
             item.setdefault("duration", None)
@@ -99,9 +105,10 @@ class PlaylistManager:
 
         # Ancien format: string = url
         if isinstance(x, str):
+            url = self._clean_url_value(x)
             return {
-                "title": x,
-                "url": x,
+                "title": url,
+                "url": url,
                 "added_by": None,
                 "ts": int(time.time()),
             }

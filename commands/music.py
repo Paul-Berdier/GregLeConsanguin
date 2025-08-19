@@ -31,6 +31,15 @@ def _infer_provider_from_url(u: str) -> Optional[str]:
         return "youtube"
     return None
 
+def _clean_url(u: Optional[str]) -> Optional[str]:
+    if not u:
+        return u
+    u = str(u).strip()
+    # strip quotes & stray semicolons/spaces
+    u = u.strip('\'" \t\r\n')
+    while u.endswith(';'):
+        u = u[:-1]
+    return u
 
 class Music(commands.Cog):
     """
@@ -241,11 +250,12 @@ class Music(commands.Cog):
 
         # URL directe
         if query_or_url.startswith(("http://", "https://")):
-            inferred = _infer_provider_from_url(query_or_url)
+            cleaned = _clean_url(query_or_url)
+            inferred = _infer_provider_from_url(cleaned)
             chosen_provider = inferred or (prov if prov != "auto" else None)
             await self.add_to_queue(
                 interaction,
-                {"title": query_or_url, "url": query_or_url, "provider": chosen_provider, "mode": play_mode},
+                {"title": cleaned, "url": cleaned, "provider": chosen_provider, "mode": play_mode},
             )
             return
 
@@ -300,12 +310,14 @@ class Music(commands.Cog):
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
             idx = int(reply.content) - 1
             selected = self.search_results[interaction.user.id][idx]
+            sel_url = _clean_url(selected.get("webpage_url", selected.get("url")))
             await self.add_to_queue(interaction, {
                 "title": selected.get("title", "Titre inconnu"),
-                "url": selected.get("webpage_url", selected.get("url")),
+                "url": sel_url,
                 "provider": selected.get("provider"),
                 "mode": play_mode,
             })
+
         except asyncio.TimeoutError:
             await interaction.followup.send("⏳ *Trop lent. Greg retourne maugréer dans sa crypte…*")
 
@@ -357,6 +369,10 @@ class Music(commands.Cog):
 
     async def add_to_queue(self, interaction_like, item):
         gid = self._gid(interaction_like.guild.id)
+        if item and "url" in item:
+            item = {**item, "url": _clean_url(item["url"])}
+            if not item["title"]:
+                item["title"] = item["url"]
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         _greg_print(f"[DEBUG add_to_queue] AVANT reload → queue={len(pm.queue)} items")
