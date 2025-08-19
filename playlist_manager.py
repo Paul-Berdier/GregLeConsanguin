@@ -282,20 +282,21 @@ class PlaylistManager:
     def to_dict(self) -> Dict[str, Any]:
         """Snapshot sérialisable pour l'API."""
         with self.lock:
+            now_play = dict(self.now_playing) if isinstance(getattr(self, "now_playing", None), dict) else None
             payload = {
-                # <-- expose the real current track, not queue[0]
-                "current": dict(self.now_playing) if isinstance(getattr(self, "now_playing", None), dict) else None,
-                "queue": [dict(it) for it in self.queue],
+                # compat nouvelle/ancienne API
+                "now_playing": now_play,
+                "current": now_play,  # ← clé attendue par l’overlay/app
+                "queue": [dict(it) for it in self.queue]
             }
             # DEBUG non intrusif
             try:
                 print(
-                    f"[DEBUG to_dict {self.guild_id}] queue={len(payload['queue'])} "
-                    f"/ current={'oui' if payload['current'] else 'non'}"
-                )
+                    f"[DEBUG to_dict {self.guild_id}] queue={len(payload['queue'])} / current={'oui' if payload['current'] else 'non'}")
             except Exception:
                 pass
             return payload
+
 
 # Test rapide (synchrone)
 if __name__ == "__main__":
