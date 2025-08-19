@@ -181,7 +181,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def api_play():
         data = request.get_json(silent=True) or request.form
         title    = (data or {}).get("title")
-        url      = (data or {}).get("url")
+        url = ((data or {}).get("url") or "").strip().rstrip(";")
         guild_id = (data or {}).get("guild_id")
         user_id  = (data or {}).get("user_id")
         # ⚠️ OBLIGATOIRE côté client désormais
