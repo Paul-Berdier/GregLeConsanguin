@@ -66,9 +66,12 @@ class GregBot(commands.Bot):
         try:
             music_cog = self.get_cog("Music")
             voice_cog = self.get_cog("Voice")
+            general_cog = self.get_cog("General")
             if music_cog and hasattr(app, "socketio"):
                 music_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
             if voice_cog and hasattr(app, "socketio"):
+                voice_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
+            if general_cog and hasattr(app, "socketio"):
                 voice_cog.emit_fn = lambda event, data: app.socketio.emit(event, data)
         except Exception as e:
             logger.error("Impossible de connecter emit_fn: %s", e)
