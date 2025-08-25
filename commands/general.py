@@ -223,7 +223,7 @@ class General(commands.Cog):
 
     @app_commands.command(
         name="yt_cookies_update",
-        description="Met à jour les cookies YouTube (joignez un fichier cookies.txt ou JSON d’extension) et lance un auto-test."
+        description="Met à jour les cookies YouTube (cookies.txt ou JSON) + auto-test."
     )
     @app_commands.describe(
         file="Fichier cookies (Netscape cookies.txt ou export JSON d'extension)."
