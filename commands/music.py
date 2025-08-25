@@ -303,12 +303,35 @@ class Music(commands.Cog):
 
     @app_commands.command(name="playlist", description="Affiche la file d’attente.")
     async def slash_playlist(self, interaction: discord.Interaction):
-        pm = self.get_pm(interaction.guild.id)
-        queue = await asyncio.get_running_loop().run_in_executor(None, pm.get_queue)
-        if not queue:
+        gid = self._gid(interaction.guild.id)
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+
+        # 🔄 aligne avec l’overlay: recharge depuis la source de vérité
+        await loop.run_in_executor(None, pm.reload)
+        data = await loop.run_in_executor(None, pm.to_dict)
+
+        queue = data.get("queue", []) or []
+        # même logique que l’overlay: now_playing > current_song > pm.current
+        current = (getattr(self, "now_playing", {}).get(gid)
+                   or self.current_song.get(gid)
+                   or data.get("current"))
+
+        if not queue and not current:
             return await self._i_send(interaction, "📋 *Playlist vide. Comme ton âme.*")
-        lines = "\n".join([f"**{i+1}.** [{it.get('title','?')}]({it.get('url','')})" for i, it in enumerate(queue)])
-        await self._i_send(interaction, f"🎶 *Sélection actuelle :*\n{lines}")
+
+        lines = []
+        if current:
+            lines.append(f"🎧 **En cours :** [{current.get('title', '?')}]({current.get('url', '')})")
+        if queue:
+            q_lines = [f"**{i + 1}.** [{it.get('title', '?')}]({it.get('url', '')})"
+                       for i, it in enumerate(queue)]
+            lines.append("\n".join(q_lines))
+
+        await self._i_send(interaction, "🎶 *Sélection actuelle :*\n" + "\n".join(lines))
+
+        # (optionnel) pousser un rafraîchissement overlay si rien ne joue
+        # self.emit_playlist_update(gid)
 
     @app_commands.command(name="current", description="Montre le morceau en cours.")
     async def slash_current(self, interaction: discord.Interaction):
