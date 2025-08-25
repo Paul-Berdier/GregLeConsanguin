@@ -20,7 +20,7 @@ SFX_EXTS = {".mp3", ".ogg", ".wav", ".m4a"}
 
 DEFAULT_MIN_DELAY = 30   # secondes
 DEFAULT_MAX_DELAY = 120
-DEFAULT_VOLUME = 0.30    # 0.0 .. 1.0  (~15% par défaut)
+DEFAULT_VOLUME = 0.30    # 0.0 .. 1.0  (~30% par défaut)
 
 
 class Spook(commands.Cog):
@@ -202,9 +202,12 @@ class Spook(commands.Cog):
 
     # ---------------- Slash commands (ADMIN) ----------------
 
-    @app_commands.command(name="spook_enable", description="Active/désactive les bruits sinistres (admin).",
-                          default_member_permissions=discord.Permissions(administrator=True),
-                          dm_permission=False)
+    @app_commands.command(
+        name="spook_enable",
+        description="Active/désactive les bruits sinistres (admin).",
+        dm_permission=False
+    )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(enable="true/false")
     async def spook_enable(self, interaction: discord.Interaction, enable: bool):
         gid = interaction.guild_id
@@ -216,10 +219,13 @@ class Spook(commands.Cog):
             self._cancel_task(gid)
             await interaction.response.send_message("🕯️ Spook **désactivé**. Les murs se taisent.")
 
-    @app_commands.command(name="spook_settings", description="Règle délai et volume des bruits (admin).",
-                          default_member_permissions=discord.Permissions(administrator=True),
-                          dm_permission=False)
-    @app_commands.describe(min_delay="délai mini entre deux sons (s)", max_delay="délai maxi (s)", volume="0.0 - 1.0 (ex: 0.15)")
+    @app_commands.command(
+        name="spook_settings",
+        description="Règle délai et volume des bruits (admin).",
+        dm_permission=False
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(min_delay="délai mini entre deux sons (s)", max_delay="délai maxi (s)", volume="0.0 - 1.0 (ex: 0.30)")
     async def spook_settings(self, interaction: discord.Interaction, min_delay: int = DEFAULT_MIN_DELAY,
                              max_delay: int = DEFAULT_MAX_DELAY, volume: float = DEFAULT_VOLUME):
         gid = interaction.guild_id
@@ -230,9 +236,12 @@ class Spook(commands.Cog):
             f"⚙️ Spook réglé : delay **{self.min_delay[gid]}–{self.max_delay[gid]}s**, volume **{self.volume[gid]:.2f}**"
         )
 
-    @app_commands.command(name="spook_status", description="Affiche l’état du Spook (admin).",
-                          default_member_permissions=discord.Permissions(administrator=True),
-                          dm_permission=False)
+    @app_commands.command(
+        name="spook_status",
+        description="Affiche l’état du Spook (admin).",
+        dm_permission=False
+    )
+    @app_commands.default_permissions(administrator=True)
     async def spook_status(self, interaction: discord.Interaction):
         gid = interaction.guild_id
         self._guild_conf(gid)
@@ -255,11 +264,13 @@ class Spook(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="spook_test", description="Joue un bruit maintenant (si conditions ok).",
-                          default_member_permissions=discord.Permissions(administrator=True),
-                          dm_permission=False)
+    @app_commands.command(
+        name="spook_test",
+        description="Joue un bruit maintenant (si conditions ok).",
+        dm_permission=False
+    )
+    @app_commands.default_permissions(administrator=True)
     async def spook_test(self, interaction: discord.Interaction):
-        gid = interaction.guild_id
         await interaction.response.defer(ephemeral=True)
 
         vc = interaction.guild.voice_client

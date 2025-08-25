@@ -227,7 +227,7 @@ class GregBot(commands.Bot):
                 logger.info("emit_fn branché sur EasterEggs")
             if socketio_ref and spook_cog:
                 eggs_cog.emit_fn = _emit
-                logger.info("emit_fn branch sur Spook")
+                logger.info("emit_fn branché sur Spook")
         except Exception as e:
             logger.error("Impossible de connecter emit_fn: %s", e)
 
