@@ -10,6 +10,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
+# --- deps pour auto-test cookies ---
+from http.cookiejar import MozillaCookieJar
 
 RESTART_MARKER = ".greg_restart.json"  # créé à la racine du projet avant execv
 COOKIES_FILENAME = "youtube.com_cookies.txt"  # utilisé côté lecture YouTube si présent
@@ -100,6 +102,73 @@ def _summarize_netscape(text: str):
             has_consent = True
     return count, sorted(list(domains))[:6], has_consent
 
+# ------------------------
+# Helpers auto-test cookies
+# ------------------------
+
+def _http_probe_with_cookies(cookies_path: str):
+    """
+    Test HTTP simple vers une vidéo publique avec les cookies chargés.
+    Retourne (ok: bool, detail: str)
+    """
+    try:
+        import requests
+    except Exception as e:
+        return False, f"lib requests manquante: {e}"
+
+    try:
+        jar = MozillaCookieJar()
+        jar.load(cookies_path, ignore_discard=True, ignore_expires=True)
+    except Exception as e:
+        return False, f"cookies illisibles: {e}"
+
+    try:
+        s = requests.Session()
+        s.cookies = jar
+        # vidéo de test (yt-dlp): BaW_jenozKc
+        r = s.get("https://www.youtube.com/watch?v=BaW_jenozKc",
+                  timeout=5, allow_redirects=False, headers={"Accept-Language": "en-US,en;q=0.7"})
+        # Si redirige vers consent.youtube.com -> consent non pris en compte
+        loc = r.headers.get("Location", "") if r.is_redirect else ""
+        if "consent.youtube.com" in loc.lower() or "consent" in loc.lower():
+            return False, f"redir CONSENT ({r.status_code})"
+        if r.status_code >= 400:
+            return False, f"HTTP {r.status_code}"
+        return True, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"requête échouée: {e}"
+
+
+def _ytdlp_probe_with_cookies(cookies_path: str):
+    """
+    Lance yt-dlp en dry-run sur une vidéo publique en utilisant cookiefile.
+    Retourne (ok: bool, detail: str)
+    """
+    try:
+        from yt_dlp import YoutubeDL
+    except Exception as e:
+        return False, f"yt-dlp manquant: {e}"
+
+    opts = {
+        "quiet": True,
+        "skip_download": True,
+        "cookiefile": cookies_path,
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+    }
+    try:
+        with YoutubeDL(opts) as ydl:
+            # vidéo de test (yt-dlp)
+            info = ydl.extract_info("https://www.youtube.com/watch?v=BaW_jenozKc", download=False)
+        if not info:
+            return False, "aucune info extraite"
+        # succès: on renvoie quelques champs
+        title = info.get("title", "?")
+        uploader = info.get("uploader") or info.get("channel") or "?"
+        return True, f"ok — {title} / {uploader}"
+    except Exception as e:
+        return False, f"yt-dlp erreur: {e}"
+
 class General(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -154,7 +223,7 @@ class General(commands.Cog):
 
     @app_commands.command(
         name="yt_cookies_update",
-        description="Met à jour les cookies YouTube (joignez un fichier cookies.txt ou JSON d’extension)."
+        description="Met à jour les cookies YouTube (joignez un fichier cookies.txt ou JSON d’extension) et lance un auto-test."
     )
     @app_commands.describe(
         file="Fichier cookies (Netscape cookies.txt ou export JSON d'extension)."
@@ -199,48 +268,83 @@ class General(commands.Cog):
         except Exception as e:
             return await interaction.followup.send(f"❌ Écriture impossible: `{e}`")
 
+        # === AUTO-TEST (hors event loop) ===
+        loop = asyncio.get_running_loop()
+        http_ok, http_detail = await loop.run_in_executor(None, _http_probe_with_cookies, target)
+        ydl_ok, ydl_detail = await loop.run_in_executor(None, _ytdlp_probe_with_cookies, target)
+
         doms = ", ".join(domains) + (" …" if len(domains) >= 6 else "")
         consent_str = "✅ CONSENT présent" if has_consent else "⚠️ CONSENT manquant"
-        await interaction.followup.send(
-            f"✅ Cookies YouTube mis à jour ({count} entrées ; domaines: {doms}).\n{consent_str}\n"
-            f"📁 Fichier: `{COOKIES_FILENAME}`\n"
-            f"ℹ️ Ces cookies seront pris en compte lors du **download** YouTube (fallback), si le fichier existe. "
-            f"({COOKIES_FILENAME} détecté et utilisé par le player)."
+
+        # Compose embed rapport
+        ok_all = http_ok and ydl_ok
+        color = 0x2ECC71 if ok_all else 0xE74C3C
+        lines = [
+            f"Cookies: **{count}** entrées ; domaines: {doms}",
+            f"{consent_str}",
+            "",
+            f"{'✅' if http_ok else '❌'} **HTTP probe** — {http_detail}",
+            f"{'✅' if ydl_ok else '❌'} **yt-dlp probe** — {ydl_detail}",
+            "",
+            f"📁 Fichier: `{COOKIES_FILENAME}` (pris en compte par le player lors des accès YouTube)."
+        ]
+        embed = discord.Embed(
+            title="YouTube cookies — Mise à jour & auto-test",
+            description="\n".join(lines),
+            color=color
         )
 
-    @app_commands.command(name="yt_cookies_status", description="Affiche l’état des cookies YouTube chargés.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="yt_cookies_status",
+        description="Vérifie l’état des cookies YouTube et lance un auto-test (HTTP + yt-dlp)."
+    )
     async def yt_cookies_status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         target = _proj_path(COOKIES_FILENAME)
         if not os.path.exists(target):
-            return await interaction.followup.send("🚫 Aucun cookies YouTube trouvé (`youtube.com_cookies.txt`).")
+            return await interaction.followup.send("🚫 Aucun cookies YouTube trouvé (`youtube.com_cookies.txt`).",
+                                                   ephemeral=True)
 
+        # Lire et résumer
         try:
             with open(target, "r", encoding="utf-8") as f:
                 text = f.read()
             count, domains, has_consent = _summarize_netscape(text)
-            mtime = dt.datetime.fromtimestamp(os.path.getmtime(target))
-            age = dt.datetime.now() - mtime
-            doms = ", ".join(domains) + (" …" if len(domains) >= 6 else "")
-            await interaction.followup.send(
-                f"📄 `{COOKIES_FILENAME}` — {count} cookies ; domaines: {doms}\n"
-                f"⏱️ Dernière maj: {mtime:%Y-%m-%d %H:%M:%S} ({age.days}j {age.seconds // 3600}h)\n"
-                f"{'✅ CONSENT présent' if has_consent else '⚠️ CONSENT manquant'}"
-            )
         except Exception as e:
-            await interaction.followup.send(f"❌ Lecture impossible: `{e}`")
+            return await interaction.followup.send(f"❌ Lecture impossible: `{e}`", ephemeral=True)
 
-    @app_commands.command(name="yt_cookies_clear", description="Supprime le fichier de cookies YouTube.")
-    async def yt_cookies_clear(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        target = _proj_path(COOKIES_FILENAME)
-        try:
-            if os.path.exists(target):
-                os.remove(target)
-                return await interaction.followup.send("🧹 Cookies YouTube supprimés.")
-            return await interaction.followup.send("ℹ️ Aucun fichier de cookies à supprimer.")
-        except Exception as e:
-            await interaction.followup.send(f"❌ Suppression impossible: `{e}`")
+        # Lancer les mêmes probes
+        loop = asyncio.get_running_loop()
+        http_ok, http_detail = await loop.run_in_executor(None, _http_probe_with_cookies, target)
+        ydl_ok, ydl_detail = await loop.run_in_executor(None, _ytdlp_probe_with_cookies, target)
+
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(target))
+        age = dt.datetime.now() - mtime
+        doms = ", ".join(domains) + (" …" if len(domains) >= 6 else "")
+        consent_str = "✅ CONSENT présent" if has_consent else "⚠️ CONSENT manquant"
+
+        ok_all = http_ok and ydl_ok
+        color = 0x2ECC71 if ok_all else 0xE74C3C
+        lines = [
+            f"📄 `{COOKIES_FILENAME}` — {count} cookies ; domaines: {doms}",
+            f"⏱️ Dernière maj: {mtime:%Y-%m-%d %H:%M:%S} ({age.days}j {age.seconds // 3600}h)",
+            f"{consent_str}",
+            "",
+            f"{'✅' if http_ok else '❌'} **HTTP probe** — {http_detail}",
+            f"{'✅' if ydl_ok else '❌'} **yt-dlp probe** — {ydl_detail}",
+        ]
+        embed = discord.Embed(
+            title="YouTube cookies — Status & auto-test",
+            description="\n".join(lines),
+            color=color
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # =======================
+    #  Redémarrage complet
+    # =======================
 
     @app_commands.command(name="restart", description="Redémarre complètement Greg et poste un auto-diagnostic.")
     async def restart(self, interaction: discord.Interaction):
