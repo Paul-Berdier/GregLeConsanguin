@@ -55,7 +55,7 @@ async def run_post_restart_selftest(bot):
         results = []
 
         # 1) COGS
-        expected_cogs = ["Music", "Voice", "General", "EasterEggs"]
+        expected_cogs = ["Music", "Voice", "General", "EasterEggs", "Spook"]
         for name in expected_cogs:
             ok = bot.get_cog(name) is not None
             results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
@@ -70,7 +70,8 @@ async def run_post_restart_selftest(bot):
         expected_cmds = [
             "play", "pause", "resume", "skip", "stop", "playlist", "current",
             "ping", "greg", "web", "help", "restart",
-            "roll", "coin", "tarot", "curse", "praise", "shame", "skullrain", "gregquote"
+            "roll", "coin", "tarot", "curse", "praise", "shame", "skullrain", "gregquote", "spook_enable",
+            "spook_settings", "spook_status"
         ]
         for name in expected_cmds:
             ok = name in names
@@ -201,6 +202,7 @@ class GregBot(commands.Bot):
             voice_cog = self.get_cog("Voice")
             general_cog = self.get_cog("General")
             eggs_cog = self.get_cog("EasterEggs")
+            spook_cog = self.get_cog("Spook")
 
             def _emit(event, data):
                 """Wrapper pour sécuriser l'emit Socket.IO et logger en cas d'erreur."""
@@ -223,6 +225,9 @@ class GregBot(commands.Bot):
             if socketio_ref and eggs_cog:
                 eggs_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur EasterEggs")
+            if socketio_ref and spook_cog:
+                eggs_cog.emit_fn = _emit
+                logger.info("emit_fn branch sur Spook")
         except Exception as e:
             logger.error("Impossible de connecter emit_fn: %s", e)
 
