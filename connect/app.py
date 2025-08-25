@@ -3,11 +3,14 @@
 from __future__ import annotations
 from typing import Callable, Any, Dict, Optional, List
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import (
+    Flask, render_template, render_template_string,
+    request, jsonify, session, redirect, url_for
+)
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
-import os, asyncio
-import requests
+import os, asyncio, requests, time, secrets
+from urllib.parse import quote_plus
 
 # --- Imports helpers (compat: exécution directe OU en package) ---
 try:
@@ -28,7 +31,6 @@ except Exception:
             start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
         )
     except Exception:
-        # fallback dev: si lancé directement depuis connect/ en script
         from session_auth import (
             login_required, current_user, set_user_session,
             clear_user_session, save_oauth_state, pop_oauth_state, is_logged_in
@@ -63,6 +65,38 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     )
 
     app.get_pm = get_pm
+
+    # ---- Device Login (OAuth via navigateur par défaut) ----
+    DEVICE_BY_STATE: dict[str, str] = {}   # oauth_state -> device_id
+    DEVICE_STORE: dict[str, dict] = {}     # device_id -> {"user": {...} or None, "ts": float}
+    DEVICE_TTL = 300  # 5 minutes
+
+    def _device_gc():
+        now = time.time()
+        # purge states or devices trop vieux
+        for st, did in list(DEVICE_BY_STATE.items()):
+            info = DEVICE_STORE.get(did)
+            if not info or (now - info.get("ts", now)) > DEVICE_TTL:
+                DEVICE_BY_STATE.pop(st, None)
+        for did, info in list(DEVICE_STORE.items()):
+            if (now - info.get("ts", now)) > DEVICE_TTL:
+                DEVICE_STORE.pop(did, None)
+
+    def _oauth_authorize_url_for_state(state: str) -> str:
+        """Construit l'URL d'autorisation Discord SANS toucher à la session (device flow)."""
+        client_id = os.environ["DISCORD_CLIENT_ID"]
+        redirect  = os.environ["DISCORD_REDIRECT_URI"]
+        scopes    = os.getenv("DISCORD_OAUTH_SCOPES", "identify guilds")
+        scope_enc = quote_plus(scopes)
+        redir_enc = quote_plus(redirect)
+        return (
+            "https://discord.com/api/oauth2/authorize"
+            f"?client_id={client_id}"
+            f"&redirect_uri={redir_enc}"
+            "&response_type=code"
+            f"&scope={scope_enc}"
+            f"&state={state}"
+        )
 
     # ------------------------ Helpers ----------------------------
     def _dbg(msg: str) -> None:
@@ -167,10 +201,51 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
     def index():
-        # L’overlay appelle /api/me pour savoir si l’utilisateur est connecté
-        return render_template("index.html")
+        # Fallback si templates/index.html absent (évite 500)
+        try:
+            return render_template("index.html")
+        except Exception:
+            return render_template_string(
+                "<!doctype html><meta charset='utf-8'>"
+                "<title>Greg Overlay</title>"
+                "<h1>Greg Overlay</h1>"
+                "<p>Pas de <code>templates/index.html</code>. Utilise la fenêtre Paramètres pour te connecter.</p>"
+            )
 
     # ------------------------ AUTH (Discord OAuth2) --------------------------
+    # ---- Device flow (navigateur par défaut) ----
+    @app.route("/auth/device/start", methods=["POST", "GET"])
+    def auth_device_start():
+        """Démarre un device-login : retourne device_id + URL à ouvrir dans le navigateur par défaut."""
+        _device_gc()
+        device_id = secrets.token_urlsafe(16)
+        state = secrets.token_urlsafe(24)
+        DEVICE_BY_STATE[state] = device_id
+        DEVICE_STORE[device_id] = {"user": None, "ts": time.time()}
+        login_url = _oauth_authorize_url_for_state(state)  # pas d'écriture session ici
+        return jsonify({"device_id": device_id, "login_url": login_url})
+
+    @app.route("/auth/device/poll", methods=["GET"])
+    def auth_device_poll():
+        """Poll côté overlay: quand user prêt, on SET le cookie de session ici et on renvoie ok."""
+        _device_gc()
+        device_id = (request.args.get("device_id") or "").strip()
+        if not device_id or device_id not in DEVICE_STORE:
+            return jsonify({"error": "invalid_device"}), 400
+        info = DEVICE_STORE.get(device_id) or {}
+        user = info.get("user")
+        if not user:
+            return jsonify({"pending": True})
+        # Dépose la session sur CETTE requête (cookie côté overlay)
+        set_user_session(user)
+        # Cleanup
+        DEVICE_STORE.pop(device_id, None)
+        for st, did in list(DEVICE_BY_STATE.items()):
+            if did == device_id:
+                DEVICE_BY_STATE.pop(st, None)
+        return jsonify({"ok": True, "user": {"id": user.get("id"), "username": user.get("username"), "global_name": user.get("global_name")}})
+
+    # ---- Flow classique (webview) ----
     @app.route("/auth/login")
     def auth_login():
         st, url = start_oauth_flow()
@@ -183,18 +258,39 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/auth/callback")
     def auth_callback():
         sent_state = request.args.get("state") or ""
+        code = request.args.get("code")
+        if not code:
+            return _bad_request("code manquant", 400)
+
+        # Branche device flow: state connu côté serveur (pas dans la session)
+        if sent_state in DEVICE_BY_STATE:
+            device_id = DEVICE_BY_STATE.get(sent_state)
+            try:
+                tok = exchange_code_for_token(code)
+                user = fetch_user_me(tok["access_token"])
+                if device_id in DEVICE_STORE:
+                    DEVICE_STORE[device_id]["user"] = user
+                    DEVICE_STORE[device_id]["ts"] = time.time()
+                # Petite page informative dans le navigateur par défaut
+                return (
+                    "<!doctype html><meta charset='utf-8'>"
+                    "<title>Greg — Connexion faite</title>"
+                    "<style>body{font-family:system-ui;padding:24px}</style>"
+                    "<h1>Connexion réussie ✅</h1>"
+                    "<p>Retourne à Greg — l’overlay va détecter la connexion.</p>"
+                )
+            except Exception as e:
+                return _bad_request(f"OAuth device échoué: {e}", 400)
+
+        # Sinon: flow classique (session) → vérif CSRF
         saved_state = pop_oauth_state()
         if not saved_state or saved_state != sent_state:
             return _bad_request("state CSRF invalide", 400)
 
-        code = request.args.get("code")
-        if not code:
-            return _bad_request("code manquant", 400)
         try:
             tok = exchange_code_for_token(code)
             user = fetch_user_me(tok["access_token"])
 
-            # (Optionnel) restreindre aux membres d’un serveur via env RESTRICT_TO_GUILD_ID
             must_guild = os.getenv("RESTRICT_TO_GUILD_ID")
             if must_guild:
                 try:
@@ -317,7 +413,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/play_at", methods=["POST"])
-    @login_required  # conseillé si tu veux restreindre les actions de controle
+    @login_required
     def api_play_at():
         data = request.get_json(silent=True) or {}
         guild_id = (data or {}).get("guild_id")
@@ -335,7 +431,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not ok:
             return _bad_request(f"index hors bornes: {idx}")
 
-        # On ne stoppe pas ici: le client appelle ensuite /api/skip pour passer tout de suite
         return jsonify(ok=True, moved_to=0)
 
     @app.route("/api/pause", methods=["POST"])
@@ -447,7 +542,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/text_channels", methods=["GET"])
     def api_text_channels():
         guild_id = request.args.get("guild_id")
-        _dbg(f"GET /api/text_channels — guild={guild_id}")
+        _dbg(f"GET /api_text_channels — guild={guild_id}")
         err = _bot_required()
         if err:
             return err
@@ -527,26 +622,21 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         def _norm(rows, chosen):
             out = []
             for r in rows[:3]:
-                # 1) Toujours une URL de page (jamais les CDN m3u8/mp3)
                 page_url = (r.get("webpage_url") or r.get("url") or "").strip().strip(";")
                 if not page_url:
                     continue
-                # 2) Métadonnées initiales
                 title = r.get("title") or None
                 artist = r.get("uploader") or r.get("artist") or r.get("channel") or r.get("author") or None
                 duration = _to_seconds(r.get("duration") or r.get("duration_ms"))
                 thumb = r.get("thumbnail") or None
-                # 3) Enrichissement via oEmbed si nécessaire
                 if (not title or not artist or not thumb) and page_url:
                     t2, a2, th2 = _oembed_enrich(page_url)
                     title = title or t2
                     artist = artist or a2
                     thumb = thumb or th2
-
-                # 4) Nettoyage simple
                 item = {
                     "title": title or page_url or "Sans titre",
-                    "url": page_url,                  # <- le front POSTe à /api/play
+                    "url": page_url,
                     "webpage_url": page_url,
                     "artist": artist,
                     "duration": duration,
