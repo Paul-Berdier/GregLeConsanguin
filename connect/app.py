@@ -60,8 +60,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     app.config.update(
         SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "gregsid"),
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),  # si overlay sur autre domaine: None
-        SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",  # prod derrière HTTPS: 1
+        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "None"),  # <-- None en string
+        SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "1") == "1",  # <-- doit être True en prod HTTPS
     )
 
     app.get_pm = get_pm
@@ -302,7 +302,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     pass
 
             set_user_session(user)
-            redirect_to = session.pop("post_login_redirect", None) or url_for("index")
+            redirect_to = session.pop("post_login_redirect", None) or url_for("auth_close")
             return redirect(redirect_to)
         except Exception as e:
             return _bad_request(f"OAuth échoué: {e}", 400)
@@ -311,6 +311,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def auth_logout():
         clear_user_session()
         return redirect(url_for("index"))
+
+    @app.route("/auth/close")
+    def auth_close():
+        # ferme la fenêtre pop-up une fois la session posée
+        return """
+    <!doctype html><meta charset="utf-8">
+    <title>Connecté</title>
+    <script>window.close();</script>
+    <p>Connecté. Vous pouvez fermer cette fenêtre.</p>
+    """, 200
 
     @app.route("/api/me")
     def api_me():
