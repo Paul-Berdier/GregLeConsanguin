@@ -22,6 +22,13 @@ DEFAULT_MIN_DELAY = 30   # secondes
 DEFAULT_MAX_DELAY = 120
 DEFAULT_VOLUME = 0.30    # 0.0 .. 1.0  (~30% par défaut)
 
+def _guild_only():
+    async def predicate(interaction: discord.Interaction):
+        if interaction.guild is None:
+            raise app_commands.CheckFailure("guild_only")
+        return True
+    return app_commands.check(predicate)
+
 
 class Spook(commands.Cog):
     """Fait jouer de petits bruits sinistres quand une seule personne reste avec Greg."""
@@ -205,9 +212,9 @@ class Spook(commands.Cog):
     @app_commands.command(
         name="spook_enable",
         description="Active/désactive les bruits sinistres (admin).",
-        dm_permission=False
     )
     @app_commands.default_permissions(administrator=True)
+    @_guild_only()
     @app_commands.describe(enable="true/false")
     async def spook_enable(self, interaction: discord.Interaction, enable: bool):
         gid = interaction.guild_id
@@ -222,9 +229,9 @@ class Spook(commands.Cog):
     @app_commands.command(
         name="spook_settings",
         description="Règle délai et volume des bruits (admin).",
-        dm_permission=False
     )
     @app_commands.default_permissions(administrator=True)
+    @_guild_only()
     @app_commands.describe(min_delay="délai mini entre deux sons (s)", max_delay="délai maxi (s)", volume="0.0 - 1.0 (ex: 0.30)")
     async def spook_settings(self, interaction: discord.Interaction, min_delay: int = DEFAULT_MIN_DELAY,
                              max_delay: int = DEFAULT_MAX_DELAY, volume: float = DEFAULT_VOLUME):
@@ -239,9 +246,9 @@ class Spook(commands.Cog):
     @app_commands.command(
         name="spook_status",
         description="Affiche l’état du Spook (admin).",
-        dm_permission=False
     )
     @app_commands.default_permissions(administrator=True)
+    @_guild_only()
     async def spook_status(self, interaction: discord.Interaction):
         gid = interaction.guild_id
         self._guild_conf(gid)
@@ -267,9 +274,9 @@ class Spook(commands.Cog):
     @app_commands.command(
         name="spook_test",
         description="Joue un bruit maintenant (si conditions ok).",
-        dm_permission=False
     )
     @app_commands.default_permissions(administrator=True)
+    @_guild_only()
     async def spook_test(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
