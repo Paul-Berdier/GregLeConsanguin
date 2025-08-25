@@ -1,18 +1,48 @@
-# web/app.py
+# connect/app.py
 
 from __future__ import annotations
 from typing import Callable, Any, Dict, Optional, List
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import os, asyncio
 import requests
 
+# --- Imports helpers (compat: exécution directe OU en package) ---
+try:
+    from connect.session_auth import (
+        login_required, current_user, set_user_session,
+        clear_user_session, save_oauth_state, pop_oauth_state, is_logged_in
+    )
+    from connect.oauth import (
+        start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
+    )
+except Exception:
+    try:
+        from .session_auth import (
+            login_required, current_user, set_user_session,
+            clear_user_session, save_oauth_state, pop_oauth_state, is_logged_in
+        )
+        from .oauth import (
+            start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
+        )
+    except Exception:
+        # fallback dev: si lancé directement depuis connect/ en script
+        from session_auth import (
+            login_required, current_user, set_user_session,
+            clear_user_session, save_oauth_state, pop_oauth_state, is_logged_in
+        )
+        from oauth import (
+            start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
+        )
+
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
-    CORS(app)  # 🔥 Autorise les requêtes cross-origin (overlay, overwolf, etc.)
+
+    # 🔥 Autoriser les cookies cross-origin si nécessaire
+    CORS(app, supports_credentials=True)
 
     # 🔧 threading: évite les problèmes websocket avec le dev server Werkzeug
     socketio = SocketIO(
@@ -23,7 +53,15 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         engineio_logger=False,
     )
 
+    # --- Session & sécurité ---
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
+    app.config.update(
+        SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "gregsid"),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "Lax"),  # si overlay sur autre domaine: None
+        SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",  # prod derrière HTTPS: 1
+    )
+
     app.get_pm = get_pm
 
     # ------------------------ Helpers ----------------------------
@@ -118,11 +156,78 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 "repeat_all": False,
             }
 
+    def _clean_field(v):
+        if v is None:
+            return None
+        s = str(v).strip().strip('\'" \t\r\n')
+        while s.endswith(';'):
+            s = s[:-1]
+        return s
+
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
     def index():
-        # Pas d’auth: l’overlay renseigne lui-même guild_id + user_id côté client
+        # L’overlay appelle /api/me pour savoir si l’utilisateur est connecté
         return render_template("index.html")
+
+    # ------------------------ AUTH (Discord OAuth2) --------------------------
+    @app.route("/auth/login")
+    def auth_login():
+        st, url = start_oauth_flow()
+        save_oauth_state(st)
+        nxt = request.args.get("next")
+        if nxt:
+            session["post_login_redirect"] = nxt
+        return redirect(url)
+
+    @app.route("/auth/callback")
+    def auth_callback():
+        sent_state = request.args.get("state") or ""
+        saved_state = pop_oauth_state()
+        if not saved_state or saved_state != sent_state:
+            return _bad_request("state CSRF invalide", 400)
+
+        code = request.args.get("code")
+        if not code:
+            return _bad_request("code manquant", 400)
+        try:
+            tok = exchange_code_for_token(code)
+            user = fetch_user_me(tok["access_token"])
+
+            # (Optionnel) restreindre aux membres d’un serveur via env RESTRICT_TO_GUILD_ID
+            must_guild = os.getenv("RESTRICT_TO_GUILD_ID")
+            if must_guild:
+                try:
+                    guilds = fetch_user_guilds(tok["access_token"])
+                    ok = any(str(g.get("id")) == str(must_guild) for g in (guilds or []))
+                    if not ok:
+                        return _bad_request("Tu n'es pas membre du serveur requis.", 403)
+                except Exception:
+                    pass
+
+            set_user_session(user)
+            redirect_to = session.pop("post_login_redirect", None) or url_for("index")
+            return redirect(redirect_to)
+        except Exception as e:
+            return _bad_request(f"OAuth échoué: {e}", 400)
+
+    @app.route("/auth/logout")
+    def auth_logout():
+        clear_user_session()
+        return redirect(url_for("index"))
+
+    @app.route("/api/me")
+    def api_me():
+        """Retourne l'utilisateur connecté (session) ou 401."""
+        u = current_user()
+        if not u:
+            return jsonify({"error": "auth_required"}), 401
+        return jsonify({
+            "id": u["id"],
+            "username": u.get("username"),
+            "global_name": u.get("global_name"),
+            "avatar": u.get("avatar"),
+        })
 
     # ------------------------ API JSON ---------------------------
     @app.route("/api/health")
@@ -167,28 +272,23 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             print(f"/api/playlist — 💥 {e}")
             return jsonify(error=str(e)), 500
 
-    def _clean_field(v):
-        if v is None:
-            return None
-        s = str(v).strip().strip('\'" \t\r\n')
-        while s.endswith(';'):
-            s = s[:-1]
-        return s
-
     @app.route("/api/play", methods=["POST"])
+    @login_required
     def api_play():
         data = request.get_json(silent=True) or request.form
         raw_url = (data or {}).get("url")
         url = _clean_field(raw_url)
         title = _clean_field((data or {}).get("title")) or url
         guild_id = (data or {}).get("guild_id")
-        user_id = (data or {}).get("user_id")
+
+        u = current_user()
+        user_id = u["id"] if u else None
 
         _dbg(f"[api_play] RAW url={raw_url!r}, CLEAN url={url!r}")
-        _dbg(f"POST /api/play (clean) — title={title!r}, url={url!r}, guild={guild_id}, user={user_id}")
+        _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user_session={user_id}")
 
         if not all([title, url, guild_id, user_id]):
-            return _bad_request("Paramètres manquants : title, url, guild_id, user_id")
+            return _bad_request("Paramètres manquants : title, url, guild_id (et session utilisateur)")
 
         music_cog, err = _music_cog_required()
         if err:
@@ -217,6 +317,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/play_at", methods=["POST"])
+    @login_required  # conseillé si tu veux restreindre les actions de controle
     def api_play_at():
         data = request.get_json(silent=True) or {}
         guild_id = (data or {}).get("guild_id")
@@ -238,6 +339,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         return jsonify(ok=True, moved_to=0)
 
     @app.route("/api/pause", methods=["POST"])
+    @login_required
     def api_pause():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/pause — guild={guild_id}")
@@ -252,6 +354,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/resume", methods=["POST"])
+    @login_required
     def api_resume():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/resume — guild={guild_id}")
@@ -266,6 +369,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/stop", methods=["POST"])
+    @login_required
     def api_stop():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/stop — guild={guild_id}")
@@ -280,6 +384,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/skip", methods=["POST"])
+    @login_required
     def api_skip():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/skip — guild={guild_id}")
@@ -294,6 +399,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/toggle_pause", methods=["POST"])
+    @login_required
     def api_toggle_pause():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/toggle_pause — guild={guild_id}")
@@ -308,6 +414,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/restart", methods=["POST"])
+    @login_required
     def api_restart():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         _dbg(f"POST /api/restart — guild={guild_id}")
@@ -322,6 +429,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(error=str(e)), 500
 
     @app.route("/api/repeat", methods=["POST"])
+    @login_required
     def api_repeat():
         data = request.get_json(force=True); guild_id = data.get("guild_id")
         mode = (data.get("mode") or "").lower().strip() if isinstance(data, dict) else ""
@@ -352,7 +460,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         return jsonify(channels)
 
     # ------------------------ Autocomplete (GET) ------------------
-    # Compat : on expose /autocomplete ET /api/autocomplete
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
@@ -436,11 +543,11 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     artist = artist or a2
                     thumb = thumb or th2
 
-                # 4) Nettoyage simple (jamais de ';' ajoutés, pas de CDN)
+                # 4) Nettoyage simple
                 item = {
                     "title": title or page_url or "Sans titre",
-                    "url": page_url,                  # <- clé que ton front poste à /api/play
-                    "webpage_url": page_url,          # <- exposée aussi pour plus de clarté
+                    "url": page_url,                  # <- le front POSTe à /api/play
+                    "webpage_url": page_url,
                     "artist": artist,
                     "duration": duration,
                     "thumb": thumb,
