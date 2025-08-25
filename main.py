@@ -7,6 +7,9 @@ import discord
 from discord.ext import commands
 from playlist_manager import PlaylistManager
 import config
+import json
+import subprocess
+import requests
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -25,6 +28,7 @@ logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 # ---------------------------------------------------------------------------
 # PlaylistManager multi-serveur
 playlist_managers = {}  # {guild_id: PlaylistManager}
+RESTART_MARKER = ".greg_restart.json"
 
 def get_pm(guild_id):
     guild_id = str(guild_id)
@@ -32,6 +36,112 @@ def get_pm(guild_id):
         playlist_managers[guild_id] = PlaylistManager(guild_id)
         logger.debug("Nouvelle instance PlaylistManager pour guild %s", guild_id)
     return playlist_managers[guild_id]
+
+async def run_post_restart_selftest(bot):
+    """Si un marker de restart existe, exécute un auto-diagnostic et poste un rapport dans le salon d'origine."""
+    try:
+        marker_path = os.path.join(os.path.dirname(__file__), RESTART_MARKER)
+        if not os.path.exists(marker_path):
+            return
+
+        with open(marker_path, "r", encoding="utf-8") as f:
+            marker = json.load(f)
+
+        guild_id = int(marker.get("guild_id"))
+        channel_id = int(marker.get("channel_id"))
+        requested_by = int(marker.get("requested_by", 0))
+
+        # === Tests ===
+        results = []
+
+        # 1) COGS
+        expected_cogs = ["Music", "Voice", "General"]
+        for name in expected_cogs:
+            ok = bot.get_cog(name) is not None
+            results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
+
+        # 2) Slash commands présents
+        try:
+            cmds = await bot.tree.fetch_commands()
+            names = {c.name for c in cmds}
+        except Exception as e:
+            names = set()
+            results.append(("Slash:fetch_commands", False, str(e)))
+        expected_cmds = ["play","pause","resume","skip","stop","playlist","current","ping","greg","web","help","restart"]
+        for name in expected_cmds:
+            ok = name in names
+            results.append((f"Slash:/{name}", ok, "" if ok else "absent"))
+
+        # 3) FFmpeg dispo
+        try:
+            music_cog = bot.get_cog("Music")
+            ff = music_cog.detect_ffmpeg() if music_cog else "ffmpeg"
+            cp = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=3)
+            ok = (cp.returncode == 0)
+            results.append(("FFmpeg", ok, "" if ok else cp.stderr[:200]))
+        except Exception as e:
+            results.append(("FFmpeg", False, str(e)))
+
+        # 4) Overlay HTTP (si non désactivé)
+        try:
+            if not os.getenv("DISABLE_WEB", "0") == "1":
+                r = requests.get("http://127.0.0.1:3000/", timeout=2)
+                ok = r.status_code < 500
+                results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
+            else:
+                results.append(("Overlay:désactivé", True, "DISABLE_WEB=1"))
+        except Exception as e:
+            results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
+
+        # 5) SocketIO émissible (test d'emit)
+        try:
+            from __main__ import socketio
+            if socketio:
+                # Pas de client pour écouter, mais vérifie qu'aucune exception n'est levée à l'emit
+                socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
+                results.append(("SocketIO:emit", True, "emit ok"))
+            else:
+                results.append(("SocketIO:instance", False, "socketio=None"))
+        except Exception as e:
+            results.append(("SocketIO:emit", False, str(e)))
+
+        # --- Compose message ---
+        ok_all = all(ok for (_, ok, _) in results)
+        color = 0x2ECC71 if ok_all else 0xE74C3C
+        lines = []
+        for name, ok, extra in results:
+            emoji = "✅" if ok else "❌"
+            if extra:
+                lines.append(f"{emoji} **{name}** — {extra}")
+            else:
+                lines.append(f"{emoji} **{name}**")
+
+        embed = discord.Embed(
+            title=("Self-test au redémarrage — OK" if ok_all else "Self-test au redémarrage — PROBLÈMES"),
+            description="\n".join(lines),
+            color=color
+        )
+        if requested_by:
+            embed.set_footer(text=f"Demandé par <@{requested_by}>")
+
+        # Poste dans le salon d'origine
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+        if channel:
+            await channel.send(embed=embed)
+
+        # Nettoie le marker
+        try:
+            os.remove(marker_path)
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"[SELFTEST] Erreur selftest post-restart: {e}")
 
 # ---------------------------------------------------------------------------
 # Discord Bot class
@@ -59,34 +169,63 @@ class GregBot(commands.Bot):
     async def on_ready(self):
         logger.info("====== EVENT on_ready() ======")
         logger.info("Utilisateur bot : %s", self.user)
-        logger.info("Serveurs : %s", [g.name for g in self.guilds])
-        logger.info("Slash commands globales : %s", [cmd.name for cmd in await self.tree.fetch_commands()])
 
-        # Injection emit_fn (utilise la variable globale socketio)
+        # Liste des serveurs (robuste)
         try:
-            from __main__ import socketio  # récupère l'instance créée plus bas
+            guild_names = [g.name for g in self.guilds]
+            logger.info("Serveurs : %s", guild_names)
+        except Exception as e:
+            logger.warning("Impossible de lister les guilds: %s", e)
+
+        # Slash commands (robuste)
+        try:
+            cmds = await self.tree.fetch_commands()
+            logger.info("Slash commands globales : %s", [cmd.name for cmd in cmds])
+        except Exception as e:
+            logger.warning("fetch_commands a échoué: %s", e)
+
+        # Injection emit_fn (utilise la variable globale socketio du main)
+        socketio_ref = None
+        try:
+            from __main__ import socketio as _socketio  # récupère l'instance créée dans main
+            socketio_ref = _socketio
         except Exception:
-            socketio = None
+            socketio_ref = None
 
         try:
             music_cog = self.get_cog("Music")
             voice_cog = self.get_cog("Voice")
             general_cog = self.get_cog("General")
 
-            if socketio and music_cog:
-                music_cog.emit_fn = lambda event, data: socketio.emit(event, data)
+            def _emit(event, data):
+                """Wrapper pour sécuriser l'emit Socket.IO et logger en cas d'erreur."""
+                if not socketio_ref:
+                    return
+                try:
+                    socketio_ref.emit(event, data)
+                except Exception as e:
+                    logger.error("socketio.emit failed: %s", e)
+
+            if socketio_ref and music_cog:
+                music_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur Music")
-
-            if socketio and voice_cog:
-                voice_cog.emit_fn = lambda event, data: socketio.emit(event, data)
+            if socketio_ref and voice_cog:
+                voice_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur Voice")
-
-            if socketio and general_cog:
-                general_cog.emit_fn = lambda event, data: socketio.emit(event, data)
+            if socketio_ref and general_cog:
+                general_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur General")
         except Exception as e:
             logger.error("Impossible de connecter emit_fn: %s", e)
 
+        # Auto self-test post-redémarrage (optionnel, si défini dans main.py)
+        try:
+            import asyncio
+            from __main__ import run_post_restart_selftest
+            asyncio.create_task(run_post_restart_selftest(self))
+            logger.info("Self-test post-redémarrage déclenché.")
+        except Exception as e:
+            logger.debug("Self-test non lancé (optionnel): %s", e)
 
 # ---------------------------------------------------------------------------
 # Flask + SocketIO (overlay web)

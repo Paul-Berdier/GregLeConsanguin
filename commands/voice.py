@@ -3,7 +3,6 @@
 # Cog "Voice" — uniquement des SLASH COMMANDS
 # - /join : rejoindre le vocal de l'utilisateur
 # - /leave : quitter le vocal
-# - /restart : redémarrer le bot
 # - /autodc [seconds?] : afficher/modifier le délai d'auto-déconnexion
 # - Auto-disconnect : si Greg reste seul dans le canal, il quitte après un délai
 #
@@ -158,16 +157,6 @@ class Voice(commands.Cog):
                 "❌ *Ah, quelle ironie… Vous exigez mon départ alors que je ne suis même pas là !*",
                 ephemeral=True
             )
-
-    @app_commands.command(name="restart", description="Redémarre Greg le Consanguin.")
-    async def restart(self, interaction: discord.Interaction):
-        """Slash command pour redémarrer le bot."""
-        print(f"[Voice] /restart par {interaction.user.display_name} sur {interaction.guild.name}")
-        await interaction.response.send_message(
-            "🔁 *Greg... Greg meurt... pour mieux revenir hanter vos canaux vocaux...*"
-        )
-        await self.bot.close()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     @app_commands.describe(seconds="Nouveau délai en secondes (laisser vide pour afficher)")
     @app_commands.command(name="autodc", description="Affiche ou modifie le délai d'auto-déconnexion quand Greg est seul.")
