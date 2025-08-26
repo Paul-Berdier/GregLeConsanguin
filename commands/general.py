@@ -9,6 +9,15 @@ import datetime as dt
 import discord
 from discord.ext import commands
 from discord import app_commands
+from priority_rules import (
+    get_weights,
+    set_role_weight,
+    reset_role_weight,
+    set_key_weight,
+    list_keys,
+    set_per_user_cap,
+    get_overrides,
+)
 
 # --- deps pour auto-test cookies ---
 from http.cookiejar import MozillaCookieJar
@@ -16,7 +25,7 @@ from http.cookiejar import MozillaCookieJar
 RESTART_MARKER = ".greg_restart.json"  # créé à la racine du projet avant execv
 COOKIES_FILENAME = "youtube.com_cookies.txt"  # utilisé côté lecture YouTube si présent
 MAX_COOKIE_SIZE = 1024 * 1024  # 1 Mo max (sécurité)
-
+OWNER_ID = int(os.getenv("GREG_OWNER_ID", "0") or 0)
 
 def _proj_path(*parts):
     # Enregistre/lit à partir du cwd (lancement du process), pour matcher les checks relatifs.
@@ -169,9 +178,89 @@ def _ytdlp_probe_with_cookies(cookies_path: str):
     except Exception as e:
         return False, f"yt-dlp erreur: {e}"
 
+# ------------------------
+# Helpers priority
+# ------------------------
+
+def _owner_only():
+    async def predicate(interaction: discord.Interaction):
+        if OWNER_ID and interaction.user.id == OWNER_ID:
+            return True
+        # petit fallback : owner de l’application
+        try:
+            app = await interaction.client.application_info()
+            if interaction.user.id == app.owner.id:
+                return True
+        except Exception:
+            pass
+        raise app_commands.CheckFailure("owner_only")
+    return app_commands.check(predicate)
+
 class General(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    priority = app_commands.Group(name="priority", description="Gérer la hiérarchie des priorités (owner only)")
+
+    @priority.command(name="weights", description="Lister les poids effectifs (fusion défaut + overrides).")
+    @_owner_only()
+    async def list_weights(self, interaction: discord.Interaction):
+        weights = get_weights()
+        lines = [f"{k}: {v}" for k, v in sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))]
+        over = get_overrides()
+        foot = f"\nOverrides: {json.dumps(over, ensure_ascii=False)}"
+        await interaction.response.send_message(
+            "### Poids effectifs\n```\n" + "\n".join(lines) + "\n```\n" + foot,
+            ephemeral=True
+        )
+
+    @priority.command(name="setrole", description="Définir le poids d’un rôle Discord.")
+    @_owner_only()
+    @app_commands.describe(role="Rôle à pondérer", weight="Entier (plus haut = plus prioritaire)")
+    async def setrole(self, interaction: discord.Interaction, role: discord.Role,
+                      weight: app_commands.Range[int, -9999, 9999]):
+        set_role_weight(role.name, int(weight))
+        await interaction.response.send_message(
+            f"✅ Poids du rôle **{role.name}** fixé à **{int(weight)}**.", ephemeral=True
+        )
+
+    @priority.command(name="resetrole", description="Supprimer l’override d’un rôle (retour au défaut).")
+    @_owner_only()
+    @app_commands.describe(role="Rôle à réinitialiser")
+    async def resetrole(self, interaction: discord.Interaction, role: discord.Role):
+        reset_role_weight(role.name)
+        await interaction.response.send_message(
+            f"♻️ Override du rôle **{role.name}** supprimé.", ephemeral=True
+        )
+
+    @priority.command(name="setkey", description="Définir un poids spécial (__ADMIN__, __MANAGE_GUILD__, __DEFAULT__).")
+    @_owner_only()
+    @app_commands.describe(key="Clé spéciale", weight="Entier (plus haut = plus prioritaire)")
+    @app_commands.choices(key=[app_commands.Choice(name=k, value=k) for k in list_keys()])
+    async def setkey(self, interaction: discord.Interaction, key: app_commands.Choice[str],
+                     weight: app_commands.Range[int, -9999, 9999]):
+        set_key_weight(key.value, int(weight))
+        await interaction.response.send_message(
+            f"✅ Poids **{key.value}** fixé à **{int(weight)}**.", ephemeral=True
+        )
+
+    @priority.command(name="setcap", description="Définir le quota de pistes par utilisateur.")
+    @_owner_only()
+    @app_commands.describe(cap="Nombre max en file par utilisateur (hors admins)")
+    async def setcap(self, interaction: discord.Interaction, cap: app_commands.Range[int, 0, 50]):
+        set_per_user_cap(int(cap))
+        await interaction.response.send_message(
+            f"✅ Cap par utilisateur fixé à **{int(cap)}**.", ephemeral=True
+        )
+
+    @priority.command(name="show", description="Afficher la configuration persistée (overrides).")
+    @_owner_only()
+    async def show(self, interaction: discord.Interaction):
+        over = get_overrides()
+        await interaction.response.send_message(
+            "### Overrides persistés\n```json\n" + json.dumps(over, indent=2, ensure_ascii=False) + "\n```",
+            ephemeral=True
+        )
 
     @app_commands.command(name="ping", description="Vérifie si Greg respire encore.")
     async def ping(self, interaction: discord.Interaction):
