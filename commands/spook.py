@@ -3,6 +3,7 @@ import os
 import asyncio
 import random
 from typing import Dict, Optional, List
+import requests
 
 import discord
 from discord.ext import commands
@@ -235,6 +236,77 @@ class Spook(commands.Cog):
             self._ensure_task(gid)
 
     # ---------------- Slash commands (ADMIN) ----------------
+
+    @app_commands.command(
+        name="spook_scare",
+        description="Envoie un jump scare à un membre (nécessite son overlay actif).",
+    )
+    @_guild_only()
+    @app_commands.describe(
+        member="Membre à cibler",
+        effect="Nom d'effet (ex: scream)",
+        duration_ms="Durée d'affichage (ms)",
+        message="Message optionnel (affiché à l'écran)",
+        img="URL image (override)",
+        sound="URL son (override)"
+    )
+    async def spook_scare(self,
+                          interaction: discord.Interaction,
+                          member: discord.Member,
+                          effect: str = "scream",
+                          duration_ms: int = 1500,
+                          message: Optional[str] = None,
+                          img: Optional[str] = None,
+                          sound: Optional[str] = None):
+        # Permissions: Admin ou Manage Guild
+        if not (interaction.user.guild_permissions.administrator or
+                interaction.user.guild_permissions.manage_guild):
+            return await interaction.response.send_message(
+                "🚫 Il faut être Admin ou avoir 'Gérer le serveur'.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        ok = False
+        # 1) Bridge direct: le web a été accroché sur le bot (même process)
+        web_app = getattr(self.bot, "web_app", None)
+        if web_app and hasattr(web_app, "push_jumpscare"):
+            try:
+                web_app.push_jumpscare(
+                    member.id, effect=effect, img=img, sound=sound,
+                    duration_ms=int(duration_ms), message=message
+                )
+                ok = True
+            except Exception as e:
+                print(f"[Spook] push_jumpscare direct KO: {e}")
+
+        # 2) Fallback HTTP interne (si configuré)
+        if not ok:
+            token = os.getenv("OVERLAY_INTERNAL_TOKEN")
+            url   = os.getenv("OVERLAY_INTERNAL_URL", "http://127.0.0.1:3000/api/jumpscare")
+            if token:
+                try:
+                    r = requests.post(url, json={
+                        "user_id": str(member.id),
+                        "effect": effect,
+                        "duration_ms": int(duration_ms),
+                        "message": message,
+                        "img": img,
+                        "sound": sound,
+                    }, headers={"X-Overlay-Token": token}, timeout=3)
+                    ok = r.ok
+                except Exception as e:
+                    print(f"[Spook] HTTP fallback KO: {e}")
+
+        if ok:
+            await interaction.followup.send(
+                f"💥 Jumpscare envoyé à **{member.display_name}** (si overlay connecté).", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Impossible d'envoyer le jumpscare (overlay non connecté ou bridge web indisponible).",
+                ephemeral=True
+            )
 
     @app_commands.command(
         name="spook_enable",
