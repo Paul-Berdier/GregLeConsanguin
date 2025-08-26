@@ -430,18 +430,24 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         index = (data or {}).get("index")
         try:
             idx = int(index)
-        except:
+        except Exception:
             return _bad_request("index invalide")
 
         if not guild_id:
             return _bad_request("guild_id manquant")
 
-        pm = get_pm(str(guild_id))
-        ok = pm.move(idx, 0)
-        if not ok:
-            return _bad_request(f"index hors bornes: {idx}")
+        music_cog, err = _music_cog_required()
+        if err:
+            return err
 
-        return jsonify(ok=True, moved_to=0)
+        u = current_user()
+        try:
+            _dispatch(music_cog.play_at_for_web(guild_id, u["id"], idx), timeout=30)
+            return jsonify(ok=True, moved_to=0)
+        except PermissionError as e:
+            return jsonify(error=str(e)), 403
+        except Exception as e:
+            return jsonify(error=str(e)), 500
 
     @app.route("/api/pause", methods=["POST"])
     @login_required

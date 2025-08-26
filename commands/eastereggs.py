@@ -7,10 +7,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-
 # --------- Contrôle d'accès "easter eggs" ----------
-# - Par défaut, visibles/usuables seulement par ADMIN.
-# - Tu peux ajouter des user IDs non-admin via la variable d'env EGG_USERS="123,456"
+# Autorisés : administrateurs OU IDs listés dans EGG_USERS="123,456"
 _EGG_ALLOW = {s.strip() for s in os.getenv("EGG_USERS", "").split(",") if s.strip().isdigit()}
 
 def _is_allowed(member: discord.Member) -> bool:
@@ -26,7 +24,7 @@ def _egg_only():
         m = interaction.user
         if isinstance(m, discord.Member) and _is_allowed(m):
             return True
-        # On échoue en silence pour éviter d'ébruiter l'existence de la commande
+        # échec silencieux (la commande reste discrète)
         raise app_commands.CheckFailure("forbidden")
     return app_commands.check(predicate)
 
@@ -94,7 +92,7 @@ CURSE_THEMES = [
     app_commands.Choice(name="coupure-edf", value="coupure"),
     app_commands.Choice(name="sur-les-genoux", value="genoux"),
     app_commands.Choice(name="mystérieux-invisible", value="mystere"),
-    app_commands.Choice(name="niakoué", value="gamer"),
+    app_commands.Choice(name="niakoue", value="niakoue"),
 ]
 
 def _curse_text(theme: str, target_mention: str) -> str:
@@ -132,11 +130,7 @@ class EasterEggs(commands.Cog):
 
     # ============== COMMANDES SECRÈTES (ADMIN/ALLOWLIST) ==============
 
-    @app_commands.command(
-        name="roll",
-        description="Lance des dés façon JDR (ex: 1d20+5).",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="roll", description="Lance des dés façon JDR (ex: 1d20+5).")
     @_guild_only()
     @_egg_only()
     async def roll(self, interaction: discord.Interaction, expr: str):
@@ -151,11 +145,7 @@ class EasterEggs(commands.Cog):
             detail += f" {'+' if k>0 else ''}{k}"
         await interaction.response.send_message(f"🎲 **{expr}** → **{total}**  ({detail})")
 
-    @app_commands.command(
-        name="coin",
-        description="Pile ou face, sans triche (promis).",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="coin", description="Pile ou face, sans triche (promis).")
     @_guild_only()
     @_egg_only()
     async def coin(self, interaction: discord.Interaction):
@@ -165,11 +155,7 @@ class EasterEggs(commands.Cog):
         flair = "👑" if side == "Face" else "🪙"
         await interaction.followup.send(f"{flair} **{side}** !")
 
-    @app_commands.command(
-        name="tarot",
-        description="Tire une carte de tarot (upright/reversed).",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="tarot", description="Tire une carte de tarot (upright/reversed).")
     @_guild_only()
     @_egg_only()
     async def tarot(self, interaction: discord.Interaction):
@@ -181,16 +167,13 @@ class EasterEggs(commands.Cog):
         embed = discord.Embed(title=f"🃏 {name} {arrow}", description=meaning, color=color)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(
-        name="curse",
-        description="Jette une (fausse) malédiction taillée sur mesure.",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="curse", description="Jette une (fausse) malédiction taillée sur mesure.")
     @app_commands.describe(user="La victime consentante.", theme="Choisis un thème (facultatif).")
     @app_commands.choices(theme=CURSE_THEMES)
     @_guild_only()
     @_egg_only()
-    async def curse(self, interaction: discord.Interaction, user: discord.Member, theme: app_commands.Choice[str] = None):
+    async def curse(self, interaction: discord.Interaction, user: discord.Member,
+                    theme: app_commands.Choice[str] = None):
         chosen = (theme.value if theme else random.choice([t.value for t in CURSE_THEMES]))
         text = _curse_text(chosen, user.mention)
         await interaction.response.send_message(
@@ -198,11 +181,7 @@ class EasterEggs(commands.Cog):
             allowed_mentions=discord.AllowedMentions(users=[user])
         )
 
-    @app_commands.command(
-        name="praise",
-        description="Accorde un compliment rare (ne t’habitue pas).",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="praise", description="Accorde un compliment rare (ne t’habitue pas).")
     @app_commands.describe(user="Chanceux du jour.")
     @_guild_only()
     @_egg_only()
@@ -212,11 +191,7 @@ class EasterEggs(commands.Cog):
             allowed_mentions=discord.AllowedMentions(users=[user])
         )
 
-    @app_commands.command(
-        name="shame",
-        description="La cloche retentit. 🔔",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="shame", description="La cloche retentit. 🔔")
     @app_commands.describe(user="Coupable présumé.")
     @_guild_only()
     @_egg_only()
@@ -228,22 +203,14 @@ class EasterEggs(commands.Cog):
             await asyncio.sleep(1.2)
             await interaction.followup.send("🔔 **Shame!**", allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(
-        name="skullrain",
-        description="Déclenche une pluie de crânes (overlay si dispo).",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="skullrain", description="Déclenche une pluie de crânes (overlay si dispo).")
     @_guild_only()
     @_egg_only()
     async def skullrain(self, interaction: discord.Interaction):
         self._emit("fx_skullrain", {"intensity": random.randint(3, 8)})
         await interaction.response.send_message("💀 *Pluie de crânes invoquée.* (si l’overlay écoute)")
 
-    @app_commands.command(
-        name="gregquote",
-        description="Une petite maxime méprisante de Greg.",
-    )
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="gregquote", description="Une petite maxime méprisante de Greg.")
     @_guild_only()
     @_egg_only()
     async def gregquote(self, interaction: discord.Interaction):
@@ -251,7 +218,8 @@ class EasterEggs(commands.Cog):
 
     # Gestion propre des erreurs de permission (silencieux pour les non-autorisés)
     @commands.Cog.listener()
-    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+    async def on_app_command_error(self, interaction: discord.Interaction,
+                                   error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
             try:
                 if not interaction.response.is_done():
@@ -260,7 +228,6 @@ class EasterEggs(commands.Cog):
                     await interaction.followup.send("⛔", ephemeral=True)
             except Exception:
                 pass
-
 
 async def setup(bot):
     await bot.add_cog(EasterEggs(bot))

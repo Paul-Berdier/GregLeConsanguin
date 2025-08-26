@@ -1,25 +1,32 @@
 # commands/music.py
 #
 # Greg le Consanguin — Cog "Music"
-# - Slash commands UNIQUEMENT
-# - Intégration overlay/web via emit_fn (fournie par main.py)
-# - Émissions Socket.IO: état enrichi (queue, current, is_paused, progress, thumbnail, repeat_all)
-# - Recherche YouTube/SoundCloud selon le provider choisi
+# - Slash commands UNIQUEMENT (pour Discord)
+# - Intégration overlay/web via méthodes *_for_web et _overlay_payload
+# - Insertion par priorité (rôles/poids), quota par utilisateur
+# - Émissions Socket.IO via emit_fn (injectée par main.py)
+
+import os
+import time
+import asyncio
+from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-import os
-import asyncio
-import time
-from typing import Optional
-import re
+
 import requests
 from urllib.parse import urlparse
 
 from extractors import get_extractor, get_search_module
 from playlist_manager import PlaylistManager
 
+# Priorités (règles centralisées)
+from priority_rules import (
+    get_member_weight, PER_USER_CAP, can_bypass_quota, can_user_bump_over
+)
+
+# ---------------------------------------------------------------------------
 
 def _greg_print(msg: str):
     print(f"[GREG/Music] {msg}")
@@ -34,15 +41,18 @@ def _infer_provider_from_url(u: str) -> Optional[str]:
         return "youtube"
     return None
 
+
 def _clean_url(u: Optional[str]) -> Optional[str]:
     if not u:
         return u
     u = str(u).strip()
-    # strip quotes & stray semicolons/spaces
     u = u.strip('\'" \t\r\n')
     while u.endswith(';'):
         u = u[:-1]
     return u
+
+
+# ---------------------------------------------------------------------------
 
 class Music(commands.Cog):
     """
@@ -53,10 +63,10 @@ class Music(commands.Cog):
     """
     def __init__(self, bot, emit_fn=None):
         self.bot = bot
-        self.managers = {}        # {guild_id(str): PlaylistManager}  (PlaylistManager reste indexé en str)
+        self.managers = {}        # {guild_id(str): PlaylistManager} (PlaylistManager indexé en str)
         # Etats internes indexés en INT (normalisés)
         self.is_playing = {}      # {guild_id(int): bool}
-        self.current_song = {}    # {guild_id(int): dict(title,url,artist?,thumb?,duration?)}
+        self.current_song = {}    # {guild_id(int): dict}
         self.search_results = {}  # {user_id: last_results}
         self.ffmpeg_path = self.detect_ffmpeg()
         self.emit_fn = emit_fn    # set par main.py au démarrage
@@ -70,84 +80,15 @@ class Music(commands.Cog):
         self.now_playing = {}     # {guild_id(int): dict courant}
         self.ticker_tasks = {}    # {guild_id(int): task d'émission périodique overlay}
 
-        # === Normalisation des items pour homogénéiser avec /api/play ===
-        def _to_seconds(self, v):
-            if v is None:
-                return None
-            try:
-                iv = int(v)
-                # Heuristique: si > 86400 on suppose des millisecondes
-                return iv // 1000 if iv > 86400 else iv
-            except Exception:
-                pass
-            if isinstance(v, str):
-                s = v.strip()
-                if s.isdigit():
-                    return int(s)
-                import re as _re
-                if _re.match(r"^\d+:\d{2}$", s):
-                    m, s2 = s.split(":")
-                    return int(m) * 60 + int(s2)
-            return None
-
-        def _oembed_enrich(self, page_url: str):
-            try:
-                host = (urlparse(page_url).hostname or "").lower()
-                host = host[4:] if host.startswith("www.") else host
-                if "soundcloud.com" in host:
-                    oe = requests.get(
-                        "https://soundcloud.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4
-                    ).json()
-                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
-                if "youtube.com" in host or "youtu.be" in host:
-                    oe = requests.get(
-                        "https://www.youtube.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4
-                    ).json()
-                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
-            except Exception:
-                pass
-            return None, None, None
-
-        def _normalize_like_api(self, item: dict) -> dict:
-            if not isinstance(item, dict):
-                item = {}
-            url = _clean_url(item.get("url"))
-            title = (item.get("title") or url or "").strip()
-            artist = (item.get("artist") or "").strip() or None
-            thumb = (item.get("thumb") or item.get("thumbnail") or "").strip() or None
-            duration = self._to_seconds(item.get("duration"))
-
-            if (not title or not artist or not thumb) and url:
-                t2, a2, th2 = self._oembed_enrich(url)
-                title = title or t2
-                artist = artist or a2
-                thumb = thumb or th2
-
-            norm = {
-                "title": title or (url or "Sans titre"),
-                "url": url,
-                "artist": artist,
-                "thumb": thumb,
-                "duration": duration,
-            }
-            for k in ("provider", "mode"):
-                if k in item:
-                    norm[k] = item[k]
-            if "added_by" in item:
-                norm["added_by"] = item["added_by"]
-            return norm
-
     # ---------- Utils clefs / migrations d’IDs ----------
+
     def _gid(self, guild_id: int) -> int:
         return int(guild_id)
 
     def _migrate_keys_to_int(self, d: dict, gid: int):
         try:
-            if d is None: return
+            if d is None:
+                return
             for k in list(d.keys()):
                 if isinstance(k, str) and k.isdigit():
                     d[int(k)] = d.pop(k)
@@ -160,6 +101,101 @@ class Music(commands.Cog):
         if key not in self.managers:
             self.managers[key] = PlaylistManager(key)
         return self.managers[key]
+
+    # ---------- Normalisation des items (aligné avec l’API web) ----------
+
+    def _to_seconds(self, v):
+        if v is None:
+            return None
+        try:
+            iv = int(v)
+            # Heuristique: si > 86400 on suppose des millisecondes
+            return iv // 1000 if iv > 86400 else iv
+        except Exception:
+            pass
+        if isinstance(v, str):
+            s = v.strip()
+            if s.isdigit():
+                return int(s)
+            import re as _re
+            if _re.match(r"^\d+:\d{2}$", s):
+                m, s2 = s.split(":")
+                return int(m) * 60 + int(s2)
+        return None
+
+    def _oembed_enrich(self, page_url: str):
+        try:
+            host = (urlparse(page_url).hostname or "").lower()
+            host = host[4:] if host.startswith("www.") else host
+            if "soundcloud.com" in host:
+                oe = requests.get(
+                    "https://soundcloud.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+            if "youtube.com" in host or "youtu.be" in host:
+                oe = requests.get(
+                    "https://www.youtube.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+        except Exception:
+            pass
+        return None, None, None
+
+    def _normalize_like_api(self, item: dict) -> dict:
+        if not isinstance(item, dict):
+            item = {}
+        url = _clean_url(item.get("url"))
+        title = (item.get("title") or url or "").strip()
+        artist = (item.get("artist") or "").strip() or None
+        thumb = (item.get("thumb") or item.get("thumbnail") or "").strip() or None
+        duration = self._to_seconds(item.get("duration"))
+
+        if (not title or not artist or not thumb) and url:
+            t2, a2, th2 = self._oembed_enrich(url)
+            title = title or t2
+            artist = artist or a2
+            thumb = thumb or th2
+
+        norm = {
+            "title": title or (url or "Sans titre"),
+            "url": url,
+            "artist": artist,
+            "thumb": thumb,
+            "duration": duration,
+        }
+        for k in ("provider", "mode"):
+            if k in item:
+                norm[k] = item[k]
+        if "added_by" in item:
+            norm["added_by"] = item["added_by"]
+        if "priority" in item:
+            norm["priority"] = int(item["priority"])
+        return norm
+
+    # ---------- Priorités / insertion ordonnée ----------
+
+    def _compute_insert_index(self, queue: list, new_weight: int) -> int:
+        """
+        Renvoie l'index où insérer un nouvel item pour respecter l'ordre de priorité.
+        Règle: devant la première piste dont le poids est STRICTEMENT inférieur.
+        """
+        if not queue:
+            return 0
+        # on évite de déplacer l'élément en cours (souvent index 0 pour pm.queue)
+        start = 1 if queue else 0
+        for i in range(start, len(queue)):
+            w = int((queue[i] or {}).get("priority") or 0)
+            if new_weight > w:
+                return i
+        return len(queue)  # append
+
+    def _count_user_in_queue(self, queue: list, user_id: int) -> int:
+        uid = str(user_id)
+        return sum(1 for it in (queue or []) if str(it.get("added_by")) == uid)
 
     # =====================================================================
     #                            Slash commands
@@ -312,7 +348,6 @@ class Music(commands.Cog):
         data = await loop.run_in_executor(None, pm.to_dict)
 
         queue = data.get("queue", []) or []
-        # même logique que l’overlay: now_playing > current_song > pm.current
         current = (getattr(self, "now_playing", {}).get(gid)
                    or self.current_song.get(gid)
                    or data.get("current"))
@@ -329,9 +364,6 @@ class Music(commands.Cog):
             lines.append("\n".join(q_lines))
 
         await self._i_send(interaction, "🎶 *Sélection actuelle :*\n" + "\n".join(lines))
-
-        # (optionnel) pousser un rafraîchissement overlay si rien ne joue
-        # self.emit_playlist_update(gid)
 
     @app_commands.command(name="current", description="Montre le morceau en cours.")
     async def slash_current(self, interaction: discord.Interaction):
@@ -358,13 +390,28 @@ class Music(commands.Cog):
             pass
         item = self._normalize_like_api(item)
 
+        # priorité de l'auteur (Discord)
+        w = get_member_weight(self.bot, gid, int(item.get("added_by") or 0))
+        item["priority"] = int(w)
+
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
-        _greg_print(f"[DEBUG add_to_queue] AVANT reload → queue={len(pm.queue)} items")
         await loop.run_in_executor(None, pm.reload)
-        _greg_print(f"[DEBUG add_to_queue] APRES reload → queue={len(pm.queue)} items")
+        queue = await loop.run_in_executor(None, pm.get_queue)
+
+        # quota par user (sauf bypass)
+        if not can_bypass_quota(self.bot, gid, int(item.get("added_by") or 0)):
+            if self._count_user_in_queue(queue, int(item.get("added_by") or 0)) >= PER_USER_CAP:
+                return await interaction_like.followup.send(f"⛔ *Quota atteint ({PER_USER_CAP} pistes).*")
+
+        # 1) ajouter en fin…
         await loop.run_in_executor(None, pm.add, item)
-        _greg_print(f"[DEBUG add_to_queue] AJOUTÉ (normalisé): {item} → queue={len(pm.queue)} items")
+        # 2) …puis placer à l'index prioritaire
+        new_queue = await loop.run_in_executor(None, pm.get_queue)
+        new_idx = len(new_queue) - 1
+        target_idx = self._compute_insert_index(new_queue, int(item["priority"]))
+        if target_idx != new_idx:
+            await loop.run_in_executor(None, pm.move, new_idx, target_idx)
 
         await interaction_like.followup.send(
             f"🎵 Ajouté : **{item['title']}** ({item['url']}) — "
@@ -372,9 +419,8 @@ class Music(commands.Cog):
         )
         self.emit_playlist_update(gid)
 
-        if not self.is_playing.get(gid, False):
-            _greg_print(f"[DEBUG add_to_queue] Rien ne joue encore, lancement play_next…")
-            await self.play_next(interaction_like)
+        # Si rien ne joue et le bot est déjà en vocal → auto-lancer
+        await self._autoplay_if_idle(gid)
 
     async def play_next(self, interaction_like):
         """Démarre ou passe au morceau suivant (met aussi à jour now_playing -> overlay)."""
@@ -392,7 +438,7 @@ class Music(commands.Cog):
             self.emit_playlist_update(gid)
             return
 
-        # Normalise l'item courant (au cas où il proviendrait d'un vieux format)
+        # Normalise l'item courant
         item = self._normalize_like_api(item)
         self.current_song[gid] = item
         self.now_playing[gid] = item
@@ -442,7 +488,7 @@ class Music(commands.Cog):
             if err:
                 _greg_print(f"[Voice after] erreur FFmpeg / playback: {err}")
             # enchaîne
-            coro = self.play_next(interaction_like)
+            coro = self._autoplay_if_idle(gid)
             fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
             try:
                 fut.result()
@@ -463,6 +509,226 @@ class Music(commands.Cog):
         except Exception as e:
             await interaction_like.followup.send(f"❌ *Lecture impossible :* `{e}`")
             self.is_playing[gid] = False
+
+    # ---------- Web helpers / auto-play (sans interaction Discord) ----------
+
+    async def _autoplay_if_idle(self, gid: int) -> bool:
+        """Démarre la lecture depuis la file si le bot est connecté et qu'aucun flux ne joue."""
+        g = self.bot.get_guild(gid)
+        vc = g.voice_client if g else None
+        if not vc:
+            return False
+        if self.is_playing.get(gid, False):
+            return True
+
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, pm.reload)
+        item = await loop.run_in_executor(None, pm.pop_next)
+        if not item:
+            self.is_playing[gid] = False
+            self.current_song.pop(gid, None)
+            self.now_playing.pop(gid, None)
+            self.emit_playlist_update(gid)
+            return False
+
+        item = self._normalize_like_api(item)
+        self.current_song[gid] = item
+        self.now_playing[gid] = item
+        self.current_meta[gid] = {}
+
+        url = item["url"]
+        provider = item.get("provider") or _infer_provider_from_url(url) or "auto"
+        mode = item.get("mode") or "auto"
+
+        try:
+            extractor = get_extractor(provider)
+            source, meta = await extractor.stream_or_download(url, self.ffmpeg_path, mode=mode)
+        except Exception as e:
+            _greg_print(f"[autoplay] extraction error: {e} → on passe au suivant")
+            return await self._autoplay_if_idle(gid)
+
+        dur = meta.get("duration")
+        if dur is not None:
+            try:
+                dur = int(dur)
+            except Exception:
+                pass
+        self.current_meta[gid] = {"duration": dur, "thumbnail": meta.get("thumbnail")}
+
+        def after_play(err):
+            if err:
+                _greg_print(f"[autoplay after] playback error: {err}")
+            coro = self._autoplay_if_idle(gid)
+            fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+            try:
+                fut.result()
+            except Exception as e:
+                _greg_print(f"[autoplay after] fut.result error: {e}")
+
+        vc.play(source, after=after_play)
+        self.is_playing[gid] = True
+        self.play_start[gid] = time.monotonic()
+        self.paused_since.pop(gid, None)
+        self.paused_total[gid] = 0.0
+        self.emit_playlist_update(gid)
+        if gid not in self.ticker_tasks:
+            self.ticker_tasks[gid] = self.bot.loop.create_task(self._ticker(gid))
+        return True
+
+    # ---------- Web API methods (utilisées par connect/app.py) ----------
+
+    async def play_for_user(self, guild_id: int | str, user_id: int | str, item: dict):
+        """Appelé par /api/play — insertion par priorité + autostart si possible."""
+        gid = int(guild_id)
+        uid = int(user_id)
+        loop = asyncio.get_running_loop()
+        pm = self.get_pm(gid)
+
+        # enrichir l'item
+        weight = get_member_weight(self.bot, gid, uid)
+        item = dict(item or {})
+        item["added_by"] = str(uid)
+        item["priority"] = int(weight)
+        item = self._normalize_like_api(item)
+
+        # quota
+        queue = await loop.run_in_executor(None, pm.get_queue)
+        if not can_bypass_quota(self.bot, gid, uid):
+            if self._count_user_in_queue(queue, uid) >= PER_USER_CAP:
+                raise PermissionError(f"Quota atteint ({PER_USER_CAP} pistes).")
+
+        # insérer à la bonne place
+        await loop.run_in_executor(None, pm.add, item)
+        new_queue = await loop.run_in_executor(None, pm.get_queue)
+        new_idx = len(new_queue) - 1
+        target_idx = self._compute_insert_index(new_queue, int(item["priority"]))
+        if target_idx != new_idx:
+            await loop.run_in_executor(None, pm.move, new_idx, target_idx)
+
+        # notifier + tenter de lancer si idle
+        self.emit_playlist_update(gid)
+        await self._autoplay_if_idle(gid)
+        return True
+
+    async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
+        """Reorder sécurisé: déplace l'élément d'index 'index' en tête, si autorisé."""
+        gid = int(guild_id)
+        rid = int(requester_id)
+        loop = asyncio.get_running_loop()
+        pm = self.get_pm(gid)
+
+        queue = await loop.run_in_executor(None, pm.get_queue)
+        if not (0 <= index < len(queue)):
+            raise IndexError("index hors bornes")
+
+        it = queue[index] or {}
+        owner_id = int(it.get("added_by") or 0)
+        owner_weight = int(it.get("priority") or 0)
+
+        # authorisé si: auteur == demandeur, poids plus élevé, ou admin
+        if owner_id != rid and not can_user_bump_over(self.bot, gid, rid, owner_weight):
+            raise PermissionError("Priorité insuffisante pour remonter cette piste.")
+
+        ok = await loop.run_in_executor(None, pm.move, index, 0)
+        if not ok:
+            raise RuntimeError("Déplacement impossible.")
+
+        self.emit_playlist_update(gid)
+        return True
+
+    async def pause_for_web(self, guild_id: int | str):
+        gid = int(guild_id)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and vc.is_playing():
+            vc.pause()
+            self.paused_since[gid] = time.monotonic()
+            self.emit_playlist_update(gid)
+            return True
+        return False
+
+    async def resume_for_web(self, guild_id: int | str):
+        gid = int(guild_id)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and vc.is_paused():
+            vc.resume()
+            if gid in self.paused_since:
+                self.paused_total[gid] = self.paused_total.get(gid, 0.0) + (time.monotonic() - self.paused_since[gid])
+                self.paused_since.pop(gid, None)
+            self.emit_playlist_update(gid)
+            return True
+        return False
+
+    async def stop_for_web(self, guild_id: int | str):
+        gid = int(guild_id)
+        pm = self.get_pm(gid)
+        await asyncio.get_running_loop().run_in_executor(None, pm.clear)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        self.is_playing[gid] = False
+        self.current_song.pop(gid, None)
+        self.now_playing.pop(gid, None)
+        self.emit_playlist_update(gid)
+        return True
+
+    async def skip_for_web(self, guild_id: int | str):
+        gid = int(guild_id)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+            return True
+        return False
+
+    async def toggle_pause_for_web(self, guild_id: int | str):
+        gid = int(guild_id)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if not vc:
+            return False
+        if vc.is_paused():
+            return await self.resume_for_web(gid)
+        if vc.is_playing():
+            return await self.pause_for_web(gid)
+        return False
+
+    async def restart_current_for_web(self, guild_id: int | str):
+        """Remet la piste actuelle au début (on l’insère devant puis stop)."""
+        gid = int(guild_id)
+        cur = self.now_playing.get(gid) or self.current_song.get(gid)
+        if not cur:
+            return False
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+        # re-ajoute en tête
+        await loop.run_in_executor(None, pm.add, cur)
+        q = await loop.run_in_executor(None, pm.get_queue)
+        last = len(q) - 1
+        if last >= 0:
+            await loop.run_in_executor(None, pm.move, last, 0)
+        # stop → after() lancera la suivante (qui est la même)
+        await self.skip_for_web(gid)
+        return True
+
+    async def repeat_for_web(self, guild_id: int | str, mode: Optional[str] = None) -> bool:
+        """Toggle/force repeat_all pour l’overlay. Retourne l'état."""
+        gid = int(guild_id)
+        cur = bool(self.repeat_all.get(gid, False))
+        if not mode or mode == "toggle":
+            nxt = not cur
+        else:
+            nxt = mode in ("on", "true", "1", "all")
+        self.repeat_all[gid] = bool(nxt)
+        self.emit_playlist_update(gid)
+        return bool(nxt)
+
+    # =====================================================================
+    #                         Command helpers (Discord)
+    # =====================================================================
 
     async def _do_skip(self, guild, send_fn):
         gid = self._gid(guild.id)
@@ -581,14 +847,6 @@ class Music(commands.Cog):
         except Exception as e:
             _greg_print(f"[WARN] interaction send failed: {e}")
 
-    async def _send_with(self, send_fn, msg: str):
-        try:
-            res = send_fn(msg)
-            if asyncio.iscoroutine(res):
-                await res
-        except Exception as e:
-            _greg_print(f"[WARN] send_fn failed: {e}")
-
     # ---------- Détection ffmpeg ----------
 
     def detect_ffmpeg(self):
@@ -621,4 +879,4 @@ class Music(commands.Cog):
 
 async def setup(bot, emit_fn=None):
     await bot.add_cog(Music(bot, emit_fn))
-    _greg_print("✅ Cog 'Music' chargé — overlay enrichi + provider/mode (slash commands only).")
+    _greg_print("✅ Cog 'Music' chargé — overlay enrichi + provider/mode + hiérarchie.")
