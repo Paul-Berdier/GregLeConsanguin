@@ -1,3 +1,4 @@
+# main.py
 import logging
 import os
 import threading
@@ -10,6 +11,18 @@ import config
 import json
 import subprocess
 import requests
+
+# === Eventlet (websocket natif) ============================================
+ASYNC_MODE = os.getenv("SOCKETIO_ASYNC_MODE", "eventlet").lower().strip()
+if ASYNC_MODE == "eventlet":
+    try:
+        import eventlet
+        eventlet.monkey_patch()
+        EVENTLET_READY = True
+    except Exception as e:
+        EVENTLET_READY = False
+else:
+    EVENTLET_READY = False
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -24,6 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
+logger.info("Socket.IO async mode: %s (eventlet_ready=%s)", ASYNC_MODE, EVENTLET_READY)
 
 # ---------------------------------------------------------------------------
 # PlaylistManager multi-serveur
@@ -102,7 +116,6 @@ async def run_post_restart_selftest(bot):
         try:
             from __main__ import socketio
             if socketio:
-                # Pas de client pour écouter, mais vérifie qu'aucune exception n'est levée à l'emit
                 socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
                 results.append(("SocketIO:emit", True, "emit ok"))
             else:
@@ -231,7 +244,7 @@ class GregBot(commands.Bot):
         except Exception as e:
             logger.error("Impossible de connecter emit_fn: %s", e)
 
-        # Auto self-test post-redémarrage (optionnel, si défini dans main.py)
+        # Auto self-test post-redémarrage
         try:
             import asyncio
             from __main__ import run_post_restart_selftest
@@ -258,7 +271,12 @@ if not DISABLE_WEB:
 def run_web():
     if socketio and app:
         logger.debug("Lancement du serveur Flask/SocketIO…")
-        socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+        # Avec eventlet installé, socketio.run utilisera le serveur wsgi eventlet.
+        # Sinon, il basculera sur Werkzeug (dev).
+        if EVENTLET_READY:
+            socketio.run(app, host="0.0.0.0", port=3000)
+        else:
+            socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
 
 def wait_for_web():
     for i in range(30):  # 30 tentatives
