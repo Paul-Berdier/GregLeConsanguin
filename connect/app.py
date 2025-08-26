@@ -38,6 +38,14 @@ except Exception:
         from oauth import (
             start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
         )
+from collections import defaultdict
+
+# par-socket + index inversé
+ONLINE_BY_SID: Dict[str, Dict[str, Any]] = {}   # sid -> {user_id, guild_id, ts}
+SIDS_BY_USER: Dict[str, set] = defaultdict(set) # user_id -> {sid, ...}
+
+# TTL de présence (GC côté /api/overlays_online)
+OVERLAY_PRESENCE_TTL = int(os.getenv("OVERLAY_PRESENCE_TTL", "90"))
 
 # --- Constantes/état overlay (rooms & présence) ---
 OVERLAY_ROOM_PREFIX_USER = "user:"
@@ -352,12 +360,38 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             ts=int(time.time())
         )
 
-    # app.py — ajoute :
     @app.route("/api/overlays_online", methods=["GET"])
     def overlays_online():
-        gid = (request.args.get("guild_id") or "").strip()
-        rows = [{"user_id": uid} for uid, _ts in ACTIVE_OVERLAY_USERS.items()]
-        # si tu gères les rooms guild: tu peux filtrer si tu stockes user->guild
+        """Liste légère des overlays connectés. ?guild_id=... pour filtrer.
+        Fait aussi un petit GC sur les sockets inactifs (> TTL).
+        """
+        gid_filter = (request.args.get("guild_id") or "").strip() or None
+        now = time.time()
+
+        # GC simple sur le mapping par sid
+        for sid, rec in list(ONLINE_BY_SID.items()):
+            if now - (rec.get("ts") or 0) > OVERLAY_PRESENCE_TTL:
+                ONLINE_BY_SID.pop(sid, None)
+                uid = rec.get("user_id")
+                if uid:
+                    SIDS_BY_USER[uid].discard(sid)
+                    if not SIDS_BY_USER[uid]:
+                        SIDS_BY_USER.pop(uid, None)
+                        ACTIVE_OVERLAY_USERS.pop(uid, None)
+
+        # Construire la liste unique par user_id (optionnellement filtrée par guild)
+        seen = set()
+        rows = []
+        for rec in ONLINE_BY_SID.values():
+            uid = rec.get("user_id")
+            gid = rec.get("guild_id")
+            if not uid or uid in seen:
+                continue
+            if gid_filter and gid != gid_filter:
+                continue
+            rows.append({"user_id": uid, "guild_id": gid, "since": int(rec.get("ts", now))})
+            seen.add(uid)
+
         return jsonify(rows)
 
     @app.route("/api/guilds", methods=["GET"])
@@ -761,19 +795,59 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not uid:
             emit("overlay_registered", {"ok": False, "reason": "missing_user_id"})
             return
-        join_room(OVERLAY_ROOM_PREFIX_USER + uid)
+
+        sid = request.sid  # <— on mémorise le socket
+        ONLINE_BY_SID[sid] = {"sid": sid, "user_id": uid, "guild_id": gid or None, "ts": time.time()}
+        SIDS_BY_USER[uid].add(sid)
+
+        join_room(f"{OVERLAY_ROOM_PREFIX_USER}{uid}")
         if gid:
-            join_room(OVERLAY_ROOM_PREFIX_GUILD + gid)
-        ACTIVE_OVERLAY_USERS[uid] = time.time()
+            join_room(f"{OVERLAY_ROOM_PREFIX_GUILD}{gid}")
+
+        ACTIVE_OVERLAY_USERS[uid] = time.time()  # compat avec ton endpoint actuel
         emit("overlay_registered", {"ok": True})
 
     @socketio.on("overlay_ping")
     def ws_overlay_ping(data: Optional[Dict[str, Any]] = None):
-        """Keepalive : l’overlay peut pinger périodiquement pour indiquer sa présence."""
+        """Keepalive: met à jour le last_seen du socket et du user."""
         data = data or {}
-        uid = str(data.get("user_id") or "").strip()
-        if uid:
-            ACTIVE_OVERLAY_USERS[uid] = time.time()
+        sid = request.sid
+        now = time.time()
+
+        rec = ONLINE_BY_SID.get(sid)
+        uid = str(data.get("user_id") or "").strip() or (rec and rec.get("user_id"))
+        if not uid:
+            return  # ping anonyme, on ignore
+
+        if not rec:
+            # Cas rare: ping reçu avant register -> on enregistre sommairement
+            ONLINE_BY_SID[sid] = {"sid": sid, "user_id": uid, "guild_id": None, "ts": now}
+            SIDS_BY_USER[uid].add(sid)
+        else:
+            rec["ts"] = now
+
+        ACTIVE_OVERLAY_USERS[uid] = now
+
+    @socketio.on("disconnect")
+    def ws_disconnect():
+        sid = request.sid
+        rec = ONLINE_BY_SID.pop(sid, None)
+        if not rec:
+            return
+        uid = rec.get("user_id")
+        gid = rec.get("guild_id")
+        try:
+            if uid:
+                SIDS_BY_USER[uid].discard(sid)
+                if not SIDS_BY_USER[uid]:
+                    # dernier socket de ce user -> on l'enlève de la presence "globale"
+                    SIDS_BY_USER.pop(uid, None)
+                    ACTIVE_OVERLAY_USERS.pop(uid, None)
+            if gid:
+                # pas besoin de leave_room explicit, Flask-SocketIO le fait à la fermeture
+                pass
+        except Exception:
+            pass
 
     # ------------------------ Helper jumpscare (bridge direct) ---------------
     def push_jumpscare(
