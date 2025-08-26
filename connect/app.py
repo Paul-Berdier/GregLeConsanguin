@@ -7,7 +7,7 @@ from flask import (
     Flask, render_template, render_template_string,
     request, jsonify, session, redirect, url_for
 )
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 import os, asyncio, requests, time, secrets
 from urllib.parse import quote_plus
@@ -38,6 +38,11 @@ except Exception:
         from oauth import (
             start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
         )
+
+# --- Constantes/état overlay (rooms & présence) ---
+OVERLAY_ROOM_PREFIX_USER = "user:"
+OVERLAY_ROOM_PREFIX_GUILD = "guild:"
+ACTIVE_OVERLAY_USERS: Dict[str, float] = {}   # user_id -> last_seen_ts
 
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
@@ -339,7 +344,21 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/health")
     def api_health():
         _dbg("GET /api/health — oui ça tourne, quelle surprise.")
-        return jsonify(ok=True)
+        # On garde ok=True pour compat ; on ajoute des infos utiles.
+        return jsonify(
+            ok=True,
+            socketio=True,
+            active_overlays=len(ACTIVE_OVERLAY_USERS),
+            ts=int(time.time())
+        )
+
+    # app.py — ajoute :
+    @app.route("/api/overlays_online", methods=["GET"])
+    def overlays_online():
+        gid = (request.args.get("guild_id") or "").strip()
+        rows = [{"user_id": uid} for uid, _ts in ACTIVE_OVERLAY_USERS.items()]
+        # si tu gères les rooms guild: tu peux filtrer si tu stockes user->guild
+        return jsonify(rows)
 
     @app.route("/api/guilds", methods=["GET"])
     def api_guilds():
@@ -570,6 +589,40 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         channels = [{"id": c.id, "name": c.name} for c in guild.text_channels]
         return jsonify(channels)
 
+    # ------------------------ Jumpscare (HTTP fallback) ----------------------
+    @app.route("/api/jumpscare", methods=["POST"])
+    def api_jumpscare():
+        """
+        Déclenche un jumpscare vers l'overlay d'un user (si connecté),
+        via HTTP interne protégé (fallback si bridge direct non utilisé).
+        """
+        needed = os.getenv("OVERLAY_INTERNAL_TOKEN")
+        token = request.headers.get("X-Overlay-Token") or request.args.get("token")
+        if not needed or token != needed:
+            return _bad_request("unauthorized", 401)
+
+        try:
+            data = request.get_json(force=True) or {}
+        except Exception:
+            data = {}
+
+        user_id = str(data.get("user_id") or "").strip()
+        if not user_id:
+            return _bad_request("user_id manquant", 400)
+
+        effect = (data.get("effect") or "scream").strip()
+        img = data.get("img") or None
+        sound = data.get("sound") or None
+        duration_ms = int(data.get("duration_ms") or 1500)
+        message = data.get("message") or None
+
+        try:
+            push_jumpscare(user_id, effect, img, sound, duration_ms, message)
+            return jsonify(ok=True)
+        except Exception as e:
+            return _bad_request(str(e), 500)
+
+
     # ------------------------ Autocomplete (GET) ------------------
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
@@ -699,6 +752,60 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 _dbg("WS connect — état initial envoyé.")
         except Exception as e:
             _dbg(f"WS connect — 💥 {e}")
+
+    @socketio.on("overlay_register")
+    def ws_overlay_register(data: Optional[Dict[str, Any]] = None):
+        """
+        Un overlay s'enregistre et rejoint ses rooms :
+        - user:<user_id>
+        - guild:<guild_id> (si fourni)
+        """
+        data = data or {}
+        uid = str(data.get("user_id") or "").strip()
+        gid = str(data.get("guild_id") or "").strip()
+        if not uid:
+            emit("overlay_registered", {"ok": False, "reason": "missing_user_id"})
+            return
+        join_room(OVERLAY_ROOM_PREFIX_USER + uid)
+        if gid:
+            join_room(OVERLAY_ROOM_PREFIX_GUILD + gid)
+        ACTIVE_OVERLAY_USERS[uid] = time.time()
+        emit("overlay_registered", {"ok": True})
+
+    @socketio.on("overlay_ping")
+    def ws_overlay_ping(data: Optional[Dict[str, Any]] = None):
+        """Keepalive : l’overlay peut pinger périodiquement pour indiquer sa présence."""
+        data = data or {}
+        uid = str(data.get("user_id") or "").strip()
+        if uid:
+            ACTIVE_OVERLAY_USERS[uid] = time.time()
+
+    # ------------------------ Helper jumpscare (bridge direct) ---------------
+    def push_jumpscare(
+        user_id: int | str,
+        effect: str = "scream",
+        img: Optional[str] = None,
+        sound: Optional[str] = None,
+        duration_ms: int = 1500,
+        message: Optional[str] = None,
+    ) -> bool:
+        """
+        Envoie un évènement 'jumpscare' à l’overlay de l’utilisateur ciblé.
+        L’overlay (HUD) doit écouter `socket.on('jumpscare', handler)`.
+        """
+        payload = {
+            "effect": effect,
+            "img": img,
+            "sound": sound,
+            "duration_ms": int(duration_ms),
+            "message": message,
+        }
+        room = f"{OVERLAY_ROOM_PREFIX_USER}{user_id}"
+        socketio.emit("jumpscare", payload, room=room)
+        return True
+
+    # Rendez le helper accessible côté bot (bridge intra-process)
+    app.push_jumpscare = push_jumpscare  # type: ignore[attr-defined]
 
     # --- Debug : afficher toutes les routes enregistrées ---
     print("\n📜 Routes Flask enregistrées :")

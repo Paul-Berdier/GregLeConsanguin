@@ -223,7 +223,7 @@ class GregBot(commands.Bot):
                 general_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur General")
             if socketio_ref and eggs_cog:
-                eggs_cog.emit_fn = _emit
+                spook_cog.emit_fn = _emit
                 logger.info("emit_fn branché sur EasterEggs")
             if socketio_ref and spook_cog:
                 eggs_cog.emit_fn = _emit
@@ -279,6 +279,7 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         app.bot = bot
+        bot.web_app = app
         threading.Thread(target=run_web, daemon=True).start()
         wait_for_web()
 
