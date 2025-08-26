@@ -258,12 +258,6 @@ class Spook(commands.Cog):
                           message: Optional[str] = None,
                           img: Optional[str] = None,
                           sound: Optional[str] = None):
-        # Permissions: Admin ou Manage Guild
-        if not (interaction.user.guild_permissions.administrator or
-                interaction.user.guild_permissions.manage_guild):
-            return await interaction.response.send_message(
-                "🚫 Il faut être Admin ou avoir 'Gérer le serveur'.", ephemeral=True
-            )
 
         await interaction.response.defer(ephemeral=True)
 
@@ -283,7 +277,7 @@ class Spook(commands.Cog):
         # 2) Fallback HTTP interne (si configuré)
         if not ok:
             token = os.getenv("OVERLAY_INTERNAL_TOKEN")
-            url   = os.getenv("OVERLAY_INTERNAL_URL", "http://127.0.0.1:3000/api/jumpscare")
+            url = os.getenv("OVERLAY_INTERNAL_URL", "http://127.0.0.1:3000/api/jumpscare")
             if token:
                 try:
                     r = requests.post(url, json={

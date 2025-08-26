@@ -593,13 +593,9 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/jumpscare", methods=["POST"])
     def api_jumpscare():
         """
-        Déclenche un jumpscare vers l'overlay d'un user (si connecté),
-        via HTTP interne protégé (fallback si bridge direct non utilisé).
+        Déclenche un jumpscare vers l'overlay d'un user (si connecté).
+        Version ouverte : plus besoin de token interne.
         """
-        needed = os.getenv("OVERLAY_INTERNAL_TOKEN")
-        token = request.headers.get("X-Overlay-Token") or request.args.get("token")
-        if not needed or token != needed:
-            return _bad_request("unauthorized", 401)
 
         try:
             data = request.get_json(force=True) or {}
@@ -621,7 +617,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(ok=True)
         except Exception as e:
             return _bad_request(str(e), 500)
-
 
     # ------------------------ Autocomplete (GET) ------------------
     @app.route("/api/autocomplete", methods=["GET"])
