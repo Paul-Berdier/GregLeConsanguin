@@ -1,5 +1,4 @@
 # connect/app.py
-
 from __future__ import annotations
 from typing import Callable, Any, Dict, Optional, List, Set
 
@@ -39,17 +38,16 @@ except Exception:
             start_oauth_flow, exchange_code_for_token, fetch_user_me, fetch_user_guilds
         )
 
-# --- Constantes/état overlay (rooms & présence) -----------------------------
-OVERLAY_ROOM_PREFIX_USER  = "user:"
+# --- Constantes/état overlay (rooms & présence) ---
+OVERLAY_ROOM_PREFIX_USER = "user:"
 OVERLAY_ROOM_PREFIX_GUILD = "guild:"
-PRESENCE_TTL = 25  # secondes avant de considérer un overlay "offline"
 
-# user_id -> last_seen_ts (conserve pour compat / endpoints légers)
-ACTIVE_OVERLAY_USERS: Dict[str, float] = {}
-# mapping SID -> infos overlay
-ONLINE_BY_SID: Dict[str, Dict[str, Any]] = {}
-# user_id -> set(SIDs)
-SIDS_BY_USER: Dict[str, Set[str]] = {}
+# Historique par user (dernière activité + nom) — TTL appliqué à la lecture
+ACTIVE_OVERLAY_USERS: Dict[str, Dict[str, Any]] = {}   # user_id -> {"ts": float, "username": str|None}
+
+# Index temps réel par SID <-> user
+ONLINE_BY_SID: Dict[str, Dict[str, Any]] = {}          # sid -> {user_id, guild_id, username, ts}
+SIDS_BY_USER: Dict[str, Set[str]] = {}                 # user_id -> {sid}
 
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
@@ -58,33 +56,25 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     # 🔥 Autoriser les cookies cross-origin si nécessaire
     CORS(app, supports_credentials=True)
 
-    # 🔧 threading: évite les problèmes websocket avec le dev server Werkzeug
-    socketio = SocketIO(
-        app,
-        cors_allowed_origins="*",
-        async_mode="threading",
-        logger=False,
-        engineio_logger=False,
-    )
-
     # --- Session & sécurité ---
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.config.update(
         SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "gregsid"),
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "None"),
+        SESSION_COOKIE_SAMESITE=os.getenv("SESSION_COOKIE_SAMESITE", "None"),  # "None" en prod HTTPS
         SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "1") == "1",
     )
 
     app.get_pm = get_pm
 
-    # ---- Device Login (OAuth via navigateur par défaut) ---------------------
+    # ---- Device Login (OAuth via navigateur par défaut) ----
     DEVICE_BY_STATE: dict[str, str] = {}   # oauth_state -> device_id
     DEVICE_STORE: dict[str, dict] = {}     # device_id -> {"user": {...} or None, "ts": float}
     DEVICE_TTL = 300  # 5 minutes
 
     def _device_gc():
         now = time.time()
+        # purge states or devices trop vieux
         for st, did in list(DEVICE_BY_STATE.items()):
             info = DEVICE_STORE.get(did)
             if not info or (now - info.get("ts", now)) > DEVICE_TTL:
@@ -94,6 +84,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 DEVICE_STORE.pop(did, None)
 
     def _oauth_authorize_url_for_state(state: str) -> str:
+        """Construit l'URL d'autorisation Discord SANS toucher à la session (device flow)."""
         client_id = os.environ["DISCORD_CLIENT_ID"]
         redirect  = os.environ["DISCORD_REDIRECT_URI"]
         scopes    = os.getenv("DISCORD_OAUTH_SCOPES", "identify guilds")
@@ -108,7 +99,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             f"&state={state}"
         )
 
-    # ------------------------ Helpers ---------------------------------------
+    # ------------------------ Helpers ----------------------------
     def _dbg(msg: str) -> None:
         print(f"🤦‍♂️ [WEB] {msg}")
 
@@ -132,10 +123,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         return music_cog, None
 
     def _dispatch(coro, timeout=60):
+        """
+        Exécute une coroutine sur la loop du bot si existante, sinon dans une
+        loop dédiée à ce thread. Remonte les exceptions Python (attrapées par
+        l'appelant et renvoyées en JSON propre).
+        """
         loop = getattr(getattr(app, "bot", None), "loop", None)
         if loop and loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(coro, loop)
             return fut.result(timeout=timeout)
+        # Fallback (dev / tests): loop dédiée et fermée proprement
         new_loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(new_loop)
@@ -148,6 +145,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             new_loop.close()
             asyncio.set_event_loop(None)
 
+    # même structure que le payload Socket.IO
     def _overlay_payload_for(guild_id: int | str) -> Dict[str, Any]:
         music_cog = getattr(app, "bot", None)
         music_cog = music_cog and app.bot.get_cog("Music")
@@ -157,6 +155,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             except Exception as e:
                 _dbg(f"_overlay_payload_for — fallback (music): {e}")
 
+        # 🎵 Fallback si pas de Music cog : on tente avec PlaylistManager
         pm = app.get_pm(guild_id)
         data = pm.to_dict()
         current = data.get("current")
@@ -182,6 +181,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 "repeat_all": data.get("repeat_all", False),
             }
         else:
+            # Aucun morceau en cours
             return {
                 "queue": data.get("queue", []),
                 "current": None,
@@ -199,26 +199,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             s = s[:-1]
         return s
 
-    def _presence_gc() -> None:
-        """Nettoie les SIDs/users offline (TTL)."""
-        now = time.time()
-        for sid, info in list(ONLINE_BY_SID.items()):
-            if (now - info.get("ts", 0)) > PRESENCE_TTL:
-                ONLINE_BY_SID.pop(sid, None)
-                uid = info.get("user_id")
-                if uid and uid in SIDS_BY_USER:
-                    SIDS_BY_USER[uid].discard(sid)
-                    if not SIDS_BY_USER[uid]:
-                        SIDS_BY_USER.pop(uid, None)
-                        ACTIVE_OVERLAY_USERS.pop(uid, None)
-        # garde ACTIVE_OVERLAY_USERS propre même si pas de SID enregistré
-        for uid, last in list(ACTIVE_OVERLAY_USERS.items()):
-            if (now - last) > PRESENCE_TTL and uid not in SIDS_BY_USER:
-                ACTIVE_OVERLAY_USERS.pop(uid, None)
-
-    # ------------------------ Pages HTML -------------------------------------
+    # ------------------------ Pages HTML --------------------------
     @app.route("/")
     def index():
+        # Fallback si templates/index.html absent (évite 500)
         try:
             return render_template("index.html")
         except Exception:
@@ -230,18 +214,21 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             )
 
     # ------------------------ AUTH (Discord OAuth2) --------------------------
+    # ---- Device flow (navigateur par défaut) ----
     @app.route("/auth/device/start", methods=["POST", "GET"])
     def auth_device_start():
+        """Démarre un device-login : retourne device_id + URL à ouvrir dans le navigateur par défaut."""
         _device_gc()
         device_id = secrets.token_urlsafe(16)
         state = secrets.token_urlsafe(24)
         DEVICE_BY_STATE[state] = device_id
         DEVICE_STORE[device_id] = {"user": None, "ts": time.time()}
-        login_url = _oauth_authorize_url_for_state(state)
+        login_url = _oauth_authorize_url_for_state(state)  # pas d'écriture session ici
         return jsonify({"device_id": device_id, "login_url": login_url})
 
     @app.route("/auth/device/poll", methods=["GET"])
     def auth_device_poll():
+        """Poll côté overlay: quand user prêt, on SET le cookie de session ici et on renvoie ok."""
         _device_gc()
         device_id = (request.args.get("device_id") or "").strip()
         if not device_id or device_id not in DEVICE_STORE:
@@ -250,13 +237,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         user = info.get("user")
         if not user:
             return jsonify({"pending": True})
+        # Dépose la session sur CETTE requête (cookie côté overlay)
         set_user_session(user)
+        # Cleanup
         DEVICE_STORE.pop(device_id, None)
         for st, did in list(DEVICE_BY_STATE.items()):
             if did == device_id:
                 DEVICE_BY_STATE.pop(st, None)
         return jsonify({"ok": True, "user": {"id": user.get("id"), "username": user.get("username"), "global_name": user.get("global_name")}})
 
+    # ---- Flow classique (webview) ----
     @app.route("/auth/login")
     def auth_login():
         st, url = start_oauth_flow()
@@ -273,6 +263,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not code:
             return _bad_request("code manquant", 400)
 
+        # Branche device flow: state connu côté serveur (pas dans la session)
         if sent_state in DEVICE_BY_STATE:
             device_id = DEVICE_BY_STATE.get(sent_state)
             try:
@@ -281,6 +272,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 if device_id in DEVICE_STORE:
                     DEVICE_STORE[device_id]["user"] = user
                     DEVICE_STORE[device_id]["ts"] = time.time()
+                # Petite page informative dans le navigateur par défaut
                 return (
                     "<!doctype html><meta charset='utf-8'>"
                     "<title>Greg — Connexion faite</title>"
@@ -291,6 +283,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             except Exception as e:
                 return _bad_request(f"OAuth device échoué: {e}", 400)
 
+        # Sinon: flow classique (session) → vérif CSRF
         saved_state = pop_oauth_state()
         if not saved_state or saved_state != sent_state:
             return _bad_request("state CSRF invalide", 400)
@@ -322,6 +315,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     @app.route("/auth/close")
     def auth_close():
+        # ferme la fenêtre pop-up une fois la session posée
         return """
     <!doctype html><meta charset="utf-8">
     <title>Connecté</title>
@@ -331,6 +325,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     @app.route("/api/me")
     def api_me():
+        """Retourne l'utilisateur connecté (session) ou 401."""
         u = current_user()
         if not u:
             return jsonify({"error": "auth_required"}), 401
@@ -341,23 +336,72 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             "avatar": u.get("avatar"),
         })
 
-    # ------------------------ API JSON ---------------------------------------
+    # ------------------------ API JSON ---------------------------
     @app.route("/api/health")
     def api_health():
-        _presence_gc()
-        return jsonify(ok=True, socketio=True,
-                       active_overlays=len(ACTIVE_OVERLAY_USERS),
-                       ts=int(time.time()))
+        _dbg("GET /api/health — oui ça tourne, quelle surprise.")
+        # On garde ok=True pour compat ; on ajoute des infos utiles.
+        return jsonify(
+            ok=True,
+            socketio=True,
+            active_overlays=len(SIDS_BY_USER),
+            ts=int(time.time())
+        )
 
     @app.route("/api/overlays_online", methods=["GET"])
     def overlays_online():
-        """Retourne les overlays considérés en ligne (TTL)."""
-        _presence_gc()
-        rows = [{"user_id": uid} for uid in sorted(ACTIVE_OVERLAY_USERS.keys())]
-        return jsonify(rows)
+        """Petite vue 'présence overlay' pour l'UI spook."""
+        gid_filter = (request.args.get("guild_id") or "").strip()
+        now = time.time()
+        TTL = 120.0  # secondes
+        rows: Dict[str, Dict[str, Any]] = {}
+        # On consolide par user_id à partir des SIDs actifs
+        for sid, info in list(ONLINE_BY_SID.items()):
+            uid = info.get("user_id")
+            if not uid:
+                continue
+            last = float(info.get("ts") or 0.0)
+            if now - last > TTL:
+                # expiré → on le purge
+                ONLINE_BY_SID.pop(sid, None)
+                try:
+                    SIDS_BY_USER.get(uid, set()).discard(sid)
+                    if not SIDS_BY_USER.get(uid):
+                        SIDS_BY_USER.pop(uid, None)
+                except Exception:
+                    pass
+                continue
+            if gid_filter and str(info.get("guild_id") or "") != gid_filter:
+                continue
+            # garde le "meilleur" (dernier ts) par user
+            prev = rows.get(uid)
+            if (not prev) or (last > prev["ts"]):
+                rows[uid] = {
+                    "user_id": uid,
+                    "username": info.get("username") or (ACTIVE_OVERLAY_USERS.get(uid) or {}).get("username"),
+                    "guild_id": info.get("guild_id") or None,
+                    "ts": last,
+                }
+
+        # aussi, merge avec le cache ACTIVE_OVERLAY_USERS si rien côté SIDs
+        for uid, meta in list(ACTIVE_OVERLAY_USERS.items()):
+            if uid in rows:
+                continue
+            if now - float(meta.get("ts") or 0.0) > TTL:
+                continue
+            rows[uid] = {
+                "user_id": uid,
+                "username": meta.get("username"),
+                "guild_id": None,
+                "ts": float(meta.get("ts") or 0.0),
+            }
+
+        # renvoie un array
+        return jsonify(sorted(rows.values(), key=lambda r: r["ts"], reverse=True))
 
     @app.route("/api/guilds", methods=["GET"])
     def api_guilds():
+        """Retourne simplement les serveurs où le bot est présent."""
         err = _bot_required()
         if err:
             return err
@@ -381,7 +425,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
         try:
             gid = int(guild_id)
-            payload = music_cog._overlay_payload(gid)
+            payload = music_cog._overlay_payload(gid)  # << SOURCE DE VÉRITÉ
             qlen = len(payload.get("queue") or [])
             cur = payload.get("current")
             print(f"🤦‍♂️ [WEB] GET /api/playlist — guild={guild_id}, "
@@ -584,9 +628,13 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         channels = [{"id": c.id, "name": c.name} for c in guild.text_channels]
         return jsonify(channels)
 
-    # ------------------------ Jumpscare (HTTP ouvert) ------------------------
+    # ------------------------ Jumpscare (HTTP fallback ouvert) ----------------
     @app.route("/api/jumpscare", methods=["POST"])
     def api_jumpscare():
+        """
+        Déclenche un jumpscare vers l'overlay d'un user (si connecté).
+        Version ouverte : plus besoin de token interne.
+        """
         try:
             data = request.get_json(force=True) or {}
         except Exception:
@@ -608,9 +656,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         except Exception as e:
             return _bad_request(str(e), 500)
 
-    # ------------------------ Autocomplete (GET) -----------------------------
+    # ------------------------ Autocomplete (GET) ------------------
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
+        """
+        Recherche (max 3) pour l'UI :
+        { results: [{title, url, webpage_url, artist, duration, thumb, provider}] }
+        - url = URL DE PAGE (Jamais de CDN HLS)
+        - duration en secondes (peut être None)
+        - provider: "soundcloud" | "youtube"
+        """
         import re
         from urllib.parse import urlparse
 
@@ -645,6 +700,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return None
 
         def _oembed_enrich(page_url: str):
+            """Retourne (title, author_name, thumbnail_url) si trouvé, sinon (None, None, None)."""
             try:
                 host = re.sub(r"^www\.", "", urlparse(page_url).hostname or "")
                 if "soundcloud.com" in host:
@@ -717,7 +773,31 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             _dbg(f"/api/autocomplete — 💥 {e}")
             return jsonify(results=[])
 
-    # ------------------------ WebSocket -------------------------------------
+    # ------------------------ Socket.IO --------------------------------------
+
+    # Choix de l'async_mode :
+    # - eventlet dispo → websockets natifs
+    # - sinon fallback auto
+    async_mode_env = os.getenv("SOCKETIO_ASYNC_MODE", "auto").lower().strip()
+    if async_mode_env == "threading":
+        async_mode_val = "threading"
+    elif async_mode_env == "eventlet":
+        async_mode_val = "eventlet"
+    else:
+        # auto-détection
+        try:
+            import eventlet  # noqa: F401
+            async_mode_val = "eventlet"
+        except Exception:
+            async_mode_val = None  # auto
+    socketio = SocketIO(
+        app,
+        cors_allowed_origins="*",
+        async_mode=async_mode_val,   # << clé : pas "threading" forcé
+        logger=False,
+        engineio_logger=False,
+    )
+
     @socketio.on("connect")
     def ws_connect(auth: Dict[str, Any] | None = None):
         _dbg("WS connect — encore un client pendu à mes ondes.")
@@ -730,16 +810,18 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         except Exception as e:
             _dbg(f"WS connect — 💥 {e}")
 
+    ONLINE_BY_SID = {}  # sid -> {user_id, guild_id, username, global_name, ts}
+    SIDS_BY_USER = {}  # user_id -> set(sids)
+    ACTIVE_OVERLAY_USERS = {}  # user_id -> last_seen_ts
+
     @socketio.on("overlay_register")
-    def ws_overlay_register(data: Optional[Dict[str, Any]] = None):
-        """
-        Un overlay s'enregistre et rejoint ses rooms :
-        - user:<user_id>
-        - guild:<guild_id> (si fourni)
-        """
+    def ws_overlay_register(data=None):
         data = data or {}
         uid = str(data.get("user_id") or "").strip()
         gid = str(data.get("guild_id") or "").strip()
+        username = (data.get("username") or "").strip()
+        global_name = (data.get("global_name") or "").strip()
+
         if not uid:
             emit("overlay_registered", {"ok": False, "reason": "missing_user_id"})
             return
@@ -750,37 +832,41 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
         now = time.time()
         sid = request.sid
-        ONLINE_BY_SID[sid] = {"user_id": uid, "guild_id": gid, "ts": now}
+        ONLINE_BY_SID[sid] = {
+            "user_id": uid, "guild_id": gid,
+            "username": username, "global_name": global_name, "ts": now
+        }
         SIDS_BY_USER.setdefault(uid, set()).add(sid)
         ACTIVE_OVERLAY_USERS[uid] = now
 
         emit("overlay_registered", {"ok": True})
 
-    @socketio.on("overlay_ping")
-    def ws_overlay_ping(data: Optional[Dict[str, Any]] = None):
-        """Keepalive : l’overlay ping périodiquement pour indiquer sa présence."""
-        now = time.time()
-        sid = request.sid
-        info = ONLINE_BY_SID.get(sid)
-        if info:
-            info["ts"] = now
-            uid = info.get("user_id")
-            if uid:
-                ACTIVE_OVERLAY_USERS[uid] = now
-
     @socketio.on("disconnect")
     def ws_disconnect():
-        """Nettoyage des maps quand un socket se ferme."""
         sid = request.sid
         info = ONLINE_BY_SID.pop(sid, None)
         if not info:
             return
         uid = info.get("user_id")
-        if uid and uid in SIDS_BY_USER:
-            SIDS_BY_USER[uid].discard(sid)
-            if not SIDS_BY_USER[uid]:
-                SIDS_BY_USER.pop(uid, None)
-                ACTIVE_OVERLAY_USERS.pop(uid, None)
+        if uid:
+            s = SIDS_BY_USER.get(uid)
+            if s:
+                s.discard(sid)
+                if not s:
+                    SIDS_BY_USER.pop(uid, None)
+
+    @app.route("/api/overlays_online", methods=["GET"])
+    def overlays_online():
+        # renvoyer les noms si on les connaît
+        out = []
+        for sid, info in ONLINE_BY_SID.items():
+            out.append({
+                "user_id": info.get("user_id"),
+                "guild_id": info.get("guild_id"),
+                "username": info.get("username"),
+                "global_name": info.get("global_name"),
+            })
+        return jsonify(out)
 
     # ------------------------ Helper jumpscare (bridge direct) ---------------
     def push_jumpscare(
@@ -791,6 +877,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         duration_ms: int = 1500,
         message: Optional[str] = None,
     ) -> bool:
+        """
+        Envoie un évènement 'jumpscare' à l’overlay de l’utilisateur ciblé.
+        L’overlay (HUD) doit écouter `socket.on('jumpscare', handler)`.
+        """
         payload = {
             "effect": effect,
             "img": img,
@@ -802,10 +892,11 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         socketio.emit("jumpscare", payload, room=room)
         return True
 
-    # Expose au bot (bridge intra-process)
+    # Rendez le helper accessible côté bot (bridge intra-process)
     app.push_jumpscare = push_jumpscare  # type: ignore[attr-defined]
+    app.socketio = socketio
 
-    # --- Debug : afficher toutes les routes enregistrées ---------------------
+    # --- Debug : afficher toutes les routes enregistrées ---
     print("\n📜 Routes Flask enregistrées :")
     for rule in app.url_map.iter_rules():
         methods = ",".join(rule.methods - {"HEAD", "OPTIONS"})
@@ -822,9 +913,9 @@ if __name__ == "__main__":
 
     app, socketio = create_web_app(_fake_pm)
     print("😒 [WEB] Démarrage 'app.py' direct.")
+    # En local: werkzeug OK ; en prod avec eventlet installé: Socket.IO utilisera eventlet.
     socketio.run(
         app,
         host="0.0.0.0",
-        port=3000,
-        allow_unsafe_werkzeug=True,  # dev only
+        port=3000
     )
