@@ -2,7 +2,7 @@
 import os
 import asyncio
 import random
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import discord
 from discord.ext import commands
@@ -18,9 +18,23 @@ def _project_path(*parts) -> str:
 SFX_DIR = _project_path("assets", "spook")
 SFX_EXTS = {".mp3", ".ogg", ".wav", ".m4a"}
 
-DEFAULT_MIN_DELAY = 30   # secondes
-DEFAULT_MAX_DELAY = 120
-DEFAULT_VOLUME = 0.30    # 0.0 .. 1.0  (~30% par défaut)
+# Defaults surchargeables via .env
+def _as_int(env, default):
+    try:
+        return int(os.getenv(env, str(default)) or default)
+    except Exception:
+        return default
+
+def _as_float(env, default):
+    try:
+        return float(os.getenv(env, str(default)) or default)
+    except Exception:
+        return default
+
+DEFAULT_MIN_DELAY = max(5, _as_int("SPOOK_MIN_DELAY", 30))   # secondes
+DEFAULT_MAX_DELAY = max(DEFAULT_MIN_DELAY, _as_int("SPOOK_MAX_DELAY", 120))
+DEFAULT_VOLUME    = min(1.0, max(0.0, _as_float("SPOOK_VOLUME", 0.30)))  # 0.0 .. 1.0 (~30%)
+
 
 def _guild_only():
     async def predicate(interaction: discord.Interaction):
@@ -31,7 +45,7 @@ def _guild_only():
 
 
 class Spook(commands.Cog):
-    """Fait jouer de petits bruits sinistres quand une seule personne reste avec Greg."""
+    """Fait jouer de petits bruits sinistres quand une seule personne reste avec Greg (et que la musique est à l'arrêt)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -40,7 +54,7 @@ class Spook(commands.Cog):
         self.min_delay: Dict[int, int] = {}
         self.max_delay: Dict[int, int] = {}
         self.volume: Dict[int, float] = {}
-        self._sfx_cache = None  # cache des fichiers disponibles
+        self._sfx_cache: Optional[List[str]] = None  # cache des fichiers disponibles
         self.ffmpeg_path = self._detect_ffmpeg()
 
     # ---------------- Utils ----------------
@@ -66,10 +80,10 @@ class Spook(commands.Cog):
         if gid not in self.volume:
             self.volume[gid] = DEFAULT_VOLUME
 
-    def _list_sfx(self):
+    def _list_sfx(self) -> List[str]:
         if self._sfx_cache is not None:
             return self._sfx_cache
-        files = []
+        files: List[str] = []
         try:
             os.makedirs(SFX_DIR, exist_ok=True)
             for name in os.listdir(SFX_DIR):
@@ -80,6 +94,10 @@ class Spook(commands.Cog):
             pass
         self._sfx_cache = files
         return files
+
+    def _reload_sfx_cache(self):
+        self._sfx_cache = None
+        return self._list_sfx()
 
     def _pick_sfx(self) -> Optional[str]:
         files = self._list_sfx()
@@ -111,10 +129,13 @@ class Spook(commands.Cog):
         return False
 
     async def _play_sfx_once(self, guild: discord.Guild) -> bool:
-        """Joue un sfx (si dispo). Retourne True si lecture lancée."""
+        """Joue un sfx (si dispo) sans empiéter sur une lecture en cours. Retourne True si lecture lancée."""
         vc = guild.voice_client
         if not vc or not vc.channel:
             return False
+        if vc.is_playing() or vc.is_paused():
+            return False  # prudence: ne pas interrompre quoi que ce soit
+
         path = self._pick_sfx()
         if not path:
             return False
@@ -156,6 +177,7 @@ class Spook(commands.Cog):
                 if guild is None or guild.voice_client is None:
                     continue
 
+                # Conditions runtime
                 if not self._is_alone_with_bot(guild):
                     await asyncio.sleep(5)
                     continue
@@ -193,6 +215,11 @@ class Spook(commands.Cog):
         if t and not t.done():
             t.cancel()
 
+    def cog_unload(self):
+        # Nettoyage propre si le cog est rechargé
+        for gid in list(self.tasks.keys()):
+            self._cancel_task(gid)
+
     # ---------------- Events ----------------
 
     @commands.Cog.listener()
@@ -213,7 +240,6 @@ class Spook(commands.Cog):
         name="spook_enable",
         description="Active/désactive les bruits sinistres (admin).",
     )
-    @app_commands.default_permissions(administrator=True)
     @_guild_only()
     @app_commands.describe(enable="true/false")
     async def spook_enable(self, interaction: discord.Interaction, enable: bool):
@@ -221,16 +247,15 @@ class Spook(commands.Cog):
         self.enabled[gid] = bool(enable)
         if enable:
             self._ensure_task(gid)
-            await interaction.response.send_message("☠️ Spook **activé**. L’ombre s’épaissit.")
+            await interaction.response.send_message("☠️ Spook **activé**. L’ombre s’épaissit.", ephemeral=True)
         else:
             self._cancel_task(gid)
-            await interaction.response.send_message("🕯️ Spook **désactivé**. Les murs se taisent.")
+            await interaction.response.send_message("🕯️ Spook **désactivé**. Les murs se taisent.", ephemeral=True)
 
     @app_commands.command(
         name="spook_settings",
         description="Règle délai et volume des bruits (admin).",
     )
-    @app_commands.default_permissions(administrator=True)
     @_guild_only()
     @app_commands.describe(min_delay="délai mini entre deux sons (s)", max_delay="délai maxi (s)", volume="0.0 - 1.0 (ex: 0.30)")
     async def spook_settings(self, interaction: discord.Interaction, min_delay: int = DEFAULT_MIN_DELAY,
@@ -240,14 +265,14 @@ class Spook(commands.Cog):
         self.max_delay[gid] = max(self.min_delay[gid], int(max_delay))
         self.volume[gid] = max(0.0, min(float(volume), 1.0))
         await interaction.response.send_message(
-            f"⚙️ Spook réglé : delay **{self.min_delay[gid]}–{self.max_delay[gid]}s**, volume **{self.volume[gid]:.2f}**"
+            f"⚙️ Spook réglé : delay **{self.min_delay[gid]}–{self.max_delay[gid]}s**, volume **{self.volume[gid]:.2f}**",
+            ephemeral=True
         )
 
     @app_commands.command(
         name="spook_status",
         description="Affiche l’état du Spook (admin).",
     )
-    @app_commands.default_permissions(administrator=True)
     @_guild_only()
     async def spook_status(self, interaction: discord.Interaction):
         gid = interaction.guild_id
@@ -262,20 +287,19 @@ class Spook(commands.Cog):
             title="Spook — État",
             description=(
                 f"**Activé :** {'✅' if en else '❌'}\n"
-                f"**Delais :** {self.min_delay[gid]}–{self.max_delay[gid]}s\n"
+                f"**Délais :** {self.min_delay[gid]}–{self.max_delay[gid]}s\n"
                 f"**Volume :** {self.volume[gid]:.2f}\n"
                 f"**Fichiers :** {len(self._list_sfx())} dans `assets/spook`\n"
                 f"**Humains dans le channel :** {humans}\n"
             ),
             color=discord.Color.dark_teal() if en else discord.Color.dark_grey()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="spook_test",
         description="Joue un bruit maintenant (si conditions ok).",
     )
-    @app_commands.default_permissions(administrator=True)
     @_guild_only()
     async def spook_test(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -295,6 +319,32 @@ class Spook(commands.Cog):
                 "❌ Impossible de jouer un son (aucun fichier ? place des sfx dans `assets/spook`).",
                 ephemeral=True
             )
+
+    @app_commands.command(
+        name="spook_files",
+        description="Liste les fichiers SFX trouvés (admin).",
+    )
+    @_guild_only()
+    async def spook_files(self, interaction: discord.Interaction):
+        files = self._list_sfx()
+        if not files:
+            return await interaction.response.send_message("🚫 Aucun fichier SFX trouvé dans `assets/spook`.", ephemeral=True)
+        names = [os.path.basename(p) for p in files]
+        preview = "\n".join(f"- {n}" for n in names[:20])
+        more = f"\n… (+{len(names)-20})" if len(names) > 20 else ""
+        await interaction.response.send_message(
+            f"**{len(names)}** fichier(s) détecté(s) dans `assets/spook`:\n{preview}{more}",
+            ephemeral=True
+        )
+
+    @app_commands.command(
+        name="spook_reload",
+        description="Recharge la liste des SFX depuis le disque (admin).",
+    )
+    @_guild_only()
+    async def spook_reload(self, interaction: discord.Interaction):
+        files = self._reload_sfx_cache()
+        await interaction.response.send_message(f"🔄 Cache rechargé — **{len(files)}** SFX.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
