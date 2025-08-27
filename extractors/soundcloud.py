@@ -22,7 +22,7 @@ import shlex
 
 
 def is_valid(url: str) -> bool:
-    return isinstance(url, str) and "soundcloud.com" in url
+    return "soundcloud.com" in url
 
 
 def _sc_client_ids():
