@@ -296,14 +296,13 @@ async def stream(url_or_query: str, ffmpeg_path: str):
     if isinstance(url_or_query, str) and "soundcloud.com" in url_or_query:
         cids = _sc_client_ids()
         # Dernière chance si env vide et premier scraping n'a rien donné :
-        if not cids:
-            more = _sc_scrape_client_ids()
-            if more:
-                cids = more
-                try:
-                    os.environ["SOUNDCLOUD_CLIENT_ID"] = ",".join(more)
-                except Exception:
-                    pass
+        more = _sc_scrape_client_ids()
+        if more:
+            cids = more
+            try:
+                os.environ["SOUNDCLOUD_CLIENT_ID"] = ",".join(more)
+            except Exception:
+                pass
 
         print("[SC] using client_ids:", (len(cids) if cids else 0))
         for cid in cids or [None]:
