@@ -349,57 +349,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             ts=int(time.time())
         )
 
-    @app.route("/api/overlays_online", methods=["GET"])
-    def overlays_online():
-        """Petite vue 'présence overlay' pour l'UI spook."""
-        gid_filter = (request.args.get("guild_id") or "").strip()
-        now = time.time()
-        TTL = 120.0  # secondes
-        rows: Dict[str, Dict[str, Any]] = {}
-        # On consolide par user_id à partir des SIDs actifs
-        for sid, info in list(ONLINE_BY_SID.items()):
-            uid = info.get("user_id")
-            if not uid:
-                continue
-            last = float(info.get("ts") or 0.0)
-            if now - last > TTL:
-                # expiré → on le purge
-                ONLINE_BY_SID.pop(sid, None)
-                try:
-                    SIDS_BY_USER.get(uid, set()).discard(sid)
-                    if not SIDS_BY_USER.get(uid):
-                        SIDS_BY_USER.pop(uid, None)
-                except Exception:
-                    pass
-                continue
-            if gid_filter and str(info.get("guild_id") or "") != gid_filter:
-                continue
-            # garde le "meilleur" (dernier ts) par user
-            prev = rows.get(uid)
-            if (not prev) or (last > prev["ts"]):
-                rows[uid] = {
-                    "user_id": uid,
-                    "username": info.get("username") or (ACTIVE_OVERLAY_USERS.get(uid) or {}).get("username"),
-                    "guild_id": info.get("guild_id") or None,
-                    "ts": last,
-                }
-
-        # aussi, merge avec le cache ACTIVE_OVERLAY_USERS si rien côté SIDs
-        for uid, meta in list(ACTIVE_OVERLAY_USERS.items()):
-            if uid in rows:
-                continue
-            if now - float(meta.get("ts") or 0.0) > TTL:
-                continue
-            rows[uid] = {
-                "user_id": uid,
-                "username": meta.get("username"),
-                "guild_id": None,
-                "ts": float(meta.get("ts") or 0.0),
-            }
-
-        # renvoie un array
-        return jsonify(sorted(rows.values(), key=lambda r: r["ts"], reverse=True))
-
     @app.route("/api/guilds", methods=["GET"])
     def api_guilds():
         """Retourne simplement les serveurs où le bot est présent."""
