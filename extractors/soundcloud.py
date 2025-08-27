@@ -148,37 +148,46 @@ def _sc_scrape_client_ids(timeout: float = 6.0, max_assets: int = 12) -> list[st
 
 def _sc_client_ids() -> list[str]:
     """
-    Lit une liste d'IDs depuis l'env SOUNDCLOUD_CLIENT_ID,
-    sinon tente cache, sinon scraping (puis met en cache).
+    Combine les sources d'IDs SoundCloud :
+    - Ceux définis dans l'env SOUNDCLOUD_CLIENT_ID
+    - Ceux présents dans le cache local
+    - Ceux scrapés en direct
+    Retourne une liste dédupliquée et mélangée.
     """
     _load_sc_cache()
 
+    ids: list[str] = []
+
+    # 1. Env
     raw = (os.getenv("SOUNDCLOUD_CLIENT_ID", "") or "").strip()
     if raw:
-        ids = [x.strip() for x in raw.replace(";", ",").replace(" ", ",").split(",") if x.strip()]
-        random.shuffle(ids)
-        _dbg(f"client_ids from env: {len(ids)}")
-        return ids
+        env_ids = [x.strip() for x in raw.replace(";", ",").replace(" ", ",").split(",") if x.strip()]
+        ids.extend(env_ids)
+        _dbg(f"client_ids from env: {len(env_ids)}")
 
-    # Utilise cache si dispo
+    # 2. Cache
     if _SC_CLIENT_CACHE:
-        return list(_SC_CLIENT_CACHE)
+        ids.extend(_SC_CLIENT_CACHE)
+        _dbg(f"client_ids from cache: {len(_SC_CLIENT_CACHE)}")
 
-    # Sinon: scrape maintenant
+    # 3. Scraping
     try:
-        ids = _sc_scrape_client_ids()
-        if ids:
-            # met de côté
-            for cid in ids:
+        scraped = _sc_scrape_client_ids()
+        if scraped:
+            ids.extend(scraped)
+            # Met aussi à jour le cache
+            for cid in scraped:
                 if cid not in _SC_CLIENT_CACHE:
                     _SC_CLIENT_CACHE.append(cid)
             _save_sc_cache()
-            _dbg(f"client_ids scraped: {len(ids)}")
-            return list(_SC_CLIENT_CACHE)
+            _dbg(f"client_ids scraped: {len(scraped)}")
     except Exception as e:
         _dbg(f"scrape failed: {e}")
 
-    return []
+    # Déduplique et mélange
+    ids = list(dict.fromkeys(ids))  # garde l'ordre d'apparition
+    random.shuffle(ids)
+    return ids
 
 # ---------- API v2 resolve / transcodings ----------
 
