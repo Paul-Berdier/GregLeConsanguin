@@ -197,6 +197,60 @@ class Music(commands.Cog):
         uid = str(user_id)
         return sum(1 for it in (queue or []) if str(it.get("added_by")) == uid)
 
+    # ---------- Extractor helpers (compat v1/v2) ----------
+
+    def _get_extractor(self, provider_or_none: Optional[str], url: str):
+        """
+        Essaie d'abord avec 'provider', puis retombe sur l'URL.
+        Évite de renvoyer None si le provider n'est pas reconnu par get_extractor.
+        """
+        ext = None
+        try:
+            if provider_or_none:
+                ext = get_extractor(provider_or_none)
+        except Exception:
+            ext = None
+        if not ext:
+            try:
+                ext = get_extractor(url)
+            except Exception:
+                ext = None
+        return ext
+
+    async def _stream_or_download(self, extractor, url: str, mode: str):
+        """
+        - Si l'extracteur fournit stream_or_download: on l'utilise (API v2).
+        - Sinon: on tente stream() si mode 'auto/stream', puis fallback sur download().
+        Retourne (source_discord, meta_dict) avec meta['title'], meta['duration'], meta['thumbnail'] possibles.
+        """
+        # API v2 unifiée
+        if hasattr(extractor, "stream_or_download"):
+            return await extractor.stream_or_download(url, self.ffmpeg_path, mode=mode)
+
+        # API v1: stream() puis download() en fallback
+        # 1) stream direct
+        if mode in ("auto", "stream") and hasattr(extractor, "stream"):
+            try:
+                source, real_title = await extractor.stream(url, self.ffmpeg_path)
+                meta = {"title": real_title, "duration": None, "thumbnail": None}
+                return source, meta
+            except Exception:
+                if mode == "stream":
+                    raise  # demandé explicitement: on remonte l'erreur
+
+        # 2) download vers fichier puis lecture FFmpeg
+        if hasattr(extractor, "download"):
+            cookies = "youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
+            filename, real_title, duration = await extractor.download(
+                url, ffmpeg_path=self.ffmpeg_path, cookies_file=cookies
+            )
+            # Attention: import discord est déjà en haut du fichier
+            source = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
+            meta = {"title": real_title, "duration": duration, "thumbnail": None}
+            return source, meta
+
+        # Rien de compatible…
+        raise RuntimeError("Extracteur incompatible: ni stream_or_download, ni stream/download.")
 
 
     # =====================================================================
@@ -453,43 +507,36 @@ class Music(commands.Cog):
         await interaction_like.followup.send(f"▶️ **Lecture :** {item['title']}")
         self.emit_playlist_update(gid)
 
-        # ✅ Choix extracteur: accepte provider OU url
-        try:
-            extractor = get_extractor(provider or url)
-        except Exception as e:
-            await interaction_like.followup.send(f"❌ *Extracteur introuvable ({provider}) :* `{e}`")
+        # ✅ Choix extracteur + compat API v1/v2
+        extractor = self._get_extractor(provider, url)
+        if not extractor:
+            await interaction_like.followup.send(f"❌ *Aucun extracteur pour:* `{url}`")
             return
 
-        # fait jouer via voice_client
-        vc = interaction_like.guild.voice_client
-        if vc is None:
-            if interaction_like.user.voice and interaction_like.user.voice.channel:
-                vc = await interaction_like.user.voice.channel.connect()
-            else:
-                return await interaction_like.followup.send("❌ *Personne en vocal pour jouer le morceau.*")
-
         try:
-            source, meta = await extractor.stream_or_download(url, self.ffmpeg_path, mode=mode)
+            source, meta = await self._stream_or_download(extractor, url, mode=mode)
         except Exception as e:
-            await interaction_like.followup.send(f"❌ *Échec extraction/stream :* `{e}`")
+            await interaction_like.followup.send(f"❌ *Échec extraction/lecture :* `{e}`")
             return
 
-        # meta: duration / thumbnail (si dispo)
+        # meta
         dur = meta.get("duration")
-        if dur is not None:
-            try:
-                dur = int(dur)
-            except Exception:
-                pass
+        try:
+            dur = int(dur) if dur is not None else None
+        except Exception:
+            pass
         self.current_meta[gid] = {
             "duration": dur,
             "thumbnail": meta.get("thumbnail"),
         }
+        # Si on a un vrai titre côté extracteur, on met à jour l'affichage
+        if meta.get("title"):
+            self.current_song[gid]["title"] = meta["title"]
+            self.now_playing[gid]["title"] = meta["title"]
 
         def after_play(err):
             if err:
-                _greg_print(f"[Voice after] erreur FFmpeg / playback: {err}")
-            # enchaîne
+                _greg_print(f"[Voice after] erreur playback: {err}")
             coro = self._autoplay_if_idle(gid)
             fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
             try:
@@ -497,15 +544,12 @@ class Music(commands.Cog):
             except Exception as e:
                 _greg_print(f"[Voice after] fut.result error: {e}")
 
-        # démarre le flux
         try:
             vc.play(source, after=after_play)
             self.is_playing[gid] = True
             self.play_start[gid] = time.monotonic()
             self.paused_since.pop(gid, None)
             self.paused_total[gid] = 0.0
-
-            # démarre ticker overlay si pas présent
             if gid not in self.ticker_tasks:
                 self.ticker_tasks[gid] = self.bot.loop.create_task(self._ticker(gid))
         except Exception as e:
@@ -543,20 +587,26 @@ class Music(commands.Cog):
         provider = item.get("provider") or _infer_provider_from_url(url) or "auto"
         mode = item.get("mode") or "auto"
 
+        extractor = self._get_extractor(provider, url)
+        if not extractor:
+            _greg_print(f"[autoplay] aucun extracteur pour: {url} → on passe au suivant")
+            return await self._autoplay_if_idle(gid)
+
         try:
-            extractor = get_extractor(provider or url)
-            source, meta = await extractor.stream_or_download(url, self.ffmpeg_path, mode=mode)
+            source, meta = await self._stream_or_download(extractor, url, mode=mode)
         except Exception as e:
             _greg_print(f"[autoplay] extraction error: {e} → on passe au suivant")
             return await self._autoplay_if_idle(gid)
 
         dur = meta.get("duration")
-        if dur is not None:
-            try:
-                dur = int(dur)
-            except Exception:
-                pass
+        try:
+            dur = int(dur) if dur is not None else None
+        except Exception:
+            pass
         self.current_meta[gid] = {"duration": dur, "thumbnail": meta.get("thumbnail")}
+        if meta.get("title"):
+            self.current_song[gid]["title"] = meta["title"]
+            self.now_playing[gid]["title"] = meta["title"]
 
         def after_play(err):
             if err:
