@@ -26,8 +26,5 @@ RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
     pip install --no-cache-dir -r requirements.txt
 
-# Avant de lancer ton bot
-CMD ["/bin/sh","-lc","python3 scripts/check_soundcloud_env.py && python3 main.py"]
-
-## Commande de démarrage du bot
-#CMD ["python", "main.py"]
+# Commande de démarrage du bot
+CMD ["python", "main.py"]
