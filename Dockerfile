@@ -1,6 +1,6 @@
 # Utilise une image Python récente
 FROM python:3.12-slim
-
+ 
 # Évite l'écriture de fichiers .pyc et active le mode verbeux
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
