@@ -1,4 +1,11 @@
 # extractors/soundcloud.py
+# Stream SoundCloud fiable :
+# 1) si URL SoundCloud -> API v2 + progressive MP3 quand dispo (via SOUNDCLOUD_CLIENT_ID)
+# 2) sinon -> yt_dlp (download=False). En cas de HLS, on passe les headers à FFmpeg.
+# 3) fallback download() si stream échoue
+#
+# DEBUG: imprime les choix de transcodings, headers, host, etc.
+
 import asyncio
 import functools
 import os
@@ -6,33 +13,36 @@ import subprocess
 from yt_dlp import YoutubeDL
 from pathlib import Path
 
-# NEW
 import json
 import random
 import time
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+import shlex
+
 
 def is_valid(url: str) -> bool:
-    return "soundcloud.com" in url
+    return isinstance(url, str) and "soundcloud.com" in url
+
 
 def _sc_client_ids():
     """
-    Return a list of SoundCloud client IDs from env SC_CLIENT_IDS
-    (comma- or whitespace-separated). Example:
-      export SC_CLIENT_IDS="abcd123, efgh456"
+    Lit une liste d'IDs API SoundCloud depuis l'env SOUNDCLOUD_CLIENT_ID,
+    séparés par virgule/point-virgule/espace. Exemple:
+        export SOUNDCLOUD_CLIENT_ID="abcd123, efgh456"
     """
-    raw = os.getenv("SOUNDCLOUD_CLIENT_ID", "").strip()
+    raw = (os.getenv("SOUNDCLOUD_CLIENT_ID", "") or "").strip()
     if not raw:
         return []
     ids = [x.strip() for x in raw.replace(";", ",").replace(" ", ",").split(",") if x.strip()]
     random.shuffle(ids)
     return ids
 
+
 def _sc_resolve_track(url: str, client_id: str, timeout: float = 8.0):
     """
-    Resolve a SoundCloud page URL to a track JSON using v2 resolve.
-    Returns the parsed JSON or None.
+    Resolve v2 -> JSON de track (avec media.transcodings).
+    Retourne le JSON ou None si échec.
     """
     ses = requests.Session()
     ses.headers.update({
@@ -44,15 +54,15 @@ def _sc_resolve_track(url: str, client_id: str, timeout: float = 8.0):
     if not r.ok:
         return None
     data = r.json()
-    # Some resolve responses wrap the track in {"kind":"track", ...}
     if isinstance(data, dict) and (data.get("kind") == "track" or "media" in data):
         return data
     return None
 
+
 def _sc_pick_progressive_stream(track_json: dict, client_id: str, timeout: float = 8.0):
     """
-    Given a resolved track JSON, pick progressive > hls, and fetch the signed stream URL.
-    Returns (stream_url, title, duration_seconds) or (None, None, None).
+    Choisit le transcoding: progressive > hls. Résout l'URL signée.
+    Retourne (stream_url, title, duration_seconds, protocol|None)
     """
     title = track_json.get("title") or "Son inconnu"
     duration_ms = track_json.get("duration") or 0
@@ -69,25 +79,39 @@ def _sc_pick_progressive_stream(track_json: dict, client_id: str, timeout: float
         elif fmt == "hls" and not hls:
             hls = t
 
-    chosen = progressive or hls  # prefer mp3 progressive; if not, try hls (last resort)
+    chosen = progressive or hls
+    protocol = (chosen and (chosen.get("format") or {}).get("protocol")) or None
     if not chosen or not chosen.get("url"):
-        return None, title, duration
+        return None, title, duration, protocol
 
-    # Resolve the signed URL
+    # Resolve l'URL signée
     ses = requests.Session()
     ses.headers.update({"User-Agent": "Mozilla/5.0"})
     r = ses.get(chosen["url"], params={"client_id": client_id}, timeout=timeout)
     if not r.ok:
-        return None, title, duration
-
+        return None, title, duration, protocol
     j = r.json()
     stream_url = j.get("url")
     if not isinstance(stream_url, str) or not stream_url.startswith("http"):
-        return None, title, duration
+        return None, title, duration, protocol
 
-    # If we fell back to HLS, it'll be an m3u8; ffmpeg may still choke.
-    # We return it anyway; the caller can decide to try yt_dlp.
-    return stream_url, title, duration
+    return stream_url, title, duration, protocol
+
+
+def _ffmpeg_headers_str(h: dict | None) -> str:
+    """
+    Construit les en-têtes CRLF que FFmpeg attend avec -headers.
+    On passe au minimum: User-Agent, Referer, Origin (+ Authorization si fournie).
+    """
+    h = {str(k).lower(): str(v) for k, v in (h or {}).items()}
+    ua = h.get("user-agent") or "Mozilla/5.0"
+    ref = h.get("referer") or "https://soundcloud.com"
+    org = h.get("origin") or "https://soundcloud.com"
+    out = [f"User-Agent: {ua}", f"Referer: {ref}", f"Origin: {org}"]
+    if h.get("authorization"):
+        out.append(f"Authorization: {h['authorization']}")
+    return "\r\n".join(out)
+
 
 def search(query: str):
     """
@@ -104,6 +128,7 @@ def search(query: str):
     with YoutubeDL(ydl_opts) as ydl:
         results = ydl.extract_info(f"scsearch3:{query}", download=False)
         return results.get("entries", []) if results else []
+
 
 async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     """
@@ -134,7 +159,10 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
         if original.endswith(".opus"):
             converted = original.replace(".opus", ".mp3")
             subprocess.run([ffmpeg_path, "-y", "-i", original, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", converted])
-            os.remove(original)
+            try:
+                os.remove(original)
+            except Exception:
+                pass
             filename = converted
         else:
             filename = Path(original).with_suffix(".mp3")
@@ -142,36 +170,63 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
             raise FileNotFoundError(f"Fichier manquant après extraction : {filename}")
     return filename, title, duration
 
+
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
     Stream SoundCloud de façon fiable :
     1) si c’est une URL de page SC → tente progressive MP3 via API v2 (client_id)
     2) sinon → yt_dlp (download=False) et récupère le stream résolu (fallback)
-    3) si flux HLS seulement et FFmpeg refuse → le caller basculera en download()
+    3) si flux HLS seulement → passe headers à FFmpeg ; sinon caller basculera en download()
     """
     import discord
+
     # --- 1) Progressive via API v2 si on a une URL SoundCloud
     if isinstance(url_or_query, str) and "soundcloud.com" in url_or_query:
-        client_ids = _sc_client_ids()
-        for cid in client_ids or [None]:
+        cids = _sc_client_ids()
+        print("[SC] using client_ids:", (len(cids) if cids else 0))
+        for cid in cids or [None]:
             if not cid:
-                break  # no client id configured -> skip API attempt
+                print("[SC] no client_id configured → skip resolve, go yt_dlp fallback")
+                break
             try:
                 tr = _sc_resolve_track(url_or_query, cid)
                 if tr:
-                    stream_url, title, duration = _sc_pick_progressive_stream(tr, cid)
-                    if stream_url and ".mp3" in stream_url.split("?")[0].lower():
-                        # Progressive MP3 : parfait pour FFmpeg
+                    trans = (tr.get("media", {}) or {}).get("transcodings") or []
+                    print("[SC] resolve → transcodings:", [(t.get("format") or {}).get("protocol") for t in trans])
+                    stream_url, title, duration, proto = _sc_pick_progressive_stream(tr, cid)
+                    if stream_url:
+                        host = urlparse(stream_url).hostname
+                        print(f"[SC] chosen protocol={proto}, host={host}")
+                        # Progressive MP3 idéal pour FFmpeg
+                        if proto == "progressive" and ".mp3" in stream_url.split("?")[0].lower():
+                            before = (
+                                f"-headers {shlex.quote(_ffmpeg_headers_str(None))} "
+                                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                            )
+                            source = discord.FFmpegPCMAudio(
+                                stream_url,
+                                before_options=before,
+                                options="-vn",
+                                executable=ffmpeg_path
+                            )
+                            return source, (title or "Son inconnu")
+                        # HLS signé via resolve → on tente quand même avec headers de base
+                        before = (
+                            f"-headers {shlex.quote(_ffmpeg_headers_str(None))} "
+                            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+                            "-protocol_whitelist file,http,https,tcp,tls,crypto "
+                            "-allowed_extensions ALL"
+                        )
                         source = discord.FFmpegPCMAudio(
                             stream_url,
-                            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                            before_options=before,
                             options="-vn",
                             executable=ffmpeg_path
                         )
                         return source, (title or "Son inconnu")
-                    # HLS only -> we’ll try yt_dlp fallback below
-            except Exception:
-                # try next client id
+            except Exception as e:
+                print(f"[SC] resolve attempt with client_id failed: {e}")
+                # essaie client_id suivant
                 continue
 
     # --- 2) Fallback: yt_dlp stream resolution (may return HLS)
@@ -180,25 +235,35 @@ async def stream(url_or_query: str, ffmpeg_path: str):
         'quiet': True,
         'default_search': 'scsearch3',
         'nocheckcertificate': True,
+        # 'extract_flat': False  # par défaut
     }
     loop = asyncio.get_event_loop()
+
     def extract():
         with YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url_or_query, download=False)
+
     try:
         data = await loop.run_in_executor(None, extract)
         info = data['entries'][0] if 'entries' in data else data
         stream_url = info['url']
         title = info.get('title', 'Son inconnu')
 
-        # This might be HLS; may still fail on some tracks (we’ll let caller fallback to download()).
+        # NEW: passer les headers yt_dlp à FFmpeg (vital pour SC HLS/opus)
+        http_headers = info.get('http_headers') or data.get('http_headers') or {}
+        hdr = _ffmpeg_headers_str(http_headers)
+        host = urlparse(stream_url).hostname
+        print("[SC] yt_dlp fallback; headers:", bool(http_headers), "host:", host)
+
+        before = (
+            f"-headers {shlex.quote(hdr)} "
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-protocol_whitelist file,http,https,tcp,tls,crypto "
+            "-allowed_extensions ALL"
+        )
         source = discord.FFmpegPCMAudio(
             stream_url,
-            before_options=(
-                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-                "-protocol_whitelist file,http,https,tcp,tls,crypto "
-                "-allowed_extensions ALL"
-            ),
+            before_options=before,
             options="-vn",
             executable=ffmpeg_path
         )
