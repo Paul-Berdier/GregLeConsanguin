@@ -197,6 +197,8 @@ class Music(commands.Cog):
         uid = str(user_id)
         return sum(1 for it in (queue or []) if str(it.get("added_by")) == uid)
 
+
+
     # =====================================================================
     #                            Slash commands
     # =====================================================================
@@ -451,9 +453,9 @@ class Music(commands.Cog):
         await interaction_like.followup.send(f"▶️ **Lecture :** {item['title']}")
         self.emit_playlist_update(gid)
 
-        # prépare l'extracteur
+        # ✅ Choix extracteur: accepte provider OU url
         try:
-            extractor = get_extractor(provider)
+            extractor = get_extractor(provider or url)
         except Exception as e:
             await interaction_like.followup.send(f"❌ *Extracteur introuvable ({provider}) :* `{e}`")
             return
@@ -542,7 +544,7 @@ class Music(commands.Cog):
         mode = item.get("mode") or "auto"
 
         try:
-            extractor = get_extractor(provider)
+            extractor = get_extractor(provider or url)
             source, meta = await extractor.stream_or_download(url, self.ffmpeg_path, mode=mode)
         except Exception as e:
             _greg_print(f"[autoplay] extraction error: {e} → on passe au suivant")
@@ -579,13 +581,31 @@ class Music(commands.Cog):
     # ---------- Web API methods (utilisées par connect/app.py) ----------
 
     async def play_for_user(self, guild_id: int | str, user_id: int | str, item: dict):
-        """Appelé par /api/play — insertion par priorité + autostart si possible."""
+        """Appelé par /api/play — insertion par priorité + auto-join + autostart."""
         gid = int(guild_id)
         uid = int(user_id)
         loop = asyncio.get_running_loop()
         pm = self.get_pm(gid)
 
-        # enrichir l'item
+        guild = self.bot.get_guild(gid)
+        if not guild:
+            raise RuntimeError("Guild introuvable.")
+
+        # 🔊 Assure la présence vocale du bot: rejoint le vocal du user si besoin
+        member = guild.get_member(uid)
+        if not member or not member.voice or not member.voice.channel:
+            raise RuntimeError("Utilisateur pas en vocal.")
+
+        else:
+            vc = guild.voice_client
+            if not vc or not vc.is_connected():
+                try:
+                    await member.voice.channel.connect()
+                    _greg_print(f"Greg rejoint le vocal {member.voice.channel.name} (via web API).")
+                except Exception as e:
+                    _greg_print(f"[WARN] Connexion vocale impossible: {e}")
+
+        # enrichir l'item (poids/quota/normalisation)
         weight = get_member_weight(self.bot, gid, uid)
         item = dict(item or {})
         item["added_by"] = str(uid)
@@ -598,7 +618,7 @@ class Music(commands.Cog):
             if self._count_user_in_queue(queue, uid) >= PER_USER_CAP:
                 raise PermissionError(f"Quota atteint ({PER_USER_CAP} pistes).")
 
-        # insérer à la bonne place
+        # insertion + placement par priorité
         await loop.run_in_executor(None, pm.add, item)
         new_queue = await loop.run_in_executor(None, pm.get_queue)
         new_idx = len(new_queue) - 1
@@ -606,8 +626,9 @@ class Music(commands.Cog):
         if target_idx != new_idx:
             await loop.run_in_executor(None, pm.move, new_idx, target_idx)
 
-        # notifier + tenter de lancer si idle
         self.emit_playlist_update(gid)
+
+        # tente de démarrer si le bot est maintenant en vocal
         await self._autoplay_if_idle(gid)
         return True
 
