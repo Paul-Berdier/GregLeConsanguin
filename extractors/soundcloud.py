@@ -17,27 +17,130 @@ import json
 import random
 import time
 import requests
-from urllib.parse import urlencode, urlparse
+import re
 import shlex
+from urllib.parse import urlencode, urlparse, urljoin
 
 
 def is_valid(url: str) -> bool:
     return "soundcloud.com" in url
 
 
+# ----------------------------- Client ID helpers -----------------------------
+
+def _sc_extract_client_ids_from_text(text: str):
+    """
+    Extrait les client_id potentiels depuis un contenu texte (JS/HTML).
+    Retourne une liste unique (ordre d'apparition).
+    """
+    patterns = [
+        r'client_id\s*:\s*"([a-zA-Z0-9]{32})"',         # client_id:"abcd..."
+        r'client_id\\":\\"([a-zA-Z0-9]{32})\\"',         # JSON échappé
+        r'client_id=([a-zA-Z0-9]{32})',                  # éventuels query fragments
+    ]
+    found = []
+    seen = set()
+    for pat in patterns:
+        for m in re.findall(pat, text):
+            if m not in seen:
+                seen.add(m)
+                found.append(m)
+    return found
+
+
+def _sc_scrape_client_ids(timeout: float = 6.0, max_js: int = 8):
+    """
+    Va chercher des client_id directement depuis la page SoundCloud
+    en scannant les assets JS.
+    - Ne nécessite pas de client_id préalable
+    - Retourne une liste (potentiellement vide) d'IDs trouvés
+    """
+    base = "https://soundcloud.com/"
+    ses = requests.Session()
+    ses.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
+    })
+    try:
+        print("[SC] scraping client_id — GET /")
+        r = ses.get(base, timeout=timeout)
+        if not r.ok or not r.text:
+            print(f"[SC] scraping failed: status={r.status_code}")
+            return []
+        html = r.text
+        # Récupère les <script src="...js"> les plus probables (cdn a-v2.sndcdn.com)
+        script_urls = re.findall(r'<script[^>]+src="([^"]+\.js)"', html)
+        # Absolutiser & filtrer
+        abs_urls = []
+        for u in script_urls:
+            u_abs = urljoin(base, u)
+            host = (urlparse(u_abs).hostname or "")
+            if "sndcdn.com" in host or "soundcloud.com" in host:
+                abs_urls.append(u_abs)
+        # Un peu de diversité: garde les premiers + uniques
+        uniq = []
+        for u in abs_urls:
+            if u not in uniq:
+                uniq.append(u)
+        uniq = uniq[:max_js]
+        print(f"[SC] scanning {len(uniq)} JS assets for client_id…")
+
+        ids = []
+        seen = set()
+        for js_url in uniq:
+            try:
+                r2 = ses.get(js_url, timeout=timeout)
+                if not r2.ok or not r2.text:
+                    continue
+                parts = _sc_extract_client_ids_from_text(r2.text)
+                for cid in parts:
+                    if cid not in seen:
+                        seen.add(cid)
+                        ids.append(cid)
+                        print(f"[SC] found client_id in {js_url}: {cid[:6]}…")
+            except Exception as e:
+                print(f"[SC] JS fetch failed ({js_url}): {e}")
+        return ids
+    except Exception as e:
+        print(f"[SC] scraping exception: {e}")
+        return []
+
+
 def _sc_client_ids():
     """
     Lit une liste d'IDs API SoundCloud depuis l'env SOUNDCLOUD_CLIENT_ID,
-    séparés par virgule/point-virgule/espace. Exemple:
+    séparés par virgule/point-virgule/espace. Si vide, tente un scraping auto.
+    Exemple:
         export SOUNDCLOUD_CLIENT_ID="abcd123, efgh456"
     """
     raw = (os.getenv("SOUNDCLOUD_CLIENT_ID", "") or "").strip()
-    if not raw:
-        return []
-    ids = [x.strip() for x in raw.replace(";", ",").replace(" ", ",").split(",") if x.strip()]
+    ids = []
+    if raw:
+        ids = [x.strip() for x in raw.replace(";", ",").replace(" ", ",").split(",") if x.strip()]
+        print(f"[SC] client_ids from env: {len(ids)}")
+    else:
+        # auto-scrape si rien en env
+        scraped = _sc_scrape_client_ids()
+        if scraped:
+            print(f"[SC] client_ids scraped: {len(scraped)}")
+            # On les place aussi dans l'env pour la durée du process (qualitatif)
+            try:
+                os.environ["SOUNDCLOUD_CLIENT_ID"] = ",".join(scraped)
+            except Exception:
+                pass
+            ids = scraped
+        else:
+            print("[SC] no client_id found via scraping; will try yt_dlp fallback")
+            ids = []
     random.shuffle(ids)
     return ids
 
+
+# ------------------------- Resolve / stream selection ------------------------
 
 def _sc_resolve_track(url: str, client_id: str, timeout: float = 8.0):
     """
@@ -110,8 +213,13 @@ def _ffmpeg_headers_str(h: dict | None) -> str:
     out = [f"User-Agent: {ua}", f"Referer: {ref}", f"Origin: {org}"]
     if h.get("authorization"):
         out.append(f"Authorization: {h['authorization']}")
+    # Facultatif: certaines configs aiment 'Accept:*/*'
+    if "accept" in h:
+        out.append(f"Accept: {h['accept']}")
     return "\r\n".join(out)
 
+
+# --------------------------------- Search -----------------------------------
 
 def search(query: str):
     """
@@ -129,6 +237,8 @@ def search(query: str):
         results = ydl.extract_info(f"scsearch3:{query}", download=False)
         return results.get("entries", []) if results else []
 
+
+# -------------------------------- Download ----------------------------------
 
 async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     """
@@ -171,6 +281,8 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     return filename, title, duration
 
 
+# --------------------------------- Stream -----------------------------------
+
 async def stream(url_or_query: str, ffmpeg_path: str):
     """
     Stream SoundCloud de façon fiable :
@@ -183,6 +295,16 @@ async def stream(url_or_query: str, ffmpeg_path: str):
     # --- 1) Progressive via API v2 si on a une URL SoundCloud
     if isinstance(url_or_query, str) and "soundcloud.com" in url_or_query:
         cids = _sc_client_ids()
+        # Dernière chance si env vide et premier scraping n'a rien donné :
+        if not cids:
+            more = _sc_scrape_client_ids()
+            if more:
+                cids = more
+                try:
+                    os.environ["SOUNDCLOUD_CLIENT_ID"] = ",".join(more)
+                except Exception:
+                    pass
+
         print("[SC] using client_ids:", (len(cids) if cids else 0))
         for cid in cids or [None]:
             if not cid:
@@ -224,6 +346,10 @@ async def stream(url_or_query: str, ffmpeg_path: str):
                             executable=ffmpeg_path
                         )
                         return source, (title or "Son inconnu")
+                    else:
+                        print("[SC] resolve succeeded but no stream_url for chosen transcoding")
+                else:
+                    print("[SC] resolve failed with provided client_id")
             except Exception as e:
                 print(f"[SC] resolve attempt with client_id failed: {e}")
                 # essaie client_id suivant

@@ -607,6 +607,7 @@ class Music(commands.Cog):
 
         # Choix extracteur par URL (robuste)
         extractor = get_extractor(url)
+        print(f"extractor = {extractor}")
         if extractor is None:
             await interaction_like.followup.send("❌ *Aucun extracteur ne veut de ta soupe…*")
             return
