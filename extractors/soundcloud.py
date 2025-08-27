@@ -47,13 +47,20 @@ def _sc_extract_client_ids_from_text(text: str):
                 found.append(m)
     return found
 
+def _safe_decode(content: bytes) -> str:
+    try:
+        return content.decode("utf-8")
+    except Exception:
+        try:
+            return content.decode("latin-1", "ignore")
+        except Exception:
+            return content.decode("utf-8", "ignore")
+
 
 def _sc_scrape_client_ids(timeout: float = 6.0, max_js: int = 8):
     """
-    Va chercher des client_id directement depuis la page SoundCloud
-    en scannant les assets JS.
-    - Ne nécessite pas de client_id préalable
-    - Retourne une liste (potentiellement vide) d'IDs trouvés
+    Récupère des client_id en scannant la home SoundCloud et quelques assets JS.
+    On évite r.text (charset-normalizer) pour ne pas déclencher de recursion depth.
     """
     base = "https://soundcloud.com/"
     ses = requests.Session()
@@ -68,42 +75,46 @@ def _sc_scrape_client_ids(timeout: float = 6.0, max_js: int = 8):
     try:
         print("[SC] scraping client_id — GET /")
         r = ses.get(base, timeout=timeout)
-        if not r.ok or not r.text:
+        if not r.ok or not r.content:
             print(f"[SC] scraping failed: status={r.status_code}")
             return []
-        html = r.text
-        # Récupère les <script src="...js"> les plus probables (cdn a-v2.sndcdn.com)
+
+        html = _safe_decode(r.content)
+
+        # Récupère les <script src="...js">
         script_urls = re.findall(r'<script[^>]+src="([^"]+\.js)"', html)
-        # Absolutiser & filtrer
+        # Absolutiser & filtrer (priorité aux CDN sndcdn + next chunks)
         abs_urls = []
+        seen = set()
         for u in script_urls:
             u_abs = urljoin(base, u)
             host = (urlparse(u_abs).hostname or "")
-            if "sndcdn.com" in host or "soundcloud.com" in host:
-                abs_urls.append(u_abs)
-        # Un peu de diversité: garde les premiers + uniques
-        uniq = []
-        for u in abs_urls:
-            if u not in uniq:
-                uniq.append(u)
-        uniq = uniq[:max_js]
-        print(f"[SC] scanning {len(uniq)} JS assets for client_id…")
+            if ("sndcdn.com" in host) or ("/_next/static/" in u_abs) or ("soundcloud.com" in host):
+                if u_abs not in seen:
+                    seen.add(u_abs)
+                    abs_urls.append(u_abs)
+
+        # Limite le nombre d’assets pour rester rapide
+        abs_urls = abs_urls[:max_js]
+        print(f"[SC] scanning {len(abs_urls)} JS assets for client_id…")
 
         ids = []
-        seen = set()
-        for js_url in uniq:
+        seen_ids = set()
+        for js_url in abs_urls:
             try:
                 r2 = ses.get(js_url, timeout=timeout)
-                if not r2.ok or not r2.text:
+                if not r2.ok or not r2.content:
                     continue
-                parts = _sc_extract_client_ids_from_text(r2.text)
+                js_text = _safe_decode(r2.content)
+                parts = _sc_extract_client_ids_from_text(js_text)
                 for cid in parts:
-                    if cid not in seen:
-                        seen.add(cid)
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
                         ids.append(cid)
                         print(f"[SC] found client_id in {js_url}: {cid[:6]}…")
             except Exception as e:
                 print(f"[SC] JS fetch failed ({js_url}): {e}")
+
         return ids
     except Exception as e:
         print(f"[SC] scraping exception: {e}")
