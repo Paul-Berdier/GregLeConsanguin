@@ -42,12 +42,13 @@ except Exception:
 OVERLAY_ROOM_PREFIX_USER = "user:"
 OVERLAY_ROOM_PREFIX_GUILD = "guild:"
 
-# Historique par user (dernière activité + nom) — TTL appliqué à la lecture
-ACTIVE_OVERLAY_USERS: Dict[str, Dict[str, Any]] = {}   # user_id -> {"ts": float, "username": str|None}
+# user_id -> last_seen_ts (conservé)
+ACTIVE_OVERLAY_USERS: Dict[str, float] = {}
 
-# Index temps réel par SID <-> user
-ONLINE_BY_SID: Dict[str, Dict[str, Any]] = {}          # sid -> {user_id, guild_id, username, ts}
-SIDS_BY_USER: Dict[str, Set[str]] = {}                 # user_id -> {sid}
+# Nouveaux index pour présence multi-socket
+ONLINE_BY_SID: Dict[str, Dict[str, Any]] = {}   # sid -> {user_id, guild_id, ts, username, global_name}
+SIDS_BY_USER: Dict[str, set] = {}               # user_id -> {sid, ...}
+USER_META: Dict[str, Dict[str, Any]] = {}       # user_id -> {username, global_name}
 
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
@@ -815,58 +816,100 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     ACTIVE_OVERLAY_USERS = {}  # user_id -> last_seen_ts
 
     @socketio.on("overlay_register")
-    def ws_overlay_register(data=None):
+    def ws_overlay_register(data: Optional[Dict[str, Any]] = None):
+        """
+        Un overlay s'enregistre et rejoint ses rooms :
+        - user:<user_id>
+        - guild:<guild_id> (si fourni)
+        Et déclare ses infos pour /api/overlays_online.
+        """
         data = data or {}
         uid = str(data.get("user_id") or "").strip()
         gid = str(data.get("guild_id") or "").strip()
-        username = (data.get("username") or "").strip()
-        global_name = (data.get("global_name") or "").strip()
+        username = (data.get("username") or "").strip() or None
+        global_name = (data.get("global_name") or "").strip() or None
 
         if not uid:
             emit("overlay_registered", {"ok": False, "reason": "missing_user_id"})
             return
 
+        # Rooms
         join_room(OVERLAY_ROOM_PREFIX_USER + uid)
         if gid:
             join_room(OVERLAY_ROOM_PREFIX_GUILD + gid)
 
+        # Index présence
         now = time.time()
         sid = request.sid
         ONLINE_BY_SID[sid] = {
-            "user_id": uid, "guild_id": gid,
-            "username": username, "global_name": global_name, "ts": now
+            "user_id": uid,
+            "guild_id": gid,
+            "ts": now,
+            "username": username,
+            "global_name": global_name,
         }
         SIDS_BY_USER.setdefault(uid, set()).add(sid)
         ACTIVE_OVERLAY_USERS[uid] = now
+
+        # Mémorise le nom (si fourni)
+        if username or global_name:
+            USER_META[uid] = {"username": username, "global_name": global_name}
 
         emit("overlay_registered", {"ok": True})
 
     @socketio.on("disconnect")
     def ws_disconnect():
+        """Nettoie les index de présence quand un socket se ferme."""
         sid = request.sid
         info = ONLINE_BY_SID.pop(sid, None)
         if not info:
             return
         uid = info.get("user_id")
-        if uid:
-            s = SIDS_BY_USER.get(uid)
-            if s:
-                s.discard(sid)
-                if not s:
-                    SIDS_BY_USER.pop(uid, None)
+        if not uid:
+            return
+
+        sids = SIDS_BY_USER.get(uid)
+        if sids:
+            sids.discard(sid)
+            if not sids:
+                # Plus aucun socket pour cet utilisateur
+                SIDS_BY_USER.pop(uid, None)
+                ACTIVE_OVERLAY_USERS.pop(uid, None)
+                # On laisse USER_META en cache (peut être utile), sinon:
+                # USER_META.pop(uid, None)
 
     @app.route("/api/overlays_online", methods=["GET"])
     def overlays_online():
-        # renvoyer les noms si on les connaît
-        out = []
-        for sid, info in ONLINE_BY_SID.items():
-            out.append({
-                "user_id": info.get("user_id"),
-                "guild_id": info.get("guild_id"),
-                "username": info.get("username"),
-                "global_name": info.get("global_name"),
+        """
+        Retourne la présence overlay côté serveur.
+        [
+          { "user_id": "...", "guild_id": "...", "username": "...", "global_name": "..." },
+          ...
+        ]
+        """
+        gid_filter = (request.args.get("guild_id") or "").strip()
+        rows: List[Dict[str, Any]] = []
+
+        # On parcourt les sockets connus (ONLINE_BY_SID) pour l’état le plus frais
+        for _sid, info in ONLINE_BY_SID.items():
+            uid = info.get("user_id")
+            gid = info.get("guild_id") or None
+            if gid_filter and gid != gid_filter:
+                continue
+
+            # Préfère les données de meta persistées si + complètes
+            meta = USER_META.get(uid) or {}
+            username = info.get("username") or meta.get("username")
+            global_name = info.get("global_name") or meta.get("global_name")
+
+            rows.append({
+                "user_id": uid,
+                "guild_id": gid,
+                "username": username,
+                "global_name": global_name,
             })
-        return jsonify(out)
+
+        return jsonify(rows)
 
     # ------------------------ Helper jumpscare (bridge direct) ---------------
     def push_jumpscare(
