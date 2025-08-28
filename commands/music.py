@@ -687,8 +687,7 @@ class Music(commands.Cog):
 
                 self.current_source[gid] = source
                 start_ts = time.monotonic()
-
-                retry_done = False  # <--- ajoute ce flag juste avant _after
+                retry_done = False  # flag retry 1x
 
                 def _after(e):
                     try:
@@ -698,7 +697,7 @@ class Music(commands.Cog):
                             nonlocal retry_done
                             elapsed = time.monotonic() - start_ts
 
-                            # 🔁 RETRY 1x si le stream a cassé très tôt (URL périmée/403)
+                            # 🔁 1) RETRY 1x si stream casse trop tôt (URL périmée/403)
                             if (e or elapsed < 2.0) and not retry_done:
                                 retry_done = True
                                 try:
@@ -711,11 +710,9 @@ class Music(commands.Cog):
                                     source2, title2 = await self._call_extractor(
                                         extractor, "stream", url, self.ffmpeg_path, **kw2
                                     )
-
                                     vc2 = interaction_like.guild.voice_client
                                     if vc2 and (vc2.is_playing() or vc2.is_paused()):
                                         vc2.stop()
-
                                     self.current_source[gid] = source2
 
                                     def _after2(err):
@@ -725,7 +722,6 @@ class Music(commands.Cog):
                                             self.bot.loop.create_task(self.play_next(interaction_like))
 
                                     vc2.play(source2, after=_after2)
-
                                     self.play_start[gid] = time.monotonic()
                                     self.paused_total[gid] = 0.0
                                     self.paused_since.pop(gid, None)
@@ -737,7 +733,42 @@ class Music(commands.Cog):
                                 except Exception:
                                     pass
 
-                            # ⬇️ ton fallback download existant
+                            # 2) Fallback STREAM (PIPE) — AVANT le download
+                            if (e or elapsed < 2.5) and getattr(extractor, "__name__", "").endswith("youtube"):
+                                try:
+                                    kwp = self._extractor_kwargs(
+                                        extractor, "stream_pipe",
+                                        cookies_file=self.youtube_cookies_file,
+                                        cookies_from_browser=self.cookies_from_browser,
+                                        ratelimit_bps=2_500_000,
+                                    )
+                                    srcp, titlep = await self._call_extractor(
+                                        extractor, "stream_pipe", url, self.ffmpeg_path, **kwp
+                                    )
+                                    vc_p = interaction_like.guild.voice_client
+                                    if vc_p and (vc_p.is_playing() or vc_p.is_paused()):
+                                        vc_p.stop()
+                                    self.current_source[gid] = srcp
+
+                                    def _after_pipe(err):
+                                        try:
+                                            self._kill_stream_proc(gid)  # tue yt-dlp pipe si présent
+                                        finally:
+                                            self.bot.loop.create_task(self.play_next(interaction_like))
+
+                                    vc_p.play(srcp, after=_after_pipe)
+                                    self.play_start[gid] = time.monotonic()
+                                    self.paused_total[gid] = 0.0
+                                    self.paused_since.pop(gid, None)
+                                    self._ensure_ticker(gid)
+
+                                    await interaction_like.followup.send(f"▶️ *Streaming (pipe)* : **{titlep}**")
+                                    self.emit_playlist_update(gid)
+                                    return
+                                except Exception as ex:
+                                    _greg_print(f"[DEBUG stream→pipe fallback KO] {ex}")
+
+                            # 3) Fallback: DOWNLOAD (si pas en mode stream-only)
                             if (e or elapsed < 2.5) and play_mode != "stream":
                                 _greg_print(f"[DEBUG stream early-exit ({elapsed:.2f}s)] → trying download fallback")
                                 try:
@@ -756,9 +787,9 @@ class Music(commands.Cog):
                                     self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
                                     self.now_playing[gid].update({"title": real_title2, "duration": dur_int})
 
-                                    vc2 = interaction_like.guild.voice_client
-                                    if vc2 and (vc2.is_playing() or vc2.is_paused()):
-                                        vc2.stop()
+                                    vc3 = interaction_like.guild.voice_client
+                                    if vc3 and (vc3.is_playing() or vc3.is_paused()):
+                                        vc3.stop()
 
                                     src2 = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
                                     self.current_source[gid] = src2
@@ -770,8 +801,7 @@ class Music(commands.Cog):
                                             self.current_source.pop(gid, None)
                                             self.bot.loop.create_task(self.play_next(interaction_like))
 
-                                    vc2.play(src2, after=_after3)
-
+                                    vc3.play(src2, after=_after3)
                                     self.play_start[gid] = time.monotonic()
                                     self.paused_total[gid] = 0.0
                                     self.paused_since.pop(gid, None)
@@ -786,13 +816,13 @@ class Music(commands.Cog):
                                 except Exception as ex:
                                     _greg_print(f"[DEBUG stream→download fallback KO] {ex}")
 
-                            # chemin normal si pas de fallback
+                            # 4) Rien n'a marché → continuer
                             self.bot.loop.create_task(self.play_next(interaction_like))
 
                         self.bot.loop.create_task(chain())
 
                 try:
-                    vc.play(source, after=_after)
+                    vc.play(source, after=_after)  # ✅ on essaie d'abord le stream direct
                 except Exception as e:
                     _greg_print(f"[DEBUG play_next] vc.play(stream) KO → fallback download: {e}")
                     self._kill_stream_proc(gid)
@@ -807,7 +837,6 @@ class Music(commands.Cog):
                 self.emit_playlist_update(gid)
                 return
             except Exception as e:
-                # message clair si stream-only, sinon on tentera le download juste après
                 if play_mode == "stream":
                     hint = ""
                     if "Sign in to confirm you're not a bot" in str(e):
@@ -824,7 +853,6 @@ class Music(commands.Cog):
                         except Exception:
                             pass
                     await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`{hint}")
-                # en "auto", on tentera download juste après
 
         # --- Fallback: DOWNLOAD ---
         try:

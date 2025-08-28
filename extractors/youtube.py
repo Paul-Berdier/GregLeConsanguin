@@ -4,29 +4,32 @@
 # - Clients sûrs (évite TV/SABR): ios → web → web_creator → web_mobile → android
 # - Formats fallback: bestaudio m4a/opus → best → 140/251/18
 # - STREAM: récupère une URL directe fraîche; si pas d'URL → réessaie avec clients alternatifs
+# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (avant le fallback download)
 # - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre; chemin fiable
 # - Cookies: navigateur (cookiesfrombrowser, via YTDLP_COOKIES_BROWSER) prioritaire, sinon fichier Netscape
 # - Recherche: ytsearch5 (flat)
+
 from __future__ import annotations
 
 import os
+import sys
+import shlex
+import shutil
+import functools
+import subprocess
 from typing import Optional, Tuple, Dict, Any, List
-import os
-import shlex                      # +++
-import functools                  # +++
-from typing import Optional, Tuple, Dict, Any, List
-
 
 import discord
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
-
-_YT_UA = (
+# UA par défaut ; peut être surchargé par l'env (recommandé: UA de ton navigateur)
+_DEFAULT_YT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/138.0.0.0 Safari/537.36"
 )
+_YT_UA = os.getenv("YTDLP_FORCE_UA", _DEFAULT_YT_UA)
 
 _CLIENTS_ORDER = ["ios", "web", "web_creator", "web_mobile", "android"]
 _FORMAT_CHAIN = "bestaudio[ext=m4a]/bestaudio/best/140/251/18"
@@ -66,8 +69,18 @@ def _mk_opts(
         "ignoreerrors": True,
         "retries": 5,
         "fragment_retries": 5,
-        "http_headers": {"User-Agent": _YT_UA, "Referer": "https://www.youtube.com/"},
-        "extractor_args": {"youtube": {"player_client": list(_CLIENTS_ORDER)}},
+        # important: forcer IPv4 sur certains DC (Railway/IPv6 souvent 403)
+        "source_address": "0.0.0.0",
+        "http_headers": {
+            "User-Agent": _YT_UA,
+            "Referer": "https://www.youtube.com/",
+        },
+        "extractor_args": {
+            "youtube": {
+                # ordre de clients pour éviter TV/SABR
+                "player_client": list(_CLIENTS_ORDER),
+            }
+        },
         "youtube_include_dash_manifest": True,
         "format": _FORMAT_CHAIN,
     }
@@ -97,6 +110,7 @@ def _mk_opts(
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }],
+            # 48 kHz pour Discord
             "postprocessor_args": ["-ar", "48000"],
         })
 
@@ -186,6 +200,11 @@ def _best_info_with_fallbacks(
     return None
 
 
+def _resolve_ytdlp_cli() -> List[str]:
+    exe = shutil.which("yt-dlp")
+    return [exe] if exe else [sys.executable, "-m", "yt_dlp"]
+
+
 # ------------------------ public: search ------------------------
 
 def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_browser: Optional[str] = None) -> List[dict]:
@@ -214,16 +233,14 @@ async def stream(
     import asyncio
 
     loop = asyncio.get_running_loop()
-    # Passe correctement les kwargs à _best_info_with_fallbacks
-    task = functools.partial(
+    info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
         ffmpeg_path=ffmpeg_path,
         ratelimit_bps=ratelimit_bps,
-    )
-    info = await loop.run_in_executor(None, task)
+    ))
     if not info:
         raise RuntimeError("Aucun résultat YouTube")
 
@@ -237,8 +254,7 @@ async def stream(
     headers.setdefault("User-Agent", _YT_UA)
     headers.setdefault("Referer", "https://www.youtube.com/")
     headers.setdefault("Origin", "https://www.youtube.com")
-    # si yt-dlp a fourni Cookie, on le passe aussi
-    # (info['http_headers'] peut en contenir selon le mode d’auth)
+    # Blob multi-lignes pour -headers
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
 
     before_opts = (
@@ -255,6 +271,70 @@ async def stream(
     )
     setattr(source, "_ytdlp_proc", None)
     return source, title
+
+
+async def stream_pipe(
+    url_or_query: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+) -> Tuple[discord.FFmpegPCMAudio, str]:
+    """
+    Fallback streaming robuste: yt-dlp → stdout → FFmpeg (pipe) → Discord.
+    Utilisé si FFmpeg en direct prend 403 malgré les headers.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    info = await loop.run_in_executor(None, functools.partial(
+        _best_info_with_fallbacks,
+        url_or_query,
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        ffmpeg_path=ffmpeg_path,
+        ratelimit_bps=ratelimit_bps,
+    ))
+    title = (info or {}).get("title", "Musique inconnue")
+
+    cmd = _resolve_ytdlp_cli() + [
+        "-f", _FORMAT_CHAIN,
+        "--no-playlist",
+        "--no-check-certificates",
+        "--retries", "5",
+        "--fragment-retries", "5",
+        "--newline",
+        "--user-agent", _YT_UA,
+        "--extractor-args", f"youtube:player_client={','.join(_CLIENTS_ORDER)}",
+        "-o", "-",  # → stdout
+        url_or_query,
+    ]
+    spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
+    if spec:
+        cmd += ["--cookies-from-browser", spec]
+    elif cookies_file and os.path.exists(cookies_file):
+        cmd += ["--cookies", cookies_file]
+    if ratelimit_bps:
+        cmd += ["--limit-rate", str(int(ratelimit_bps))]
+
+    yt = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    src = discord.FFmpegPCMAudio(
+        source=yt.stdout,
+        executable=ffmpeg_path,
+        before_options=None,
+        options="-vn -ar 48000 -ac 2 -f s16le",
+        pipe=True,
+    )
+    setattr(src, "_ytdlp_proc", yt)
+    setattr(src, "_title", title)
+    return src, title
+
 
 # ------------------------ public: download ------------------------
 
@@ -300,7 +380,7 @@ def download(
             return filepath, title, duration
     except DownloadError as e:
         if "Requested format is not available" in str(e):
-            # Fallback ultime: itag 18
+            # Fallback ultime: itag 18 (mp4) puis conversion audio
             opts2 = _mk_opts(
                 ffmpeg_path=ffmpeg_path,
                 cookies_file=cookies_file,
