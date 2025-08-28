@@ -76,8 +76,7 @@ def download(url: str, ffmpeg_path: str, cookies_file: str = None):
         'nocheckcertificate': True,
         'ignoreerrors': False,
         'quiet': False,
-        'sleep_interval_requests': 1,
-        'ratelimit': 5.0,
+        'sleep_interval_requests': 0,
         'extractor_args': {
             'youtube': ['--no-check-certificate', '--force-ipv4']
         },
