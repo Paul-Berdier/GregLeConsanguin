@@ -51,6 +51,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
     CORS(app, supports_credentials=True)
 
+    # Cookies cross-origin (Overlay ↔ Railway)
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.config.update(
         SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "gregsid"),
@@ -97,7 +98,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     def _bad_request(msg: str, code: int = 400):
         _dbg(f"Requête pourrie ({code}) : {msg}")
-        return jsonify({"error": msg}), code
+        return jsonify({"error": str(msg)}), code
 
     def _bot_required():
         bot = getattr(app, "bot", None)
@@ -135,7 +136,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def _overlay_payload_for(guild_id: int | str) -> Dict[str, Any]:
         music_cog = getattr(app, "bot", None)
         music_cog = music_cog and app.bot.get_cog("Music")
-        if music_cog:
+        if music_cog and hasattr(music_cog, "_overlay_payload"):
             try:
                 return music_cog._overlay_payload(int(guild_id))
             except Exception as e:
@@ -214,6 +215,15 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not device_id or device_id not in DEVICE_STORE:
             return jsonify({"error": "invalid_device"}), 400
         info = DEVICE_STORE.get(device_id) or {}
+        # Erreur signalée par /auth/callback → on nettoie et on renvoie 410 pour faire basculer l’overlay en popup
+        if info.get("error"):
+            err = info.pop("error", "oauth_failed")
+            DEVICE_STORE.pop(device_id, None)
+            for st, did in list(DEVICE_BY_STATE.items()):
+                if did == device_id:
+                    DEVICE_BY_STATE.pop(st, None)
+            return jsonify({"error": err}), 410
+
         user = info.get("user")
         if not user:
             return jsonify({"pending": True})
@@ -240,6 +250,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not code:
             return _bad_request("code manquant", 400)
 
+        # --- Branche "device login"
         if sent_state in DEVICE_BY_STATE:
             device_id = DEVICE_BY_STATE.get(sent_state)
             try:
@@ -255,9 +266,17 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     "<h1>Connexion réussie ✅</h1>"
                     "<p>Retourne à Greg — l’overlay va détecter la connexion.</p>"
                 )
+            except RecursionError:
+                # Conflit eventlet/requests → on signale à /auth/device/poll de basculer en popup
+                if device_id in DEVICE_STORE:
+                    DEVICE_STORE[device_id]["error"] = "oauth_failed"
+                return _bad_request("OAuth device échoué: recursion (eventlet). Forcer SOCKETIO_ASYNC_MODE=threading.", 400)
             except Exception as e:
+                if device_id in DEVICE_STORE:
+                    DEVICE_STORE[device_id]["error"] = "oauth_failed"
                 return _bad_request(f"OAuth device échoué: {e}", 400)
 
+        # --- Branche "popup normale"
         saved_state = pop_oauth_state()
         if not saved_state or saved_state != sent_state:
             return _bad_request("state CSRF invalide", 400)
@@ -527,6 +546,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return err
         try:
             result = _dispatch(music_cog.repeat_for_web(guild_id, mode or None), timeout=30)
+            # True/False → repeat_all on/off
             return jsonify(repeat_all=bool(result))
         except Exception as e:
             _dbg(f"/api/repeat — 💥 {e}")
@@ -547,7 +567,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         channels = [{"id": c.id, "name": c.name} for c in guild.text_channels]
         return jsonify(channels)
 
-    # ------------------------ Jumpscare (HTTP fallback ouvert) ----------------
+    # ------------------------ Jumpscare (HTTP fallback) ------------
     @app.route("/api/jumpscare", methods=["POST"])
     def api_jumpscare():
         try:
@@ -575,12 +595,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/autocomplete", methods=["GET"])
     def autocomplete():
         """
-        Recherche (max 3) pour l'UI :
         { results: [{title, url, webpage_url, artist, duration, thumb, provider}] }
         - url = URL DE PAGE (jamais une URL CDN)
-        - duration en secondes (peut être None)
-        - provider: "youtube" | "soundcloud"
-        - En mode auto: **YouTube prioritaire**, puis fallback SoundCloud
         """
         import re
         from urllib.parse import urlparse
@@ -689,17 +705,13 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(results=[])
 
     # ------------------------ Socket.IO --------------------------------------
-    async_mode_env = os.getenv("SOCKETIO_ASYNC_MODE", "auto").lower().strip()
-    if async_mode_env == "threading":
-        async_mode_val = "threading"
-    elif async_mode_env == "eventlet":
-        async_mode_val = "eventlet"
+    # IMPORTANT : on évite eventlet par défaut (source du RecursionError avec requests+OAuth)
+    async_mode_env = os.getenv("SOCKETIO_ASYNC_MODE", "threading").lower().strip()
+    if async_mode_env in ("threading", "eventlet", "gevent"):
+        async_mode_val = async_mode_env
     else:
-        try:
-            import eventlet  # noqa: F401
-            async_mode_val = "eventlet"
-        except Exception:
-            async_mode_val = None  # auto
+        async_mode_val = "threading"
+
     socketio = SocketIO(
         app,
         cors_allowed_origins="*",
@@ -719,10 +731,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 _dbg("WS connect — état initial envoyé.")
         except Exception as e:
             _dbg(f"WS connect — 💥 {e}")
-
-    ONLINE_BY_SID = {}
-    SIDS_BY_USER = {}
-    ACTIVE_OVERLAY_USERS = {}
 
     @socketio.on("overlay_register")
     def ws_overlay_register(data: Optional[Dict[str, Any]] = None):
@@ -757,6 +765,15 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
         emit("overlay_registered", {"ok": True})
 
+    @socketio.on("overlay_ping")
+    def ws_overlay_ping(data: Optional[Dict[str, Any]] = None):
+        try:
+            uid = str((data or {}).get("user_id") or "")
+            if uid:
+                ACTIVE_OVERLAY_USERS[uid] = time.time()
+        except Exception:
+            pass
+
     @socketio.on("disconnect")
     def ws_disconnect():
         sid = request.sid
@@ -766,7 +783,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         uid = info.get("user_id")
         if not uid:
             return
-
         sids = SIDS_BY_USER.get(uid)
         if sids:
             sids.discard(sid)
