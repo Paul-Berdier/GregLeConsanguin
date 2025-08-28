@@ -688,13 +688,56 @@ class Music(commands.Cog):
                 self.current_source[gid] = source
                 start_ts = time.monotonic()
 
+                retry_done = False  # <--- ajoute ce flag juste avant _after
+
                 def _after(e):
                     try:
                         self._kill_stream_proc(gid)
                     finally:
                         async def chain():
+                            nonlocal retry_done
                             elapsed = time.monotonic() - start_ts
-                            # si le stream a avorté trop vite → tente download (sauf mode "stream" forcé)
+
+                            # 🔁 RETRY 1x si le stream a cassé très tôt (URL périmée/403)
+                            if (e or elapsed < 2.0) and not retry_done:
+                                retry_done = True
+                                try:
+                                    kw2 = self._extractor_kwargs(
+                                        extractor, "stream",
+                                        cookies_file=self.youtube_cookies_file,
+                                        cookies_from_browser=self.cookies_from_browser,
+                                        ratelimit_bps=2_500_000,
+                                    )
+                                    source2, title2 = await self._call_extractor(
+                                        extractor, "stream", url, self.ffmpeg_path, **kw2
+                                    )
+
+                                    vc2 = interaction_like.guild.voice_client
+                                    if vc2 and (vc2.is_playing() or vc2.is_paused()):
+                                        vc2.stop()
+
+                                    self.current_source[gid] = source2
+
+                                    def _after2(err):
+                                        try:
+                                            self._kill_stream_proc(gid)
+                                        finally:
+                                            self.bot.loop.create_task(self.play_next(interaction_like))
+
+                                    vc2.play(source2, after=_after2)
+
+                                    self.play_start[gid] = time.monotonic()
+                                    self.paused_total[gid] = 0.0
+                                    self.paused_since.pop(gid, None)
+                                    self._ensure_ticker(gid)
+
+                                    await interaction_like.followup.send(f"▶️ *Streaming (retry)* : **{title2}**")
+                                    self.emit_playlist_update(gid)
+                                    return
+                                except Exception:
+                                    pass
+
+                            # ⬇️ ton fallback download existant
                             if (e or elapsed < 2.5) and play_mode != "stream":
                                 _greg_print(f"[DEBUG stream early-exit ({elapsed:.2f}s)] → trying download fallback")
                                 try:
@@ -720,14 +763,14 @@ class Music(commands.Cog):
                                     src2 = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
                                     self.current_source[gid] = src2
 
-                                    def _after2(err):
+                                    def _after3(err):
                                         try:
                                             getattr(src2, "cleanup", lambda: None)()
                                         finally:
                                             self.current_source.pop(gid, None)
                                             self.bot.loop.create_task(self.play_next(interaction_like))
 
-                                    vc2.play(src2, after=_after2)
+                                    vc2.play(src2, after=_after3)
 
                                     self.play_start[gid] = time.monotonic()
                                     self.paused_total[gid] = 0.0
@@ -735,8 +778,8 @@ class Music(commands.Cog):
                                     self._ensure_ticker(gid)
 
                                     await interaction_like.followup.send(
-                                        f"🎶 *Téléchargé & joué :* **{real_title2}**"
-                                        + (f" (`{duration}`s)" if duration else "")
+                                        f"🎶 *Téléchargé & joué :* **{real_title2}**" + (
+                                            f" (`{duration}`s)" if duration else "")
                                     )
                                     self.emit_playlist_update(gid)
                                     return
@@ -980,38 +1023,37 @@ class Music(commands.Cog):
     async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
         gid = int(guild_id)
         rid = int(requester_id)
-        loop = asyncio.get_running_loop()
-        pm = self.get_pm(gid)
+        guild = self.bot.get_guild(gid)   # 👈 fix: on récupère bien la guild
 
+        # 🔒 ADMIN uniquement
+        member = guild and guild.get_member(rid)
+        if not member or not getattr(member.guild_permissions, "administrator", False):
+            raise PermissionError("Admin requis pour sélectionner un titre dans la playlist.")
+
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not (0 <= index < len(queue)):
             raise IndexError("index hors bornes")
-
-        it = queue[index] or {}
-        owner_id = int(it.get("added_by") or 0)
-        owner_weight = int(it.get("priority") or 0)
-
-        if owner_id != rid and not can_user_bump_over(self.bot, gid, rid, owner_weight):
-            raise PermissionError("Priorité insuffisante pour remonter cette piste.")
 
         ok = await loop.run_in_executor(None, pm.move, index, 0)
         if not ok:
             raise RuntimeError("Déplacement impossible.")
 
-        # Si le voice client est inactif, on démarre
-        g = guild
-        vc = g and g.voice_client
+        vc = guild.voice_client if guild else None
         if (not vc) or (not vc.is_playing() and not vc.is_paused()):
             class FakeInteraction:
-                def __init__(self, gg):
-                    self.guild = gg
-                    self.followup = self
-                async def send(self, msg):
-                    _greg_print(f"[WEB->Discord] {msg}")
-            await self.play_next(FakeInteraction(g))
+                def __init__(self, g): self.guild = g; self.followup = self
+                async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
+            await self.play_next(FakeInteraction(guild))
+        else:
+            # on coupe pour déclencher l'after ; on nettoie l'UI de suite
+            vc.stop()
+            self._force_idle(gid, 1.2)
 
         self.emit_playlist_update(gid)
         return True
+
 
     async def pause_for_web(self, guild_id: int | str):
         gid = int(guild_id)

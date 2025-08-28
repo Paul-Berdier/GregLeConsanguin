@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import os
 from typing import Optional, Tuple, Dict, Any, List
+import os
+import shlex                      # +++
+import functools                  # +++
+from typing import Optional, Tuple, Dict, Any, List
+
 
 import discord
 from yt_dlp import YoutubeDL
@@ -205,30 +210,21 @@ async def stream(
     """
     Prépare un stream pour Discord via URL directe (yt-dlp choisit un flux audio).
     Si pas d'URL (clients bloqués), retente avec clients alternatifs.
-    Retourne (source_ffmpeg, title).
+    Retourne (source_ffmpeg, title). Les headers sont passés à FFmpeg (anti-403).
     """
     import asyncio
 
-    # 1) Résoudre info avec URL directe
-    info = await asyncio.get_running_loop().run_in_executor(
-        None,
+    loop = asyncio.get_running_loop()
+    # ✅ passer les kwargs correctement via functools.partial
+    task = functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
-        # kwargs:
-        {"cookies_file": cookies_file,
-         "cookies_from_browser": cookies_from_browser,
-         "ffmpeg_path": ffmpeg_path,
-         "ratelimit_bps": ratelimit_bps},
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        ffmpeg_path=ffmpeg_path,
+        ratelimit_bps=ratelimit_bps,
     )
-    # La petite astuce ci-dessus ne passe pas les kwargs; recompose autrement:
-    if info is None:
-        info = _best_info_with_fallbacks(
-            url_or_query,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
-            ffmpeg_path=ffmpeg_path,
-            ratelimit_bps=ratelimit_bps,
-        )
+    info = await loop.run_in_executor(None, task)
     if not info:
         raise RuntimeError("Aucun résultat YouTube")
 
@@ -237,16 +233,29 @@ async def stream(
     if not stream_url:
         raise RuntimeError("Flux audio indisponible (clients bloqués).")
 
-    # 2) Construire la source FFmpeg (reconnexions activées)
+    # ✅ passer les HTTP headers à FFmpeg (crucial pour éviter 403)
+    headers = (info.get("http_headers") or {})
+    headers.setdefault("User-Agent", _YT_UA)
+    headers.setdefault("Referer", "https://www.youtube.com/")
+    # Optionnel, parfois utile :
+    headers.setdefault("Origin", "https://www.youtube.com")
+
+    hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+    before_opts = (
+        f"-user_agent {shlex.quote(headers['User-Agent'])} "
+        f"-headers {shlex.quote(hdr_blob)} "
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    )
+
     source = discord.FFmpegPCMAudio(
         stream_url,
-        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        before_options=before_opts,
         options="-vn",
         executable=ffmpeg_path,
     )
-    # on laisse play_next() gérer l'early-exit → il fera son download fallback
     setattr(source, "_ytdlp_proc", None)
     return source, title
+
 
 
 # ------------------------ public: download ------------------------
