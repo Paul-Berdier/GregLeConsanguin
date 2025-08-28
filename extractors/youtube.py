@@ -209,13 +209,12 @@ async def stream(
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
     Prépare un stream pour Discord via URL directe (yt-dlp choisit un flux audio).
-    Si pas d'URL (clients bloqués), retente avec clients alternatifs.
-    Retourne (source_ffmpeg, title). Les headers sont passés à FFmpeg (anti-403).
+    Passe les http_headers à FFmpeg (anti-403) et corrige l'appel executor pour les kwargs.
     """
     import asyncio
 
     loop = asyncio.get_running_loop()
-    # ✅ passer les kwargs correctement via functools.partial
+    # Passe correctement les kwargs à _best_info_with_fallbacks
     task = functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
@@ -233,14 +232,15 @@ async def stream(
     if not stream_url:
         raise RuntimeError("Flux audio indisponible (clients bloqués).")
 
-    # ✅ passer les HTTP headers à FFmpeg (crucial pour éviter 403)
+    # >>>>>> HEADERS POUR FFMPEG (crucial pour éviter 403) <<<<<<
     headers = (info.get("http_headers") or {})
     headers.setdefault("User-Agent", _YT_UA)
     headers.setdefault("Referer", "https://www.youtube.com/")
-    # Optionnel, parfois utile :
     headers.setdefault("Origin", "https://www.youtube.com")
-
+    # si yt-dlp a fourni Cookie, on le passe aussi
+    # (info['http_headers'] peut en contenir selon le mode d’auth)
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+
     before_opts = (
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
         f"-headers {shlex.quote(hdr_blob)} "
@@ -255,8 +255,6 @@ async def stream(
     )
     setattr(source, "_ytdlp_proc", None)
     return source, title
-
-
 
 # ------------------------ public: download ------------------------
 
