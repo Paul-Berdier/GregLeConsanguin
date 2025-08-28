@@ -207,47 +207,74 @@ class Music(commands.Cog):
     # ---------- Overlay payload ----------
 
     def _overlay_payload(self, guild_id: int) -> dict:
+        """
+        Source de vérité pour l'overlay.
+        - NE PAS annoncer de 'current' si le vocal n'est ni playing ni paused.
+        - Progression calculée avec play_start / paused_since / paused_total.
+        - Métadonnées (thumb/duration) fusionnées avec current_meta si dispo.
+        """
         gid = self._gid(guild_id)
-        for d in (self.is_playing, self.current_song, self.play_start,
-                  self.paused_since, self.paused_total, self.current_meta,
-                  self.repeat_all, getattr(self, "now_playing", {})):
+
+        # Harmonise les clés sur int
+        for d in (
+                self.is_playing, self.current_song, self.play_start,
+                self.paused_since, self.paused_total, self.current_meta,
+                self.repeat_all, getattr(self, "now_playing", {})
+        ):
             self._migrate_keys_to_int(d, gid)
 
         pm = self.get_pm(gid)
         data = pm.to_dict()
 
+        # État du voice client
         try:
             g = self.bot.get_guild(gid)
             vc = g.voice_client if g else None
         except Exception:
             vc = None
 
+        is_paused_vc = bool(vc and vc.is_paused())
+        is_playing_vc = bool(vc and vc.is_playing())
+        voice_active = is_paused_vc or is_playing_vc
+
+        # Candidat "current" (ordre: now_playing → current_song → PM)
         nowp = getattr(self, "now_playing", {})
         current = nowp.get(gid) or self.current_song.get(gid) or data.get("current")
-        is_paused = bool(vc and vc.is_paused())
 
-        start = self.play_start.get(gid)
-        paused_since = self.paused_since.get(gid)
-        paused_total = self.paused_total.get(gid, 0.0)
-        elapsed = 0
-        if start:
-            base = paused_since or time.monotonic()
-            elapsed = max(0, int(base - start - paused_total))
+        # Si le vocal N'EST PAS actif, on NE renvoie PAS de "current"
+        # (évite l'affichage fantôme après stop/fin de file)
+        if not voice_active:
+            current = None
+            elapsed = 0
+            duration = None
+            thumb = None
+        else:
+            # Progression
+            start = self.play_start.get(gid)
+            paused_since = self.paused_since.get(gid)
+            paused_total = self.paused_total.get(gid, 0.0)
+            elapsed = 0
+            if start:
+                base = paused_since or time.monotonic()
+                elapsed = max(0, int(base - start - paused_total))
 
-        meta = self.current_meta.get(gid, {})
-        duration = meta.get("duration")
-        thumb = meta.get("thumbnail")
-        if isinstance(current, dict):
-            if duration is None and isinstance(current.get("duration"), (int, float)):
-                duration = int(current["duration"])
-            thumb = thumb or current.get("thumb") or current.get("thumbnail")
+            # Métadonnées
+            meta = self.current_meta.get(gid, {})
+            duration = meta.get("duration")
+            thumb = meta.get("thumbnail")
+            if isinstance(current, dict):
+                if duration is None and isinstance(current.get("duration"), (int, float)):
+                    duration = int(current["duration"])
+                thumb = thumb or current.get("thumb") or current.get("thumbnail")
 
         payload = {
             "queue": data.get("queue", []),
             "current": current,
-            "is_paused": is_paused,
-            "progress": {"elapsed": elapsed,
-                         "duration": int(duration) if duration is not None else None},
+            "is_paused": is_paused_vc,
+            "progress": {
+                "elapsed": elapsed,
+                "duration": int(duration) if duration is not None else None
+            },
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
         }
