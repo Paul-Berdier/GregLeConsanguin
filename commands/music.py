@@ -235,15 +235,16 @@ class Music(commands.Cog):
 
         is_paused_vc = bool(vc and vc.is_paused())
         is_playing_vc = bool(vc and vc.is_playing())
-        voice_active = is_paused_vc or is_playing_vc
+        voice_active  = is_paused_vc or is_playing_vc
 
         # Candidat "current" (ordre: now_playing → current_song → PM)
-        nowp = getattr(self, "now_playing", {})
+        nowp    = getattr(self, "now_playing", {})
         current = nowp.get(gid) or self.current_song.get(gid) or data.get("current")
 
         # Si le vocal N'EST PAS actif, on NE renvoie PAS de "current"
         # (évite l'affichage fantôme après stop/fin de file)
         if not voice_active:
+            # vocal inactif → pas de 'current' pour éviter l'affichage fantôme
             current = None
             elapsed = 0
             duration = None
@@ -261,7 +262,7 @@ class Music(commands.Cog):
             # Métadonnées
             meta = self.current_meta.get(gid, {})
             duration = meta.get("duration")
-            thumb = meta.get("thumbnail")
+            thumb    = meta.get("thumbnail")
             if isinstance(current, dict):
                 if duration is None and isinstance(current.get("duration"), (int, float)):
                     duration = int(current["duration"])
@@ -997,6 +998,18 @@ class Music(commands.Cog):
         if not ok:
             raise RuntimeError("Déplacement impossible.")
 
+        # Si le voice client est inactif, on démarre
+        g = guild
+        vc = g and g.voice_client
+        if (not vc) or (not vc.is_playing() and not vc.is_paused()):
+            class FakeInteraction:
+                def __init__(self, gg):
+                    self.guild = gg
+                    self.followup = self
+                async def send(self, msg):
+                    _greg_print(f"[WEB->Discord] {msg}")
+            await self.play_next(FakeInteraction(g))
+
         self.emit_playlist_update(gid)
         return True
 
@@ -1046,11 +1059,19 @@ class Music(commands.Cog):
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
             return True
-        # si rien ne joue, tue un éventuel process et passe à la suite
+        # Si rien ne joue, enchaîne la suite
         self._kill_stream_proc(gid)
-        return False
+        class FakeInteraction:
+            def __init__(self, gg):
+                self.guild = gg
+                self.followup = self
+            async def send(self, msg):
+                _greg_print(f"[WEB->Discord] {msg}")
+        await self.play_next(FakeInteraction(g))
+        return True
 
     async def toggle_pause_for_web(self, guild_id: int | str):
+
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client

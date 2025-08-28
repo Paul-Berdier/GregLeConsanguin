@@ -21,9 +21,9 @@ class PlaylistManager:
     REQUIRED_KEYS = {"title", "url", "artist", "thumb", "duration"}
 
     def __init__(self, guild_id: str | int):
-        os.makedirs("playlists", exist_ok=True)
+        os.makedirs("../playlists", exist_ok=True)
         self.guild_id = str(guild_id)
-        self.file = os.path.join("playlists", f"playlist_{self.guild_id}.json")
+        self.file = os.path.join("../playlists", f"playlist_{self.guild_id}.json")
         self.queue: List[Dict[str, Any]] = []
         self.now_playing: Optional[Dict[str, Any]] = None
         self.lock = RLock()

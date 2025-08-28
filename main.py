@@ -5,7 +5,7 @@ import time
 import socket
 import discord
 from discord.ext import commands
-from playlist_manager import PlaylistManager
+from utils.playlist_manager import PlaylistManager
 import config
 import json
 import subprocess

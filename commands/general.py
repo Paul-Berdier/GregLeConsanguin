@@ -9,7 +9,7 @@ import datetime as dt
 import discord
 from discord.ext import commands
 from discord import app_commands
-from priority_rules import (
+from utils.priority_rules import (
     get_weights,
     set_role_weight,
     reset_role_weight,
