@@ -1,293 +1,235 @@
-import logging
+# extractors/soundcloud.py
+#
+# SoundCloud robuste (Greg le Consanguin)
+# - search: scsearch5 (flat) → 5 résultats normalisés
+# - stream: URL directe (yt-dlp) → FFmpeg (avec headers & reconnexions)
+# - download: MP3 (192 kbps, 48 kHz), chemin fiable via requested_downloads
+# - cookies: navigateur prioritaire (cookiesfrombrowser), sinon fichier Netscape
+# - options: cookies_file / cookies_from_browser / ratelimit_bps pris en charge
+from __future__ import annotations
+
 import os
-import threading
-import time
-import socket
+import shlex
+from typing import Optional, Tuple, Dict, Any, List
+
 import discord
-from discord.ext import commands
-from playlist_manager import PlaylistManager
-import config
-import json
-import subprocess
-import requests
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
-# ---------------------------------------------------------------------------
-# Logging configuration
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("greg.log", encoding="utf-8")
-    ],
+_SC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/138.0.0.0 Safari/537.36"
 )
-logger = logging.getLogger(__name__)
-logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-# ---------------------------------------------------------------------------
-# PlaylistManager multi-serveur
-playlist_managers = {}  # {guild_id: PlaylistManager}
-RESTART_MARKER = ".greg_restart.json"
+_PROVIDER = "soundcloud"
 
-def get_pm(guild_id):
-    guild_id = str(guild_id)
-    if guild_id not in playlist_managers:
-        playlist_managers[guild_id] = PlaylistManager(guild_id)
-        logger.debug("Nouvelle instance PlaylistManager pour guild %s", guild_id)
-    return playlist_managers[guild_id]
 
-async def run_post_restart_selftest(bot):
-    """Si un marker de restart existe, exécute un auto-diagnostic et poste un rapport dans le salon d'origine."""
+def is_valid(url: str) -> bool:
+    if not isinstance(url, str):
+        return False
+    u = url.lower()
+    return ("soundcloud.com/" in u) or ("sndcdn.com/" in u)
+
+
+# ------------------------ helpers ------------------------
+
+def _parse_cookies_from_browser_spec(spec: Optional[str]):
+    if not spec:
+        return None
+    parts = spec.split(":", 1)
+    browser = parts[0].strip().lower()
+    profile = parts[1].strip() if len(parts) > 1 else None
+    return (browser,) if profile is None else (browser, profile)
+
+
+def _mk_opts(
+    *,
+    ffmpeg_path: Optional[str] = None,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+    search: bool = False,
+    for_download: bool = False,
+) -> Dict[str, Any]:
+    ydl_opts: Dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "ignoreerrors": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "http_headers": {"User-Agent": _SC_UA, "Referer": "https://soundcloud.com/"},
+        "format": "bestaudio/best",
+        # Important pour certains streams HLS SC
+        "extractor_args": {"soundcloud": {"client_id": []}},  # laisser yt-dlp gérer le client_id
+    }
+
+    if ratelimit_bps:
+        ydl_opts["ratelimit"] = int(ratelimit_bps)
+
+    # Cookies : navigateur prioritaire (même variable d'env que YouTube si tu l'utilises)
+    cfb = _parse_cookies_from_browser_spec(cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER"))
+    if cfb:
+        ydl_opts["cookiesfrombrowser"] = cfb
+    elif cookies_file and os.path.exists(cookies_file):
+        ydl_opts["cookiefile"] = cookies_file
+
+    if ffmpeg_path:
+        ydl_opts["ffmpeg_location"] = ffmpeg_path
+
+    if search:
+        ydl_opts.update({
+            "default_search": "scsearch5",
+            "extract_flat": True,
+        })
+
+    if for_download:
+        ydl_opts.update({
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "postprocessor_args": ["-ar", "48000"],
+        })
+
+    return ydl_opts
+
+
+def _normalize_entries(entries: List[dict]) -> List[dict]:
+    out = []
+    for e in entries or []:
+        title = e.get("title") or "Titre inconnu"
+        url = e.get("webpage_url") or e.get("url") or ""
+        # duration: yt-dlp renvoie parfois ms → préférer secondes si dispo
+        duration = e.get("duration")
+        if isinstance(duration, str) and duration.isdigit():
+            duration = int(duration)
+        thumb = e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get("url") if e.get("thumbnails") else None
+        out.append({
+            "title": title,
+            "url": url,
+            "webpage_url": url,
+            "duration": duration,
+            "thumb": thumb,
+            "provider": _PROVIDER,
+            "uploader": e.get("uploader") or e.get("uploader_id") or e.get("uploader_url"),
+        })
+    return out
+
+
+# ------------------------ public: search ------------------------
+
+def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_browser: Optional[str] = None) -> List[dict]:
+    if not query or not query.strip():
+        return []
+    with YoutubeDL(_mk_opts(cookies_file=cookies_file, cookies_from_browser=cookies_from_browser, search=True)) as ydl:
+        data = ydl.extract_info(f"scsearch5:{query}", download=False)
+        entries = (data or {}).get("entries") or []
+        return _normalize_entries(entries)
+
+
+# ------------------------ public: stream ------------------------
+
+async def stream(
+    url_or_query: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+) -> Tuple[discord.FFmpegPCMAudio, str]:
+    """
+    Prépare un stream pour Discord à partir de SoundCloud :
+    - résout l'URL/ID avec yt-dlp (récupère aussi les http_headers)
+    - passe les headers à FFmpeg (-headers + -user_agent), reconnexions activées
+    Retourne (source_ffmpeg, title).
+    """
+    import asyncio
+
+    def _probe(q: str):
+        # Si ce n'est pas une URL SC, on transforme en scsearch1:<query>
+        qb = q if is_valid(q) else f"scsearch1:{q}"
+        with YoutubeDL(_mk_opts(cookies_file=cookies_file, cookies_from_browser=cookies_from_browser)) as ydl:
+            info = ydl.extract_info(qb, download=False)
+            if info and "entries" in info and info["entries"]:
+                info = info["entries"][0]
+            return info or {}
+
+    info = await asyncio.get_running_loop().run_in_executor(None, _probe, url_or_query)
+    if not info:
+        raise RuntimeError("Aucun résultat SoundCloud")
+
+    stream_url = info.get("url")
+    title = info.get("title", "Musique inconnue")
+    if not stream_url:
+        raise RuntimeError("Flux SoundCloud indisponible.")
+
+    # Préparer headers pour FFmpeg (utile sur HLS *.m3u8)
+    headers = (info.get("http_headers") or {})
+    headers.setdefault("User-Agent", _SC_UA)
+    headers.setdefault("Referer", "https://soundcloud.com/")
+    hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+
+    before_opts = (
+        f"-user_agent {shlex.quote(headers['User-Agent'])} "
+        f"-headers {shlex.quote(hdr_blob)} "
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    )
+
+    source = discord.FFmpegPCMAudio(
+        stream_url,
+        before_options=before_opts,
+        options="-vn",
+        executable=ffmpeg_path,
+    )
+    setattr(source, "_ytdlp_proc", None)  # par homogénéité avec YouTube
+    return source, title
+
+
+# ------------------------ public: download ------------------------
+
+def download(
+    url: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    out_dir: str = "downloads",
+    ratelimit_bps: Optional[int] = 2_500_000,
+) -> Tuple[str, str, Optional[int]]:
+    """
+    Télécharge l'audio SoundCloud et convertit en MP3.
+    Retourne (filepath_mp3, title, duration_seconds|None).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    opts = _mk_opts(
+        ffmpeg_path=ffmpeg_path,
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        ratelimit_bps=ratelimit_bps,
+        for_download=True,
+    )
+    opts["paths"] = {"home": out_dir}
+    opts["outtmpl"] = "%(title).200B - %(id)s.%(ext)s"
+
     try:
-        marker_path = os.path.join(os.path.dirname(__file__), RESTART_MARKER)
-        if not os.path.exists(marker_path):
-            return
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info and "entries" in info and info["entries"]:
+                info = info["entries"][0]
 
-        with open(marker_path, "r", encoding="utf-8") as f:
-            marker = json.load(f)
-
-        guild_id = int(marker.get("guild_id"))
-        channel_id = int(marker.get("channel_id"))
-        requested_by = int(marker.get("requested_by", 0))
-
-        # === Tests ===
-        results = []
-
-        # 1) COGS
-        expected_cogs = ["Music", "Voice", "General", "EasterEggs", "Spook"]
-        for name in expected_cogs:
-            ok = bot.get_cog(name) is not None
-            results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
-
-        # 2) Slash commands présents
-        try:
-            cmds = await bot.tree.fetch_commands()
-            names = {c.name for c in cmds}
-        except Exception as e:
-            names = set()
-            results.append(("Slash:fetch_commands", False, str(e)))
-        expected_cmds = [
-            "play", "pause", "resume", "skip", "stop", "playlist", "current",
-            "ping", "greg", "web", "help", "restart",
-            "roll", "coin", "tarot", "curse", "praise", "shame", "skullrain", "gregquote", "spook_enable",
-            "spook_settings", "spook_status"
-        ]
-        for name in expected_cmds:
-            ok = name in names
-            results.append((f"Slash:/{name}", ok, "" if ok else "absent"))
-
-        # 3) FFmpeg dispo
-        try:
-            music_cog = bot.get_cog("Music")
-            ff = music_cog.detect_ffmpeg() if music_cog else "ffmpeg"
-            cp = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=3)
-            ok = (cp.returncode == 0)
-            results.append(("FFmpeg", ok, "" if ok else cp.stderr[:200]))
-        except Exception as e:
-            results.append(("FFmpeg", False, str(e)))
-
-        # 4) Overlay HTTP (si non désactivé)
-        try:
-            if not os.getenv("DISABLE_WEB", "0") == "1":
-                r = requests.get("http://127.0.0.1:3000/", timeout=2)
-                ok = r.status_code < 500
-                results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
+            req = (info or {}).get("requested_downloads") or []
+            if req:
+                filepath = req[0].get("filepath")
             else:
-                results.append(("Overlay:désactivé", True, "DISABLE_WEB=1"))
-        except Exception as e:
-            results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
+                base = ydl.prepare_filename(info)
+                filepath = os.path.splitext(base)[0] + ".mp3"
 
-        # 5) SocketIO émissible (test d'emit)
-        try:
-            from __main__ import socketio
-            if socketio:
-                socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
-                results.append(("SocketIO:emit", True, "emit ok"))
-            else:
-                results.append(("SocketIO:instance", False, "socketio=None"))
-        except Exception as e:
-            results.append(("SocketIO:emit", False, str(e)))
-
-        # --- Compose message ---
-        ok_all = all(ok for (_, ok, _) in results)
-        color = 0x2ECC71 if ok_all else 0xE74C3C
-        lines = []
-        for name, ok, extra in results:
-            emoji = "✅" if ok else "❌"
-            if extra:
-                lines.append(f"{emoji} **{name}** — {extra}")
-            else:
-                lines.append(f"{emoji} **{name}**")
-
-        embed = discord.Embed(
-            title=("Self-test au redémarrage — OK" if ok_all else "Self-test au redémarrage — PROBLÈMES"),
-            description="\n".join(lines),
-            color=color
-        )
-        if requested_by:
-            embed.set_footer(text=f"Demandé par <@{requested_by}>")
-
-        # Poste dans le salon d'origine
-        channel = bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await bot.fetch_channel(channel_id)
-            except Exception:
-                channel = None
-        if channel:
-            await channel.send(embed=embed)
-
-        # Nettoie le marker
-        try:
-            os.remove(marker_path)
-        except Exception:
-            pass
-
-    except Exception as e:
-        print(f"[SELFTEST] Erreur selftest post-restart: {e}")
-
-# ---------------------------------------------------------------------------
-# Discord Bot class
-class GregBot(commands.Bot):
-    def __init__(self, **kwargs):
-        intents = discord.Intents.all()
-        super().__init__(command_prefix="!", intents=intents, **kwargs)
-
-    async def setup_hook(self):
-        # Charger tous les Cogs
-        logger.debug("Chargement des Cogs…")
-        for filename in os.listdir("./commands"):
-            if filename.endswith(".py") and filename != "__init__.py":
-                extension = f"commands.{filename[:-3]}"
-                try:
-                    await self.load_extension(extension)
-                    logger.info("✅ Cog chargé : %s", extension)
-                except Exception as e:
-                    logger.error("❌ Erreur chargement %s : %s", extension, e)
-
-        # Sync slash commands
-        await self.tree.sync()
-        logger.info("Slash commands sync DONE !")
-
-    async def on_ready(self):
-        logger.info("====== EVENT on_ready() ======")
-        logger.info("Utilisateur bot : %s", self.user)
-
-        # Liste des serveurs (robuste)
-        try:
-            guild_names = [g.name for g in self.guilds]
-            logger.info("Serveurs : %s", guild_names)
-        except Exception as e:
-            logger.warning("Impossible de lister les guilds: %s", e)
-
-        # Slash commands (robuste)
-        try:
-            cmds = await self.tree.fetch_commands()
-            logger.info("Slash commands globales : %s", [cmd.name for cmd in cmds])
-        except Exception as e:
-            logger.warning("fetch_commands a échoué: %s", e)
-
-        # Injection emit_fn (utilise la variable globale socketio du main)
-        socketio_ref = None
-        try:
-            from __main__ import socketio as _socketio  # récupère l'instance créée dans main
-            socketio_ref = _socketio
-        except Exception:
-            socketio_ref = None
-
-        try:
-            music_cog = self.get_cog("Music")
-            voice_cog = self.get_cog("Voice")
-            general_cog = self.get_cog("General")
-            eggs_cog = self.get_cog("EasterEggs")
-            spook_cog = self.get_cog("Spook")
-
-            def _emit(event, data):
-                """Wrapper pour sécuriser l'emit Socket.IO et logger en cas d'erreur."""
-                if not socketio_ref:
-                    return
-                try:
-                    socketio_ref.emit(event, data)
-                except Exception as e:
-                    logger.error("socketio.emit failed: %s", e)
-
-            if socketio_ref and music_cog:
-                music_cog.emit_fn = _emit
-                logger.info("emit_fn branché sur Music")
-            if socketio_ref and voice_cog:
-                voice_cog.emit_fn = _emit
-                logger.info("emit_fn branché sur Voice")
-            if socketio_ref and general_cog:
-                general_cog.emit_fn = _emit
-                logger.info("emit_fn branché sur General")
-            if socketio_ref and eggs_cog:
-                spook_cog.emit_fn = _emit
-                logger.info("emit_fn branché sur EasterEggs")
-            if socketio_ref and spook_cog:
-                eggs_cog.emit_fn = _emit
-                logger.info("emit_fn branché sur Spook")
-        except Exception as e:
-            logger.error("Impossible de connecter emit_fn: %s", e)
-
-        # Auto self-test post-redémarrage
-        try:
-            import asyncio
-            from __main__ import run_post_restart_selftest
-            asyncio.create_task(run_post_restart_selftest(self))
-            logger.info("Self-test post-redémarrage déclenché.")
-        except Exception as e:
-            logger.debug("Self-test non lancé (optionnel): %s", e)
-
-# ---------------------------------------------------------------------------
-# Flask + SocketIO (overlay web)
-DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
-app = None
-socketio = None
-
-if not DISABLE_WEB:
-    try:
-        # NOTE: create_web_app configure déjà async_mode avec défaut "threading"
-        from connect import create_web_app
-        app, socketio = create_web_app(get_pm)
-        app.bot = None  # attach later
-        logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
-    except ImportError:
-        logger.warning("Overlay désactivé : module 'connect' introuvable")
-        DISABLE_WEB = True
-
-def run_web():
-    if socketio and app:
-        mode = getattr(socketio, "async_mode", "threading")
-        logger.debug("Lancement du serveur Flask/SocketIO… (mode=%s)", mode)
-        if mode == "eventlet":
-            # eventlet fourni son propre serveur, pas besoin du flag Werkzeug
-            socketio.run(app, host="0.0.0.0", port=3000)
-        else:
-            # Werkzeug refuse la prod sans ce flag
-            socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
-
-def wait_for_web():
-    for i in range(30):  # 30 tentatives
-        try:
-            s = socket.create_connection(("127.0.0.1", 3000), 1)
-            s.close()
-            logger.debug("Serveur web prêt après %s tentatives.", i + 1)
-            return
-        except Exception:
-            time.sleep(1)
-    logger.critical("Serveur web jamais prêt !")
-    raise SystemExit("[FATAL] Serveur web jamais prêt !")
-
-# ---------------------------------------------------------------------------
-# Main
-if __name__ == "__main__":
-    bot = GregBot()
-
-    if not DISABLE_WEB:
-        app.bot = bot
-        bot.web_app = app
-        threading.Thread(target=run_web, daemon=True).start()
-        wait_for_web()
-
-    bot.run(config.DISCORD_TOKEN)
+            title = (info or {}).get("title", "Musique inconnue")
+            duration = (info or {}).get("duration")
+            return filepath, title, duration
+    except DownloadError as e:
+        # Sur SC, les erreurs de format sont rares; normaliser le message
+        raise RuntimeError(f"Échec download SoundCloud: {e}") from e
