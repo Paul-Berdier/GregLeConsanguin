@@ -22,10 +22,10 @@ import requests
 from urllib.parse import urlparse
 
 from extractors import get_extractor, get_search_module
-from playlist_manager import PlaylistManager
+from utils.playlist_manager import PlaylistManager
 
 # Priorités (règles centralisées)
-from priority_rules import (
+from utils.priority_rules import (
     get_member_weight, PER_USER_CAP, can_bypass_quota, can_user_bump_over
 )
 

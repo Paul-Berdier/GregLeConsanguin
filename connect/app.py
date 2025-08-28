@@ -831,7 +831,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
 if __name__ == "__main__":
     def _fake_pm(_gid):
-        from playlist_manager import PlaylistManager
+        from utils.playlist_manager import PlaylistManager
         return PlaylistManager(_gid)
 
     app, socketio = create_web_app(_fake_pm)
