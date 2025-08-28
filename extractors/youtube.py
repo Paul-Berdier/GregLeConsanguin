@@ -258,9 +258,14 @@ async def stream(
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
 
     before_opts = (
+        "-nostdin "
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
         f"-headers {shlex.quote(hdr_blob)} "
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        "-rw_timeout 15000000 "  # 15s I/O timeout
+        "-probesize 32k -analyzeduration 0 "
+        "-fflags nobuffer -flags low_delay "
+        "-seekable 0"
     )
 
     source = discord.FFmpegPCMAudio(
@@ -327,10 +332,11 @@ async def stream_pipe(
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
         executable=ffmpeg_path,
-        before_options=None,
-        options="-vn -ar 48000 -ac 2 -f s16le",
+        before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+        options="-re -vn -ar 48000 -ac 2 -f s16le",  # <- -re = cadence temps réel
         pipe=True,
     )
+
     setattr(src, "_ytdlp_proc", yt)
     setattr(src, "_title", title)
     return src, title

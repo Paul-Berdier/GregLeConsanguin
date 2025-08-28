@@ -922,6 +922,7 @@ class Music(commands.Cog):
         await self._safe_send(send_fn, "⏭ *Et que ça saute !*")
 
         if vc and (vc.is_playing() or vc.is_paused()):
+            self._kill_stream_proc(gid)
             vc.stop()  # after -> play_next
         else:
             # kill éventuel stream zombie
@@ -969,8 +970,8 @@ class Music(commands.Cog):
             vc.pause()
             if not self.paused_since.get(gid):
                 self.paused_since[gid] = time.monotonic()
+            self.emit_playlist_update(gid)  # pousse l'état tout de suite
             await self._safe_send(send_fn, "⏸ *Enfin une pause…*")
-            self.emit_playlist_update(gid)
         else:
             await self._safe_send(send_fn, "❌ *Rien à mettre en pause, hélas…*")
 
