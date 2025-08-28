@@ -277,8 +277,7 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
         "ffmpeg_location": ffmpeg_path,
         "quiet": False,
         "nocheckcertificate": True,
-        "ratelimit": 5.0,
-        "sleep_interval_requests": 1,
+        "sleep_interval_requests": 0,
         "prefer_ffmpeg": True,
         "force_generic_extractor": False,
     }
