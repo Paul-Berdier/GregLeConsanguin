@@ -600,6 +600,7 @@ class Music(commands.Cog):
         url = item.get("url")
         play_mode = (item.get("mode") or "auto").lower()
 
+        # état courant minimal + méta
         self.current_song[gid] = {
             "title": item.get("title", url),
             "url": url,
@@ -661,11 +662,11 @@ class Music(commands.Cog):
 
                 def _after(e):
                     try:
-                        # tue le process yt-dlp si attaché
                         self._kill_stream_proc(gid)
                     finally:
                         async def chain():
                             elapsed = time.monotonic() - start_ts
+                            # si le stream a avorté trop vite → tente download (sauf mode "stream" forcé)
                             if (e or elapsed < 2.5) and play_mode != "stream":
                                 _greg_print(f"[DEBUG stream early-exit ({elapsed:.2f}s)] → trying download fallback")
                                 try:
@@ -714,6 +715,7 @@ class Music(commands.Cog):
                                 except Exception as ex:
                                     _greg_print(f"[DEBUG stream→download fallback KO] {ex}")
 
+                            # chemin normal si pas de fallback
                             self.bot.loop.create_task(self.play_next(interaction_like))
 
                         self.bot.loop.create_task(chain())
@@ -734,8 +736,23 @@ class Music(commands.Cog):
                 self.emit_playlist_update(gid)
                 return
             except Exception as e:
+                # message clair si stream-only, sinon on tentera le download juste après
                 if play_mode == "stream":
-                    await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`")
+                    hint = ""
+                    if "Sign in to confirm you're not a bot" in str(e):
+                        hint = (
+                            "\n\n🔐 **Cookies YouTube requis/expirés** — "
+                            "utilise `/yt_cookies_update` ou mets `YTDLP_COOKIES_B64`."
+                            f"\n• cookies.txt chargé : `{self.youtube_cookies_file or 'none'}`"
+                        )
+                        try:
+                            cg = self.bot.get_cog("CookieGuardian")
+                            if cg:
+                                await cg._notify(
+                                    "⚠️ **Echec YouTube (auth)** pendant un stream. Recharge des cookies requis.")
+                        except Exception:
+                            pass
+                    await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`{hint}")
                 # en "auto", on tentera download juste après
 
         # --- Fallback: DOWNLOAD ---
@@ -781,7 +798,23 @@ class Music(commands.Cog):
             )
             self.emit_playlist_update(gid)
         except Exception as e:
-            await interaction_like.followup.send(f"❌ *Même le téléchargement s’écroule…* `{e}`")
+            # 🔐 message enrichi en cas d'erreur d'auth YouTube
+            msg = f"❌ *Même le téléchargement s’écroule…* `{e}`"
+            if "Sign in to confirm you're not a bot" in str(e):
+                msg += (
+                    "\n\n🔐 **Cookies YouTube requis/expirés**."
+                    " Recharge via `/yt_cookies_update` ou mets à jour `YTDLP_COOKIES_B64`."
+                    f"\n• cookies.txt chargé : `{self.youtube_cookies_file or 'none'}`"
+                    "\n• Test local : `yt-dlp --cookies youtube.com_cookies.txt -F <url>`"
+                )
+                try:
+                    cg = self.bot.get_cog("CookieGuardian")
+                    if cg:
+                        await cg._notify(
+                            "⚠️ **Echec YouTube (auth)** pendant une lecture. Recharge des cookies requis.")
+                except Exception:
+                    pass
+            await interaction_like.followup.send(msg)
 
     async def _do_skip(self, guild: discord.Guild, send_fn):
         gid = self._gid(guild.id)
