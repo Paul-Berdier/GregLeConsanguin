@@ -631,12 +631,61 @@ class Music(commands.Cog):
                 if vc.is_playing():
                     vc.stop()
 
+                start_ts = time.monotonic()
+
                 def _after(e):
                     try:
                         getattr(source, "cleanup", lambda: None)()
                     finally:
-                        # Enchaîne sur la suivante
-                        self.bot.loop.create_task(self.play_next(interaction_like))
+                        async def chain():
+                            elapsed = time.monotonic() - start_ts
+                            # si le stream a avorté presque instantanément → tente download (en mode auto)
+                            if (e or elapsed < 2.5) and play_mode != "stream":
+                                _greg_print(f"[DEBUG stream early-exit ({elapsed:.2f}s)] → trying download fallback")
+                                try:
+                                    cookies = "youtube.com_cookies.txt" if os.path.exists(
+                                        "youtube.com_cookies.txt") else None
+                                    filename, real_title, duration = await extractor.download(
+                                        url, ffmpeg_path=self.ffmpeg_path, cookies_file=cookies
+                                    )
+
+                                    # maj états
+                                    self.current_song[gid]["title"] = real_title
+                                    dur_int = int(duration) if duration else None
+                                    self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
+                                    self.now_playing[gid].update({"title": real_title, "duration": dur_int})
+
+                                    vc2 = interaction_like.guild.voice_client
+                                    if vc2 and (vc2.is_playing() or vc2.is_paused()):
+                                        vc2.stop()
+
+                                    src2 = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
+
+                                    def _after2(err):
+                                        try:
+                                            getattr(src2, "cleanup", lambda: None)()
+                                        finally:
+                                            self.bot.loop.create_task(self.play_next(interaction_like))
+
+                                    vc2.play(src2, after=_after2)
+
+                                    # chrono
+                                    self.play_start[gid] = time.monotonic()
+                                    self.paused_total[gid] = 0.0
+                                    self.paused_since.pop(gid, None)
+                                    self._ensure_ticker(gid)
+
+                                    await interaction_like.followup.send(
+                                        f"🎶 *Téléchargé & joué :* **{real_title}** (`{duration}`s)")
+                                    self.emit_playlist_update(gid)
+                                    return
+                                except Exception as ex:
+                                    _greg_print(f"[DEBUG stream→download fallback KO] {ex}")
+
+                            # chemin normal si pas de fallback download
+                            self.bot.loop.create_task(self.play_next(interaction_like))
+
+                        self.bot.loop.create_task(chain())
 
                 try:
                     vc.play(source, after=_after)
