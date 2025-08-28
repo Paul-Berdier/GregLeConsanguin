@@ -81,9 +81,13 @@ class Music(commands.Cog):
         self.current_source = {}   # {guild_id: FFmpegPCMAudio} (pour tuer un stream en cours)
 
         # --- Cookies YouTube ---
-        self.cookies_from_browser = os.getenv("YTDLP_COOKIES_BROWSER") or None  # ex "chrome:Default"
-        self.youtube_cookies_file = "youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None
-        _greg_print(f"[YT cookies] browser={self.cookies_from_browser or 'none'} file={self.youtube_cookies_file or 'none'}")
+        # Sur Railway on s'appuie sur le fichier déposé par /yt_cookies_update
+        self.cookies_from_browser = None  # (optionnel en local)
+        self.youtube_cookies_file = (
+                os.getenv("YTDLP_COOKIES_FILE")
+                or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
+        )
+        _greg_print(f"[YT cookies] file={self.youtube_cookies_file or 'none'}")
 
         _greg_print("Initialisation du cog Music… *Quelle joie contenue…*")
 
