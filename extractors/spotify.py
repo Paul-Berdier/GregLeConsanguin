@@ -1,217 +1,235 @@
-# extractors/spotify.py
-# ----------------------------------------------------------------------
-# Spotify extractor (SAFE):
-# - Recherche & résolution de tracks/albums/playlists via l'API Spotify.
-# - Lecture audio: redirection vers YouTube (pas de stream Spotify direct).
-# - Garde-fou: lecture réservée aux utilisateurs allowlistés (set_spotify_account).
-#   => on expose stream_for_user(user_id, ...) ; stream(...) lève PermissionError.
-# ENV requis pour la recherche/résolution:
-#   SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
-# ----------------------------------------------------------------------
+# extractors/soundcloud.py
+#
+# SoundCloud robuste (Greg le Consanguin)
+# - search: scsearch5 (flat) → 5 résultats normalisés
+# - stream: URL directe (yt-dlp) → FFmpeg (avec headers & reconnexions)
+# - download: MP3 (192 kbps, 48 kHz), chemin fiable via requested_downloads
+# - cookies: navigateur prioritaire (cookiesfrombrowser), sinon fichier Netscape
+# - options: cookies_file / cookies_from_browser / ratelimit_bps pris en charge
 from __future__ import annotations
 
-import os, time, base64
-import asyncio
-from typing import Dict, List, Optional, Tuple
+import os
+import shlex
+from typing import Optional, Tuple, Dict, Any, List
 
-import requests
+import discord
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
-from utils import spotify_auth
-from . import youtube  # pour la lecture effective (fallback)
+_SC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/138.0.0.0 Safari/537.36"
+)
 
-_SPOTIFY_TOKEN: Optional[str] = None
-_SPOTIFY_EXP: float = 0.0
+_PROVIDER = "soundcloud"
+
 
 def is_valid(url: str) -> bool:
     if not isinstance(url, str):
         return False
     u = url.lower()
-    return ("open.spotify.com/" in u) or u.startswith("spotify:")
+    return ("soundcloud.com/" in u) or ("sndcdn.com/" in u)
 
-# =================== Auth (Client Credentials) ======================
 
-def _get_app_token() -> str:
-    """
-    Récupère/refresh un token d'app (client_credentials).
-    """
-    global _SPOTIFY_TOKEN, _SPOTIFY_EXP
-    now = time.time()
-    if _SPOTIFY_TOKEN and now < _SPOTIFY_EXP - 30:
-        return _SPOTIFY_TOKEN
+# ------------------------ helpers ------------------------
 
-    cid = os.getenv("SPOTIFY_CLIENT_ID")
-    csec = os.getenv("SPOTIFY_CLIENT_SECRET")
-    if not cid or not csec:
-        raise RuntimeError("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET manquants")
+def _parse_cookies_from_browser_spec(spec: Optional[str]):
+    if not spec:
+        return None
+    parts = spec.split(":", 1)
+    browser = parts[0].strip().lower()
+    profile = parts[1].strip() if len(parts) > 1 else None
+    return (browser,) if profile is None else (browser, profile)
 
-    auth = base64.b64encode(f"{cid}:{csec}".encode()).decode()
-    r = requests.post(
-        "https://accounts.spotify.com/api/token",
-        data={"grant_type": "client_credentials"},
-        headers={"Authorization": f"Basic {auth}"},
-        timeout=10,
-    )
-    if not r.ok:
-        raise RuntimeError(f"Spotify auth failed: {r.status_code} {r.text}")
-    j = r.json()
-    _SPOTIFY_TOKEN = j["access_token"]
-    _SPOTIFY_EXP = now + int(j.get("expires_in", 3600))
-    return _SPOTIFY_TOKEN
 
-def _sp_get(path: str, params: Dict[str, str] | None = None) -> dict:
-    tok = _get_app_token()
-    r = requests.get(
-        f"https://api.spotify.com/v1/{path.lstrip('/')}",
-        headers={"Authorization": f"Bearer {tok}"},
-        params=params or {},
-        timeout=12,
-    )
-    if not r.ok:
-        raise RuntimeError(f"Spotify API GET {path} failed: {r.status_code} {r.text}")
-    return r.json()
-
-# =================== Normalisation items ============================
-
-def _first_img(album: dict) -> Optional[str]:
-    imgs = (album or {}).get("images") or []
-    if imgs:
-        return imgs[0].get("url")
-    return None
-
-def _artists_str(artists: List[dict]) -> str:
-    return ", ".join(a.get("name") for a in (artists or []) if a.get("name"))
-
-def _to_item_from_track(tr: dict) -> dict:
-    title = tr.get("name") or "Unknown"
-    artists = _artists_str(tr.get("artists") or [])
-    dur_ms = tr.get("duration_ms") or 0
-    duration = int(round((dur_ms or 0) / 1000.0))
-    album = tr.get("album") or {}
-    track_id = tr.get("id")
-    page = f"https://open.spotify.com/track/{track_id}" if track_id else None
-    return {
-        "title": title,
-        "url": page,
-        "webpage_url": page,
-        "artist": artists or None,
-        "duration": duration or None,
-        "thumb": _first_img(album),
-        "provider": "spotify",
-        "spotify_id": track_id,
+def _mk_opts(
+    *,
+    ffmpeg_path: Optional[str] = None,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+    search: bool = False,
+    for_download: bool = False,
+) -> Dict[str, Any]:
+    ydl_opts: Dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "ignoreerrors": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "http_headers": {"User-Agent": _SC_UA, "Referer": "https://soundcloud.com/"},
+        "format": "bestaudio/best",
+        # Important pour certains streams HLS SC
+        "extractor_args": {"soundcloud": {"client_id": []}},  # laisser yt-dlp gérer le client_id
     }
 
-# =================== Public: search (tracks) ========================
+    if ratelimit_bps:
+        ydl_opts["ratelimit"] = int(ratelimit_bps)
 
-def search(query: str) -> List[dict]:
-    """
-    Recherche Spotify (tracks) → 3 premiers résultats (format like autocomplete).
-    Nécessite SPOTIFY_CLIENT_ID/SECRET.
-    """
-    if not query or len(query.strip()) < 2:
-        return []
-    j = _sp_get("search", params={"q": query, "type": "track", "limit": "3"})
-    items = (j.get("tracks") or {}).get("items") or []
-    return [_to_item_from_track(tr) for tr in items]
+    # Cookies : navigateur prioritaire (même variable d'env que YouTube si tu l'utilises)
+    cfb = _parse_cookies_from_browser_spec(cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER"))
+    if cfb:
+        ydl_opts["cookiesfrombrowser"] = cfb
+    elif cookies_file and os.path.exists(cookies_file):
+        ydl_opts["cookiefile"] = cookies_file
 
-# =================== Public: resolve URLs ===========================
+    if ffmpeg_path:
+        ydl_opts["ffmpeg_location"] = ffmpeg_path
 
-def _parse_spotify_url(url: str) -> Tuple[str, str]:
-    """
-    Retourne (type, id) → type ∈ {track, album, playlist}
-    """
-    u = url.split("?")[0]
-    parts = u.strip("/").split("/")
-    # .../open.spotify.com/track/<id>
-    try:
-        idx = parts.index("open.spotify.com")
-    except ValueError:
-        # spotify:track:ID
-        if url.startswith("spotify:"):
-            seg = url.split(":")
-            return seg[1], seg[2]
-        raise RuntimeError("URL Spotify invalide")
+    if search:
+        ydl_opts.update({
+            "default_search": "scsearch5",
+            "extract_flat": True,
+        })
 
-    typ = parts[idx+1]
-    sid = parts[idx+2]
-    return typ, sid
+    if for_download:
+        ydl_opts.update({
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "postprocessor_args": ["-ar", "48000"],
+        })
 
-def resolve_items(url: str, limit: int = 50) -> List[dict]:
-    """
-    Résout une URL Spotify en liste d'items normalisés.
-    - track → [1 item]
-    - album → [tracks...]
-    - playlist → [tracks...]
-    """
-    typ, sid = _parse_spotify_url(url)
-    out: List[dict] = []
-    if typ == "track":
-        tr = _sp_get(f"tracks/{sid}")
-        out.append(_to_item_from_track(tr))
-    elif typ == "album":
-        al = _sp_get(f"albums/{sid}")
-        tracks = (al.get("tracks") or {}).get("items") or []
-        # enrichir chaque item avec album (pour thumb)
-        album_stub = {k: al.get(k) for k in ("images", "name")}
-        for t in tracks[:limit]:
-            t["album"] = t.get("album") or album_stub
-            out.append(_to_item_from_track(t))
-    elif typ == "playlist":
-        pl = _sp_get(f"playlists/{sid}", params={"fields": "tracks.items(track(name,id,artists,duration_ms,album(images)))"})
-        items = ((pl.get("tracks") or {}).get("items") or [])[:limit]
-        for it in items:
-            tr = it.get("track") or {}
-            out.append(_to_item_from_track(tr))
-    else:
-        raise RuntimeError(f"Type Spotify non supporté: {typ}")
+    return ydl_opts
+
+
+def _normalize_entries(entries: List[dict]) -> List[dict]:
+    out = []
+    for e in entries or []:
+        title = e.get("title") or "Titre inconnu"
+        url = e.get("webpage_url") or e.get("url") or ""
+        # duration: yt-dlp renvoie parfois ms → préférer secondes si dispo
+        duration = e.get("duration")
+        if isinstance(duration, str) and duration.isdigit():
+            duration = int(duration)
+        thumb = e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get("url") if e.get("thumbnails") else None
+        out.append({
+            "title": title,
+            "url": url,
+            "webpage_url": url,
+            "duration": duration,
+            "thumb": thumb,
+            "provider": _PROVIDER,
+            "uploader": e.get("uploader") or e.get("uploader_id") or e.get("uploader_url"),
+        })
     return out
 
-# =================== Lecture (via YouTube) ==========================
 
-def _to_youtube_query(item: dict) -> str:
-    # ex: "Artist1, Artist2 - Title (audio)"
-    title = item.get("title") or ""
-    artist = item.get("artist") or ""
-    return f"{artist} - {title} audio".strip(" -")
+# ------------------------ public: search ------------------------
 
-async def stream_for_user(user_id: int | str, url_or_query: str, ffmpeg_path: str, cookies_file: str | None = None):
+def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_browser: Optional[str] = None) -> List[dict]:
+    if not query or not query.strip():
+        return []
+    with YoutubeDL(_mk_opts(cookies_file=cookies_file, cookies_from_browser=cookies_from_browser, search=True)) as ydl:
+        data = ydl.extract_info(f"scsearch5:{query}", download=False)
+        entries = (data or {}).get("entries") or []
+        return _normalize_entries(entries)
+
+
+# ------------------------ public: stream ------------------------
+
+async def stream(
+    url_or_query: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
-    Lecture réservée aux utilisateurs allowlistés :
-    - Si URL Spotify → on résout → on joue le premier morceau via recherche YouTube.
-    - Si chaîne 'artist - title' → recherche Spotify d'abord (optionnel), puis YouTube.
+    Prépare un stream pour Discord à partir de SoundCloud :
+    - résout l'URL/ID avec yt-dlp (récupère aussi les http_headers)
+    - passe les headers à FFmpeg (-headers + -user_agent), reconnexions activées
+    Retourne (source_ffmpeg, title).
     """
-    if not spotify_auth.is_allowed(user_id):
-        raise PermissionError("Spotify est réservé aux utilisateurs autorisés. Utilisez /set_spotify_account.")
+    import asyncio
 
-    # Cas URL Spotify
-    if is_valid(str(url_or_query)):
-        items = resolve_items(str(url_or_query), limit=1)
-        if not items:
-            raise RuntimeError("Aucun titre dans ce lien Spotify.")
-        q = _to_youtube_query(items[0])
-        return await youtube.stream(q, ffmpeg_path, cookies_file=cookies_file)
+    def _probe(q: str):
+        # Si ce n'est pas une URL SC, on transforme en scsearch1:<query>
+        qb = q if is_valid(q) else f"scsearch1:{q}"
+        with YoutubeDL(_mk_opts(cookies_file=cookies_file, cookies_from_browser=cookies_from_browser)) as ydl:
+            info = ydl.extract_info(qb, download=False)
+            if info and "entries" in info and info["entries"]:
+                info = info["entries"][0]
+            return info or {}
 
-    # Cas texte libre → on tente d'améliorer la requête via Spotify
+    info = await asyncio.get_running_loop().run_in_executor(None, _probe, url_or_query)
+    if not info:
+        raise RuntimeError("Aucun résultat SoundCloud")
+
+    stream_url = info.get("url")
+    title = info.get("title", "Musique inconnue")
+    if not stream_url:
+        raise RuntimeError("Flux SoundCloud indisponible.")
+
+    # Préparer headers pour FFmpeg (utile sur HLS *.m3u8)
+    headers = (info.get("http_headers") or {})
+    headers.setdefault("User-Agent", _SC_UA)
+    headers.setdefault("Referer", "https://soundcloud.com/")
+    hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+
+    before_opts = (
+        f"-user_agent {shlex.quote(headers['User-Agent'])} "
+        f"-headers {shlex.quote(hdr_blob)} "
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    )
+
+    source = discord.FFmpegPCMAudio(
+        stream_url,
+        before_options=before_opts,
+        options="-vn",
+        executable=ffmpeg_path,
+    )
+    setattr(source, "_ytdlp_proc", None)  # par homogénéité avec YouTube
+    return source, title
+
+
+# ------------------------ public: download ------------------------
+
+def download(
+    url: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    out_dir: str = "downloads",
+    ratelimit_bps: Optional[int] = 2_500_000,
+) -> Tuple[str, str, Optional[int]]:
+    """
+    Télécharge l'audio SoundCloud et convertit en MP3.
+    Retourne (filepath_mp3, title, duration_seconds|None).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    opts = _mk_opts(
+        ffmpeg_path=ffmpeg_path,
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        ratelimit_bps=ratelimit_bps,
+        for_download=True,
+    )
+    opts["paths"] = {"home": out_dir}
+    opts["outtmpl"] = "%(title).200B - %(id)s.%(ext)s"
+
     try:
-        sp = search(str(url_or_query))
-        if sp:
-            q = _to_youtube_query(sp[0])
-        else:
-            q = str(url_or_query)
-    except Exception:
-        q = str(url_or_query)
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info and "entries" in info and info["entries"]:
+                info = info["entries"][0]
 
-    return await youtube.stream(q, ffmpeg_path, cookies_file=cookies_file)
+            req = (info or {}).get("requested_downloads") or []
+            if req:
+                filepath = req[0].get("filepath")
+            else:
+                base = ydl.prepare_filename(info)
+                filepath = os.path.splitext(base)[0] + ".mp3"
 
-async def stream(url_or_query: str, ffmpeg_path: str, cookies_file: str | None = None):
-    """
-    Protection volontaire : pour éviter l'usage involontaire sans contrôle d'accès,
-    cette fonction lève une PermissionError. Utiliser stream_for_user().
-    """
-    raise PermissionError("Utilisez spotify.stream_for_user(user_id, ...) (usage restreint).")
-
-async def download(url: str, ffmpeg_path: str, cookies_file: str | None = None):
-    """
-    On ne fournit PAS de téléchargement depuis Spotify (DRM / ToS).
-    Si besoin, télécharge via YouTube après résolution (logique à faire côté appelant).
-    """
-    raise PermissionError("Le téléchargement Spotify n'est pas supporté.")
+            title = (info or {}).get("title", "Musique inconnue")
+            duration = (info or {}).get("duration")
+            return filepath, title, duration
+    except DownloadError as e:
+        # Sur SC, les erreurs de format sont rares; normaliser le message
+        raise RuntimeError(f"Échec download SoundCloud: {e}") from e
