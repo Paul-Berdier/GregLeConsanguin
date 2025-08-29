@@ -24,12 +24,11 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 # UA par défaut ; peut être surchargé par l'env (recommandé: UA de ton navigateur)
-_DEFAULT_YT_UA = (
+_YT_UA = os.getenv("YTDLP_FORCE_UA") or (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/138.0.0.0 Safari/537.36"
 )
-_YT_UA = os.getenv("YTDLP_FORCE_UA", _DEFAULT_YT_UA)
 
 _CLIENTS_ORDER = ["ios", "web", "web_creator", "web_mobile", "android"]
 _FORMAT_CHAIN = "bestaudio[ext=m4a]/bestaudio/best/140/251/18"
