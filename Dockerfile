@@ -27,13 +27,14 @@ RUN pip install --upgrade pip && \
 
 # -------- Étape tests (exécutée pendant le build) --------
 # On peut l'ignorer avec: docker build --build-arg SKIP_TESTS=1 .
+# ...
 ARG SKIP_TESTS=0
 RUN if [ "$SKIP_TESTS" != "1" ]; then \
- echo "== Lancer uniquement les tests YouTube ==" && \
+      echo "== Lancer uniquement les tests YouTube ==" && \
       pip install --no-cache-dir pytest pytest-asyncio && \
       YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
       PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-      python -m pytest -q tests/test_youtube_extractor.py || (echo 'Pytest a échoué'; exit 1); \
+      python -m pytest -q -p pytest_asyncio --asyncio-mode=auto tests/test_youtube_extractor.py || (echo 'Pytest a échoué'; exit 1); \
     else \
       echo 'SKIP_TESTS=1 -> tests sautés'; \
     fi
