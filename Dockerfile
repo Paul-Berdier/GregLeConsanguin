@@ -1,14 +1,13 @@
 # Utilise une image Python récente
 FROM python:3.12-slim
 
-# Évite l'écriture de fichiers .pyc et active le mode verbeux
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
-# Définit le répertoire de travail
 WORKDIR /app
 
-# Installe git, ffmpeg et les libs nécessaires à l'audio (PyNaCl)
+# Déps système (ffmpeg + voice)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -18,19 +17,29 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copie les fichiers de l'app (y compris tests/)
+# Copie *tout* le projet (incluant tests/, à condition qu'il ne soit pas ignoré)
 COPY . .
 
-# Met à jour pip et installe les dépendances runtime
+# Déps Python
 RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
     pip install --no-cache-dir -r requirements.txt
 
-# 🔎 Dépendances de test + exécution de pytest (fail-fast)
-# On coupe tout ce qui pourrait déclencher du réseau/serveur web côté tests
-RUN pip install --no-cache-dir pytest pytest-asyncio && \
-    YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
-    pytest -q tests/test_youtube_extractor.py
+# -------- Étape tests (exécutée pendant le build) --------
+# On peut l'ignorer avec: docker build --build-arg SKIP_TESTS=1 .
+ARG SKIP_TESTS=0
+RUN if [ "$SKIP_TESTS" != "1" ]; then \
+        echo "== Sanity: liste des tests ==" && \
+        (find tests -maxdepth 2 -type f -name 'test_*.py' -print || true) && \
+        echo "== Installer pytest ==" && \
+        pip install --no-cache-dir pytest pytest-asyncio && \
+        echo "== Lancer pytest ==" && \
+        YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+        python -m pytest -q tests || (echo 'Pytest a échoué'; exit 1); \
+    else \
+        echo 'SKIP_TESTS=1 -> on saute les tests'; \
+    fi
 
 # Commande de démarrage du bot
 CMD ["python", "main.py"]
