@@ -1,14 +1,13 @@
 # extractors/youtube.py
 #
-# YouTube robuste (Greg le Consanguin)
+# YouTube robuste (Greg le Consanguin) — DEBUG MAX
 # - Clients sûrs (évite TV/SABR): ios → web → web_creator → web_mobile → android
-# - Formats fallback: bestaudio m4a/opus → best → 140/251/18
-# - STREAM: récupère une URL directe fraîche; si pas d'URL → réessaie avec clients alternatifs
-# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (avant le fallback download)
-# - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre; chemin fiable
-# - Cookies: navigateur (cookiesfrombrowser, via YTDLP_COOKIES_BROWSER) prioritaire, sinon fichier Netscape
+# - STREAM direct: URL + headers → FFmpeg (anti-403)
+# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (avant fallback download)
+# - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre
+# - Cookies: navigateur (cookiesfrombrowser) prioritaire, sinon fichier Netscape
 # - Recherche: ytsearch5 (flat)
-
+# - DEBUG: traces complètes [YTDBG], HTTP probe optionnelle
 from __future__ import annotations
 
 import os
@@ -17,11 +16,48 @@ import shlex
 import shutil
 import functools
 import subprocess
+import threading
+import time
+import datetime as dt
+import urllib.parse as _url
+import urllib.request as _ureq
 from typing import Optional, Tuple, Dict, Any, List
 
 import discord
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
+
+# ====== DEBUG TOGGLES ======
+_YTDBG = os.getenv("YTDBG", "1") not in ("0", "false", "False", "")
+_YTDBG_HTTP_PROBE = os.getenv("YTDBG_HTTP_PROBE", "0") not in ("0", "false", "False", "")
+
+def _dbg(msg: str):
+    if _YTDBG:
+        print(f"[YTDBG] {msg}")
+
+def _redact_headers(h: Dict[str, str]) -> Dict[str, str]:
+    out = dict(h or {})
+    for k in list(out.keys()):
+        if k.lower() in ("cookie", "authorization", "x-youTube-identity-token"):
+            v = out.get(k)
+            out[k] = f"<redacted:{len(v) if isinstance(v, str) else '?'}>"
+    return out
+
+def _parse_qs(url: str) -> Dict[str, str]:
+    try:
+        q = _url.urlsplit(url).query
+        return {k: v[0] for k, v in _url.parse_qs(q).items()}
+    except Exception:
+        return {}
+
+def _fmt_epoch(e: str | int | None) -> str:
+    try:
+        e = int(e)
+        t = dt.datetime.utcfromtimestamp(e)
+        left = e - int(time.time())
+        return f"{t.isoformat()}Z (t-{left}s)"
+    except Exception:
+        return "?"
 
 # UA par défaut ; peut être surchargé par l'env (recommandé: UA de ton navigateur)
 _YT_UA = os.getenv("YTDLP_FORCE_UA") or (
@@ -90,8 +126,12 @@ def _mk_opts(
     cfb = _parse_cookies_from_browser_spec(cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER"))
     if cfb:
         ydl_opts["cookiesfrombrowser"] = cfb
+        _dbg(f"cookiesfrombrowser={cfb}")
     elif cookies_file and os.path.exists(cookies_file):
         ydl_opts["cookiefile"] = cookies_file
+        _dbg(f"cookiefile={cookies_file} (exists={os.path.exists(cookies_file)})")
+    else:
+        _dbg("cookies: none")
 
     if ffmpeg_path:
         ydl_opts["ffmpeg_location"] = ffmpeg_path
@@ -160,6 +200,8 @@ def _probe_with_client(
         info = ydl.extract_info(query, download=False)
         if info and "entries" in info and info["entries"]:
             info = info["entries"][0]
+        if info is not None:
+            info["_dbg_client_used"] = client or "auto"
         return info or None
 
 
@@ -172,6 +214,7 @@ def _best_info_with_fallbacks(
     ratelimit_bps: Optional[int],
 ) -> Optional[dict]:
     """Tente successivement les clients jusqu'à obtenir un info['url'] exploitable."""
+    _dbg(f"_best_info_with_fallbacks(query={query})")
     # 1) tentative avec chaîne complète (laisser yt-dlp choisir)
     info = _probe_with_client(
         query,
@@ -182,6 +225,7 @@ def _best_info_with_fallbacks(
         client=None,
     )
     if info and info.get("url"):
+        _dbg(f"yt-dlp chose client={info.get('_dbg_client_used')}, title={info.get('title')!r}")
         return info
 
     # 2) forcer iOS, puis autres clients en séquence
@@ -195,13 +239,43 @@ def _best_info_with_fallbacks(
             client=c,
         )
         if info and info.get("url"):
+            _dbg(f"fallback client={c} worked, title={info.get('title')!r}")
             return info
+        else:
+            _dbg(f"client={c} → no direct url")
     return None
 
 
 def _resolve_ytdlp_cli() -> List[str]:
     exe = shutil.which("yt-dlp")
     return [exe] if exe else [sys.executable, "-m", "yt_dlp"]
+
+
+def _http_probe(url: str, headers: Dict[str, str]) -> None:
+    """Optionnel: interroge en HEAD puis GET Range 0-1 pour voir si 403 côté serveur."""
+    if not _YTDBG_HTTP_PROBE:
+        return
+    _dbg("HTTP_PROBE: start")
+    req_h = dict(headers or {})
+    # urllib ne gère pas HTTP/2, mais suffisant pour diagnostiquer 403
+    try:
+        r = _ureq.Request(url, method="HEAD", headers=req_h)
+        with _ureq.urlopen(r, timeout=10) as resp:
+            _dbg(f"HTTP_PROBE: HEAD {resp.status}")
+            _dbg(f"HTTP_PROBE: Server={resp.headers.get('Server')} Age={resp.headers.get('Age')} Via={resp.headers.get('Via')}")
+            return
+    except Exception as e:
+        _dbg(f"HTTP_PROBE: HEAD failed: {e}")
+
+    try:
+        req_h2 = dict(headers or {})
+        req_h2["Range"] = "bytes=0-1"
+        r2 = _ureq.Request(url, method="GET", headers=req_h2)
+        with _ureq.urlopen(r2, timeout=10) as resp:
+            _dbg(f"HTTP_PROBE: GET Range→ {resp.status} (len={resp.headers.get('Content-Length')})")
+            return
+    except Exception as e:
+        _dbg(f"HTTP_PROBE: GET Range failed: {e}")
 
 
 # ------------------------ public: search ------------------------
@@ -227,9 +301,13 @@ async def stream(
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
     Prépare un stream pour Discord via URL directe (yt-dlp choisit un flux audio).
-    Passe les http_headers à FFmpeg (anti-403) et corrige l'appel executor pour les kwargs.
+    Passe les http_headers à FFmpeg (anti-403) + DEBUG complet.
     """
     import asyncio
+
+    _dbg(f"STREAM request: url_or_query={url_or_query!r}")
+    _dbg(f"ENV: UA={_YT_UA[:60]}...")
+    _dbg(f"ENV: cookies_from_browser={cookies_from_browser or os.getenv('YTDLP_COOKIES_BROWSER')}, cookies_file={cookies_file}")
 
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, functools.partial(
@@ -245,16 +323,28 @@ async def stream(
 
     stream_url = info.get("url")
     title = info.get("title", "Musique inconnue")
+    client_used = info.get("_dbg_client_used", "unknown")
     if not stream_url:
         raise RuntimeError("Flux audio indisponible (clients bloqués).")
+
+    # Log des paramètres URL
+    qs = _parse_qs(stream_url)
+    _dbg(f"yt-dlp client_used={client_used}, title={title!r}")
+    _dbg(f"URL host={_url.urlsplit(stream_url).hostname}, itag={qs.get('itag')} mime={qs.get('mime')} dur={qs.get('dur')} clen={qs.get('clen')} ip={qs.get('ip')}")
+    _dbg(f"URL expire={_fmt_epoch(qs.get('expire'))}")
 
     # >>>>>> HEADERS POUR FFMPEG (crucial pour éviter 403) <<<<<<
     headers = (info.get("http_headers") or {})
     headers.setdefault("User-Agent", _YT_UA)
     headers.setdefault("Referer", "https://www.youtube.com/")
     headers.setdefault("Origin", "https://www.youtube.com")
-    # Blob multi-lignes pour -headers
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+
+    # HTTP probe (optionnel) — pour voir si l’URL est 403 côté serveur *avant* FFmpeg
+    try:
+        _http_probe(stream_url, headers)
+    except Exception as e:
+        _dbg(f"http_probe error: {e}")
 
     before_opts = (
         "-nostdin "
@@ -266,13 +356,19 @@ async def stream(
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
     )
+    _dbg(f"FFMPEG before_options={before_opts}")
+
+    # Log headers redacted
+    _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
 
     source = discord.FFmpegPCMAudio(
         stream_url,
         before_options=before_opts,
-        options="-vn",
+        options="-vn -loglevel debug",
         executable=ffmpeg_path,
     )
+    _dbg("FFMPEG source created (direct URL).")
+
     setattr(source, "_ytdlp_proc", None)
     return source, title
 
@@ -291,6 +387,7 @@ async def stream_pipe(
     """
     import asyncio
 
+    _dbg(f"STREAM_PIPE request: {url_or_query!r}")
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
@@ -322,19 +419,41 @@ async def stream_pipe(
     if ratelimit_bps:
         cmd += ["--limit-rate", str(int(ratelimit_bps))]
 
+    _dbg(f"yt-dlp PIPE cmd: {' '.join(shlex.quote(c) for c in cmd)}")
+
     yt = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,   # capture logs
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
+
+    # Draine stderr dans un thread pour diagnostic
+    def _drain_stderr():
+        try:
+            for line in yt.stderr:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                # yt-dlp peut afficher des URLs signées ou cookies:
+                # on laisse tel quel (debug) mais on peut filtrer si besoin
+                print(f"[YTDBG][yt-dlp] {line}")
+        except Exception as e:
+            print(f"[YTDBG][yt-dlp] <stderr reader died: {e}>")
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
         executable=ffmpeg_path,
         before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
-        options="-re -vn -ar 48000 -ac 2 -f s16le",  # <- -re = cadence temps réel
+        options="-re -vn -ar 48000 -ac 2 -f s16le",
         pipe=True,
     )
+    _dbg("FFMPEG source created (PIPE).")
 
     setattr(src, "_ytdlp_proc", yt)
     setattr(src, "_title", title)
@@ -369,6 +488,7 @@ def download(
 
     try:
         with YoutubeDL(opts) as ydl:
+            _dbg(f"DOWNLOAD start: {url}")
             info = ydl.extract_info(url, download=True)
             if info and "entries" in info and info["entries"]:
                 info = info["entries"][0]
@@ -382,8 +502,10 @@ def download(
 
             title = (info or {}).get("title", "Musique inconnue")
             duration = (info or {}).get("duration")
+            _dbg(f"DOWNLOAD ok: path={filepath}, title={title!r}, dur={duration}")
             return filepath, title, duration
     except DownloadError as e:
+        _dbg(f"DOWNLOAD failed: {e}")
         if "Requested format is not available" in str(e):
             # Fallback ultime: itag 18 (mp4) puis conversion audio
             opts2 = _mk_opts(
@@ -397,6 +519,7 @@ def download(
             opts2["paths"] = {"home": out_dir}
             opts2["outtmpl"] = "%(title).200B - %(id)s.%(ext)s"
             with YoutubeDL(opts2) as ydl2:
+                _dbg("DOWNLOAD fallback: itag=18")
                 info = ydl2.extract_info(url, download=True)
                 if info and "entries" in info and info["entries"]:
                     info = info["entries"][0]
@@ -404,5 +527,6 @@ def download(
                 filepath = req[0].get("filepath") if req else (os.path.splitext(ydl2.prepare_filename(info))[0] + ".mp3")
                 title = (info or {}).get("title", "Musique inconnue")
                 duration = (info or {}).get("duration")
+                _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
         raise RuntimeError(f"Échec download YouTube: {e}") from e
