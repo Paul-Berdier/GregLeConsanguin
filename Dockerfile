@@ -1,13 +1,14 @@
 # Utilise une image Python récente
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+# Évite l'écriture de fichiers .pyc et active le mode verbeux
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
+# Définit le répertoire de travail
 WORKDIR /app
 
-# Déps système (ffmpeg + voice)
+# Installe git, ffmpeg et les libs nécessaires à l'audio (PyNaCl)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -17,27 +18,13 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copie *tout* le projet (incluant tests/, à condition qu'il ne soit pas ignoré)
+# Copie les fichiers de l'app
 COPY . .
 
-# Déps Python
+# Met à jour pip et installe la version dev de discord.py avec l'extra [voice]
 RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
     pip install --no-cache-dir -r requirements.txt
-
-# -------- Étape tests (exécutée pendant le build) --------
-# On peut l'ignorer avec: docker build --build-arg SKIP_TESTS=1 .
-ARG SKIP_TESTS=0
-RUN if [ "$SKIP_TESTS" != "1" ]; then \
-      echo "== Lancer uniquement les tests YouTube ==" && \
-      pip install --no-cache-dir pytest pytest-asyncio && \
-      YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-      python -m pytest -q -p pytest_asyncio tests/test_youtube_extractor.py || (echo 'Pytest a échoué'; exit 1); \
-    else \
-      echo 'SKIP_TESTS=1 -> tests sautés'; \
-    fi
-
 
 # Commande de démarrage du bot
 CMD ["python", "main.py"]

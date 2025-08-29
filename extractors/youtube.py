@@ -2,12 +2,12 @@
 #
 # YouTube robuste (Greg le Consanguin) — DEBUG MAX + Contournements 403
 # - Clients sûrs (évite TV/SABR): ios → web → web_creator → web_mobile → android
-# - STREAM direct: URL + headers → FFmpeg (anti-403)
+# - STREAM direct: URL + headers → FFmpeg (anti-403) (+ -http_proxy si défini)
 # - STREAM (PIPE): yt-dlp → stdout → FFmpeg (avant fallback download)
 # - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre (itag 18 si besoin)
-# - Cookies: navigateur (cookiesfrombrowser) prioritaire, sinon fichier Netscape;
+# - Cookies: navigateur (cookiesfrombrowser) prioritaire, sinon fichier Netscape ;
 #            support injection via env/base64 (YTDLP_COOKIES_B64 → youtube.com_cookies.txt)
-# - Proxies/VPN: support env YTDLP_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY → yt-dlp & http_probe
+# - Proxies/VPN: support env YTDLP_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY → yt-dlp & http_probe & FFmpeg
 # - IPv4: forçage source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
 # - DEBUG: traces complètes [YTDBG], HTTP probe optionnelle (HEAD/GET Range)
@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import functools
-import io
 import os
 import shlex
 import shutil
@@ -75,7 +74,12 @@ _FORCE_IPV4 = os.getenv("YTDLP_FORCE_IPV4", "1").lower() not in ("0", "false", "
 _HTTP_PROXY = os.getenv("YTDLP_HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY")
 
 _CLIENTS_ORDER = ["ios", "web", "web_creator", "web_mobile", "android"]
-_FORMAT_CHAIN = "bestaudio[ext=m4a]/bestaudio/best/140/251/18"
+
+# 🔊 Formats orientés AUDIO ; overridable par env YTDLP_FORMAT
+_FORMAT_CHAIN = os.getenv(
+    "YTDLP_FORMAT",
+    "bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/251/140/bestaudio/18"
+)
 _COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
 
 
@@ -84,7 +88,6 @@ def is_valid(url: str) -> bool:
         return False
     u = url.lower()
     return ("youtube.com/watch" in u) or ("youtu.be/" in u) or ("youtube.com/shorts/" in u)
-
 
 # ------------------------ cookies helpers ------------------------
 
@@ -98,7 +101,6 @@ def _ensure_cookiefile_from_b64(target_path: str) -> Optional[str]:
         return None
     try:
         raw = base64.b64decode(b64)
-        # accept utf-8 or latin-1
         text = raw.decode("utf-8", errors="replace")
         with open(target_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -116,7 +118,6 @@ def _parse_cookies_from_browser_spec(spec: Optional[str]):
     browser = parts[0].strip().lower()
     profile = parts[1].strip() if len(parts) > 1 else None
     return (browser,) if profile is None else (browser, profile)
-
 
 # ------------------------ yt-dlp opts ------------------------
 
@@ -144,7 +145,7 @@ def _mk_opts(
         "ignoreerrors": True,
         "retries": 5,
         "fragment_retries": 5,
-        # IPv4 souvent plus stable sur Railway (évite des 403 IPv6/DC)
+        # IPv4 souvent plus stable sur Railway
         "source_address": "0.0.0.0" if _FORCE_IPV4 else None,
         "http_headers": {
             "User-Agent": _YT_UA,
@@ -152,7 +153,6 @@ def _mk_opts(
         },
         "extractor_args": {
             "youtube": {
-                # ordre de clients
                 "player_client": list(_CLIENTS_ORDER),
             }
         },
@@ -203,7 +203,6 @@ def _mk_opts(
             del ydl_opts[k]
     return ydl_opts
 
-
 # ------------------------ search ------------------------
 
 def _normalize_search_entries(entries: List[dict]) -> List[dict]:
@@ -234,7 +233,6 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
         data = ydl.extract_info(f"ytsearch5:{query}", download=False)
         entries = (data or {}).get("entries") or []
         return _normalize_search_entries(entries)
-
 
 # ------------------------ internal probe helpers ------------------------
 
@@ -311,7 +309,6 @@ def _resolve_ytdlp_cli() -> List[str]:
     exe = shutil.which("yt-dlp")
     return [exe] if exe else [sys.executable, "-m", "yt_dlp"]
 
-
 def _http_probe(url: str, headers: Dict[str, str]) -> None:
     """Optionnel: interroge en HEAD puis GET Range 0-1 pour voir si 403 côté serveur."""
     if not _YTDBG_HTTP_PROBE:
@@ -341,7 +338,6 @@ def _http_probe(url: str, headers: Dict[str, str]) -> None:
             _dbg(f"HTTP_PROBE: GET Range→ {getattr(resp, 'status', resp.getcode())} (len={resp.headers.get('Content-Length')})")
     except Exception as e:
         _dbg(f"HTTP_PROBE: GET Range failed: {e}")
-
 
 # ------------------------ public: stream (direct) ------------------------
 
@@ -413,6 +409,10 @@ async def stream(
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
     )
+    # 🔌 Proxy FFmpeg si défini
+    if _HTTP_PROXY:
+        before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
+
     _dbg(f"FFMPEG before_options={before_opts}")
     _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
 
@@ -426,7 +426,6 @@ async def stream(
 
     setattr(source, "_ytdlp_proc", None)
     return source, title
-
 
 # ------------------------ public: stream_pipe (yt-dlp → ffmpeg) ------------------------
 
@@ -525,7 +524,6 @@ async def stream_pipe(
     setattr(src, "_title", title)
     return src, title
 
-
 # ------------------------ public: download ------------------------
 
 def download(
@@ -598,3 +596,204 @@ def download(
                 _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
         raise RuntimeError(f"Échec download YouTube: {e}") from e
+
+# ======================== CLI de test local ========================
+
+def _print_env_summary():
+    print("\n=== ENV SUMMARY ===")
+    print(f"UA: {_YT_UA[:80]}...")
+    print(f"FORCE_IPV4: {_FORCE_IPV4}")
+    print(f"PROXY: {_HTTP_PROXY or 'none'}")
+    print(f"YTDLP_COOKIES_BROWSER: {os.getenv('YTDLP_COOKIES_BROWSER') or 'none'}")
+    print(f"YTDLP_COOKIES_B64: {'set' if os.getenv('YTDLP_COOKIES_B64') else 'unset'}")
+    cf = os.path.exists(_COOKIE_FILE_DEFAULT)
+    print(f"cookie file present: {cf} -> {_COOKIE_FILE_DEFAULT if cf else '-'}")
+    print(f"YTDBG: {_YTDBG} YTDBG_HTTP_PROBE: {_YTDBG_HTTP_PROBE}")
+    print("====================\n")
+
+def _ffmpeg_pull_test(url: str, headers: Dict[str, str], ffmpeg_path: str, seconds: int = 3) -> int:
+    hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+    before_opts = [
+        "-nostdin",
+        "-user_agent", headers.get("User-Agent", _YT_UA),
+        "-headers", hdr_blob,
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-rw_timeout", "15000000",
+        "-probesize", "32k", "-analyzeduration", "0",
+        "-fflags", "nobuffer", "-flags", "low_delay",
+        "-seekable", "0",
+    ]
+    if _HTTP_PROXY:
+        before_opts += ["-http_proxy", _HTTP_PROXY]
+    cmd = [ffmpeg_path] + before_opts + ["-i", url, "-t", str(seconds), "-f", "null", "-"]
+    print("[CLI] ffmpeg test cmd:", " ".join(shlex.quote(c) for c in cmd))
+    cp = subprocess.run(cmd, text=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
+    print("[CLI] ffmpeg exit:", cp.returncode)
+    if cp.stdout:
+        # n'affiche pas TOUT pour rester lisible
+        print(cp.stdout[-1200:])
+    return cp.returncode
+
+def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
+    ytcmd = _resolve_ytdlp_cli() + [
+        "-f", _FORMAT_CHAIN,
+        "--no-playlist",
+        "--no-check-certificates",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--newline",
+        "--user-agent", _YT_UA,
+        "--extractor-args", f"youtube:player_client={','.join(_CLIENTS_ORDER)}",
+        "-o", "-",
+    ]
+    if _FORCE_IPV4:
+        ytcmd += ["--force-ipv4"]
+    if _HTTP_PROXY:
+        ytcmd += ["--proxy", _HTTP_PROXY]
+    if os.path.exists(_COOKIE_FILE_DEFAULT):
+        ytcmd += ["--cookies", _COOKIE_FILE_DEFAULT]
+    ytcmd += [url]
+
+    print("[CLI] yt-dlp pipe cmd:", " ".join(shlex.quote(c) for c in ytcmd))
+
+    yt = subprocess.Popen(
+        ytcmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        bufsize=0,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    ff = subprocess.Popen(
+        [ffmpeg_path, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
+         "-i", "pipe:0", "-t", str(seconds), "-f", "null", "-"],
+        stdin=yt.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    # draine les logs yt-dlp
+    def _drain_stderr():
+        try:
+            while True:
+                chunk = yt.stderr.readline()
+                if not chunk:
+                    break
+                try:
+                    line = chunk.decode("utf-8", errors="replace").rstrip("\n")
+                except Exception:
+                    line = repr(chunk)
+                if line:
+                    print(f"[YTDBG][yt-dlp] {line}")
+        except Exception as e:
+            print(f"[YTDBG][yt-dlp] <stderr reader died: {e}>")
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+
+    out = ff.communicate()[0] or ""
+    rc = ff.returncode
+    print("[CLI] ffmpeg (pipe) exit:", rc)
+    if out:
+        print(out[-1200:])
+
+    try:
+        yt.kill()
+    except Exception:
+        pass
+    return rc
+
+def _cli_env():
+    _print_env_summary()
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser("YouTube extractor debug CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_env = sub.add_parser("env", help="Afficher le résumé d'environnement")
+
+    p_search = sub.add_parser("search", help="Recherche ytsearch5")
+    p_search.add_argument("query")
+
+    p_stream = sub.add_parser("stream", help="Tester un pull direct FFmpeg (headers anti-403)")
+    p_stream.add_argument("url")
+    p_stream.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg")
+    p_stream.add_argument("--seconds", type=int, default=3)
+
+    p_pipe = sub.add_parser("pipe", help="Tester un pull PIPE yt-dlp → ffmpeg")
+    p_pipe.add_argument("url")
+    p_pipe.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg")
+    p_pipe.add_argument("--seconds", type=int, default=3)
+
+    p_dl = sub.add_parser("download", help="Télécharger et convertir (mp3)")
+    p_dl.add_argument("url")
+    p_dl.add_argument("--ffmpeg", required=False, default=shutil.which("ffmpeg") or "ffmpeg")
+    p_dl.add_argument("--out", default="downloads")
+
+    p_probe = sub.add_parser("probe", help="Faire un HTTP probe (HEAD/GET Range) sur une URL googlevideo")
+    p_probe.add_argument("url")
+
+    args = parser.parse_args()
+    _print_env_summary()
+
+    if args.cmd == "env":
+        _cli_env()
+
+    elif args.cmd == "search":
+        res = search(args.query)
+        print(f"Results: {len(res)}")
+        for i, r in enumerate(res, 1):
+            print(f" {i}. {r['title']} — {r['url']}")
+
+    elif args.cmd == "stream":
+        # on fait juste l'extraction et un coup de ffmpeg -t N
+        info = _best_info_with_fallbacks(
+            args.url,
+            cookies_file=_COOKIE_FILE_DEFAULT if os.path.exists(_COOKIE_FILE_DEFAULT) else None,
+            cookies_from_browser=os.getenv("YTDLP_COOKIES_BROWSER"),
+            ffmpeg_path=args.ffmpeg,
+            ratelimit_bps=None,
+        )
+        if not info or not info.get("url"):
+            print("AUCUNE URL DIRECTE OBTENUE")
+            sys.exit(2)
+        headers = (info.get("http_headers") or {})
+        headers.setdefault("User-Agent", _YT_UA)
+        headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        headers.setdefault("Accept-Language", "en-us,en;q=0.5")
+        headers.setdefault("Sec-Fetch-Mode", "navigate")
+        headers.setdefault("Referer", "https://www.youtube.com/")
+        headers.setdefault("Origin", "https://www.youtube.com")
+        code = _ffmpeg_pull_test(info["url"], headers, args.ffmpeg, seconds=args.seconds)
+        sys.exit(code)
+
+    elif args.cmd == "pipe":
+        code = _ytdlp_pipe_pull_test(args.url, args.ffmpeg, seconds=args.seconds)
+        sys.exit(code)
+
+    elif args.cmd == "download":
+        try:
+            path, title, dur = download(
+                args.url,
+                args.ffmpeg,
+                cookies_file=_COOKIE_FILE_DEFAULT if os.path.exists(_COOKIE_FILE_DEFAULT) else None,
+                cookies_from_browser=os.getenv("YTDLP_COOKIES_BROWSER"),
+                out_dir=args.out,
+            )
+            print(f"OK: {path} | {title} | {dur}")
+            sys.exit(0)
+        except Exception as e:
+            print(f"DOWNLOAD ERROR: {e}")
+            sys.exit(3)
+
+    elif args.cmd == "probe":
+        headers = {
+            "User-Agent": _YT_UA,
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
+        }
+        try:
+            _http_probe(args.url, headers)
+        except Exception as e:
+            print("probe failed:", e)
