@@ -667,6 +667,7 @@ class Music(commands.Cog):
 
         # --- STREAM prioritaire ---
         if play_mode in ("auto", "stream") and hasattr(extractor, "stream"):
+            _greg_print("TEST STREAM - 1")
             try:
                 kw = self._extractor_kwargs(
                     extractor, "stream",
@@ -695,6 +696,7 @@ class Music(commands.Cog):
 
                     # 1) RETRY direct une fois si échec très tôt (URL périmée/403)
                     if (err or elapsed < 2.0) and not retried_direct:
+                        _greg_print("RETRY direct une fois si échec très tôt (URL périmée/403)")
                         retried_direct = True
                         try:
                             kw2 = self._extractor_kwargs(
@@ -737,7 +739,9 @@ class Music(commands.Cog):
                             pass  # on enchaîne sur le pipe
 
                     # 2) STREAM (PIPE) — yt-dlp → stdout → ffmpeg
+
                     if getattr(extractor, "__name__", "").endswith("youtube"):
+                        _greg_print("STREAM (PIPE) — yt-dlp → stdout → ffmpeg")
                         try:
                             kwp = self._extractor_kwargs(
                                 extractor, "stream_pipe",
