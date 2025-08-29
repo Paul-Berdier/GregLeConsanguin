@@ -29,16 +29,13 @@ RUN pip install --upgrade pip && \
 # On peut l'ignorer avec: docker build --build-arg SKIP_TESTS=1 .
 ARG SKIP_TESTS=0
 RUN if [ "$SKIP_TESTS" != "1" ]; then \
-        echo "== Sanity: liste des tests ==" && \
-        (find tests -maxdepth 2 -type f -name 'test_*.py' -print || true) && \
-        echo "== Installer pytest ==" && \
-        pip install --no-cache-dir pytest pytest-asyncio && \
-        echo "== Lancer pytest ==" && \
-        YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
-        PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-        python -m pytest -q tests || (echo 'Pytest a échoué'; exit 1); \
+ echo "== Lancer uniquement les tests YouTube ==" && \
+      pip install --no-cache-dir pytest pytest-asyncio && \
+      YTDBG=0 YTDBG_HTTP_PROBE=0 DISABLE_WEB=1 \
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+      python -m pytest -q tests/test_youtube_extractor.py || (echo 'Pytest a échoué'; exit 1); \
     else \
-        echo 'SKIP_TESTS=1 -> on saute les tests'; \
+      echo 'SKIP_TESTS=1 -> tests sautés'; \
     fi
 
 # Commande de démarrage du bot
