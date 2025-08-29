@@ -250,6 +250,14 @@ def _probe_with_client(
     )
     if client:
         opts["extractor_args"]["youtube"]["player_client"] = [client]
+        # iOS/Android ne doivent PAS avoir de cookies, sinon yt-dlp les skippe
+        if client in ("ios", "android"):
+            opts.pop("cookiesfrombrowser", None)
+            opts.pop("cookiefile", None)
+            _dbg(f"force client={client} without cookies")
+
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(query, download=False)
 
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(query, download=False)
@@ -448,73 +456,96 @@ async def stream_pipe(
     ))
     title = (info or {}).get("title", "Musique inconnue")
 
-    cmd = _resolve_ytdlp_cli() + [
+    # --- build des deux commandes ---
+    cmd_ios = _resolve_ytdlp_cli() + [
+        "--force-ipv4",
         "-f", _FORMAT_CHAIN,
-        "--no-playlist",
-        "--no-check-certificates",
-        "--retries", "5",
-        "--fragment-retries", "5",
+        "--no-playlist", "--no-check-certificates",
+        "--retries", "5", "--fragment-retries", "5",
         "--newline",
         "--user-agent", _YT_UA,
-        "--extractor-args", f"youtube:player_client={','.join(_CLIENTS_ORDER)}",
-        "-o", "-",  # → stdout
-        url_or_query,
+        "--extractor-args", "youtube:player_client=ios,android",
+        "-o", "-", url_or_query,
     ]
-    # Forcer IPv4 côté yt-dlp aussi (souvent utile sur Railway)
-    cmd.insert(1, "--force-ipv4")
+    # pas de cookies sur iOS/Android !
 
+    cmd_web = _resolve_ytdlp_cli() + [
+        "--force-ipv4",
+        "-f", _FORMAT_CHAIN,
+        "--no-playlist", "--no-check-certificates",
+        "--retries", "5", "--fragment-retries", "5",
+        "--newline",
+        "--user-agent", _YT_UA,
+        "--extractor-args", f"youtube:player_client=web,web_creator"
+                            + (f";po_token=web_creator.gvs+{os.getenv('YT_PO_TOKEN')}" if os.getenv(
+            "YT_PO_TOKEN") else ""),
+        "-o", "-", url_or_query,
+    ]
+    # cookies autorisés sur web/web_creator :
     spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
-    cfile = _ensure_cookies_file(cookies_file or os.getenv("YTDLP_COOKIES_FILE") or "youtube.com_cookies.txt")
     if spec:
-        cmd += ["--cookies-from-browser", spec]
-    elif cfile and os.path.exists(cfile):
-        cmd += ["--cookies", cfile]
-    if ratelimit_bps:
-        cmd += ["--limit-rate", str(int(ratelimit_bps))]
+        cmd_web += ["--cookies-from-browser", spec]
+    elif cookies_file and os.path.exists(cookies_file):
+        cmd_web += ["--cookies", cookies_file]
+    if ratelimit_bps: cmd_web += ["--limit-rate", str(int(ratelimit_bps))]
 
-    _dbg(f"yt-dlp PIPE cmd: {' '.join(shlex.quote(str(c)) for c in cmd)}")
+    def _try_pipe(cmd, label):
+        _dbg(f"yt-dlp PIPE ({label}) cmd: " + " ".join(shlex.quote(c) for c in cmd))
+        yt = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+                              universal_newlines=True)
+        # Thread de drain + buffer des 30 dernières lignes
+        last = []
 
-    # PIPE binaire: stdout=None (bytes), stderr capturé en texte (thread séparé)
-    yt = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,               # <<< IMPORTANT: flux binaire
-        bufsize=0,
-        universal_newlines=False,
-        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-    )
-
-    # Draine stderr dans un thread pour diagnostic (décodage utf-8 permissif)
-    def _drain_stderr():
-        try:
-            while True:
-                chunk = yt.stderr.readline()
-                if not chunk:
-                    break
-                try:
-                    line = chunk.decode("utf-8", errors="replace").rstrip("\n")
-                except Exception:
-                    line = repr(chunk)
+        def _drain():
+            for line in yt.stderr:
+                line = line.rstrip("\n")
                 if line:
+                    last.append(line);
+                    if len(last) > 30: last.pop(0)
                     print(f"[YTDBG][yt-dlp] {line}")
-        except Exception as e:
-            print(f"[YTDBG][yt-dlp] <stderr reader died: {e}>")
 
-    threading.Thread(target=_drain_stderr, daemon=True).start()
+        threading.Thread(target=_drain, daemon=True).start()
 
-    src = discord.FFmpegPCMAudio(
-        source=yt.stdout,
-        executable=ffmpeg_path,
-        before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
-        options="-re -vn -ar 48000 -ac 2 -f s16le",
-        pipe=True,
-    )
-    _dbg("FFMPEG source created (PIPE).")
+        # “garde” 12s: si le process meurt vite → on considère l’essai KO
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            rc = yt.poll()
+            if rc is not None and rc != 0:
+                raise RuntimeError(f"yt-dlp early exit rc={rc} ({label}) — {last[-1] if last else ''}")
+            if rc == 0:  # a fini (peu probable en 12s)
+                break
+            time.sleep(0.25)
 
-    setattr(src, "_ytdlp_proc", yt)
-    setattr(src, "_title", title)
-    return src, title
+        src = discord.FFmpegPCMAudio(
+            source=yt.stdout, executable=ffmpeg_path,
+            before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+            options="-re -vn -ar 48000 -ac 2 -f s16le", pipe=True)
+        setattr(src, "_ytdlp_proc", yt)
+        return src
+
+    # 1) iOS/Android sans cookies
+    try:
+        src = _try_pipe(cmd_ios, "ios/android")
+        _dbg("FFMPEG source created (PIPE iOS/Android).")
+        return src, title
+    except Exception as e:
+        _dbg(f"PIPE iOS/Android failed early: {e}")
+
+    # 2) web/web_creator (+cookies, PO token si dispo)
+    try:
+        src = _try_pipe(cmd_web, "web/web_creator")
+        _dbg("FFMPEG source created (PIPE web/web_creator).")
+        return src, title
+    except Exception as e:
+        _dbg(f"PIPE web/web_creator failed early: {e}")
+
+    # 3) Dernier recours: DOWNLOAD
+    _dbg("Both PIPE attempts failed fast → fallback DOWNLOAD")
+    path, title, _ = download(url_or_query, ffmpeg_path, cookies_file=cookies_file,
+                              cookies_from_browser=cookies_from_browser, ratelimit_bps=ratelimit_bps)
+    file_src = discord.FFmpegPCMAudio(path, executable=ffmpeg_path, options="-vn -loglevel debug")
+    return file_src, title
+
 
 # ------------------------ public: download ------------------------
 
