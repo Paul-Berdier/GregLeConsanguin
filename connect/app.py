@@ -60,15 +60,22 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         "http://localhost:5000",
         "http://127.0.0.1:5000",
     ]
+    # Autoriser explicitement l'origine Overwolf (passée par env)
+    # Exemple env: OVERWOLF_ORIGIN="overwolf-extension://npnebaiopikandkfjbkdjlecpcllldhgnekcjplj"
+    OW_ORIGIN = os.getenv("OVERWOLF_ORIGIN", "").strip()
+
     EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
-    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA))
+    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA + ([OW_ORIGIN] if OW_ORIGIN else [])))
 
     # ⚠️ On garde Flask-CORS pour les origines HTTP(s) classiques seulement
     CORS(
         app,
         supports_credentials=True,
         resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+        allow_headers=["Content-Type", "Authorization"],
+        methods=["GET", "POST", "OPTIONS"],
     )
+
 
     # Autorisation manuelle (Overwolf + fallback total si besoin)
     ALLOW_ORIGIN_ANY = os.getenv("ALLOW_ORIGIN_ANY", "0") == "1"
@@ -219,7 +226,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.after_request
     def _allow_overwolf_origin(resp):
         origin = request.headers.get("Origin") or ""
-        if origin.startswith("overwolf-extension://"):
+        # Autorise si l'origine est dans la whitelist OU si c'est un schéma Overwolf
+        if origin in ALLOWED_ORIGINS or origin.startswith("overwolf-extension://"):
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
             resp.headers["Access-Control-Allow-Credentials"] = "true"
@@ -228,6 +236,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             )
             resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
         return resp
+
 
     from flask import make_response
 
@@ -827,6 +836,11 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(results=[])
 
     # ------------------------ Socket.IO --------------------------------------
+    # Autorisations Socket.IO
+    sio_allowed = ALLOWED_ORIGINS + (["overwolf-extension://*"] if not OW_ORIGIN else [OW_ORIGIN])
+    if os.getenv("SOCKETIO_CORS_ANY", "0") == "1":
+        sio_allowed = "*"  # dev/urgence: accepte tout
+
     async_mode_env = os.getenv("SOCKETIO_ASYNC_MODE", "auto").lower().strip()
     if async_mode_env == "threading":
         async_mode_val = "threading"
@@ -838,15 +852,17 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             async_mode_val = "eventlet"
         except Exception:
             async_mode_val = None  # auto
+
     socketio = SocketIO(
         app,
-        cors_allowed_origins="*",
+        cors_allowed_origins=sio_allowed,
         async_mode=async_mode_val,
         ping_timeout=25,
         ping_interval=20,
         logger=False,
         engineio_logger=False,
     )
+
 
     @socketio.on("connect")
     def ws_connect(auth: Dict[str, Any] | None = None):
