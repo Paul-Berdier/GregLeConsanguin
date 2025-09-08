@@ -62,13 +62,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     ]
     # On peut compléter via ORIGINS="https://foo,https://bar"
     EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
-    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA))  # unique & ordre conservé
+    # Ajoute un motif regex pour Overwolf (quel que soit l'ID d’extension)
+    OVERWOLF_REGEX = r"^overwolf-extension://.*$"
 
-    # CORS avec credentials et whitelist (REST)
+    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA))
+
+    # CORS avec credentials + whitelist étendue (inclut Overwolf via regex)
     CORS(
         app,
         supports_credentials=True,
-        resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+        resources={r"/*": {"origins": ALLOWED_ORIGINS + [OVERWOLF_REGEX]}},
     )
 
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
@@ -207,7 +210,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     @app.after_request
     def _allow_overwolf_origin(resp):
-        # flask-cors ne "comprend" pas overwolf-extension:// ; on l'autorise explicitement
         origin = request.headers.get("Origin") or ""
         if origin.startswith("overwolf-extension://"):
             resp.headers["Access-Control-Allow-Origin"] = origin
@@ -218,6 +220,23 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             )
             resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
         return resp
+
+    @app.before_request
+    def _cors_preflight_for_overwolf():
+        if request.method == "OPTIONS" and (request.headers.get("Origin") or "").startswith("overwolf-extension://"):
+            from flask import make_response
+            resp = make_response("", 204)
+            origin = request.headers.get("Origin")
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                "Access-Control-Request-Headers", "Content-Type"
+            )
+            resp.headers["Access-Control-Allow-Methods"] = request.headers.get(
+                "Access-Control-Request-Method", "GET,POST,OPTIONS"
+            )
+            return resp
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
@@ -501,7 +520,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return err
         u = current_user()
         try:
-            result = _dispatch(music_cog.stop_for_web(guild_id, u["id"]), timeout=30)
+            result = _dispatch(music_cog.stop_for_web(guild_id), timeout=30)
             return jsonify(ok=bool(result))
         except PermissionError as e:
             return jsonify(error=str(e)), 403
@@ -520,7 +539,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return err
         u = current_user()
         try:
-            result = _dispatch(music_cog.skip_for_web(guild_id, u["id"]), timeout=30)
+            result = _dispatch(music_cog.skip_for_web(guild_id), timeout=30)
             return jsonify(ok=bool(result))
         except PermissionError as e:
             return jsonify(error=str(e)), 403
@@ -795,7 +814,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             async_mode_val = None  # auto
     socketio = SocketIO(
         app,
-        cors_allowed_origins=ALLOWED_ORIGINS + ["overwolf-extension://*"],
+        cors_allowed_origins="*",
         async_mode=async_mode_val,
         ping_timeout=25,
         ping_interval=20,
