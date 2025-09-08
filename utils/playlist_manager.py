@@ -1,4 +1,4 @@
-# playlist_manager.py
+# utils/playlist_manager.py
 
 import os
 import json

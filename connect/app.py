@@ -1,6 +1,8 @@
 # connect/app.py
 from __future__ import annotations
 from typing import Callable, Any, Dict, Optional, List, Set
+from werkzeug.middleware.proxy_fix import ProxyFix
+import re
 
 from flask import (
     Flask, render_template, render_template_string,
@@ -49,7 +51,25 @@ USER_META: Dict[str, Dict[str, Any]] = {}
 
 def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
-    CORS(app, supports_credentials=True)
+    # --- derrière un proxy (Railway) : force le schéma/host corrects pour url_for/redirect ---
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+    # --- Origins autorisés (Railway + local + Overwolf) ---
+    DEFAULT_ORIGINS = [
+        "https://gregleconsanguin.up.railway.app",
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+    ]
+    # On peut compléter via ORIGINS="https://foo,https://bar"
+    EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
+    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA))  # unique & ordre conservé
+
+    # CORS avec credentials et whitelist (REST)
+    CORS(
+        app,
+        supports_credentials=True,
+        resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    )
 
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.config.update(
@@ -182,6 +202,22 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         while s.endswith(';'):
             s = s[:-1]
         return s
+
+    # ------------------------ Hook overwolf --------------------------
+
+    @app.after_request
+    def _allow_overwolf_origin(resp):
+        # flask-cors ne "comprend" pas overwolf-extension:// ; on l'autorise explicitement
+        origin = request.headers.get("Origin") or ""
+        if origin.startswith("overwolf-extension://"):
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                "Access-Control-Request-Headers", "Content-Type"
+            )
+            resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        return resp
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
@@ -334,17 +370,15 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     def api_playlist():
         guild_id = request.args.get("guild_id")
         if not guild_id:
-            return jsonify({"queue": [], "current": None, "is_paused": False,
-                            "progress": {"elapsed": 0, "duration": None},
-                            "thumbnail": None, "repeat_all": False})
-
-        music_cog = app.bot.get_cog("Music") if hasattr(app, "bot") else None
-        if not music_cog:
-            return jsonify(error="Music cog not ready"), 503
+            return jsonify({
+                "queue": [], "current": None, "is_paused": False,
+                "progress": {"elapsed": 0, "duration": None},
+                "thumbnail": None, "repeat_all": False
+            })
 
         try:
-            gid = int(guild_id)
-            payload = music_cog._overlay_payload(gid)  # SOURCE DE VÉRITÉ
+            # ✅ Fallback robuste : on passe toujours par _overlay_payload_for
+            payload = _overlay_payload_for(int(guild_id))
             qlen = len(payload.get("queue") or [])
             cur = payload.get("current")
             print(f"🤦‍♂️ [WEB] GET /api/playlist — guild={guild_id}, "
@@ -459,14 +493,18 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/stop", methods=["POST"])
     @login_required
     def api_stop():
-        data = request.get_json(force=True); guild_id = data.get("guild_id")
+        data = request.get_json(force=True);
+        guild_id = data.get("guild_id")
         _dbg(f"POST /api/stop — guild={guild_id}")
         music_cog, err = _music_cog_required()
         if err:
             return err
+        u = current_user()
         try:
-            result = _dispatch(music_cog.stop_for_web(guild_id), timeout=30)
+            result = _dispatch(music_cog.stop_for_web(guild_id, u["id"]), timeout=30)
             return jsonify(ok=bool(result))
+        except PermissionError as e:
+            return jsonify(error=str(e)), 403
         except Exception as e:
             _dbg(f"/api/stop — 💥 {e}")
             return jsonify(error=str(e)), 500
@@ -474,14 +512,18 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @app.route("/api/skip", methods=["POST"])
     @login_required
     def api_skip():
-        data = request.get_json(force=True); guild_id = data.get("guild_id")
+        data = request.get_json(force=True);
+        guild_id = data.get("guild_id")
         _dbg(f"POST /api/skip — guild={guild_id}")
         music_cog, err = _music_cog_required()
         if err:
             return err
+        u = current_user()
         try:
-            result = _dispatch(music_cog.skip_for_web(guild_id), timeout=30)
+            result = _dispatch(music_cog.skip_for_web(guild_id, u["id"]), timeout=30)
             return jsonify(ok=bool(result))
+        except PermissionError as e:
+            return jsonify(error=str(e)), 403
         except Exception as e:
             _dbg(f"/api/skip — 💥 {e}")
             return jsonify(error=str(e)), 500
@@ -515,6 +557,57 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         except Exception as e:
             _dbg(f"/api/restart — 💥 {e}")
             return jsonify(error=str(e)), 500
+
+    @app.route("/api/remove_at", methods=["POST"])
+    @login_required
+    def api_remove_at():
+        data = request.get_json(force=True) or {}
+        guild_id = data.get("guild_id")
+        index = int(data.get("index", -1))
+        if guild_id is None or index < 0:
+            return jsonify(error="missing guild_id/index"), 400
+
+        music_cog, err = _music_cog_required()
+        if err:
+            return err
+
+        u = current_user()
+        try:
+            res = _dispatch(music_cog.remove_at_for_web(guild_id, u["id"], index), timeout=20)
+            return jsonify(ok=bool(res))
+        except PermissionError as e:
+            return jsonify(error=str(e)), 403
+        except IndexError as e:
+            return jsonify(error=str(e)), 400
+        except Exception as e:
+            _dbg(f"/api/remove_at — 💥 {e}")
+            return jsonify(error="internal-error"), 500
+
+    @app.route("/api/move", methods=["POST"])
+    @login_required
+    def api_move():
+        d = request.get_json(force=True) or {}
+        guild_id = d.get("guild_id")
+        src = int(d.get("src", -1))
+        dst = int(d.get("dst", -1))
+        if guild_id is None or src < 0 or dst < 0:
+            return jsonify(error="missing guild_id/src/dst"), 400
+
+        music_cog, err = _music_cog_required()
+        if err:
+            return err
+
+        u = current_user()
+        try:
+            res = _dispatch(music_cog.move_for_web(guild_id, u["id"], src, dst), timeout=20)
+            return jsonify(ok=bool(res))
+        except PermissionError as e:
+            return jsonify(error=str(e)), 403
+        except IndexError as e:
+            return jsonify(error=str(e)), 400
+        except Exception as e:
+            _dbg(f"/api/move — 💥 {e}")
+            return jsonify(error="internal-error"), 500
 
     @app.route("/api/repeat", methods=["POST"])
     @login_required
@@ -702,8 +795,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             async_mode_val = None  # auto
     socketio = SocketIO(
         app,
-        cors_allowed_origins="*",
+        cors_allowed_origins=ALLOWED_ORIGINS + ["overwolf-extension://*"],
         async_mode=async_mode_val,
+        ping_timeout=25,
+        ping_interval=20,
         logger=False,
         engineio_logger=False,
     )

@@ -114,6 +114,13 @@ class Music(commands.Cog):
             _greg_print(f"Nouvelle PlaylistManager pour la guild {gid_str}.")
         return self.managers[gid_str]
 
+    def _get_current_owner_id(self, gid: int) -> int:
+        try:
+            cur = (self.current_song.get(gid) or {})  # source de vérité côté web
+            return int(cur.get("added_by") or 0)
+        except Exception:
+            return 0
+
     # ---------- Normalisation/enrichissement des items ----------
 
     def _to_seconds(self, v):
@@ -287,7 +294,13 @@ class Music(commands.Cog):
             payload = self._overlay_payload(gid)
             print(f"[EMIT] playlist_update gid={gid} paused={payload.get('is_paused')} "
                   f"elapsed={(payload.get('progress', {}) or {}).get('elapsed')} title={(payload.get('current') or {}).get('title')}")
-            self.emit_fn("playlist_update", payload)
+            payload["guild_id"] = gid  # ← important pour l’émetteur
+            try:
+                # nouvelle signature (avec kwargs)
+                self.emit_fn("playlist_update", payload, guild_id=gid)
+            except TypeError:
+                # backward-compat si l’emit_fn legacy ne prend que 2 args
+                self.emit_fn("playlist_update", payload)
 
     async def _i_send(self, interaction: discord.Interaction, msg: str):
         try:
@@ -1139,37 +1152,92 @@ class Music(commands.Cog):
             return True
         return False
 
-    async def stop_for_web(self, guild_id: int | str):
+    async def stop_for_web(self, guild_id: int | str, requester_id: int | str) -> bool:
         gid = int(guild_id)
+        rid = int(requester_id)
+
+        # ⚖️ priorité globale : on regarde le poids max (queue + current)
         pm = self.get_pm(gid)
-        await asyncio.get_running_loop().run_in_executor(None, pm.clear)
+        loop = asyncio.get_running_loop()
+        q = await loop.run_in_executor(None, pm.get_queue)
+
+        owners = set()
+        try:
+            owners.add(self._get_current_owner_id(gid))
+        except Exception:
+            pass
+        for it in (q or []):
+            try:
+                owners.add(int(it.get("added_by") or 0))
+            except Exception:
+                pass
+        owners.discard(0)
+
+        max_weight = 0
+        for oid in owners:
+            try:
+                w = get_member_weight(self.bot, gid, int(oid))
+                if w > max_weight:
+                    max_weight = w
+            except Exception:
+                pass
+
+        if max_weight > 0 and not can_user_bump_over(self.bot, gid, rid, max_weight):
+            raise PermissionError("Insufficient priority to stop the player.")
+
+        # ⏹ arrêt propre
+        await loop.run_in_executor(None, pm.stop)
+
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
+
         self._kill_stream_proc(gid)
+
         self.is_playing[gid] = False
         self.current_song.pop(gid, None)
         self.now_playing.pop(gid, None)
+        self.play_start.pop(gid, None)
+        self.paused_since.pop(gid, None)
+        self.paused_total.pop(gid, None)
+        self.current_meta.pop(gid, None)
+
         self.emit_playlist_update(gid)
         return True
 
-    async def skip_for_web(self, guild_id: int | str):
+    async def skip_for_web(self, guild_id: int | str, requester_id: int | str) -> bool:
         gid = int(guild_id)
+        rid = int(requester_id)
+
+        # ⚖️ contrôle de priorité sur le morceau courant
+        owner_id = self._get_current_owner_id(gid)
+        if owner_id and owner_id != rid:
+            owner_weight = get_member_weight(self.bot, gid, owner_id)
+            if not can_user_bump_over(self.bot, gid, rid, owner_weight):
+                raise PermissionError("Insufficient priority to skip the current item.")
+
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
+
         if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()
-            return True
-        # Si rien ne joue, enchaîne la suite
-        self._kill_stream_proc(gid)
-        class FakeInteraction:
-            def __init__(self, gg):
-                self.guild = gg
-                self.followup = self
-            async def send(self, msg):
-                _greg_print(f"[WEB->Discord] {msg}")
-        await self.play_next(FakeInteraction(g))
+            self._kill_stream_proc(gid)
+            vc.stop()  # after -> play_next
+        else:
+            # Si rien ne joue, force la suivante
+            self._kill_stream_proc(gid)
+
+            class FakeInteraction:
+                def __init__(self, gg):
+                    self.guild = gg
+                    self.followup = self
+
+                async def send(self, msg):
+                    _greg_print(f"[WEB->Discord] {msg}")
+
+            await self.play_next(FakeInteraction(g))
+
+        self.emit_playlist_update(gid)
         return True
 
     async def toggle_pause_for_web(self, guild_id: int | str):
@@ -1232,6 +1300,87 @@ class Music(commands.Cog):
         self.repeat_all[gid] = bool(nxt)
         self.emit_playlist_update(gid)
         return bool(nxt)
+
+    async def remove_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int) -> bool:
+        """
+        Supprime l'élément à l'index si l'appelant est :
+        - le propriétaire de l'item, OU
+        - plus prioritaire que le propriétaire (can_user_bump_over == True).
+        """
+        gid = int(guild_id)
+        rid = int(requester_id)
+
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+        queue = await loop.run_in_executor(None, pm.get_queue)
+
+        if not (0 <= index < len(queue)):
+            raise IndexError("index hors bornes")
+
+        item = queue[index] or {}
+        owner_id = int(item.get("added_by") or 0)
+
+        # propriétaire → OK direct
+        if rid != owner_id:
+            owner_weight = get_member_weight(self.bot, gid, owner_id)
+            if not can_user_bump_over(self.bot, gid, rid, owner_weight):
+                raise PermissionError("Insufficient priority to remove this item.")
+
+        ok = await loop.run_in_executor(None, pm.remove_at, index)
+        if ok:
+            self.emit_playlist_update(gid)
+        return bool(ok)
+
+    async def move_for_web(self, guild_id: int | str, requester_id: int | str, src: int, dst: int) -> bool:
+        """
+        Déplace l'item src → dst avec règles de priorité :
+        - On peut toujours déplacer ses propres items.
+        - Pour déplacer l'item de quelqu’un d’autre : il faut un poids strictement supérieur
+          à celui du propriétaire de l’item à déplacer.
+        - Si on déplace vers le HAUT (dst < src), on ne peut PAS dépasser un item appartenant
+          à un propriétaire dont le poids est >= au nôtre (sauf si c’est aussi nos propres items).
+        - Vers le BAS (dst > src) : libre (on n’écrase le privilège de personne).
+        """
+        gid = int(guild_id)
+        rid = int(requester_id)
+
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+        queue = await loop.run_in_executor(None, pm.get_queue)
+
+        n = len(queue)
+        if not (0 <= src < n and 0 <= dst < n):
+            raise IndexError("index hors bornes")
+        if src == dst:
+            return True
+
+        item = queue[src] or {}
+        owner_id = int(item.get("added_by") or 0)
+
+        requester_weight = get_member_weight(self.bot, gid, rid)
+        owner_weight     = get_member_weight(self.bot, gid, owner_id)
+
+        # Si on déplace l’item de quelqu’un d’autre → il faut être plus lourd
+        if rid != owner_id and not can_user_bump_over(self.bot, gid, rid, owner_weight):
+            raise PermissionError("Insufficient priority to move this item.")
+
+        # Si on monte (dst < src), on ne doit pas dépasser des items de poids >= au nôtre
+        if dst < src:
+            for i in range(dst, src):
+                it = queue[i] or {}
+                it_owner_id = int(it.get("added_by") or 0)
+                if it_owner_id == rid:
+                    # on a le droit de dépasser nos propres items
+                    continue
+                it_owner_weight = get_member_weight(self.bot, gid, it_owner_id)
+                if it_owner_weight >= requester_weight:
+                    raise PermissionError("Insufficient priority to pass higher/equal priority items.")
+
+        ok = await loop.run_in_executor(None, pm.move, src, dst)
+        if ok:
+            self.emit_playlist_update(gid)
+        return bool(ok)
+
 
     # ---------- Ticker ----------
     def _ensure_ticker(self, guild_id: int):

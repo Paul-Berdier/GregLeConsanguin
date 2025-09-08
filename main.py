@@ -11,6 +11,9 @@ from discord.ext import commands
 
 from utils.playlist_manager import PlaylistManager
 import config
+from __main__ import socketio as _socketio
+from typing import Any
+
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -182,11 +185,19 @@ class GregBot(commands.Bot):
         # Injecte emit_fn (utilise l’instance socketio globale)
         try:
             from __main__ import socketio as _socketio
-            def _emit(event, data):
+            def _emit(event: str, data: Any, *, guild_id: int | str | None = None, user_id: int | str | None = None):
                 if not _socketio:
                     return
                 try:
-                    _socketio.emit(event, data)
+                    sent = False
+                    if guild_id is not None:
+                        _socketio.emit(event, data, room=f"guild:{int(guild_id)}")
+                        sent = True
+                    if user_id is not None:
+                        _socketio.emit(event, data, room=f"user:{int(user_id)}")
+                        sent = True
+                    if not sent:
+                        _socketio.emit(event, data)  # fallback broadcast
                 except Exception as e:
                     logger.error("socketio.emit failed: %s", e)
 
