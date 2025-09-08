@@ -54,29 +54,29 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     # Railway/Proxy: corrige schéma/host pour url_for/redirect
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
-    # --- Origins autorisés (Railway + local + Overwolf) ---
-    DEFAULT_ORIGINS = [
-        "https://gregleconsanguin.up.railway.app",
-        "http://localhost:5000",
-        "http://127.0.0.1:5000",
-    ]
-    # Ajoute ton ID d’extension Overwolf ici via env
-    # ex: OVERWOLF_ORIGIN="overwolf-extension://npnebaiopikandkfjbkdjlecpcllldhgnekcjplj"
-    OW_ORIGIN = os.getenv("OVERWOLF_ORIGIN", "").strip()
-    EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
-
-    ALLOWED_ORIGINS = list(
-        dict.fromkeys(DEFAULT_ORIGINS + EXTRA + ([OW_ORIGIN] if OW_ORIGIN else []))
-    )
-
-    # CORS REST (cookies/credentials)
-    CORS(
-        app,
-        supports_credentials=True,
-        resources={r"/*": {"origins": ALLOWED_ORIGINS}},
-        allow_headers=["Content-Type", "Authorization"],
-        methods=["GET", "POST", "OPTIONS"],
-    )
+    # # --- Origins autorisés (Railway + local + Overwolf) ---
+    # DEFAULT_ORIGINS = [
+    #     "https://gregleconsanguin.up.railway.app",
+    #     "http://localhost:5000",
+    #     "http://127.0.0.1:5000",
+    # ]
+    # # Ajoute ton ID d’extension Overwolf ici via env
+    # # ex: OVERWOLF_ORIGIN="overwolf-extension://npnebaiopikandkfjbkdjlecpcllldhgnekcjplj"
+    # OW_ORIGIN = os.getenv("OVERWOLF_ORIGIN", "").strip()
+    # EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
+    #
+    # ALLOWED_ORIGINS = list(
+    #     dict.fromkeys(DEFAULT_ORIGINS + EXTRA + ([OW_ORIGIN] if OW_ORIGIN else []))
+    # )
+    #
+    # # CORS REST (cookies/credentials)
+    # CORS(
+    #     app,
+    #     supports_credentials=True,
+    #     resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    #     allow_headers=["Content-Type", "Authorization"],
+    #     methods=["GET", "POST", "OPTIONS"],
+    # )
 
     # Cookies de session
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
@@ -211,20 +211,20 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             s = s[:-1]
         return s
 
-    # ------------------------ CORS: autoriser Overwolf explicite --------------------------
-    @app.after_request
-    def _allow_overwolf_origin(resp):
-        origin = request.headers.get("Origin") or ""
-        # Autorise si l'origine est dans la whitelist OU si c'est un schéma Overwolf
-        if origin in ALLOWED_ORIGINS or origin.startswith("overwolf-extension://"):
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Vary"] = "Origin"
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
-            resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
-                "Access-Control-Request-Headers", "Content-Type"
-            )
-            resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-        return resp
+    # # ------------------------ CORS: autoriser Overwolf explicite --------------------------
+    # @app.after_request
+    # def _allow_overwolf_origin(resp):
+    #     origin = request.headers.get("Origin") or ""
+    #     # Autorise si l'origine est dans la whitelist OU si c'est un schéma Overwolf
+    #     if origin in ALLOWED_ORIGINS or origin.startswith("overwolf-extension://"):
+    #         resp.headers["Access-Control-Allow-Origin"] = origin
+    #         resp.headers["Vary"] = "Origin"
+    #         resp.headers["Access-Control-Allow-Credentials"] = "true"
+    #         resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
+    #             "Access-Control-Request-Headers", "Content-Type"
+    #         )
+    #         resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    #     return resp
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
@@ -776,10 +776,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             return jsonify(results=[])
 
     # ------------------------ Socket.IO --------------------------------------
-    # Liste des origines autorisées côté WS
-    sio_allowed = ALLOWED_ORIGINS + (["overwolf-extension://*"] if not OW_ORIGIN else [OW_ORIGIN])
-    if os.getenv("SOCKETIO_CORS_ANY", "0") == "1":
-        sio_allowed = "*"  # mode permissif (dev/diagnostic)
+    # # Liste des origines autorisées côté WS
+    # sio_allowed = ALLOWED_ORIGINS + (["overwolf-extension://*"] if not OW_ORIGIN else [OW_ORIGIN])
+    # if os.getenv("SOCKETIO_CORS_ANY", "0") == "1":
+    #     sio_allowed = "*"  # mode permissif (dev/diagnostic)
 
     async_mode_env = os.getenv("SOCKETIO_ASYNC_MODE", "auto").lower().strip()
     if async_mode_env == "threading":
@@ -795,7 +795,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
 
     socketio = SocketIO(
         app,
-        cors_allowed_origins=sio_allowed,
+        # cors_allowed_origins=sio_allowed,
         async_mode=async_mode_val,
         ping_timeout=25,
         ping_interval=20,
