@@ -1076,33 +1076,40 @@ class Music(commands.Cog):
     async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
         gid = int(guild_id)
         rid = int(requester_id)
-        guild = self.bot.get_guild(gid)   # 👈 fix: on récupère bien la guild
+        guild = self.bot.get_guild(gid)
 
-        # 🔒 ADMIN uniquement
-        member = guild and guild.get_member(rid)
-        if not member or not getattr(member.guild_permissions, "administrator", False):
-            raise PermissionError("Admin requis pour sélectionner un titre dans la playlist.")
-
+        # Récup file & borne
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not (0 <= index < len(queue)):
             raise IndexError("index hors bornes")
 
+        # Poids du propriétaire de l'item + droit du demandeur
+        item = queue[index] or {}
+        owner_id = int(item.get("added_by") or 0)
+        owner_weight = get_member_weight(self.bot, gid, owner_id)
+
+        # Autorisé si admin/manage_guild OU si requester.weight > owner_weight
+        if not can_user_bump_over(self.bot, gid, rid, owner_weight):
+            raise PermissionError("Insufficient priority for this action.")
+
+        # Déplacement en tête
         ok = await loop.run_in_executor(None, pm.move, index, 0)
         if not ok:
             raise RuntimeError("Déplacement impossible.")
 
+        # Lancer la lecture (ou passer à la suivante si déjà en cours)
         vc = guild.voice_client if guild else None
-        if (not vc) or (not vc.is_playing() and not vc.is_paused()):
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()  # after -> play_next()
+        else:
             class FakeInteraction:
                 def __init__(self, g): self.guild = g; self.followup = self
+
                 async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
+
             await self.play_next(FakeInteraction(guild))
-        else:
-            # on coupe pour déclencher l'after ; on nettoie l'UI de suite
-            vc.stop()
-            self._force_idle(gid, 1.2)
 
         self.emit_playlist_update(gid)
         return True
