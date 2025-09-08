@@ -578,8 +578,6 @@ if __name__ == "__main__":
         code = _ffmpeg_pull_test(su, hdr_blob, args.ffmpeg, seconds=args.seconds, is_hls=is_hls)
         sys.exit(code)
 
-
-
     elif args.cmd == "download":
         try:
             path, title, dur = asyncio.run(download(args.url, args.ffmpeg))
