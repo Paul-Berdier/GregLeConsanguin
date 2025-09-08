@@ -60,19 +60,27 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         "http://localhost:5000",
         "http://127.0.0.1:5000",
     ]
-    # On peut compléter via ORIGINS="https://foo,https://bar"
     EXTRA = [o.strip() for o in os.getenv("ORIGINS", "").split(",") if o.strip()]
-    # Ajoute un motif regex pour Overwolf (quel que soit l'ID d’extension)
-    OVERWOLF_REGEX = r"^overwolf-extension://.*$"
-
     ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ORIGINS + EXTRA))
 
-    # CORS avec credentials + whitelist étendue (inclut Overwolf via regex)
+    # ⚠️ On garde Flask-CORS pour les origines HTTP(s) classiques seulement
     CORS(
         app,
         supports_credentials=True,
-        resources={r"/*": {"origins": ALLOWED_ORIGINS + [OVERWOLF_REGEX]}},
+        resources={r"/*": {"origins": ALLOWED_ORIGINS}},
     )
+
+    # Autorisation manuelle (Overwolf + fallback total si besoin)
+    ALLOW_ORIGIN_ANY = os.getenv("ALLOW_ORIGIN_ANY", "0") == "1"
+
+    def _origin_allowed(origin: str) -> bool:
+        if not origin:
+            return False
+        if ALLOW_ORIGIN_ANY:
+            return True
+        if origin.startswith("overwolf-extension://"):
+            return True
+        return origin in ALLOWED_ORIGINS
 
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.config.update(
@@ -221,22 +229,40 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
         return resp
 
+    from flask import make_response
+
     @app.before_request
     def _cors_preflight_for_overwolf():
-        if request.method == "OPTIONS" and (request.headers.get("Origin") or "").startswith("overwolf-extension://"):
-            from flask import make_response
-            resp = make_response("", 204)
-            origin = request.headers.get("Origin")
+        # Répondre aux OPTIONS avec les bons headers pour CORS custom
+        if request.method == "OPTIONS":
+            origin = request.headers.get("Origin") or ""
+            if _origin_allowed(origin):
+                resp = make_response("", 204)
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Vary"] = "Origin"
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
+                    "Access-Control-Request-Headers", "Content-Type"
+                )
+                resp.headers["Access-Control-Allow-Methods"] = request.headers.get(
+                    "Access-Control-Request-Method", "GET,POST,OPTIONS"
+                )
+                return resp
+        return None
+
+    @app.after_request
+    def _force_cors_headers(resp):
+        # Pose les headers CORS finaux si l’origine est autorisée (inclut Overwolf)
+        origin = request.headers.get("Origin") or ""
+        if _origin_allowed(origin):
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
             resp.headers["Access-Control-Allow-Credentials"] = "true"
-            resp.headers["Access-Control-Allow-Headers"] = request.headers.get(
-                "Access-Control-Request-Headers", "Content-Type"
-            )
-            resp.headers["Access-Control-Allow-Methods"] = request.headers.get(
-                "Access-Control-Request-Method", "GET,POST,OPTIONS"
-            )
-            return resp
+            if request.method != "OPTIONS":
+                # Pour les requêtes non-OPTIONS on renforce aussi les allow
+                resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type,Authorization")
+                resp.headers.setdefault("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        return resp
 
     # ------------------------ Pages HTML --------------------------
     @app.route("/")
