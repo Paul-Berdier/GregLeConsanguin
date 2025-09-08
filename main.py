@@ -11,7 +11,6 @@ from discord.ext import commands
 
 from utils.playlist_manager import PlaylistManager
 import config
-from __main__ import socketio as _socketio
 from typing import Any
 
 
@@ -182,32 +181,36 @@ class GregBot(commands.Bot):
         except Exception as e:
             logger.warning("fetch_commands a échoué: %s", e)
 
-        # Injecte emit_fn (utilise l’instance socketio globale)
-        try:
-            from __main__ import socketio as _socketio
-            def _emit(event: str, data: Any, *, guild_id: int | str | None = None, user_id: int | str | None = None):
-                if not _socketio:
-                    return
-                try:
-                    sent = False
-                    if guild_id is not None:
-                        _socketio.emit(event, data, room=f"guild:{int(guild_id)}")
-                        sent = True
-                    if user_id is not None:
-                        _socketio.emit(event, data, room=f"user:{int(user_id)}")
-                        sent = True
-                    if not sent:
-                        _socketio.emit(event, data)  # fallback broadcast
-                except Exception as e:
-                    logger.error("socketio.emit failed: %s", e)
+        # ---- Wire emit_fn to Socket.IO (no fragile __main__ import) ----
+        def _resolve_socketio():
+            try:
+                si = globals().get("socketio")
+                if si:
+                    return si
+            except Exception:
+                pass
+            app = getattr(self, "web_app", None)
+            return getattr(app, "socketio", None)
 
-            for cog_name in ("Music","Voice","General","EasterEggs","Spook"):
-                cog = self.get_cog(cog_name)
-                if cog and not getattr(cog, "emit_fn", None):
-                    cog.emit_fn = _emit
-                    logger.info("emit_fn branché sur %s", cog_name)
-        except Exception as e:
-            logger.error("Impossible de connecter emit_fn: %s", e)
+        def _emit(event, data, **kwargs):
+            si = _resolve_socketio()
+            if not si:
+                return
+            try:
+                gid = kwargs.get("guild_id")
+                if gid is not None:
+                    # target all overlays for this guild
+                    si.emit(event, data, room=f"guild:{gid}")
+                else:
+                    si.emit(event, data)
+            except Exception as e:
+                logger.error("socketio.emit failed: %s", e)
+
+        for cog_name in ("Music", "Voice", "General", "EasterEggs", "Spook"):
+            cog = self.get_cog(cog_name)
+            if cog and not getattr(cog, "emit_fn", None):
+                cog.emit_fn = _emit
+                logger.info("emit_fn branché sur %s", cog_name)
 
         # Self-test post restart (optionnel)
         try:
