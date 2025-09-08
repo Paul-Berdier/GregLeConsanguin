@@ -3,13 +3,14 @@ import os
 import threading
 import time
 import socket
-import discord
-from discord.ext import commands
-from utils.playlist_manager import PlaylistManager
-import config
 import json
 import subprocess
 import requests
+import discord
+from discord.ext import commands
+
+from utils.playlist_manager import PlaylistManager
+import config
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -54,7 +55,10 @@ async def run_post_restart_selftest(bot):
         results = []
 
         # 1) COGS
-        expected_cogs = ["Music", "Voice", "General", "EasterEggs", "Spook"]
+        expected_cogs = [
+            "Music", "Voice", "General",
+            "EasterEggs", "Spook", "SpotifyAccount", "CookieGuardian"
+        ]
         for name in expected_cogs:
             ok = bot.get_cog(name) is not None
             results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
@@ -67,10 +71,18 @@ async def run_post_restart_selftest(bot):
             names = set()
             results.append(("Slash:fetch_commands", False, str(e)))
         expected_cmds = [
+            # music/voice/general habituels…
             "play","pause","resume","skip","stop","playlist","current",
             "ping","greg","web","help","restart",
-            "roll","coin","tarot","curse","praise","shame","skullrain","gregquote","spook_enable",
-            "spook_settings","spook_status"
+            # easter eggs
+            "roll","coin","tarot","curse","praise","shame","skullrain","gregquote",
+            # spook
+            "spook_enable","spook_settings","spook_status",
+            "spook_test","spook_files","spook_reload","spook_scare",
+            # spotify account
+            "set_spotify_account","unset_spotify_account",
+            # guardian yt cookies
+            "yt_cookies_update","yt_cookies_check",
         ]
         for name in expected_cmds:
             ok = name in names
@@ -79,10 +91,10 @@ async def run_post_restart_selftest(bot):
         # 3) FFmpeg
         try:
             music_cog = bot.get_cog("Music")
-            ff = music_cog.detect_ffmpeg() if music_cog else "ffmpeg"
+            ff = music_cog.detect_ffmpeg() if music_cog and hasattr(music_cog, "detect_ffmpeg") else "ffmpeg"
             cp = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=3)
             ok = (cp.returncode == 0)
-            results.append(("FFmpeg", ok, "" if ok else cp.stderr[:200]))
+            results.append(("FFmpeg", ok, "" if ok else (cp.stderr or cp.stdout)[:200]))
         except Exception as e:
             results.append(("FFmpeg", False, str(e)))
 
@@ -139,15 +151,22 @@ class GregBot(commands.Bot):
         intents = discord.Intents.all()
         super().__init__(command_prefix="!", intents=intents, **kwargs)
 
-    async def setup_hook(self):
-        for filename in os.listdir("./commands"):
+    async def _load_ext_dir(self, dir_name: str):
+        if not os.path.isdir(f"./{dir_name}"):
+            return
+        for filename in os.listdir(f"./{dir_name}"):
             if filename.endswith(".py") and filename != "__init__.py":
-                extension = f"commands.{filename[:-3]}"
+                extension = f"{dir_name}.{filename[:-3]}"
                 try:
                     await self.load_extension(extension)
                     logging.getLogger(__name__).info("✅ Cog chargé : %s", extension)
                 except Exception as e:
                     logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
+
+    async def setup_hook(self):
+        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
+        for dir_name in ("commands", "cogs"):
+            await self._load_ext_dir(dir_name)
         await self.tree.sync()
         logging.getLogger(__name__).info("Slash commands sync DONE !")
 
@@ -164,9 +183,12 @@ class GregBot(commands.Bot):
         try:
             from __main__ import socketio as _socketio
             def _emit(event, data):
-                if not _socketio: return
-                try: _socketio.emit(event, data)
-                except Exception as e: logger.error("socketio.emit failed: %s", e)
+                if not _socketio:
+                    return
+                try:
+                    _socketio.emit(event, data)
+                except Exception as e:
+                    logger.error("socketio.emit failed: %s", e)
 
             for cog_name in ("Music","Voice","General","EasterEggs","Spook"):
                 cog = self.get_cog(cog_name)

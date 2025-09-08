@@ -82,12 +82,56 @@ _FORMAT_CHAIN = os.getenv(
 )
 _COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
 
-
 def is_valid(url: str) -> bool:
     if not isinstance(url, str):
         return False
     u = url.lower()
     return ("youtube.com/watch" in u) or ("youtu.be/" in u) or ("youtube.com/shorts/" in u)
+
+# ------------------------ FFmpeg path helpers ------------------------
+
+def _resolve_ffmpeg_paths(ffmpeg_hint: Optional[str]) -> Tuple[str, Optional[str]]:
+    """
+    Résout le binaire FFmpeg à exécuter ET le dossier à donner à yt-dlp (pour ffprobe).
+    Retourne (ffmpeg_exec, ffmpeg_location_dir|None).
+    - Accepte: chemin exe, dossier bin, simple 'ffmpeg' si dans PATH.
+    - Sur Windows: binaire = 'ffmpeg.exe'
+    """
+    exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+    def _abs(p: str) -> str:
+        return os.path.abspath(os.path.expanduser(p))
+
+    # 1) Pas d'indice fourni → chercher dans PATH
+    if not ffmpeg_hint:
+        which = shutil.which(exe_name) or shutil.which("ffmpeg")
+        if which:
+            return which, os.path.dirname(which)
+        return "ffmpeg", None  # on laisse le système résoudre
+
+    p = _abs(ffmpeg_hint)
+
+    # 2) Si c'est un dossier → joindre le binaire
+    if os.path.isdir(p):
+        cand = os.path.join(p, exe_name)
+        if os.path.isfile(cand):
+            return cand, p
+        # si on a passé .../ffmpeg (racine) → souvent le binaire est dans ./bin
+        cand2 = os.path.join(p, "bin", exe_name)
+        if os.path.isfile(cand2):
+            return cand2, os.path.dirname(cand2)
+        raise FileNotFoundError(f"FFmpeg introuvable dans le dossier: {p} (attendu: {exe_name} ou bin/{exe_name})")
+
+    # 3) Si c'est un fichier → OK
+    if os.path.isfile(p):
+        return p, os.path.dirname(p)
+
+    # 4) Sinon, essayer le PATH avec ce hint
+    which = shutil.which(p)
+    if which:
+        return which, os.path.dirname(which)
+
+    raise FileNotFoundError(f"FFmpeg introuvable: {ffmpeg_hint}")
 
 # ------------------------ cookies helpers ------------------------
 
@@ -109,7 +153,6 @@ def _ensure_cookiefile_from_b64(target_path: str) -> Optional[str]:
     except Exception as e:
         _dbg(f"cookies: failed to write from env: {e}")
         return None
-
 
 def _parse_cookies_from_browser_spec(spec: Optional[str]):
     if not spec:
@@ -159,6 +202,14 @@ def _mk_opts(
         "youtube_include_dash_manifest": True,
         "format": _FORMAT_CHAIN,
     }
+
+    # ffmpeg_location pour yt-dlp = dossier (pas le .exe)
+    if ffmpeg_path:
+        if os.path.isfile(ffmpeg_path):
+            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
+        else:
+            ydl_opts["ffmpeg_location"] = ffmpeg_path
+
     # proxy ?
     if _HTTP_PROXY:
         ydl_opts["proxy"] = _HTTP_PROXY
@@ -176,9 +227,6 @@ def _mk_opts(
         _dbg(f"cookiefile={cookies_file} (exists=True)")
     else:
         _dbg("cookies: none")
-
-    if ffmpeg_path:
-        ydl_opts["ffmpeg_location"] = ffmpeg_path
 
     if search:
         ydl_opts.update({
@@ -225,7 +273,6 @@ def _normalize_search_entries(entries: List[dict]) -> List[dict]:
         })
     return out
 
-
 def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_browser: Optional[str] = None) -> List[dict]:
     if not query or not query.strip():
         return []
@@ -262,7 +309,6 @@ def _probe_with_client(
         if info is not None:
             info["_dbg_client_used"] = client or "auto"
         return info or None
-
 
 def _best_info_with_fallbacks(
     query: str,
@@ -303,7 +349,6 @@ def _best_info_with_fallbacks(
         else:
             _dbg(f"client={c} → no direct url")
     return None
-
 
 def _resolve_ytdlp_cli() -> List[str]:
     exe = shutil.which("yt-dlp")
@@ -355,9 +400,12 @@ async def stream(
     """
     import asyncio
 
+    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM request: url_or_query={url_or_query!r}")
     _dbg(f"ENV: UA={_YT_UA[:60]}...")
     _dbg(f"ENV: cookies_from_browser={cookies_from_browser or os.getenv('YTDLP_COOKIES_BROWSER')}, cookies_file={cookies_file}, proxy={_HTTP_PROXY or 'none'}, ipv4={_FORCE_IPV4}")
+    _dbg(f"FFmpeg exec resolved: {ff_exec}")
+    _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
 
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, functools.partial(
@@ -365,7 +413,7 @@ async def stream(
         url_or_query,
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
-        ffmpeg_path=ffmpeg_path,
+        ffmpeg_path=ff_loc or ff_exec,
         ratelimit_bps=ratelimit_bps,
     ))
     if not info:
@@ -404,7 +452,7 @@ async def stream(
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
         f"-headers {shlex.quote(hdr_blob)} "
         "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        "-rw_timeout 15000000 "  # 15s I/O timeout
+        "-rw_timeout 15000000 "
         "-probesize 32k -analyzeduration 0 "
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
@@ -420,7 +468,7 @@ async def stream(
         stream_url,
         before_options=before_opts,
         options="-vn -loglevel debug",
-        executable=ffmpeg_path,
+        executable=ff_exec,
     )
     _dbg("FFMPEG source created (direct URL).")
 
@@ -443,14 +491,18 @@ async def stream_pipe(
     """
     import asyncio
 
+    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM_PIPE request: {url_or_query!r}")
+    _dbg(f"FFmpeg exec resolved: {ff_exec}")
+    _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
+
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
-        ffmpeg_path=ffmpeg_path,
+        ffmpeg_path=ff_loc or ff_exec,
         ratelimit_bps=ratelimit_bps,
     ))
     title = (info or {}).get("title", "Musique inconnue")
@@ -511,13 +563,17 @@ async def stream_pipe(
 
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
+    # FFmpeg via PIPE (yt-dlp -> stdout)
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
-        executable=ffmpeg_path,
-        before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
-        options="-re -vn -ar 48000 -ac 2 -f s16le",  # -re = cadence temps réel
+        executable=ff_exec,
+        # -re est une OPTION D'ENTRÉE => doit être AVANT -i, donc ici:
+        before_options="-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+        # ces options s’appliquent APRÈS -i (sortie/filtre/encodage PCM pour Discord)
+        options="-vn -ar 48000 -ac 2 -f s16le",
         pipe=True,
     )
+
     _dbg("FFMPEG source created (PIPE).")
 
     setattr(src, "_ytdlp_proc", yt)
@@ -541,9 +597,10 @@ def download(
     """
     os.makedirs(out_dir, exist_ok=True)
 
+    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     # mêmes règles cookies/proxy/ipv4
     opts = _mk_opts(
-        ffmpeg_path=ffmpeg_path,
+        ffmpeg_path=ff_loc or ff_exec,
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
         ratelimit_bps=ratelimit_bps,
@@ -575,7 +632,7 @@ def download(
         if "Requested format is not available" in str(e):
             # Fallback ultime: itag 18 (mp4) puis conversion audio
             opts2 = _mk_opts(
-                ffmpeg_path=ffmpeg_path,
+                ffmpeg_path=ff_loc or ff_exec,
                 cookies_file=cookies_file,
                 cookies_from_browser=cookies_from_browser,
                 ratelimit_bps=ratelimit_bps,
@@ -612,6 +669,7 @@ def _print_env_summary():
     print("====================\n")
 
 def _ffmpeg_pull_test(url: str, headers: Dict[str, str], ffmpeg_path: str, seconds: int = 3) -> int:
+    ff_exec, _ = _resolve_ffmpeg_paths(ffmpeg_path)
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
     before_opts = [
         "-nostdin",
@@ -625,16 +683,17 @@ def _ffmpeg_pull_test(url: str, headers: Dict[str, str], ffmpeg_path: str, secon
     ]
     if _HTTP_PROXY:
         before_opts += ["-http_proxy", _HTTP_PROXY]
-    cmd = [ffmpeg_path] + before_opts + ["-i", url, "-t", str(seconds), "-f", "null", "-"]
+    cmd = [ff_exec] + before_opts + ["-i", url, "-t", str(seconds), "-f", "null", "-"]
     print("[CLI] ffmpeg test cmd:", " ".join(shlex.quote(c) for c in cmd))
     cp = subprocess.run(cmd, text=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
     print("[CLI] ffmpeg exit:", cp.returncode)
     if cp.stdout:
-        # n'affiche pas TOUT pour rester lisible
         print(cp.stdout[-1200:])
     return cp.returncode
 
 def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
+    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
+
     ytcmd = _resolve_ytdlp_cli() + [
         "-f", _FORMAT_CHAIN,
         "--no-playlist",
@@ -665,7 +724,7 @@ def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
     ff = subprocess.Popen(
-        [ffmpeg_path, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
+        [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
          "-i", "pipe:0", "-t", str(seconds), "-f", "null", "-"],
         stdin=yt.stdout,
         stdout=subprocess.PIPE,
@@ -711,24 +770,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("YouTube extractor debug CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_env = sub.add_parser("env", help="Afficher le résumé d'environnement")
+    sub.add_parser("env", help="Afficher le résumé d'environnement")
 
     p_search = sub.add_parser("search", help="Recherche ytsearch5")
     p_search.add_argument("query")
 
     p_stream = sub.add_parser("stream", help="Tester un pull direct FFmpeg (headers anti-403)")
     p_stream.add_argument("url")
-    p_stream.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg")
+    p_stream.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg (exe OU dossier)")
     p_stream.add_argument("--seconds", type=int, default=3)
 
     p_pipe = sub.add_parser("pipe", help="Tester un pull PIPE yt-dlp → ffmpeg")
     p_pipe.add_argument("url")
-    p_pipe.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg")
+    p_pipe.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg (exe OU dossier)")
     p_pipe.add_argument("--seconds", type=int, default=3)
 
     p_dl = sub.add_parser("download", help="Télécharger et convertir (mp3)")
     p_dl.add_argument("url")
-    p_dl.add_argument("--ffmpeg", required=False, default=shutil.which("ffmpeg") or "ffmpeg")
+    p_dl.add_argument("--ffmpeg", required=False, default=shutil.which("ffmpeg") or "ffmpeg",
+                      help="Chemin vers ffmpeg (exe OU dossier)")
     p_dl.add_argument("--out", default="downloads")
 
     p_probe = sub.add_parser("probe", help="Faire un HTTP probe (HEAD/GET Range) sur une URL googlevideo")
@@ -748,11 +808,12 @@ if __name__ == "__main__":
 
     elif args.cmd == "stream":
         # on fait juste l'extraction et un coup de ffmpeg -t N
+        ff_exec, ff_loc = _resolve_ffmpeg_paths(args.ffmpeg)
         info = _best_info_with_fallbacks(
             args.url,
             cookies_file=_COOKIE_FILE_DEFAULT if os.path.exists(_COOKIE_FILE_DEFAULT) else None,
             cookies_from_browser=os.getenv("YTDLP_COOKIES_BROWSER"),
-            ffmpeg_path=args.ffmpeg,
+            ffmpeg_path=ff_loc or ff_exec,
             ratelimit_bps=None,
         )
         if not info or not info.get("url"):
@@ -765,7 +826,7 @@ if __name__ == "__main__":
         headers.setdefault("Sec-Fetch-Mode", "navigate")
         headers.setdefault("Referer", "https://www.youtube.com/")
         headers.setdefault("Origin", "https://www.youtube.com")
-        code = _ffmpeg_pull_test(info["url"], headers, args.ffmpeg, seconds=args.seconds)
+        code = _ffmpeg_pull_test(info["url"], headers, ff_exec, seconds=args.seconds)
         sys.exit(code)
 
     elif args.cmd == "pipe":

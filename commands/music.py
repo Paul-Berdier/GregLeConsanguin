@@ -665,7 +665,124 @@ class Music(commands.Cog):
             await interaction_like.followup.send("❌ *Pas de connexion vocale active.*")
             return
 
-        # --- STREAM prioritaire ---
+        # ------------------------ règles YouTube PIPE-FIRST ------------------------
+        is_youtube = getattr(extractor, "__name__", "").endswith("youtube")
+        yt_pipe_first_env = os.getenv("YTDLP_PIPE_FIRST", "0").lower() not in ("0", "false", "", "no", "off")
+        pipe_first = (play_mode == "pipe") or (is_youtube and yt_pipe_first_env)
+
+        # helpers communs
+        async def _fallback_download_then_next(real_title_hint: str):
+            """Télécharger et jouer si possible, sinon passer à la suivante."""
+            try:
+                kwd = self._extractor_kwargs(
+                    extractor, "download",
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.cookies_from_browser,
+                )
+                dl_res = await self._call_extractor(
+                    extractor, "download", url, ffmpeg_path=self.ffmpeg_path, **kwd
+                )
+                filename, t3, duration = self._unpack_download_result(dl_res, real_title_hint)
+
+                self.current_song[gid]["title"] = t3
+                dur_int = int(duration) if duration else None
+                self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
+                self.now_playing[gid].update({"title": t3, "duration": dur_int})
+
+                vc3 = interaction_like.guild.voice_client
+                if vc3 and (vc3.is_playing() or vc3.is_paused()):
+                    vc3.stop()
+
+                src3 = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
+                self.current_source[gid] = src3
+
+                def _after3(e4):
+                    try:
+                        getattr(src3, "cleanup", lambda: None)()
+                    finally:
+                        self.current_source.pop(gid, None)
+                        self.bot.loop.create_task(self.play_next(interaction_like))
+
+                vc3.play(src3, after=_after3)
+
+                self.play_start[gid] = time.monotonic()
+                self.paused_total[gid] = 0.0
+                self.paused_since.pop(gid, None)
+                self._ensure_ticker(gid)
+
+                await interaction_like.followup.send(
+                    f"🎶 *Téléchargé & joué :* **{t3}**" + (f" (`{duration}`s)" if duration else "")
+                )
+                self.emit_playlist_update(gid)
+            except Exception as e:
+                msg = f"❌ *Même le téléchargement s’écroule…* `{e}`"
+                if "Sign in to confirm you're not a bot" in str(e):
+                    msg += (
+                        "\n\n🔐 **Cookies YouTube requis/expirés**."
+                        " Recharge via `/yt_cookies_update` ou mets à jour `YTDLP_COOKIES_B64`."
+                        f"\n• cookies.txt chargé : `{self.youtube_cookies_file or 'none'}`"
+                        "\n• Test local : `yt-dlp --cookies youtube.com_cookies.txt -F <url>`"
+                    )
+                    try:
+                        cg = self.bot.get_cog("CookieGuardian")
+                        if cg:
+                            await cg._notify(
+                                "⚠️ **Echec YouTube (auth)** pendant une lecture. Recharge des cookies requis.")
+                    except Exception:
+                        pass
+                await interaction_like.followup.send(msg)
+
+        # ------------------------ STRATÉGIE PIPE-FIRST ------------------------
+        if pipe_first and hasattr(extractor, "stream_pipe"):
+            _greg_print("[DEBUG play_next] PIPE-FIRST activé pour cet item")
+            try:
+                kwp = self._extractor_kwargs(
+                    extractor, "stream_pipe",
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.cookies_from_browser,
+                    ratelimit_bps=2_500_000,
+                )
+                srcp, tp = await self._call_extractor(
+                    extractor, "stream_pipe", url, self.ffmpeg_path, **kwp
+                )
+
+                self.current_song[gid]["title"] = tp
+                self.now_playing[gid]["title"] = tp
+                self.current_meta[gid].update({"duration": None})
+
+                if vc.is_playing():
+                    vc.stop()
+                self.current_source[gid] = srcp
+
+                def _after_pipe(e3):
+                    try:
+                        self._kill_stream_proc(gid)  # tue yt-dlp pipe si présent
+                    finally:
+                        # Fin de piste → suivante
+                        self.bot.loop.create_task(self.play_next(interaction_like))
+
+                vc.play(srcp, after=_after_pipe)
+
+                self.play_start[gid] = time.monotonic()
+                self.paused_total[gid] = 0.0
+                self.paused_since.pop(gid, None)
+                self._ensure_ticker(gid)
+
+                await interaction_like.followup.send(f"▶️ *Streaming (pipe)* : **{tp}**")
+                self.emit_playlist_update(gid)
+                return
+            except Exception as ex:
+                _greg_print(f"[DEBUG pipe-first KO] {ex}")
+                if play_mode == "pipe":
+                    # demandé explicitement → pas d’autres essais
+                    await interaction_like.followup.send(f"⚠️ *Stream (pipe) KO.* `{ex}`")
+                    self.bot.loop.create_task(self.play_next(interaction_like))
+                    return
+                # sinon on tente le download
+                await _fallback_download_then_next(self.current_song[gid]["title"])
+                return
+
+        # ------------------------ STRATÉGIE DIRECT-FIRST (auto/stream) ------------------------
         if play_mode in ("auto", "stream") and hasattr(extractor, "stream"):
             _greg_print("TEST STREAM - 1")
             try:
@@ -691,10 +808,10 @@ class Music(commands.Cog):
                 retried_direct = False  # on ne refait le direct qu'une seule fois
 
                 async def _fallback_after_stream(elapsed: float, err):
-                    """Séquence de secours commune (après tout early-exit)."""
+                    """Séquence de secours (retry direct tôt -> pipe -> download)."""
                     nonlocal retried_direct
 
-                    # 1) RETRY direct une fois si échec très tôt (URL périmée/403)
+                    # 1) RETRY direct si échec très tôt (URL périmée/403)
                     if (err or elapsed < 2.0) and not retried_direct:
                         _greg_print("RETRY direct une fois si échec très tôt (URL périmée/403)")
                         retried_direct = True
@@ -718,7 +835,6 @@ class Music(commands.Cog):
                                 try:
                                     self._kill_stream_proc(gid)
                                 finally:
-                                    # IMPORTANT : relance la même chaîne (retry -> pipe -> download)
                                     async def chain2():
                                         el2 = time.monotonic() - start_ts
                                         await _fallback_after_stream(el2, e2)
@@ -736,10 +852,9 @@ class Music(commands.Cog):
                             self.emit_playlist_update(gid)
                             return
                         except Exception:
-                            pass  # on enchaîne sur le pipe
+                            pass  # enchaîne sur le pipe
 
-                    # 2) STREAM (PIPE) — yt-dlp → stdout → ffmpeg
-
+                    # 2) PIPE — yt-dlp → stdout → ffmpeg (si YouTube et dispo)
                     if getattr(extractor, "__name__", "").endswith("youtube"):
                         _greg_print("STREAM (PIPE) — yt-dlp → stdout → ffmpeg")
                         try:
@@ -760,7 +875,7 @@ class Music(commands.Cog):
 
                             def _after_pipe(e3):
                                 try:
-                                    self._kill_stream_proc(gid)  # tue yt-dlp pipe si présent
+                                    self._kill_stream_proc(gid)
                                 finally:
                                     self.bot.loop.create_task(self.play_next(interaction_like))
 
@@ -780,50 +895,8 @@ class Music(commands.Cog):
                     # 3) DOWNLOAD si pas en mode stream-only
                     if play_mode != "stream":
                         _greg_print(f"[DEBUG stream early-exit ({elapsed:.2f}s)] → trying download fallback")
-                        try:
-                            kwd = self._extractor_kwargs(
-                                extractor, "download",
-                                cookies_file=self.youtube_cookies_file,
-                                cookies_from_browser=self.cookies_from_browser,
-                            )
-                            dl_res = await self._call_extractor(
-                                extractor, "download", url, ffmpeg_path=self.ffmpeg_path, **kwd
-                            )
-                            filename, t3, duration = self._unpack_download_result(dl_res, real_title)
-
-                            self.current_song[gid]["title"] = t3
-                            dur_int = int(duration) if duration else None
-                            self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
-                            self.now_playing[gid].update({"title": t3, "duration": dur_int})
-
-                            vc3 = interaction_like.guild.voice_client
-                            if vc3 and (vc3.is_playing() or vc3.is_paused()):
-                                vc3.stop()
-
-                            src3 = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
-                            self.current_source[gid] = src3
-
-                            def _after3(e4):
-                                try:
-                                    getattr(src3, "cleanup", lambda: None)()
-                                finally:
-                                    self.current_source.pop(gid, None)
-                                    self.bot.loop.create_task(self.play_next(interaction_like))
-
-                            vc3.play(src3, after=_after3)
-
-                            self.play_start[gid] = time.monotonic()
-                            self.paused_total[gid] = 0.0
-                            self.paused_since.pop(gid, None)
-                            self._ensure_ticker(gid)
-
-                            await interaction_like.followup.send(
-                                f"🎶 *Téléchargé & joué :* **{t3}**" + (f" (`{duration}`s)" if duration else "")
-                            )
-                            self.emit_playlist_update(gid)
-                            return
-                        except Exception as ex:
-                            _greg_print(f"[DEBUG stream→download fallback KO] {ex}")
+                        await _fallback_download_then_next(real_title)
+                        return
 
                     # 4) Rien n'a marché → piste suivante
                     self.bot.loop.create_task(self.play_next(interaction_like))
@@ -840,7 +913,6 @@ class Music(commands.Cog):
                 except Exception as e:
                     _greg_print(f"[DEBUG play_next] vc.play(stream) KO: {e}")
                     self._kill_stream_proc(gid)
-                    # passe directement à la chaîne de fallback
                     await _fallback_after_stream(0.0, e)
                     return
 
@@ -852,6 +924,7 @@ class Music(commands.Cog):
                 await interaction_like.followup.send(f"▶️ *Streaming :* **{real_title}**")
                 self.emit_playlist_update(gid)
                 return
+
             except Exception as e:
                 if play_mode == "stream":
                     hint = ""
@@ -863,64 +936,8 @@ class Music(commands.Cog):
                         )
                     await interaction_like.followup.send(f"⚠️ *Stream KO, je bascule en download…* `{e}`{hint}")
 
-        # --- Fallback: DOWNLOAD ---
-        try:
-            kwd = self._extractor_kwargs(
-                extractor, "download",
-                cookies_file=self.youtube_cookies_file,
-                cookies_from_browser=self.cookies_from_browser,
-            )
-            dl_res = await self._call_extractor(
-                extractor, "download", url, ffmpeg_path=self.ffmpeg_path, **kwd
-            )
-            filename, real_title, duration = self._unpack_download_result(dl_res, item.get("title", url))
-
-            self.current_song[gid]["title"] = real_title
-            dur_int = int(duration) if duration else None
-            self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
-            self.now_playing[gid].update({"title": real_title, "duration": dur_int})
-
-            if vc.is_playing():
-                vc.stop()
-
-            source = discord.FFmpegPCMAudio(filename, executable=self.ffmpeg_path)
-            self.current_source[gid] = source
-
-            def _after(e):
-                try:
-                    getattr(source, "cleanup", lambda: None)()
-                finally:
-                    self.current_source.pop(gid, None)
-                    self.bot.loop.create_task(self.play_next(interaction_like))
-
-            vc.play(source, after=_after)
-
-            self.play_start[gid] = time.monotonic()
-            self.paused_total[gid] = 0.0
-            self.paused_since.pop(gid, None)
-            self._ensure_ticker(gid)
-
-            await interaction_like.followup.send(
-                f"🎶 *Téléchargé & joué :* **{real_title}**" + (f" (`{duration}`s)" if duration else "")
-            )
-            self.emit_playlist_update(gid)
-        except Exception as e:
-            msg = f"❌ *Même le téléchargement s’écroule…* `{e}`"
-            if "Sign in to confirm you're not a bot" in str(e):
-                msg += (
-                    "\n\n🔐 **Cookies YouTube requis/expirés**."
-                    " Recharge via `/yt_cookies_update` ou mets à jour `YTDLP_COOKIES_B64`."
-                    f"\n• cookies.txt chargé : `{self.youtube_cookies_file or 'none'}`"
-                    "\n• Test local : `yt-dlp --cookies youtube.com_cookies.txt -F <url>`"
-                )
-                try:
-                    cg = self.bot.get_cog("CookieGuardian")
-                    if cg:
-                        await cg._notify(
-                            "⚠️ **Echec YouTube (auth)** pendant une lecture. Recharge des cookies requis.")
-                except Exception:
-                    pass
-            await interaction_like.followup.send(msg)
+        # ------------------------ Fallback global: DOWNLOAD ------------------------
+        await _fallback_download_then_next(self.current_song[gid]["title"])
 
     async def _do_skip(self, guild: discord.Guild, send_fn):
         gid = self._gid(guild.id)
