@@ -22,7 +22,7 @@ from discord.ext import commands
 import requests
 from urllib.parse import urlparse
 
-from extractors import get_extractor, get_search_module
+from extractors import get_extractor, get_search_module, is_bundle_url, expand_bundle
 from utils.playlist_manager import PlaylistManager
 
 # Priorités (règles centralisées)
@@ -545,26 +545,23 @@ class Music(commands.Cog):
             cleaned = _clean_url(query_or_url)
             chosen_provider = _infer_provider_from_url(cleaned) or (prov if prov != "auto" else None)
 
-            # Si YouTube + lien playlist/mix → demander à l'extractor de construire un bundle (10)
-            if (("youtube.com" in cleaned) or ("youtu.be" in cleaned)) and (chosen_provider in (None, "youtube")):
-                extractor = get_extractor(cleaned)  # renverra extractors.youtube pour un lien YT
-                if extractor and hasattr(extractor, "is_playlist_like") and extractor.is_playlist_like(cleaned):
-                    try:
-                        bundle = await self._call_extractor(
-                            extractor, "expand_bundle",
-                            cleaned, limit_total=10,
-                            cookies_file=self.youtube_cookies_file,
-                            cookies_from_browser=self.cookies_from_browser,
-                        )
-                    except Exception as e:
-                        bundle = []
-                        _greg_print(f"[YT bundle] error: {e}")
+            # 🔁 Si l’URL est une playlist/mix supportée → on déplie (10)
+            if is_bundle_url(cleaned):
+                try:
+                    bundle = expand_bundle(
+                        cleaned,
+                        limit=10,
+                        cookies_file=self.youtube_cookies_file,
+                        cookies_from_browser=self.cookies_from_browser,
+                    )
+                except Exception as e:
+                    _greg_print(f"[bundle] expand error: {e}")
+                    bundle = []
 
-                    if bundle:
-                        # 1ère via chemin normal (priorité/insertion), puis enfile le reste
-                        first = {**bundle[0], "mode": play_mode}
-                        await self._enqueue_bundle_after_first(interaction, first, bundle)
-                        return
+                if bundle:
+                    first = {**bundle[0], "mode": play_mode}
+                    await self._enqueue_bundle_after_first(interaction, first, bundle)
+                    return
 
             # sinon: ajout simple
             await self.add_to_queue(
@@ -1106,15 +1103,9 @@ class Music(commands.Cog):
                 _greg_print(f"[PlaylistManager {gid}] quota atteint ({PER_USER_CAP}) pour user={user_id}")
                 return
 
-        # === Détection playlist/mix YouTube et expansion (10 éléments) ===
-        # On ajoute d'abord l'item courant comme d’habitude, puis on enfile les 9 suivants.
+        # === Détection playlist/mix et expansion (10 éléments) ===
         extras: list[dict] = []
         page_url = item.get("url") or ""
-        try:
-            from extractors import youtube as ytex
-            is_bundle = ytex.is_playlist_or_mix_url(page_url) if page_url else False
-        except Exception:
-            is_bundle = False
 
         # 1) Ajout de l'item courant (avec insertion selon priorité)
         _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(queue)}): {[it.get('title') for it in queue]}")
@@ -1131,44 +1122,33 @@ class Music(commands.Cog):
                 _greg_print(
                     f"[PlaylistManager {gid}] ❌ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
 
-        # 2) Si bundle YT → récupérer les 9 suivantes et les enqueuer (respect quota restant)
-        if is_bundle:
+        # 2) Si c'est une playlist/mix → enfile les 9 suivantes (respect du quota)
+        if is_bundle_url(page_url):
             try:
-                # Appel synchrone (dans executor) pour décharger l'event loop
-                def _expand():
-                    return ytex.expand_bundle(
-                        page_url,
-                        cookies_file=self.youtube_cookies_file,
-                        cookies_from_browser=self.cookies_from_browser,
-                        limit=10
-                    )
-
-                bundle = await loop.run_in_executor(None, _expand)
-                # bundle[0] = piste courante ; on veut les 9 suivantes
-                extras = (bundle or [])[1:10]
+                bundle = expand_bundle(
+                    page_url,
+                    limit=10,
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.cookies_from_browser,
+                ) or []
+                extras = bundle[1:10]  # on a déjà ajouté la 1ère
             except Exception as e:
-                _greg_print(f"[YT bundle] expansion failed: {e}")
+                _greg_print(f"[bundle] expansion failed: {e}")
                 extras = []
 
             if extras:
-                # Appliquer 'added_by' + 'priority' sur chaque extra
                 for it in extras:
                     it["added_by"] = str(user_id)
                     it["priority"] = weight
 
-                # Respect du quota restant (on a déjà ajouté 1 piste)
                 remaining = PER_USER_CAP
                 if not can_bypass_quota(self.bot, gid, int(user_id)):
                     remaining = max(0, PER_USER_CAP - self._count_user_in_queue(new_queue, int(user_id)))
-                if remaining > 0:
-                    extras = extras[:remaining]
-                else:
-                    extras = []
+                extras = extras[:remaining] if remaining > 0 else []
 
                 if extras:
-                    # Ajout en bloc (en fin de file, on ne re-trie pas par priorité pour ne pas tout chambouler)
                     await loop.run_in_executor(None, pm.add_many, extras, str(user_id))
-                    _greg_print(f"[YT bundle] +{len(extras)} piste(s) ajoutée(s) depuis playlist/mix.")
+                    _greg_print(f"[bundle] +{len(extras)} piste(s) ajoutée(s).")
 
         # 3) Démarrer si rien ne joue
         class FakeInteraction:

@@ -310,235 +310,101 @@ def is_playlist_or_mix_url(url: str) -> bool:
         return False
 
 
-def expand_bundle(
+def expand_playlist_or_mix(
     url: str,
     *,
     cookies_file: Optional[str] = None,
     cookies_from_browser: Optional[str] = None,
-    limit: int = 10,
+    max_items: int = 10,
 ) -> List[dict]:
     """
-    Retourne la piste courante + les suivantes (jusqu’à `limit`, défaut=10)
-    pour tout lien YouTube playlist/mix.
-    - Supporte list=PL..., list=RD..., list=RDEM..., start_radio=1, etc.
-    - Normalise: {title, url, webpage_url, duration, thumb, provider, uploader}
+    Retourne jusqu'à `max_items` éléments à partir d'une URL YouTube playlist/mix.
+    - Supporte list=PL..., RD..., RDEM..., OLAK..., start_radio=1, etc.
+    - Extraction "flat" rapide puis normalisation en:
+      {title, url, webpage_url, duration, thumb, uploader, provider='youtube'}.
+    - Essaie de commencer à la vidéo courante si identifiable (v=... ou index=...).
     """
-    limit = max(1, int(limit or 10))
+    if not url or "youtube" not in url:
+        return []
 
-    # Parse URL et paramètres utiles
+    # Paramètres utiles (pour caler le point de départ)
     u = _url.urlsplit(url)
-    qs = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
-    list_id = qs.get("list")
-    video_id = qs.get("v")
-    idx_hint = None
+    q = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
+    list_id  = q.get("list")
+    video_id = q.get("v")
+    start_idx = None
     try:
-        if "index" in qs:
-            idx_hint = max(0, int(qs["index"]) - 1)
+        if "index" in q:
+            start_idx = max(0, int(q["index"]) - 1)
     except Exception:
-        idx_hint = None
-
-    # Si pas de "list" mais radio explicit → reconstitue un list=RD<video>
-    if (not list_id) and qs.get("start_radio") == "1" and video_id:
+        start_idx = None
+    if (not list_id) and q.get("start_radio") == "1" and video_id:
         list_id = f"RD{video_id}"
 
-    # Choisir l’URL "playlist seed"
-    if list_id:
-        seed_url = f"https://www.youtube.com/playlist?list={list_id}"
-    else:
-        # Fallback: on tente quand même l’URL brute avec allow_playlist
-        seed_url = url
+    seed_url = f"https://www.youtube.com/playlist?list={list_id}" if list_id else url
 
-    # Extrait la playlist/mix en "flat" (rapide)
-    with YoutubeDL(_mk_opts(
+    # Extraction flat de la playlist/mix
+    opts = _mk_opts(
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
-        allow_playlist=True,     # ★ autorise la playlist
-        extract_flat=True,       # ★ juste les métadonnées
-    )) as ydl:
+        allow_playlist=True,
+        extract_flat=True,
+    )
+    with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(seed_url, download=False)
 
     entries = (info or {}).get("entries") or []
     if not entries:
         return []
 
-    # Où se trouve la vidéo courante ?
-    start_idx = 0
-    if idx_hint is not None and 0 <= idx_hint < len(entries):
-        start_idx = idx_hint
+    # Trouver le point de départ
+    if start_idx is not None and 0 <= start_idx < len(entries):
+        begin = start_idx
     elif video_id:
+        begin = 0
         for i, e in enumerate(entries):
-            # e['url'] (en flat) = id vidéo ; e['id'] idem la plupart du temps
-            vid = e.get("id") or e.get("url")
+            vid = (e or {}).get("id") or (e or {}).get("url")
             if vid and vid == video_id:
-                start_idx = i
+                begin = i
                 break
+    else:
+        begin = 0
 
-    # Slice: piste courante + 9 suivantes → total 10
-    sel = entries[start_idx:start_idx + limit]
-    if not sel:  # fallback
-        sel = entries[:limit]
+    sub = entries[begin:begin + max_items]
+    if not sub:
+        sub = entries[:max_items]
 
     out: List[dict] = []
-    for e in sel:
+    for e in sub:
+        if not isinstance(e, dict):
+            continue
         vid = e.get("id") or e.get("url")
         if not vid:
             continue
-        watch_url = f"https://www.youtube.com/watch?v={vid}"
-        # conserve la liste si on l’a (garde le contexte playlist/mix)
+        watch = f"https://www.youtube.com/watch?v={vid}"
         if list_id:
-            watch_url += f"&list={list_id}"
-        # thumbnail (flat): 'thumbnails' (list) ou 'thumbnail'
+            watch += f"&list={list_id}"
+
+        # thumb: 'thumbnails' (liste) > 'thumbnail'
         thumb = None
-        if e.get("thumbnails"):
+        if isinstance(e.get("thumbnails"), list) and e["thumbnails"]:
             try:
                 thumb = (e["thumbnails"][-1] or {}).get("url")
             except Exception:
                 thumb = None
         thumb = thumb or e.get("thumbnail")
+
         out.append({
             "title": e.get("title") or "Titre inconnu",
-            "url": watch_url,
-            "webpage_url": watch_url,
+            "url": watch,
+            "webpage_url": watch,
             "duration": e.get("duration"),
             "thumb": thumb,
-            "provider": "youtube",
             "uploader": e.get("uploader"),
+            "provider": "youtube",
         })
+
     return out
-
-def is_playlist_like(url: str) -> bool:
-    """True si URL YouTube de type playlist/mix (watch?list=..., /playlist?list=..., RD/OLAK etc.)."""
-    try:
-        u = _url.urlsplit(url)
-        host = (u.hostname or "").lower()
-        if ("youtube.com" not in host) and ("youtu.be" not in host) and ("music.youtube.com" not in host):
-            return False
-        q = _url.parse_qs(u.query or "")
-        q = {k: (v[0] if isinstance(v, list) and v else v) for k, v in q.items()}
-        return ("list" in q) or ((u.path or "").startswith("/playlist"))
-    except Exception:
-        return False
-
-
-def _parse_list_and_index(url: str):
-    """Retourne (list_id, video_id, index_1based|None) depuis une URL watch/playlist."""
-    try:
-        u = _url.urlsplit(url)
-        q = _url.parse_qs(u.query or "")
-        list_id = (q.get("list") or [None])[0]
-        vid = (q.get("v") or [None])[0]
-        idx = None
-        if "index" in q:
-            try: idx = int((q.get("index") or [None])[0])
-            except: idx = None
-        elif "i" in q:
-            try: idx = int((q.get("i") or [None])[0])
-            except: idx = None
-        if (not list_id) and (u.path or "").startswith("/playlist"):
-            list_id = (q.get("list") or [None])[0]
-        return list_id, vid, idx
-    except Exception:
-        return None, None, None
-
-
-def _build_watch_url(video_id: str, list_id: Optional[str]) -> str:
-    base = f"https://www.youtube.com/watch?v={video_id}"
-    if list_id:
-        base += f"&list={list_id}"
-    return base
-
-
-def _yt_flat_entries(playlist_url: str, *, end: int = 50,
-                     cookies_file: Optional[str] = None,
-                     cookies_from_browser: Optional[str] = None) -> List[dict]:
-    """
-    Récupère rapidement des entrées 'flat' d'une playlist/mix (sans ouvrir chaque vidéo).
-    """
-    opts = _mk_opts(cookies_file=cookies_file, cookies_from_browser=cookies_from_browser)
-    opts.update({
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": True,
-        "noplaylist": False,
-        "playlistend": int(max(1, end)),
-    })
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(playlist_url, download=False)
-        if isinstance(info, dict) and isinstance(info.get("entries"), list):
-            return info["entries"]
-        return []
-
-
-def _normalize_flat_entry(e: dict, list_id: Optional[str]) -> dict:
-    """Normalise une entrée yt-dlp 'flat' vers le format queue (title/url/artist/duration/thumb/provider)."""
-    vid = (e or {}).get("id") or ""
-    url = (e or {}).get("url") or ""
-    if not url and vid:
-        url = _build_watch_url(vid, list_id)
-    title = (e or {}).get("title") or url or "Sans titre"
-
-    duration = None
-    try:
-        d = (e or {}).get("duration")
-        if isinstance(d, (int, float)) and d > 0:
-            duration = int(d)
-    except Exception:
-        pass
-
-    artist = (e or {}).get("uploader") or (e or {}).get("artist") or None
-    return {
-        "title": title,
-        "url": url,
-        "artist": artist,
-        "thumb": None,         # plat → pas toujours dispo, on laisse None
-        "duration": duration,
-        "provider": "youtube",
-    }
-
-
-def expand_bundle(url: str, limit_total: int = 10,
-                  cookies_file: Optional[str] = None,
-                  cookies_from_browser: Optional[str] = None) -> List[dict]:
-    """
-    Construit un bundle playlist/mix: la vidéo visée + les suivantes dans la même playlist, max `limit_total`.
-    Retourne une liste d'items normalisés [{title,url,artist,thumb,duration,provider}, ...].
-    """
-    list_id, video_id, idx = _parse_list_and_index(url)
-    if not list_id:
-        return []
-
-    playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
-    entries = _yt_flat_entries(
-        playlist_url,
-        end=max(25, limit_total + 5),
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-    )
-    if not entries:
-        return []
-
-    # Cherche position de la vidéo si on la connaît
-    start = 0
-    if video_id:
-        for i, e in enumerate(entries):
-            if (e or {}).get("id") == video_id:
-                start = i
-                break
-    elif idx and idx >= 1:
-        start = max(0, idx - 1)
-
-    out = [_normalize_flat_entry(e, list_id) for e in entries[start:start + limit_total]]
-    # Unique par URL
-    seen, uniq = set(), []
-    for it in out:
-        u = it.get("url")
-        if not u or u in seen:
-            continue
-        seen.add(u)
-        uniq.append(it)
-    return uniq[:limit_total]
-
 
 # ------------------------ internal probe helpers ------------------------
 
