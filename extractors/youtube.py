@@ -393,10 +393,12 @@ async def stream(
     cookies_file: Optional[str] = None,
     cookies_from_browser: Optional[str] = None,
     ratelimit_bps: Optional[int] = None,
+    afilter: Optional[str] = None,  # ★ filtre audio optionnel
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
     Prépare un stream pour Discord via URL directe (yt-dlp choisit un flux audio).
     Passe les http_headers à FFmpeg (anti-403) + DEBUG complet.
+    Applique un filtre audio (-af) si fourni et force 48 kHz / stéréo pour Discord.
     """
     import asyncio
 
@@ -464,10 +466,15 @@ async def stream(
     _dbg(f"FFMPEG before_options={before_opts}")
     _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
 
+    # ★ Options de sortie: 48 kHz + stéréo + debug + filtre éventuel
+    out_opts = "-vn -ar 48000 -ac 2 -loglevel debug"
+    if afilter:
+        out_opts += f" -af {shlex.quote(afilter)}"
+
     source = discord.FFmpegPCMAudio(
         stream_url,
         before_options=before_opts,
-        options="-vn -loglevel debug",
+        options=out_opts,  # ★
         executable=ff_exec,
     )
     _dbg("FFMPEG source created (direct URL).")
@@ -484,10 +491,12 @@ async def stream_pipe(
     cookies_file: Optional[str] = None,
     cookies_from_browser: Optional[str] = None,
     ratelimit_bps: Optional[int] = None,
+    afilter: Optional[str] = None,  # ★ filtre audio optionnel
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
     Fallback streaming robuste: yt-dlp → stdout → FFmpeg (pipe) → Discord.
     Utilisé si FFmpeg direct prend 403 malgré les headers.
+    Applique un filtre audio (-af) si fourni et force 48 kHz / stéréo pour Discord.
     """
     import asyncio
 
@@ -563,6 +572,11 @@ async def stream_pipe(
 
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
+    # ★ Options de sortie: 48 kHz + stéréo + format PCM + filtre éventuel
+    out_opts = "-vn -ar 48000 -ac 2 -f s16le"
+    if afilter:
+        out_opts += f" -af {shlex.quote(afilter)}"
+
     # FFmpeg via PIPE (yt-dlp -> stdout)
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
@@ -570,7 +584,7 @@ async def stream_pipe(
         # -re est une OPTION D'ENTRÉE => doit être AVANT -i, donc ici:
         before_options="-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
         # ces options s’appliquent APRÈS -i (sortie/filtre/encodage PCM pour Discord)
-        options="-vn -ar 48000 -ac 2 -f s16le",
+        options=out_opts,  # ★
         pipe=True,
     )
 

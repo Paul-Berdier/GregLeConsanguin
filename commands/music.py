@@ -13,6 +13,7 @@ import time
 import asyncio
 import inspect
 from typing import Optional
+import shlex
 
 import discord
 from discord import app_commands
@@ -53,6 +54,19 @@ def _clean_url(u: Optional[str]) -> Optional[str]:
         u = u[:-1]
     return u
 
+# ---- Presets d'égalisation (FFmpeg -af) ----
+# "music" = basses + normalisation dynamique + limiteur doux
+AUDIO_EQ_PRESETS = {
+    "off":   None,
+    "music": "bass=g=8:f=110:w=0.7,dynaudnorm=f=200:g=12:p=0.7,alimiter=limit=0.97",
+}
+
+def _build_ffmpeg_out_options(afilter: str | None) -> str:
+    # options 'après -i' → sortie PCM pour Discord (48 kHz stéréo) + filtre éventuel
+    opts = "-vn -ar 48000 -ac 2"
+    if afilter:
+        opts += f" -af {shlex.quote(afilter)}"
+    return opts
 
 class Music(commands.Cog):
     """
@@ -67,6 +81,7 @@ class Music(commands.Cog):
         self.is_playing = {}      # {guild_id(int): bool}
         self.current_song = {}    # {guild_id(int): dict(title,url,artist?,thumb?,duration?,added_by?,priority?)}
         self.search_results = {}  # {user_id: last_results}
+        self.audio_mode = {}  # {guild_id:int -> "music" | "off"}
         self.ffmpeg_path = self.detect_ffmpeg()
         self.emit_fn = emit_fn
 
@@ -120,6 +135,14 @@ class Music(commands.Cog):
             return int(cur.get("added_by") or 0)
         except Exception:
             return 0
+
+    def _get_audio_mode(self, guild_id: int) -> str:
+        gid = self._gid(guild_id)
+        # défaut = "music" (mode musique activé)
+        return self.audio_mode.get(gid, "music")
+
+    def _afilter_for(self, guild_id: int) -> str | None:
+        return AUDIO_EQ_PRESETS.get(self._get_audio_mode(guild_id))
 
     # ---------- Normalisation/enrichissement des items ----------
 
@@ -519,6 +542,30 @@ class Music(commands.Cog):
         state = await self.repeat_for_web(interaction.guild.id, mode if mode else None)
         await self._i_send(interaction, f"🔁 Repeat ALL : **{'ON' if state else 'OFF'}**")
 
+    @app_commands.describe(mode="on/off (vide pour basculer)")
+    @app_commands.command(
+        name="musicmode",
+        description="Active/désactive le rendu 'musique' (stéréo + basses + normalisation)."
+    )
+    async def slash_musicmode(self, interaction: discord.Interaction, mode: str | None = None):
+        gid = self._gid(interaction.guild.id)
+        cur = self._get_audio_mode(gid)
+
+        mode = (mode or "").strip().lower()
+        if mode not in ("", "on", "off"):
+            return await self._i_send(interaction, "⚠️ Utilise: `/musicmode` (toggle) ou `/musicmode on|off`")
+
+        new_mode = ("off" if cur != "off" else "music") if mode == "" else ("music" if mode == "on" else "off")
+        self.audio_mode[gid] = new_mode
+
+        await self._i_send(interaction, f"🎚️ Mode musique: **{'ON' if new_mode == 'music' else 'OFF'}**")
+
+        # Si quelque chose joue, on redémarre la piste courante pour appliquer le nouveau filtre
+        g = interaction.guild
+        vc = g.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()  # l'after → play_next() reprendra avec le nouveau filtre
+
     # =====================================================================
     #                         Actions internes factorisées
     # =====================================================================
@@ -691,6 +738,7 @@ class Music(commands.Cog):
                     extractor, "download",
                     cookies_file=self.youtube_cookies_file,
                     cookies_from_browser=self.cookies_from_browser,
+                    afilter=self._afilter_for(gid),  # ★
                 )
                 dl_res = await self._call_extractor(
                     extractor, "download", url, ffmpeg_path=self.ffmpeg_path, **kwd
@@ -754,6 +802,7 @@ class Music(commands.Cog):
                     cookies_file=self.youtube_cookies_file,
                     cookies_from_browser=self.cookies_from_browser,
                     ratelimit_bps=2_500_000,
+                    afilter=self._afilter_for(gid),  # ★
                 )
                 srcp, tp = await self._call_extractor(
                     extractor, "stream_pipe", url, self.ffmpeg_path, **kwp
@@ -804,6 +853,7 @@ class Music(commands.Cog):
                     cookies_file=self.youtube_cookies_file,
                     cookies_from_browser=self.cookies_from_browser,
                     ratelimit_bps=2_500_000,
+                    afilter=self._afilter_for(gid),  # ★
                 )
                 source, real_title = await self._call_extractor(
                     extractor, "stream", url, self.ffmpeg_path, **kw
@@ -876,6 +926,7 @@ class Music(commands.Cog):
                                 cookies_file=self.youtube_cookies_file,
                                 cookies_from_browser=self.cookies_from_browser,
                                 ratelimit_bps=2_500_000,
+                                afilter=self._afilter_for(gid),  # ★
                             )
                             srcp, tp = await self._call_extractor(
                                 extractor, "stream_pipe", url, self.ffmpeg_path, **kwp

@@ -101,7 +101,8 @@ def _resolve_ffmpeg_paths(ffmpeg_hint: Optional[str]) -> Tuple[str, Optional[str
 
 # ============================ Client IDs ============================
 
-_SC_CACHE_FILE = Path(".sc_client_ids.json")
+from pathlib import Path as _Path
+_SC_CACHE_FILE = _Path(".sc_client_ids.json")
 _SC_CLIENT_CACHE: List[str] = []
 _SC_MAX_CACHE = 20
 
@@ -141,7 +142,6 @@ def _push_good_client_id(cid: str):
 def _requests_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(_headers_default())
-    # Requests honore déjà les proxies via env, mais on les force si précisés
     if _HTTP_PROXY:
         s.proxies.update({"http": _HTTP_PROXY, "https": _HTTP_PROXY})
     return s
@@ -324,7 +324,12 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
 # ============================ Public: stream =========================
 
-async def stream(url_or_query: str, ffmpeg_path: str):
+async def stream(
+    url_or_query: str,
+    ffmpeg_path: str,
+    *,
+    afilter: Optional[str] = None,  # ★ nouveau: filtre audio optionnel
+):
     """
     Stream SoundCloud :
     1) URL SoundCloud → API v2 (progressive prioritaire, sinon HLS) → FFmpeg
@@ -334,6 +339,16 @@ async def stream(url_or_query: str, ffmpeg_path: str):
     import discord  # import tardif pour éviter charge côté outils CLI
 
     ff_exec, _ = _resolve_ffmpeg_paths(ffmpeg_path)
+
+    # Build sortie FFmpeg (commune) : 48 kHz + stéréo + faible latence + filtre éventuel
+    def _out_opts(base: str = "") -> str:
+        opts = "-vn -ar 48000 -ac 2 -fflags nobuffer -flags low_delay"
+        if base:
+            opts = base + " " + opts
+        if afilter:
+            opts += f" -af {shlex.quote(afilter)}"
+        _dbg("FFMPEG out_options:", opts)
+        return opts
 
     # --- 1) Progressive/HLS via API v2 si URL SoundCloud
     if isinstance(url_or_query, str) and "soundcloud.com" in url_or_query:
@@ -349,7 +364,6 @@ async def stream(url_or_query: str, ffmpeg_path: str):
                     continue
 
                 title = tr.get("title") or "Son inconnu"
-                duration_ms = tr.get("duration") or 0
                 if tr.get("access", "").lower() == "blocked":
                     _dbg("access=blocked → cannot stream via API")
                 progressive, hls = _pick_transcodings(tr)
@@ -369,14 +383,16 @@ async def stream(url_or_query: str, ffmpeg_path: str):
                             before += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
                         if _FORCE_IPV4:
                             before += " -protocol_whitelist file,http,https,tcp,tls,crypto"
-
                         if is_hls:
                             before += " -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL"
+
+                        out = _out_opts()  # ★ applique -ar 48k, -ac 2 et -af si présent
+                        _dbg("FFMPEG before_options:", before)
 
                         source = discord.FFmpegPCMAudio(
                             stream_url,
                             before_options=before,
-                            options="-vn -fflags nobuffer -flags low_delay",
+                            options=out,
                             executable=ff_exec
                         )
                         return source, title
@@ -419,11 +435,14 @@ async def stream(url_or_query: str, ffmpeg_path: str):
         if is_hls:
             before += " -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL"
 
+        out = _out_opts()
+        _dbg("FFMPEG before_options:", before)
+
         import discord
         source = discord.FFmpegPCMAudio(
             stream_url,
             before_options=before,
-            options="-vn -fflags nobuffer -flags low_delay",
+            options=out,
             executable=ff_exec
         )
         return source, title
@@ -577,7 +596,6 @@ if __name__ == "__main__":
         hdr_blob = _ffmpeg_headers_str(info.get("http_headers") or data.get("http_headers") or {})
         code = _ffmpeg_pull_test(su, hdr_blob, args.ffmpeg, seconds=args.seconds, is_hls=is_hls)
         sys.exit(code)
-
 
     elif args.cmd == "download":
         try:
