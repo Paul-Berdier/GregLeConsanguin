@@ -238,14 +238,20 @@ class Music(commands.Cog):
         uid = str(user_id)
         return sum(1 for it in (queue or []) if str(it.get("added_by")) == uid)
 
-    # ---------- TICKER (progress) ----------
+    def _compute_elapsed(self, gid: int) -> int:
+        start = self.play_start.get(gid)
+        if not start:
+            return 0
+        paused_since = self.paused_since.get(gid)
+        paused_total = self.paused_total.get(gid, 0.0)
+        base = paused_since or time.monotonic()
+        return max(0, int(base - start - paused_total))
 
+    # ---------- TICKER (progress) ----------
 
     def _ticker_running(self, gid: int) -> bool:
         t = self._progress_task.get(gid)
         return bool(t and not t.done())
-
-
 
     def _cancel_ticker(self, gid: int):
         t = self._progress_task.pop(gid, None)
@@ -259,14 +265,28 @@ class Music(commands.Cog):
         async def _runner():
             try:
                 while True:
-                    g = self.bot.get_guild(int(gid)) if not isinstance(gid, int) else self.bot.get_guild(gid)
+                    g = self.bot.get_guild(int(gid))
                     vc = g.voice_client if g else None
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
 
-                    # Push léger (elapsed) → on laisse la logique serveur coalescer/throttler
                     try:
-                        self.emit_playlist_update(gid, only_elapsed=True)
+                        elapsed = self._compute_elapsed(gid)
+                        # On n'envoie QUE la progression + pause (pas la queue)
+                        duration = None
+                        try:
+                            duration = int((self.current_meta.get(gid) or {}).get("duration") or 0)
+                        except Exception:
+                            duration = None
+                        payload = {
+                            "only_elapsed": True,
+                            "is_paused": bool(vc.is_paused()),
+                            "progress": {
+                                "elapsed": elapsed,
+                                "duration": duration
+                            }
+                        }
+                        self.emit_playlist_update(gid, payload)
                     except Exception:
                         pass
 
@@ -353,25 +373,34 @@ class Music(commands.Cog):
         }
         return payload
 
-    def emit_playlist_update(self, guild_id, *, only_elapsed: bool = False):
+    def emit_playlist_update(self, guild_id, payload=None):
         gid = self._gid(guild_id)
-        if self.emit_fn:
+        if not self.emit_fn:
+            return
+
+        # payload complet par défaut
+        if payload is None:
             payload = self._overlay_payload(gid)
-            payload["guild_id"] = gid
-            if only_elapsed:
-                payload["only_elapsed"] = True  # aide au throttle côté serveur web
 
-            print(f"[EMIT] playlist_update gid={gid} paused={payload.get('is_paused')} "
-                  f"elapsed={(payload.get('progress', {}) or {}).get('elapsed')} "
-                  f"title={(payload.get('current') or {}).get('title')} "
-                  f"only_elapsed={only_elapsed}")
+        payload["guild_id"] = gid
 
-            try:
-                # nouvelle signature (avec kwargs)
-                self.emit_fn("playlist_update", payload, guild_id=gid)
-            except TypeError:
-                # backward-compat si l’emit_fn legacy ne prend que 2 args
-                self.emit_fn("playlist_update", payload)
+        try:
+            # nouvelle signature (avec kwargs)
+            self.emit_fn("playlist_update", payload, guild_id=gid)
+        except TypeError:
+            # compat ancienne signature
+            self.emit_fn("playlist_update", payload)
+
+        try:
+            print(
+                f"[EMIT] playlist_update gid={gid} "
+                f"paused={payload.get('is_paused')} "
+                f"elapsed={(payload.get('progress') or {}).get('elapsed')} "
+                f"title={(payload.get('current') or {}).get('title')} "
+                f"only_elapsed={payload.get('only_elapsed', False)}"
+            )
+        except Exception:
+            pass
 
     async def _i_send(self, interaction: discord.Interaction, msg: str):
         try:
