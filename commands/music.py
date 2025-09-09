@@ -248,7 +248,6 @@ class Music(commands.Cog):
         return max(0, int(base - start - paused_total))
 
     # ---------- TICKER (progress) ----------
-
     def _ticker_running(self, gid: int) -> bool:
         t = self._progress_task.get(gid)
         return bool(t and not t.done())
@@ -265,15 +264,29 @@ class Music(commands.Cog):
         async def _runner():
             try:
                 while True:
-                    g = self.bot.get_guild(gid)
+                    g = self.bot.get_guild(int(gid))
                     vc = g.voice_client if g else None
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
-                    # push état complet à 1 Hz (pas de "only_elapsed" fantôme)
-                    self.emit_playlist_update(gid)
+
+                    # Envoie un payload "léger" pour ne mettre à jour que la progression côté overlay
+                    try:
+                        payload = self._overlay_payload(gid)
+                        payload["only_elapsed"] = True
+                        payload["guild_id"] = gid
+                        if self.emit_fn:
+                            try:
+                                self.emit_fn("playlist_update", payload, guild_id=gid)
+                            except TypeError:
+                                self.emit_fn("playlist_update", payload)
+                    except Exception:
+                        pass
+
                     await asyncio.sleep(1.0)
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._progress_task.pop(gid, None)
 
         self._progress_task[gid] = self.bot.loop.create_task(_runner())
 
@@ -282,14 +295,14 @@ class Music(commands.Cog):
     def _overlay_payload(self, guild_id: int) -> dict:
         """
         Source de vérité pour l'overlay.
-        - Ne plus "cacher" le current pendant le démarrage du stream : si on a un
-          candidat (now_playing/current_song), on l'envoie avec pending=True.
+        - N'EXCLUT plus 'current' quand le vocal n'a pas encore démarré, si on sait
+          qu'un play est en cours/pending (is_playing/current_song/now_playing).
         - Progression calculée avec play_start / paused_since / paused_total.
         - Métadonnées fusionnées avec current_meta si dispo.
         """
         gid = self._gid(guild_id)
 
-        # Harmonise les clés (int) pour tous les dicts d'état
+        # Harmonise les clés sur int
         for d in (
                 self.is_playing, self.current_song, self.play_start,
                 self.paused_since, self.paused_total, self.current_meta,
@@ -300,7 +313,7 @@ class Music(commands.Cog):
         pm = self.get_pm(gid)
         data = pm.to_dict()
 
-        # État voice
+        # État du voice client
         try:
             g = self.bot.get_guild(gid)
             vc = g.voice_client if g else None
@@ -311,21 +324,27 @@ class Music(commands.Cog):
         is_playing_vc = bool(vc and vc.is_playing())
         voice_active = is_paused_vc or is_playing_vc
 
-        # Candidat "current"
+        # Candidat "current" (ordre: now_playing → current_song → PM)
         nowp = getattr(self, "now_playing", {})
         current = nowp.get(gid) or self.current_song.get(gid) or data.get("current")
 
-        # Si le vocal n'est pas actif, on garde tout de même le "current" s'il existe,
-        # mais on le marque comme pending (démarrage/connexion en cours).
-        pending = False
-        if not voice_active:
-            if current:
-                pending = True
-            else:
-                current = None  # rien à montrer
+        # Nouveau critère: on montre 'current' si on a une intention claire de jouer,
+        # pas uniquement quand le voice est actif.
+        should_show_current = (
+                voice_active
+                or bool(self.is_playing.get(gid, False))
+                or bool(self.current_song.get(gid))
+                or bool(nowp.get(gid))
+        )
 
-        # Progression
-        if voice_active:
+        if not should_show_current:
+            # vocal inactif ET pas d'intention → pas de current
+            current = None
+            elapsed = 0
+            duration = None
+            thumb = None
+        else:
+            # Progression
             start = self.play_start.get(gid)
             paused_since = self.paused_since.get(gid)
             paused_total = self.paused_total.get(gid, 0.0)
@@ -333,27 +352,28 @@ class Music(commands.Cog):
             if start:
                 base = paused_since or time.monotonic()
                 elapsed = max(0, int(base - start - paused_total))
-        else:
-            elapsed = 0  # on ne fait pas avancer la barre en pending
 
-        # Métadonnées (duration / thumb)
-        meta = self.current_meta.get(gid, {}) if current else {}
-        duration = meta.get("duration")
-        thumb = meta.get("thumbnail")
-        if isinstance(current, dict):
-            if duration is None and isinstance(current.get("duration"), (int, float)):
-                duration = int(current["duration"])
-            thumb = thumb or current.get("thumb") or current.get("thumbnail")
+            # Métadonnées
+            meta = self.current_meta.get(gid, {})
+            duration = meta.get("duration")
+            thumb = meta.get("thumbnail")
+            if isinstance(current, dict):
+                if duration is None and isinstance(current.get("duration"), (int, float)):
+                    duration = int(current["duration"])
+                thumb = thumb or current.get("thumb") or current.get("thumbnail")
 
-        return {
+        payload = {
             "queue": data.get("queue", []),
             "current": current,
-            "pending": pending,  # ★ nouveau indicateur côté overlay
-            "is_paused": is_paused_vc,  # état réel du VC
-            "progress": {"elapsed": elapsed, "duration": int(duration) if duration is not None else None},
+            "is_paused": is_paused_vc,
+            "progress": {
+                "elapsed": elapsed,
+                "duration": int(duration) if duration is not None else None
+            },
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
         }
+        return payload
 
     def emit_playlist_update(self, guild_id, payload=None):
         gid = self._gid(guild_id)
