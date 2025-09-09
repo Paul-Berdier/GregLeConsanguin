@@ -406,6 +406,21 @@ def expand_playlist_or_mix(
 
     return out
 
+def expand_bundle(
+    url: str,
+    *,
+    limit: int = 10,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+) -> List[dict]:
+    """Alias attendu par extractors.expand_bundle / music.py (paramètre 'limit')."""
+    return expand_playlist_or_mix(
+        url,
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        max_items=limit,
+    )
+
 # ------------------------ internal probe helpers ------------------------
 
 def _probe_with_client(
