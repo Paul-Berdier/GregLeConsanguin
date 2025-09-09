@@ -371,6 +371,32 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if not all([title, url, guild_id, user_id]):
             return _bad_request("Paramètres manquants : title, url, guild_id (et session utilisateur)")
 
+        # ------ NEW: pré-check vocal (retourne 409 si l'user n'est pas en vocal) ------
+        try:
+            gid_int = int(guild_id)
+        except Exception:
+            return _bad_request("guild_id invalide")
+
+        guild = getattr(app, "bot", None) and app.bot.get_guild(gid_int)
+        if not guild:
+            return _bad_request("guild introuvable", 404)
+
+        member = guild.get_member(int(user_id))
+        if member is None:
+            try:
+                member = _dispatch(guild.fetch_member(int(user_id)), timeout=8)
+            except Exception:
+                member = None
+
+        if not getattr(member, "voice", None) or not getattr(member.voice, "channel", None):
+            # 409 = Conflict: état requis manquant
+            return jsonify(
+                ok=False,
+                error="Tu dois être connecté à un salon vocal sur ce serveur pour lancer une musique.",
+                error_code="USER_NOT_IN_VOICE"
+            ), 409
+        # -------------------------------------------------------------------------------
+
         music_cog, err = _music_cog_required()
         if err:
             return err
@@ -391,9 +417,28 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             item = {"title": title, "url": url, **extra}
             _dbg(f"[api_play] ITEM FINAL: {item}")
 
-            _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
+            result = _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
+
+            # NEW: normaliser la réponse potentielle du cog
+            if isinstance(result, dict):
+                if not result.get("ok", True):
+                    code = result.get("error_code") or "PLAY_FAILED"
+                    msg = result.get("message") or "Lecture impossible."
+                    status = 409 if code in ("USER_NOT_IN_VOICE", "BOT_NO_PERMS", "VOICE_CONNECT_FAILED") else 400
+                    return jsonify(ok=False, error=msg, error_code=code), status
+                return jsonify(ok=True)
+            if result is False:
+                return jsonify(ok=False, error="Lecture impossible.", error_code="PLAY_FAILED"), 400
+
             return jsonify(ok=True)
+        except PermissionError as e:
+            return jsonify(ok=False, error=str(e), error_code="PERMISSION_DENIED"), 403
         except Exception as e:
+            msg = str(e)
+            low = msg.lower()
+            if "pas en vocal" in msg or "not in a voice" in low or "join a voice" in low:
+                return jsonify(ok=False, error="Tu dois être connecté à un salon vocal.",
+                               error_code="USER_NOT_IN_VOICE"), 409
             _dbg(f"POST /api/play — 💥 Exception : {e}")
             return jsonify(error=str(e)), 500
 
