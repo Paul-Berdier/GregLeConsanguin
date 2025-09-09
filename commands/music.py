@@ -265,31 +265,12 @@ class Music(commands.Cog):
         async def _runner():
             try:
                 while True:
-                    g = self.bot.get_guild(int(gid))
+                    g = self.bot.get_guild(gid)
                     vc = g.voice_client if g else None
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
-
-                    try:
-                        elapsed = self._compute_elapsed(gid)
-                        # On n'envoie QUE la progression + pause (pas la queue)
-                        duration = None
-                        try:
-                            duration = int((self.current_meta.get(gid) or {}).get("duration") or 0)
-                        except Exception:
-                            duration = None
-                        payload = {
-                            "only_elapsed": True,
-                            "is_paused": bool(vc.is_paused()),
-                            "progress": {
-                                "elapsed": elapsed,
-                                "duration": duration
-                            }
-                        }
-                        self.emit_playlist_update(gid, payload)
-                    except Exception:
-                        pass
-
+                    # push état complet à 1 Hz (pas de "only_elapsed" fantôme)
+                    self.emit_playlist_update(gid)
                     await asyncio.sleep(1.0)
             except asyncio.CancelledError:
                 pass
@@ -301,13 +282,14 @@ class Music(commands.Cog):
     def _overlay_payload(self, guild_id: int) -> dict:
         """
         Source de vérité pour l'overlay.
-        - NE PAS annoncer de 'current' si le vocal n'est ni playing ni paused.
+        - Ne plus "cacher" le current pendant le démarrage du stream : si on a un
+          candidat (now_playing/current_song), on l'envoie avec pending=True.
         - Progression calculée avec play_start / paused_since / paused_total.
-        - Métadonnées (thumb/duration) fusionnées avec current_meta si dispo.
+        - Métadonnées fusionnées avec current_meta si dispo.
         """
         gid = self._gid(guild_id)
 
-        # Harmonise les clés sur int
+        # Harmonise les clés (int) pour tous les dicts d'état
         for d in (
                 self.is_playing, self.current_song, self.play_start,
                 self.paused_since, self.paused_total, self.current_meta,
@@ -318,7 +300,7 @@ class Music(commands.Cog):
         pm = self.get_pm(gid)
         data = pm.to_dict()
 
-        # État du voice client
+        # État voice
         try:
             g = self.bot.get_guild(gid)
             vc = g.voice_client if g else None
@@ -327,22 +309,23 @@ class Music(commands.Cog):
 
         is_paused_vc = bool(vc and vc.is_paused())
         is_playing_vc = bool(vc and vc.is_playing())
-        voice_active  = is_paused_vc or is_playing_vc
+        voice_active = is_paused_vc or is_playing_vc
 
-        # Candidat "current" (ordre: now_playing → current_song → PM)
-        nowp    = getattr(self, "now_playing", {})
+        # Candidat "current"
+        nowp = getattr(self, "now_playing", {})
         current = nowp.get(gid) or self.current_song.get(gid) or data.get("current")
 
-        # Si le vocal N'EST PAS actif, on NE renvoie PAS de "current"
-        # (évite l'affichage fantôme après stop/fin de file)
+        # Si le vocal n'est pas actif, on garde tout de même le "current" s'il existe,
+        # mais on le marque comme pending (démarrage/connexion en cours).
+        pending = False
         if not voice_active:
-            # vocal inactif → pas de 'current' pour éviter l'affichage fantôme
-            current = None
-            elapsed = 0
-            duration = None
-            thumb = None
-        else:
-            # Progression
+            if current:
+                pending = True
+            else:
+                current = None  # rien à montrer
+
+        # Progression
+        if voice_active:
             start = self.play_start.get(gid)
             paused_since = self.paused_since.get(gid)
             paused_total = self.paused_total.get(gid, 0.0)
@@ -350,28 +333,27 @@ class Music(commands.Cog):
             if start:
                 base = paused_since or time.monotonic()
                 elapsed = max(0, int(base - start - paused_total))
+        else:
+            elapsed = 0  # on ne fait pas avancer la barre en pending
 
-            # Métadonnées
-            meta = self.current_meta.get(gid, {})
-            duration = meta.get("duration")
-            thumb    = meta.get("thumbnail")
-            if isinstance(current, dict):
-                if duration is None and isinstance(current.get("duration"), (int, float)):
-                    duration = int(current["duration"])
-                thumb = thumb or current.get("thumb") or current.get("thumbnail")
+        # Métadonnées (duration / thumb)
+        meta = self.current_meta.get(gid, {}) if current else {}
+        duration = meta.get("duration")
+        thumb = meta.get("thumbnail")
+        if isinstance(current, dict):
+            if duration is None and isinstance(current.get("duration"), (int, float)):
+                duration = int(current["duration"])
+            thumb = thumb or current.get("thumb") or current.get("thumbnail")
 
-        payload = {
+        return {
             "queue": data.get("queue", []),
             "current": current,
-            "is_paused": is_paused_vc,
-            "progress": {
-                "elapsed": elapsed,
-                "duration": int(duration) if duration is not None else None
-            },
+            "pending": pending,  # ★ nouveau indicateur côté overlay
+            "is_paused": is_paused_vc,  # état réel du VC
+            "progress": {"elapsed": elapsed, "duration": int(duration) if duration is not None else None},
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
         }
-        return payload
 
     def emit_playlist_update(self, guild_id, payload=None):
         gid = self._gid(guild_id)

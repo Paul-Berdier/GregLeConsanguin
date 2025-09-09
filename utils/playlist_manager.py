@@ -5,7 +5,6 @@ import json
 import time
 import tempfile
 from threading import RLock
-import traceback
 from typing import List, Dict, Optional, Any
 
 
@@ -40,7 +39,6 @@ class PlaylistManager:
         directory = os.path.dirname(self.file)
         os.makedirs(directory, exist_ok=True)
 
-        # On sérialise ce qu'on a EN MÉMOIRE (source de vérité)
         payload = {
             "now_playing": self.now_playing if isinstance(self.now_playing, (dict, type(None))) else None,
             "queue": data if isinstance(data, list) else []
