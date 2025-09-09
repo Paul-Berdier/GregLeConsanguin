@@ -96,6 +96,9 @@ class Music(commands.Cog):
         self.now_playing = {}
         self.current_source = {}   # {guild_id: FFmpegPCMAudio} (pour tuer un stream en cours)
 
+        # Ticker de progression par guilde (évite doublons)
+        self._progress_task = {}  # {gid: asyncio.Task}
+
         # --- Cookies YouTube ---
         # Sur Railway on s'appuie sur le fichier déposé par /yt_cookies_update
         self.cookies_from_browser = None  # (optionnel en local)
@@ -235,6 +238,44 @@ class Music(commands.Cog):
         uid = str(user_id)
         return sum(1 for it in (queue or []) if str(it.get("added_by")) == uid)
 
+    # ---------- TICKER (progress) ----------
+
+
+    def _ticker_running(self, gid: int) -> bool:
+        t = self._progress_task.get(gid)
+        return bool(t and not t.done())
+
+
+
+    def _cancel_ticker(self, gid: int):
+        t = self._progress_task.pop(gid, None)
+        if t and not t.done():
+            t.cancel()
+
+    def _ensure_ticker(self, gid: int):
+        if self._ticker_running(gid):
+            return
+
+        async def _runner():
+            try:
+                while True:
+                    g = self.bot.get_guild(int(gid)) if not isinstance(gid, int) else self.bot.get_guild(gid)
+                    vc = g.voice_client if g else None
+                    if not vc or (not vc.is_playing() and not vc.is_paused()):
+                        break
+
+                    # Push léger (elapsed) → on laisse la logique serveur coalescer/throttler
+                    try:
+                        self.emit_playlist_update(gid, only_elapsed=True)
+                    except Exception:
+                        pass
+
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                pass
+
+        self._progress_task[gid] = self.bot.loop.create_task(_runner())
+
     # ---------- Overlay payload ----------
 
     def _overlay_payload(self, guild_id: int) -> dict:
@@ -312,13 +353,19 @@ class Music(commands.Cog):
         }
         return payload
 
-    def emit_playlist_update(self, guild_id):
+    def emit_playlist_update(self, guild_id, *, only_elapsed: bool = False):
         gid = self._gid(guild_id)
         if self.emit_fn:
             payload = self._overlay_payload(gid)
+            payload["guild_id"] = gid
+            if only_elapsed:
+                payload["only_elapsed"] = True  # aide au throttle côté serveur web
+
             print(f"[EMIT] playlist_update gid={gid} paused={payload.get('is_paused')} "
-                  f"elapsed={(payload.get('progress', {}) or {}).get('elapsed')} title={(payload.get('current') or {}).get('title')}")
-            payload["guild_id"] = gid  # ← important pour l’émetteur
+                  f"elapsed={(payload.get('progress', {}) or {}).get('elapsed')} "
+                  f"title={(payload.get('current') or {}).get('title')} "
+                  f"only_elapsed={only_elapsed}")
+
             try:
                 # nouvelle signature (avec kwargs)
                 self.emit_fn("playlist_update", payload, guild_id=gid)
@@ -821,6 +868,9 @@ class Music(commands.Cog):
                         self.bot.loop.create_task(self.play_next(interaction_like))
 
                 vc.play(srcp, after=_after_pipe)
+                # Ticker unique de progression
+                self._cancel_ticker(gid)
+                self._ensure_ticker(gid)
 
                 # Démarre la progression
                 self.play_start[gid] = time.monotonic()
@@ -1091,7 +1141,7 @@ class Music(commands.Cog):
             vc.stop()
 
         self._kill_stream_proc(gid)
-
+        self._cancel_ticker(gid)
         self.is_playing[gid] = False
         self.current_song.pop(gid, None)
         self.now_playing.pop(gid, None)
@@ -1277,27 +1327,6 @@ class Music(commands.Cog):
         if ok:
             self.emit_playlist_update(gid)
         return bool(ok)
-
-
-    # ---------- Ticker ----------
-    def _ensure_ticker(self, guild_id: int):
-        gid = self._gid(guild_id)
-        if self.ticker_tasks.get(gid):
-            return
-        self.ticker_tasks[gid] = self.bot.loop.create_task(self._ticker(gid))
-
-    async def _ticker(self, guild_id: int):
-        gid = self._gid(guild_id)
-        try:
-            while True:
-                g = self.bot.get_guild(gid)
-                vc = g.voice_client if g else None
-                if not vc or (not vc.is_playing() and not vc.is_paused()):
-                    break
-                self.emit_playlist_update(gid)
-                await asyncio.sleep(1)
-        finally:
-            self.ticker_tasks.pop(gid, None)
 
 
 async def setup(bot, emit_fn=None):

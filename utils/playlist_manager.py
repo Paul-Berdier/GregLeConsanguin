@@ -40,7 +40,7 @@ class PlaylistManager:
         directory = os.path.dirname(self.file)
         os.makedirs(directory, exist_ok=True)
 
-        # On serialise ce qu'on a EN MEMOIRE (source de vérité)
+        # On sérialise ce qu'on a EN MÉMOIRE (source de vérité)
         payload = {
             "now_playing": self.now_playing if isinstance(self.now_playing, (dict, type(None))) else None,
             "queue": data if isinstance(data, list) else []
@@ -54,13 +54,6 @@ class PlaylistManager:
 
         qlen = len(payload.get("queue", []))
         print(f"[PlaylistManager {self.guild_id}] 💾 Sauvegarde atomique effectuée ({qlen} items).")
-
-        # DEBUG: petite stack (où est-on ?)
-        try:
-            stack = "".join(traceback.format_stack(limit=4))
-            print(f"[DEBUG _safe_write {self.guild_id}] len={qlen}\n{stack}")
-        except Exception:
-            pass
 
     def reload(self) -> None:
         """Recharge la playlist depuis le disque (migration OK)."""
@@ -106,11 +99,7 @@ class PlaylistManager:
     def save(self) -> None:
         """Sauvegarde l'état courant sur disque (atomique)."""
         with self.lock:
-            print(f"[DEBUG save {self.guild_id}] Avant _safe_write — len(queue)={len(self.queue)} "
-                  f"/ now_playing={'oui' if self.now_playing else 'non'}")
             self._safe_write(self.queue)
-            print(f"[DEBUG save {self.guild_id}] Après _safe_write — len(queue)={len(self.queue)} "
-                  f"/ now_playing={'oui' if self.now_playing else 'non'}")
 
     # ------------------------- UTILITAIRES -------------------------
 
@@ -252,6 +241,8 @@ class PlaylistManager:
     def move(self, src: int, dst: int) -> bool:
         """Déplace l’élément de `src` vers `dst`."""
         with self.lock:
+            if src == dst:
+                return False  # no-op (évite save + log + broadcast)
             n = len(self.queue)
             if not (0 <= src < n and 0 <= dst < n):
                 print(f"[PlaylistManager {self.guild_id}] ❌ move invalide: src={src}, dst={dst}, n={n}")

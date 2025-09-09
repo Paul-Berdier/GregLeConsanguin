@@ -602,7 +602,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         dst = int(d.get("dst", -1))
         if guild_id is None or src < 0 or dst < 0:
             return jsonify(error="missing guild_id/src/dst"), 400
-
+        if src == dst:
+            return jsonify(ok=True, no_op=True)  # ← évite save/reload/logs inutiles
         music_cog, err = _music_cog_required()
         if err:
             return err
