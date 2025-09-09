@@ -8,6 +8,8 @@ load_dotenv()
 # Token Discord
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
+DISCORD_APP_ID = os.getenv("DISCORD_CLIENT_ID")
+
 # Clé API HuggingFace (si jamais tu ajoutes des fonctions IA plus tard)
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
