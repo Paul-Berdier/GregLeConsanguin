@@ -172,6 +172,8 @@ def _mk_opts(
     ratelimit_bps: Optional[int] = None,
     search: bool = False,
     for_download: bool = False,
+    allow_playlist: bool = False,   # ★ NEW
+    extract_flat: bool = False,     # ★ NEW (utile pour les playlists)
 ) -> Dict[str, Any]:
     # cookies via env/base64 si besoin
     if (not cookies_file) and os.path.exists(_COOKIE_FILE_DEFAULT):
@@ -184,11 +186,10 @@ def _mk_opts(
     ydl_opts: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": True,
+        "noplaylist": (not allow_playlist),   # ★
         "ignoreerrors": True,
         "retries": 5,
         "fragment_retries": 5,
-        # IPv4 souvent plus stable sur Railway
         "source_address": "0.0.0.0" if _FORCE_IPV4 else None,
         "http_headers": {
             "User-Agent": _YT_UA,
@@ -203,6 +204,9 @@ def _mk_opts(
         "format": _FORMAT_CHAIN,
     }
 
+    if extract_flat:
+        ydl_opts["extract_flat"] = True  # ★ rapide et suffisant pour lister les entrées
+
     # ffmpeg_location pour yt-dlp = dossier (pas le .exe)
     if ffmpeg_path:
         if os.path.isfile(ffmpeg_path):
@@ -210,14 +214,12 @@ def _mk_opts(
         else:
             ydl_opts["ffmpeg_location"] = ffmpeg_path
 
-    # proxy ?
     if _HTTP_PROXY:
         ydl_opts["proxy"] = _HTTP_PROXY
 
     if ratelimit_bps:
         ydl_opts["ratelimit"] = int(ratelimit_bps)
 
-    # Cookies: navigateur d'abord, sinon fichier
     cfb = _parse_cookies_from_browser_spec(cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER"))
     if cfb:
         ydl_opts["cookiesfrombrowser"] = cfb
@@ -241,11 +243,9 @@ def _mk_opts(
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }],
-            # 48 kHz pour Discord
             "postprocessor_args": ["-ar", "48000"],
         })
 
-    # purge None values
     for k in list(ydl_opts.keys()):
         if ydl_opts[k] is None:
             del ydl_opts[k]
@@ -283,7 +283,128 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
 
 # ------------------------ playlist / mix expansion ------------------------
 
-from typing import Optional, List
+def is_playlist_or_mix_url(url: str) -> bool:
+    """
+    Détecte les liens YouTube de type playlist/mix.
+    Gère:
+      - watch?v=...&list=PL..., RD..., RDEM..., OLAK..., etc.
+      - /playlist?list=...
+      - watch?...&start_radio=1 (radio/mix auto)
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        u = _url.urlsplit(url)
+        host = (u.hostname or "").lower()
+        if "youtube.com" not in host and "youtu.be" not in host and "music.youtube.com" not in host:
+            return False
+        qs = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
+        if "list" in qs and qs["list"]:
+            return True
+        if qs.get("start_radio") == "1":
+            return True
+        if (u.path or "").startswith("/playlist"):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def expand_bundle(
+    url: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    limit: int = 10,
+) -> List[dict]:
+    """
+    Retourne la piste courante + les suivantes (jusqu’à `limit`, défaut=10)
+    pour tout lien YouTube playlist/mix.
+    - Supporte list=PL..., list=RD..., list=RDEM..., start_radio=1, etc.
+    - Normalise: {title, url, webpage_url, duration, thumb, provider, uploader}
+    """
+    limit = max(1, int(limit or 10))
+
+    # Parse URL et paramètres utiles
+    u = _url.urlsplit(url)
+    qs = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
+    list_id = qs.get("list")
+    video_id = qs.get("v")
+    idx_hint = None
+    try:
+        if "index" in qs:
+            idx_hint = max(0, int(qs["index"]) - 1)
+    except Exception:
+        idx_hint = None
+
+    # Si pas de "list" mais radio explicit → reconstitue un list=RD<video>
+    if (not list_id) and qs.get("start_radio") == "1" and video_id:
+        list_id = f"RD{video_id}"
+
+    # Choisir l’URL "playlist seed"
+    if list_id:
+        seed_url = f"https://www.youtube.com/playlist?list={list_id}"
+    else:
+        # Fallback: on tente quand même l’URL brute avec allow_playlist
+        seed_url = url
+
+    # Extrait la playlist/mix en "flat" (rapide)
+    with YoutubeDL(_mk_opts(
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        allow_playlist=True,     # ★ autorise la playlist
+        extract_flat=True,       # ★ juste les métadonnées
+    )) as ydl:
+        info = ydl.extract_info(seed_url, download=False)
+
+    entries = (info or {}).get("entries") or []
+    if not entries:
+        return []
+
+    # Où se trouve la vidéo courante ?
+    start_idx = 0
+    if idx_hint is not None and 0 <= idx_hint < len(entries):
+        start_idx = idx_hint
+    elif video_id:
+        for i, e in enumerate(entries):
+            # e['url'] (en flat) = id vidéo ; e['id'] idem la plupart du temps
+            vid = e.get("id") or e.get("url")
+            if vid and vid == video_id:
+                start_idx = i
+                break
+
+    # Slice: piste courante + 9 suivantes → total 10
+    sel = entries[start_idx:start_idx + limit]
+    if not sel:  # fallback
+        sel = entries[:limit]
+
+    out: List[dict] = []
+    for e in sel:
+        vid = e.get("id") or e.get("url")
+        if not vid:
+            continue
+        watch_url = f"https://www.youtube.com/watch?v={vid}"
+        # conserve la liste si on l’a (garde le contexte playlist/mix)
+        if list_id:
+            watch_url += f"&list={list_id}"
+        # thumbnail (flat): 'thumbnails' (list) ou 'thumbnail'
+        thumb = None
+        if e.get("thumbnails"):
+            try:
+                thumb = (e["thumbnails"][-1] or {}).get("url")
+            except Exception:
+                thumb = None
+        thumb = thumb or e.get("thumbnail")
+        out.append({
+            "title": e.get("title") or "Titre inconnu",
+            "url": watch_url,
+            "webpage_url": watch_url,
+            "duration": e.get("duration"),
+            "thumb": thumb,
+            "provider": "youtube",
+            "uploader": e.get("uploader"),
+        })
+    return out
 
 def is_playlist_like(url: str) -> bool:
     """True si URL YouTube de type playlist/mix (watch?list=..., /playlist?list=..., RD/OLAK etc.)."""

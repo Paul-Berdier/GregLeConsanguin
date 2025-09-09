@@ -1087,57 +1087,36 @@ class Music(commands.Cog):
                 return {"ok": False, "error_code": "VOICE_CONNECT_FAILED",
                         "message": "Impossible de rejoindre le vocal."}
 
-        # Normalisation + priorité
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+
+        # enrichir + normaliser + priorité/quotas (pour l'ITEM COURANT)
         item = dict(item or {})
         item["added_by"] = str(user_id)
         item = self._normalize_like_api(item)
-        item["priority"] = int(get_member_weight(self.bot, gid, int(user_id)))
+        weight = int(get_member_weight(self.bot, gid, int(user_id)))
+        item["priority"] = weight
 
-        url = item.get("url") or ""
-
-        # 🎯 Cas spécial: lien YouTube playlist/mix → on prend 10 pistes (la sélection + les 9 suivantes)
-        if ("youtube.com" in url or "youtu.be" in url):
-            extractor = get_extractor(url)  # → extractors.youtube
-            if extractor and hasattr(extractor, "is_playlist_like") and extractor.is_playlist_like(url):
-                try:
-                    bundle = await self._call_extractor(
-                        extractor, "expand_bundle",
-                        url, limit_total=10,
-                        cookies_file=self.youtube_cookies_file,
-                        cookies_from_browser=self.cookies_from_browser,
-                    )
-                except Exception as e:
-                    bundle = []
-                    _greg_print(f"[YT bundle/web] error: {e}")
-
-                if bundle:
-                    # 1ère piste via chemin standard, puis les suivantes en respectant quotas
-                    class FakeInteraction:
-                        def __init__(self, g):
-                            self.guild = g
-                            self.followup = self
-
-                        async def send(self, msg):
-                            _greg_print(f"[WEB->Discord] {msg}")
-
-                    # Applique owner/priority à la 1ère
-                    bundle[0]["added_by"] = str(user_id)
-                    bundle[0]["priority"] = item["priority"]
-
-                    await self._enqueue_bundle_after_first(FakeInteraction(guild), bundle[0], bundle)
-                    return {"ok": True}
-
-        # Sinon: ajout simple (comportement existant)
-        pm = self.get_pm(gid)
-        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
 
+        # Quota : on compte AVANT ajout (l'item courant prendra 1 slot)
         if not can_bypass_quota(self.bot, gid, int(user_id)):
             if self._count_user_in_queue(queue, int(user_id)) >= PER_USER_CAP:
                 _greg_print(f"[PlaylistManager {gid}] quota atteint ({PER_USER_CAP}) pour user={user_id}")
                 return
 
+        # === Détection playlist/mix YouTube et expansion (10 éléments) ===
+        # On ajoute d'abord l'item courant comme d’habitude, puis on enfile les 9 suivants.
+        extras: list[dict] = []
+        page_url = item.get("url") or ""
+        try:
+            from extractors import youtube as ytex
+            is_bundle = ytex.is_playlist_or_mix_url(page_url) if page_url else False
+        except Exception:
+            is_bundle = False
+
+        # 1) Ajout de l'item courant (avec insertion selon priorité)
         _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(queue)}): {[it.get('title') for it in queue]}")
         await loop.run_in_executor(None, pm.add, item)
         new_queue = await loop.run_in_executor(None, pm.get_queue)
@@ -1145,27 +1124,62 @@ class Music(commands.Cog):
             f"[DEBUG play_for_user] Queue après ajout ({len(new_queue)}): {[it.get('title') for it in new_queue]}")
 
         new_idx = len(new_queue) - 1
-        target_idx = self._compute_insert_index(new_queue, int(item["priority"]))
+        target_idx = self._compute_insert_index(new_queue, weight)
         if 0 <= target_idx < len(new_queue) and target_idx != new_idx:
             ok = await loop.run_in_executor(None, pm.move, new_idx, target_idx)
             if not ok:
                 _greg_print(
                     f"[PlaylistManager {gid}] ❌ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
 
-        # Lance la lecture si rien ne joue
+        # 2) Si bundle YT → récupérer les 9 suivantes et les enqueuer (respect quota restant)
+        if is_bundle:
+            try:
+                # Appel synchrone (dans executor) pour décharger l'event loop
+                def _expand():
+                    return ytex.expand_bundle(
+                        page_url,
+                        cookies_file=self.youtube_cookies_file,
+                        cookies_from_browser=self.cookies_from_browser,
+                        limit=10
+                    )
+
+                bundle = await loop.run_in_executor(None, _expand)
+                # bundle[0] = piste courante ; on veut les 9 suivantes
+                extras = (bundle or [])[1:10]
+            except Exception as e:
+                _greg_print(f"[YT bundle] expansion failed: {e}")
+                extras = []
+
+            if extras:
+                # Appliquer 'added_by' + 'priority' sur chaque extra
+                for it in extras:
+                    it["added_by"] = str(user_id)
+                    it["priority"] = weight
+
+                # Respect du quota restant (on a déjà ajouté 1 piste)
+                remaining = PER_USER_CAP
+                if not can_bypass_quota(self.bot, gid, int(user_id)):
+                    remaining = max(0, PER_USER_CAP - self._count_user_in_queue(new_queue, int(user_id)))
+                if remaining > 0:
+                    extras = extras[:remaining]
+                else:
+                    extras = []
+
+                if extras:
+                    # Ajout en bloc (en fin de file, on ne re-trie pas par priorité pour ne pas tout chambouler)
+                    await loop.run_in_executor(None, pm.add_many, extras, str(user_id))
+                    _greg_print(f"[YT bundle] +{len(extras)} piste(s) ajoutée(s) depuis playlist/mix.")
+
+        # 3) Démarrer si rien ne joue
+        class FakeInteraction:
+            def __init__(self, g): self.guild = g; self.followup = self
+
+            async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
+
         if not self.is_playing.get(gid, False):
-            class FakeInteraction:
-                def __init__(self, g):
-                    self.guild = g
-                    self.followup = self
-
-                async def send(self, msg):
-                    _greg_print(f"[WEB->Discord] {msg}")
-
             await self.play_next(FakeInteraction(guild))
 
         self.emit_playlist_update(gid)
-        return {"ok": True}
 
     async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
         gid = int(guild_id)
