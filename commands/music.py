@@ -375,6 +375,45 @@ class Music(commands.Cog):
         }
         return payload
 
+    async def _enqueue_bundle_after_first(self, interaction_like, first_item: dict, bundle: list[dict]):
+        """
+        Ajoute 'first_item' via le chemin normal (quota + insertion par priorité),
+        puis pousse le reste du bundle à la suite (en respectant le quota restant).
+        """
+        gid = self._gid(interaction_like.guild.id)
+        uid = int((getattr(interaction_like, "user", None) or getattr(interaction_like, "author", None)).id)
+
+        # Ajout de la 1ère (logique habituelle)
+        await self.add_to_queue(interaction_like, first_item)
+
+        # Si rien d’autre → fini
+        extras = (bundle or [])[1:]
+        if not extras:
+            return
+
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, pm.reload)
+        queue = await loop.run_in_executor(None, pm.get_queue)
+
+        # Quota restant
+        if not can_bypass_quota(self.bot, gid, uid):
+            already = self._count_user_in_queue(queue, uid)
+            remaining = max(0, PER_USER_CAP - already)
+            if remaining <= 0:
+                return
+            extras = extras[:remaining]
+
+        # Pose le même poids sur chaque item avant add_many
+        w = get_member_weight(self.bot, gid, uid)
+        for it in extras:
+            it["added_by"] = str(uid)
+            it["priority"] = int(w)
+
+        if extras:
+            await loop.run_in_executor(None, pm.add_many, extras, str(uid))
+            self.emit_playlist_update(gid)
+
     def emit_playlist_update(self, guild_id, payload=None):
         gid = self._gid(guild_id)
         if not self.emit_fn:
@@ -505,6 +544,29 @@ class Music(commands.Cog):
         if query_or_url.startswith(("http://", "https://")):
             cleaned = _clean_url(query_or_url)
             chosen_provider = _infer_provider_from_url(cleaned) or (prov if prov != "auto" else None)
+
+            # Si YouTube + lien playlist/mix → demander à l'extractor de construire un bundle (10)
+            if (("youtube.com" in cleaned) or ("youtu.be" in cleaned)) and (chosen_provider in (None, "youtube")):
+                extractor = get_extractor(cleaned)  # renverra extractors.youtube pour un lien YT
+                if extractor and hasattr(extractor, "is_playlist_like") and extractor.is_playlist_like(cleaned):
+                    try:
+                        bundle = await self._call_extractor(
+                            extractor, "expand_bundle",
+                            cleaned, limit_total=10,
+                            cookies_file=self.youtube_cookies_file,
+                            cookies_from_browser=self.cookies_from_browser,
+                        )
+                    except Exception as e:
+                        bundle = []
+                        _greg_print(f"[YT bundle] error: {e}")
+
+                    if bundle:
+                        # 1ère via chemin normal (priorité/insertion), puis enfile le reste
+                        first = {**bundle[0], "mode": play_mode}
+                        await self._enqueue_bundle_after_first(interaction, first, bundle)
+                        return
+
+            # sinon: ajout simple
             await self.add_to_queue(
                 interaction,
                 {"title": cleaned, "url": cleaned, "provider": chosen_provider, "mode": play_mode},
@@ -1022,19 +1084,55 @@ class Music(commands.Cog):
                 await member.voice.channel.connect()
             except Exception as e:
                 _greg_print(f"Connexion vocal échouée: {e}")
-                return {"ok": False, "error_code": "VOICE_CONNECT_FAILED", "message": "Impossible de rejoindre le vocal."}
+                return {"ok": False, "error_code": "VOICE_CONNECT_FAILED",
+                        "message": "Impossible de rejoindre le vocal."}
 
-        pm = self.get_pm(gid)
-        loop = asyncio.get_running_loop()
-
-        # enrichir + normaliser + priorité/quotas
+        # Normalisation + priorité
         item = dict(item or {})
         item["added_by"] = str(user_id)
         item = self._normalize_like_api(item)
         item["priority"] = int(get_member_weight(self.bot, gid, int(user_id)))
 
+        url = item.get("url") or ""
+
+        # 🎯 Cas spécial: lien YouTube playlist/mix → on prend 10 pistes (la sélection + les 9 suivantes)
+        if ("youtube.com" in url or "youtu.be" in url):
+            extractor = get_extractor(url)  # → extractors.youtube
+            if extractor and hasattr(extractor, "is_playlist_like") and extractor.is_playlist_like(url):
+                try:
+                    bundle = await self._call_extractor(
+                        extractor, "expand_bundle",
+                        url, limit_total=10,
+                        cookies_file=self.youtube_cookies_file,
+                        cookies_from_browser=self.cookies_from_browser,
+                    )
+                except Exception as e:
+                    bundle = []
+                    _greg_print(f"[YT bundle/web] error: {e}")
+
+                if bundle:
+                    # 1ère piste via chemin standard, puis les suivantes en respectant quotas
+                    class FakeInteraction:
+                        def __init__(self, g):
+                            self.guild = g
+                            self.followup = self
+
+                        async def send(self, msg):
+                            _greg_print(f"[WEB->Discord] {msg}")
+
+                    # Applique owner/priority à la 1ère
+                    bundle[0]["added_by"] = str(user_id)
+                    bundle[0]["priority"] = item["priority"]
+
+                    await self._enqueue_bundle_after_first(FakeInteraction(guild), bundle[0], bundle)
+                    return {"ok": True}
+
+        # Sinon: ajout simple (comportement existant)
+        pm = self.get_pm(gid)
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
+
         if not can_bypass_quota(self.bot, gid, int(user_id)):
             if self._count_user_in_queue(queue, int(user_id)) >= PER_USER_CAP:
                 _greg_print(f"[PlaylistManager {gid}] quota atteint ({PER_USER_CAP}) pour user={user_id}")
@@ -1043,26 +1141,31 @@ class Music(commands.Cog):
         _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(queue)}): {[it.get('title') for it in queue]}")
         await loop.run_in_executor(None, pm.add, item)
         new_queue = await loop.run_in_executor(None, pm.get_queue)
-        _greg_print(f"[DEBUG play_for_user] Queue après ajout ({len(new_queue)}): {[it.get('title') for it in new_queue]}")
+        _greg_print(
+            f"[DEBUG play_for_user] Queue après ajout ({len(new_queue)}): {[it.get('title') for it in new_queue]}")
 
         new_idx = len(new_queue) - 1
         target_idx = self._compute_insert_index(new_queue, int(item["priority"]))
         if 0 <= target_idx < len(new_queue) and target_idx != new_idx:
             ok = await loop.run_in_executor(None, pm.move, new_idx, target_idx)
             if not ok:
-                _greg_print(f"[PlaylistManager {gid}] ❌ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
+                _greg_print(
+                    f"[PlaylistManager {gid}] ❌ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
 
-        class FakeInteraction:
-            def __init__(self, g):
-                self.guild = g
-                self.followup = self
-            async def send(self, msg):
-                _greg_print(f"[WEB->Discord] {msg}")
-
+        # Lance la lecture si rien ne joue
         if not self.is_playing.get(gid, False):
+            class FakeInteraction:
+                def __init__(self, g):
+                    self.guild = g
+                    self.followup = self
+
+                async def send(self, msg):
+                    _greg_print(f"[WEB->Discord] {msg}")
+
             await self.play_next(FakeInteraction(guild))
 
         self.emit_playlist_update(gid)
+        return {"ok": True}
 
     async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
         gid = int(guild_id)
