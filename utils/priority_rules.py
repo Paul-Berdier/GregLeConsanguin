@@ -12,8 +12,20 @@ DEFAULT_WEIGHTS: Dict[str, int] = {
     "__DEFAULT__": 10,
 }
 
+OWNER_WEIGHT = 10_000  # bien plus haut que n'importe quel rôle
+
 # Fichier de config persistée (overrides)
 CONFIG_PATH = os.getenv("PRIORITY_FILE", "data/priority.json")
+
+def _to_int(v):
+    try: return int(v)
+    except Exception:
+        try: return int(str(v).strip())
+        except Exception: return None
+
+def is_owner(user_id) -> bool:
+    oid = _to_int(os.getenv("GREG_OWNER_ID", ""))
+    return (oid is not None) and (_to_int(user_id) == oid)
 
 # --- lecture overrides ENV (legacy) ---
 def _load_custom_weights_env() -> Dict[str, int]:
@@ -66,7 +78,7 @@ def _save_overrides_file():
 
 # état en mémoire
 CUSTOM: Dict[str, int] = {}
-PER_USER_CAP: int = int(os.getenv("QUEUE_PER_USER_CAP", "3") or 3)
+PER_USER_CAP: int = int(os.getenv("QUEUE_PER_USER_CAP", "10") or 10)
 
 # init
 def _init_state():
@@ -134,8 +146,12 @@ def get_member_weight(bot, guild_id: int, user_id: int) -> int:
     """
     Calcule le poids d'un membre en se basant sur les rôles du serveur + flags admin.
     """
+    if is_owner(user_id):
+        return OWNER_WEIGHT
+
     weights = get_weights()
     guild = bot.get_guild(int(guild_id)) if bot else None
+
     if not guild:
         return int(weights.get("__DEFAULT__", 10))
     member = guild.get_member(int(user_id)) if guild else None
@@ -160,11 +176,15 @@ def get_member_weight(bot, guild_id: int, user_id: int) -> int:
     return best
 
 def can_bypass_quota(bot, guild_id: int, user_id: int) -> bool:
+    if is_owner(user_id):
+        return True
     guild = bot.get_guild(int(guild_id)) if bot else None
     m = guild and guild.get_member(int(user_id))
     return bool(m and (m.guild_permissions.administrator or m.guild_permissions.manage_guild))
 
 def can_user_bump_over(bot, guild_id: int, requester_id: int, owner_weight: int) -> bool:
+    if is_owner(requester_id):
+        return True
     req_w = get_member_weight(bot, guild_id, requester_id)
     if can_bypass_quota(bot, guild_id, requester_id):
         return True
