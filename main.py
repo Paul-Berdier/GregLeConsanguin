@@ -13,9 +13,8 @@ from utils.playlist_manager import PlaylistManager
 import config
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# Logging configuration
+# -----------------------------------------------------------------------------
+# Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -33,41 +32,78 @@ logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 playlist_managers = {}  # {guild_id: PlaylistManager}
 RESTART_MARKER = ".greg_restart.json"
 
-def get_pm(guild_id):
-    guild_id = str(guild_id)
-    if guild_id not in playlist_managers:
-        playlist_managers[guild_id] = PlaylistManager(guild_id)
-        logger.debug("Nouvelle instance PlaylistManager pour guild %s", guild_id)
-    return playlist_managers[guild_id]
+def get_pm(guild_id: int | str) -> PlaylistManager:
+    gid = str(int(guild_id))
+    pm = playlist_managers.get(gid)
+    if pm is None:
+        pm = PlaylistManager(gid)
+        playlist_managers[gid] = pm
+        logger.info("PlaylistManager créée pour guild %s", gid)
+    return pm
 
-async def run_post_restart_selftest(bot):
-    """Auto-diagnostic après restart s’il y a un marker."""
-    try:
-        marker_path = os.path.join(os.path.dirname(__file__), RESTART_MARKER)
-        if not os.path.exists(marker_path):
+# ---------------------------------------------------------------------------
+# Bot Discord
+INTENTS = discord.Intents.default()
+INTENTS.message_content = False
+INTENTS.members = True
+INTENTS.presences = False
+INTENTS.guilds = True
+INTENTS.voice_states = True
+
+class GregBot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix="!",
+            intents=INTENTS,
+            application_id=int(config.DISCORD_APP_ID),
+        )
+        self.web_app = None
+
+    async def _load_ext_dir(self, dirname: str):
+        """Charge toutes les extensions (cogs) d'un dossier si présent."""
+        import pkgutil, importlib
+        if not os.path.isdir(dirname):
             return
+        for _, modname, ispkg in pkgutil.iter_modules([dirname]):
+            if ispkg:
+                continue
+            extension = f"{dirname}.{modname}"
+            try:
+                await self.load_extension(extension)
+                logging.getLogger(__name__).info("✅ Cog chargé : %s", extension)
+            except Exception as e:
+                logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
 
-        with open(marker_path, "r", encoding="utf-8") as f:
-            marker = json.load(f)
+    async def setup_hook(self):
+        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
+        for dir_name in ("commands", "cogs"):
+            await self._load_ext_dir(dir_name)
+        await self.tree.sync()
+        logging.getLogger(__name__).info("Slash commands sync DONE !")
 
-        guild_id = int(marker.get("guild_id"))
-        channel_id = int(marker.get("channel_id"))
-        requested_by = int(marker.get("requested_by", 0))
+    async def on_ready(self):
+        logger.info("====== EVENT on_ready() ======")
+        logger.info("Utilisateur bot : %s", self.user)
+        try:
+            await self.post_restart_selftest()
+        except Exception as e:
+            logger.debug("Selftest skipped: %s", e)
 
-        results = []
+    async def post_restart_selftest(self):
+        """Check rapide de l'environnement, utile après redémarrage."""
+        results: list[tuple[str, bool, str]] = []
 
-        # 1) COGS
+        # 1) Cogs présents
         expected_cogs = [
-            "Music", "Voice", "General",
-            "EasterEggs", "Spook", "SpotifyAccount", "CookieGuardian"
+            "Music", "Voice", "General", "EasterEggs", "Spook", "SpotifyAccount", "CookieGuardian"
         ]
         for name in expected_cogs:
-            ok = bot.get_cog(name) is not None
+            ok = self.get_cog(name) is not None
             results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
 
         # 2) Slash commands
         try:
-            cmds = await bot.tree.fetch_commands()
+            cmds = await self.tree.fetch_commands()
             names = {c.name for c in cmds}
         except Exception as e:
             names = set()
@@ -86,13 +122,15 @@ async def run_post_restart_selftest(bot):
             # guardian yt cookies
             "yt_cookies_update","yt_cookies_check",
         ]
-        for name in expected_cmds:
-            ok = name in names
-            results.append((f"Slash:/{name}", ok, "" if ok else "absent"))
+        missing = [c for c in expected_cmds if c not in names]
+        if missing:
+            results.append(("Slash:manquants", False, ", ".join(missing)))
+        else:
+            results.append(("Slash:manquants", True, ""))
 
         # 3) FFmpeg
         try:
-            music_cog = bot.get_cog("Music")
+            music_cog = self.get_cog("Music")
             ff = music_cog.detect_ffmpeg() if music_cog and hasattr(music_cog, "detect_ffmpeg") else "ffmpeg"
             cp = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=3)
             ok = (cp.returncode == 0)
@@ -122,65 +160,21 @@ async def run_post_restart_selftest(bot):
         except Exception as e:
             results.append(("SocketIO:emit", False, str(e)))
 
-        ok_all = all(ok for (_, ok, _) in results)
-        color = 0x2ECC71 if ok_all else 0xE74C3C
-        lines = []
-        for name, ok, extra in results:
-            emoji = "✅" if ok else "❌"
-            lines.append(f"{emoji} **{name}**" + (f" — {extra}" if extra else ""))
+        # Dump résultat
+        for name, ok, info in results:
+            logger.info("Selftest %-22s : %s %s", name, "OK" if ok else "KO", ("" if ok else f"({info})"))
 
-        embed = discord.Embed(
-            title=("Self-test au redémarrage — OK" if ok_all else "Self-test au redémarrage — PROBLÈMES"),
-            description="\n".join(lines),
-            color=color
-        )
-        if requested_by:
-            embed.set_footer(text=f"Demandé par <@{requested_by}>")
+    async def on_connect(self):
+        logger.info("Bot connecté aux Gateway.")
 
-        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-        await channel.send(embed=embed)
+    async def on_resumed(self):
+        logger.info("Session Discord résumée.")
 
-        try: os.remove(marker_path)
-        except Exception: pass
-
-    except Exception as e:
-        print(f"[SELFTEST] Erreur selftest post-restart: {e}")
-
-# ---------------------------------------------------------------------------
-# Discord Bot
-class GregBot(commands.Bot):
-    def __init__(self, **kwargs):
-        intents = discord.Intents.all()
-        super().__init__(command_prefix="!", intents=intents, **kwargs)
-
-    async def _load_ext_dir(self, dir_name: str):
-        if not os.path.isdir(f"./{dir_name}"):
-            return
-        for filename in os.listdir(f"./{dir_name}"):
-            if filename.endswith(".py") and filename != "__init__.py":
-                extension = f"{dir_name}.{filename[:-3]}"
-                try:
-                    await self.load_extension(extension)
-                    logging.getLogger(__name__).info("✅ Cog chargé : %s", extension)
-                except Exception as e:
-                    logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
-
-    async def setup_hook(self):
-        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
-        for dir_name in ("commands", "cogs"):
-            await self._load_ext_dir(dir_name)
-        await self.tree.sync()
-        logging.getLogger(__name__).info("Slash commands sync DONE !")
-
-    async def on_ready(self):
-        logger.info("====== EVENT on_ready() ======")
-        logger.info("Utilisateur bot : %s", self.user)
-        try:
-            cmds = await self.tree.fetch_commands()
-            logger.info("Slash commands globales : %s", [cmd.name for cmd in cmds])
-        except Exception as e:
-            logger.warning("fetch_commands a échoué: %s", e)
-
+    async def setup_emit_fn(self):
+        """
+        Branche un emit(event, data, guild_id=...) utilisable par les Cogs.
+        L’émetteur cible la room Socket.IO 'guild:{gid}' pour éviter les collisions.
+        """
         # ---- Wire emit_fn to Socket.IO (no fragile __main__ import) ----
         def _resolve_socketio():
             try:
@@ -218,6 +212,12 @@ class GregBot(commands.Bot):
             asyncio.create_task(run_post_restart_selftest(self))
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
+
+async def run_post_restart_selftest(bot: GregBot):
+    try:
+        await bot.post_restart_selftest()
+    except Exception as e:
+        logger.debug("Self-test (async) non lancé: %s", e)
 
 # ---------------------------------------------------------------------------
 # Flask + SocketIO (overlay web)
@@ -266,5 +266,11 @@ if __name__ == "__main__":
         bot.web_app = app
         threading.Thread(target=run_web, daemon=True).start()
         wait_for_web()
+
+    # Branche l'emit_fn après que les cogs soient chargés et les slash sync
+    @bot.event
+    async def on_ready():
+        await bot.setup_emit_fn()  # branche emit_fn
+        await GregBot.on_ready(bot)  # call parent handler
 
     bot.run(config.DISCORD_TOKEN)

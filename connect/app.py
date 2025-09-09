@@ -348,6 +348,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             print(f"🤦‍♂️ [WEB] GET /api/playlist — guild={guild_id}, "
                   f"payload_queue={qlen}, current={'oui' if cur else 'non'}, "
                   f"elapsed={(payload.get('progress') or {}).get('elapsed', 0)}")
+            payload["guild_id"] = int(guild_id)
             return jsonify(payload)
         except Exception as e:
             print(f"/api/playlist — 💥 {e}")
@@ -511,7 +512,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if err:
             return err
         try:
-            result = _dispatch(music_cog.stop_for_web(guild_id), timeout=30)
+            u = current_user()
+            result = _dispatch(music_cog.stop_for_web(guild_id, u["id"]), timeout=30)
             return jsonify(ok=bool(result))
         except Exception as e:
             _dbg(f"/api/stop — 💥 {e}")
@@ -527,7 +529,8 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         if err:
             return err
         try:
-            result = _dispatch(music_cog.skip_for_web(guild_id), timeout=30)
+            u = current_user()
+            result = _dispatch(music_cog.skip_for_web(guild_id, u["id"]), timeout=30)
             return jsonify(ok=bool(result))
         except Exception as e:
             _dbg(f"/api/skip — 💥 {e}")
@@ -813,9 +816,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         try:
             guilds = getattr(getattr(app, "bot", None), "guilds", []) or []
             if guilds:
-                payload = _overlay_payload_for(guilds[0].id)
+                gid = int(guilds[0].id)
+                payload = _overlay_payload_for(gid)
+                payload["guild_id"] = gid
                 emit("playlist_update", payload)
-                _dbg("WS connect — état initial envoyé.")
         except Exception as e:
             _dbg(f"WS connect — 💥 {e}")
 
