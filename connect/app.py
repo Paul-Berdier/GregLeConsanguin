@@ -66,6 +66,16 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     DEVICE_STORE: dict[str, dict] = {}
     DEVICE_TTL = 300  # 5 minutes
 
+    # === SPOTIFY: brancher les routes ===
+    try:
+        from connect.spotify_backend import register_spotify_routes
+    except Exception:
+        try:
+            from .spotify_backend import register_spotify_routes
+        except Exception:
+            from spotify_backend import register_spotify_routes
+    register_spotify_routes(app)
+
     def _device_gc():
         now = time.time()
         for st, did in list(DEVICE_BY_STATE.items()):
