@@ -283,143 +283,136 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
 
 # ------------------------ playlist / mix expansion ------------------------
 
+# --- Playlist detection + expansion (NEW) --------------------------------
+from urllib.parse import urlparse, parse_qs
+from typing import List, Dict, Optional
+
 def is_playlist_or_mix_url(url: str) -> bool:
     """
-    Détecte les liens YouTube de type playlist/mix.
-    Gère:
-      - watch?v=...&list=PL..., RD..., RDEM..., OLAK..., etc.
-      - /playlist?list=...
-      - watch?...&start_radio=1 (radio/mix auto)
+    True if the URL clearly references a YT playlist/mix.
     """
-    if not isinstance(url, str):
-        return False
     try:
-        u = _url.urlsplit(url)
-        host = (u.hostname or "").lower()
-        if "youtube.com" not in host and "youtu.be" not in host and "music.youtube.com" not in host:
+        u = urlparse(url)
+        if not u.netloc:
             return False
-        qs = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
-        if "list" in qs and qs["list"]:
+        if "youtube.com" not in u.netloc and "youtu.be" not in u.netloc and "music.youtube.com" not in u.netloc:
+            return False
+        q = parse_qs(u.query)
+        lst = (q.get("list") or [None])[0]
+        if lst:
+            # playlist ids (PL..., LL..., WL...), mixes (RD..., OLAK5uy...)
             return True
-        if qs.get("start_radio") == "1":
-            return True
-        if (u.path or "").startswith("/playlist"):
+        # also accept /playlist?list=... path
+        if u.path.strip("/").lower() == "playlist" and lst:
             return True
         return False
     except Exception:
         return False
 
+# compat alias for music.py (slash_play uses hasattr(..., "is_playlist_like"))
+def is_playlist_like(url: str) -> bool:
+    return is_playlist_or_mix_url(url)
 
-def expand_playlist_or_mix(
-    url: str,
-    *,
+def _yt_watch_url(video_id: str, list_id: Optional[str] = None) -> str:
+    base = f"https://www.youtube.com/watch?v={video_id}"
+    return f"{base}&list={list_id}" if list_id else base
+
+def expand_bundle(
+    page_url: str,
+    limit_total: Optional[int] = None,
+    limit: Optional[int] = None,
     cookies_file: Optional[str] = None,
-    cookies_from_browser: Optional[str] = None,
-    max_items: int = 10,
-) -> List[dict]:
+    cookies_from_browser: Optional[object] = None,  # kept for signature parity
+) -> List[Dict]:
     """
-    Retourne jusqu'à `max_items` éléments à partir d'une URL YouTube playlist/mix.
-    - Supporte list=PL..., RD..., RDEM..., OLAK..., start_radio=1, etc.
-    - Extraction "flat" rapide puis normalisation en:
-      {title, url, webpage_url, duration, thumb, uploader, provider='youtube'}.
-    - Essaie de commencer à la vidéo courante si identifiable (v=... ou index=...).
+    Returns up to N tracks from a playlist/mix URL as a list of dicts:
+    {title, url, artist, thumb, duration}.
+
+    - Respects the clicked video's position (if v= present), putting it first.
+    - Uses yt_dlp in extract_flat mode (no download).
     """
-    if not url or "youtube" not in url:
+    import yt_dlp
+
+    N = int(limit_total or limit or 10)
+    # yt-dlp flat extraction of playlist
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": True,            # don't resolve media URLs
+        "noplaylist": False,
+        "playlistend": N,                # soft limit, we’ll re-slice after reordering
+    }
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(page_url, download=False)
+
+    # If the user pasted a watch URL with &list=..., info may be a 'video' depending on yt-dlp heuristics.
+    # Force resolving the surrounding playlist when needed.
+    if info and info.get("_type") == "url" and "playlist" in (info.get("ie_key") or "").lower():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(info["url"], download=False)
+
+    if not info:
         return []
 
-    # Paramètres utiles (pour caler le point de départ)
-    u = _url.urlsplit(url)
-    q = {k: v[0] for k, v in _url.parse_qs(u.query).items()}
-    list_id  = q.get("list")
-    video_id = q.get("v")
-    start_idx = None
+    # Determine playlist id & entries
+    list_id = info.get("id") if info.get("_type") == "playlist" else None
+    entries = info.get("entries") or []
+
+    # Fallback: if flat entry with "webpage_url" that still points to a playlist, try again
+    if not entries and is_playlist_or_mix_url(page_url):
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(page_url, download=False)
+        entries = (info or {}).get("entries") or []
+        if not entries:
+            return []
+
+    # Reorder so the clicked video is first if the URL had v=...
+    v_id = None
     try:
-        if "index" in q:
-            start_idx = max(0, int(q["index"]) - 1)
+        u = urlparse(page_url)
+        v_id = (parse_qs(u.query).get("v") or [None])[0]
     except Exception:
-        start_idx = None
-    if (not list_id) and q.get("start_radio") == "1" and video_id:
-        list_id = f"RD{video_id}"
+        v_id = None
 
-    seed_url = f"https://www.youtube.com/playlist?list={list_id}" if list_id else url
+    if v_id:
+        try:
+            i = next((i for i, e in enumerate(entries)
+                      if (e.get("id") or e.get("url")) == v_id), None)
+            if i is not None:
+                entries = entries[i:] + entries[:i]
+        except Exception:
+            pass
 
-    # Extraction flat de la playlist/mix
-    opts = _mk_opts(
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-        allow_playlist=True,
-        extract_flat=True,
-    )
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(seed_url, download=False)
-
-    entries = (info or {}).get("entries") or []
-    if not entries:
-        return []
-
-    # Trouver le point de départ
-    if start_idx is not None and 0 <= start_idx < len(entries):
-        begin = start_idx
-    elif video_id:
-        begin = 0
-        for i, e in enumerate(entries):
-            vid = (e or {}).get("id") or (e or {}).get("url")
-            if vid and vid == video_id:
-                begin = i
-                break
-    else:
-        begin = 0
-
-    sub = entries[begin:begin + max_items]
-    if not sub:
-        sub = entries[:max_items]
-
-    out: List[dict] = []
-    for e in sub:
-        if not isinstance(e, dict):
-            continue
+    # Normalize items
+    out: List[Dict] = []
+    for e in entries:
         vid = e.get("id") or e.get("url")
         if not vid:
             continue
-        watch = f"https://www.youtube.com/watch?v={vid}"
-        if list_id:
-            watch += f"&list={list_id}"
-
-        # thumb: 'thumbnails' (liste) > 'thumbnail'
-        thumb = None
-        if isinstance(e.get("thumbnails"), list) and e["thumbnails"]:
-            try:
-                thumb = (e["thumbnails"][-1] or {}).get("url")
-            except Exception:
-                thumb = None
-        thumb = thumb or e.get("thumbnail")
-
+        title = e.get("title") or ""
+        artist = e.get("uploader") or e.get("channel") or e.get("uploader_id")
+        thumb = (
+            e.get("thumbnail")
+            or (e.get("thumbnails") or [{}])[-1].get("url")
+            or None
+        )
+        dur = e.get("duration")
         out.append({
-            "title": e.get("title") or "Titre inconnu",
-            "url": watch,
-            "webpage_url": watch,
-            "duration": e.get("duration"),
+            "title": title or _yt_watch_url(vid, list_id),
+            "url": _yt_watch_url(vid, list_id),
+            "artist": artist,
             "thumb": thumb,
-            "uploader": e.get("uploader"),
+            "duration": dur,
             "provider": "youtube",
         })
+        if len(out) >= N:
+            break
 
     return out
-
-def expand_bundle(
-    url: str,
-    *,
-    limit: int = 10,
-    cookies_file: Optional[str] = None,
-    cookies_from_browser: Optional[str] = None,
-) -> List[dict]:
-    """Alias attendu par extractors.expand_bundle / music.py (paramètre 'limit')."""
-    return expand_playlist_or_mix(
-        url,
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-        max_items=limit,
-    )
 
 # ------------------------ internal probe helpers ------------------------
 

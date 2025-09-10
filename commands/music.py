@@ -58,8 +58,15 @@ def _clean_url(u: Optional[str]) -> Optional[str]:
 # "music" = basses + normalisation dynamique + limiteur doux
 AUDIO_EQ_PRESETS = {
     "off":   None,
-    "music": "bass=g=8:f=110:w=0.7,dynaudnorm=f=200:g=12:p=0.7,alimiter=limit=0.97",
+
+    # Hip-hop / Phonk — EQ statique, aucun ride de volume
+    # - highpass : enlève le sub (<30–35 Hz) qui déclenche le pumping
+    # - volume -6 dB : crée de la marge pour le boost de basses (évite que le limiteur travaille)
+    # - bass +4 dB vers 95 Hz : plus de coffre sans baver
+    # - alimiter : attrape seulement un pic rarissime (attaque/release courts pour rester transparent)
+    "music": "highpass=f=32,volume=-6dB,bass=g=4:f=95:w=1.0,alimiter=limit=0.98:attack=5:release=50",
 }
+
 
 def _build_ffmpeg_out_options(afilter: str | None) -> str:
     # options 'après -i' → sortie PCM pour Discord (48 kHz stéréo) + filtre éventuel
@@ -708,11 +715,11 @@ class Music(commands.Cog):
 
         await self._i_send(interaction, f"🎚️ Mode musique: **{'ON' if new_mode == 'music' else 'OFF'}**")
 
-        # Si quelque chose joue, on redémarre la piste courante pour appliquer le nouveau filtre
         g = interaction.guild
         vc = g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()  # l'after → play_next() reprendra avec le nouveau filtre
+            # au lieu de: vc.stop()
+            await self.restart_current_for_web(g.id)
 
     # =====================================================================
     #                         Actions internes factorisées
@@ -835,6 +842,16 @@ class Music(commands.Cog):
             except Exception:
                 pass
 
+            # Vérif VC connecté
+            vc = interaction_like.guild.voice_client
+            if not vc:
+                try:
+                    await interaction_like.followup.send("❌ *Pas de connexion vocale active.*")
+                except Exception:
+                    pass
+                return
+
+
             # Pop élément suivant
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
@@ -886,15 +903,6 @@ class Music(commands.Cog):
                 "priority": item.get("priority"),
             }
             self.emit_playlist_update(gid)
-
-            # Vérif VC connecté
-            vc = interaction_like.guild.voice_client
-            if not vc:
-                try:
-                    await interaction_like.followup.send("❌ *Pas de connexion vocale active.*")
-                except Exception:
-                    pass
-                return
 
             # Choix de l'extracteur pour l'URL
             extractor = get_extractor(url)
