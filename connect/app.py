@@ -499,24 +499,49 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         data = request.get_json(silent=True) or {}
         guild_id = (data or {}).get("guild_id")
         index = (data or {}).get("index")
+
         try:
             idx = int(index)
         except Exception:
             return _bad_request("index invalide")
-
         if not guild_id:
             return _bad_request("guild_id manquant")
+
+        # 🔒 même pré-check que /api/play
+        try:
+            gid_int = int(guild_id)
+        except Exception:
+            return _bad_request("guild_id invalide")
+        guild = getattr(app, "bot", None) and app.bot.get_guild(gid_int)
+        if not guild:
+            return _bad_request("guild introuvable", 404)
+
+        u = current_user()
+        user_id = int(u["id"])
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = _dispatch(guild.fetch_member(user_id), timeout=8)
+            except Exception:
+                member = None
+        if not getattr(member, "voice", None) or not getattr(member.voice, "channel", None):
+            return jsonify(
+                ok=False,
+                error="Tu dois être connecté à un salon vocal sur ce serveur pour lancer une musique.",
+                error_code="USER_NOT_IN_VOICE"
+            ), 409
 
         music_cog, err = _music_cog_required()
         if err:
             return err
 
-        u = current_user()
         try:
-            _dispatch(music_cog.play_at_for_web(guild_id, u["id"], idx), timeout=30)
+            _dispatch(music_cog.play_at_for_web(guild_id, user_id, idx), timeout=30)
             return jsonify(ok=True, moved_to=0)
         except PermissionError as e:
             return jsonify(error=str(e)), 403
+        except IndexError as e:
+            return jsonify(error=str(e)), 400
         except Exception as e:
             return jsonify(error=str(e)), 500
 
