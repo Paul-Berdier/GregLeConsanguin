@@ -193,6 +193,30 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
             s = s[:-1]
         return s
 
+    def _oembed_enrich_play(page_url: str):
+        """
+        Enrichit un simple URL (YouTube/SoundCloud) en (title, artist, thumb)
+        en réutilisant la même logique que l'autocomplete (oEmbed).
+        """
+        try:
+            host = re.sub(r"^www\.", "", urlparse(page_url).hostname or "")
+            if "soundcloud.com" in host:
+                oe = requests.get(
+                    "https://soundcloud.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return (oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url"))
+            if "youtube.com" in host or "youtu.be" in host:
+                oe = requests.get(
+                    "https://www.youtube.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return (oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url"))
+        except Exception:
+            pass
+        return (None, None, None)
         # ------------------------ Pages HTML --------------------------
 
     @app.route("/")
@@ -424,6 +448,22 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                     except Exception:
                         v = None
                 extra[k] = v
+
+            # --- ENRICHISSEMENT QUAND ON N’A QUE L’URL (suivre autocomplete/oEmbed) ---
+            # Cas typique: le front a envoyé {title:url, url} sans artist/thumb.
+            needs_enrich = (title == url) or ("artist" not in extra) or ("thumb" not in extra)
+            if needs_enrich and url:
+                t2, a2, th2 = _oembed_enrich_play(url)
+                # Si le titre est juste l’URL → remplace par le titre oEmbed
+                if t2 and (not title or title == url):
+                    title = t2
+                # Ne remplace pas ce que le client a explicitement fourni
+                if a2 and "artist" not in extra:
+                    extra["artist"] = a2
+                if th2 and "thumb" not in extra:
+                    extra["thumb"] = th2
+            # --------------------------------------------------------------------------
+
 
             item = {"title": title, "url": url, **extra}
             _dbg(f"[api_play] ITEM FINAL: {item}")
@@ -721,27 +761,6 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 return int(m) * 60 + int(s)
             return None
 
-        def _oembed_enrich(page_url: str):
-            try:
-                host = re.sub(r"^www\.", "", urlparse(page_url).hostname or "")
-                if "soundcloud.com" in host:
-                    oe = requests.get(
-                        "https://soundcloud.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4
-                    ).json()
-                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
-                if "youtube.com" in host or "youtu.be" in host:
-                    oe = requests.get(
-                        "https://www.youtube.com/oembed",
-                        params={"format": "json", "url": page_url},
-                        timeout=4
-                    ).json()
-                    return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
-            except Exception:
-                pass
-            return None, None, None
-
         def _norm(rows, chosen):
             out = []
             for r in rows[:3]:
@@ -753,7 +772,7 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 duration = _to_seconds(r.get("duration") or r.get("duration_ms"))
                 thumb = r.get("thumbnail") or None
                 if (not title or not artist or not thumb) and page_url:
-                    t2, a2, th2 = _oembed_enrich(page_url)
+                    t2, a2, th2 = _oembed_enrich_play(page_url)
                     title = title or t2
                     artist = artist or a2
                     thumb = thumb or th2

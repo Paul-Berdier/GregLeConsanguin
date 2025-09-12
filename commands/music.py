@@ -1115,6 +1115,31 @@ class Music(commands.Cog):
         extras: list[dict] = []
         page_url = item.get("url") or ""
 
+        # 🔴 NOUVEAU : si l'URL est une playlist/mix, on remplace l'item courant
+        # par la 1ʳᵉ piste (reordonnée si v= présent), puis on garde le reste en extras.
+        if is_bundle_url(page_url):
+            try:
+                bundle = expand_bundle(
+                    page_url,
+                    limit=10,
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.cookies_from_browser,
+                ) or []
+            except Exception as e:
+                _greg_print(f"[bundle] expansion failed: {e}")
+                bundle = []
+
+            if bundle:
+                head = bundle[0]  # ★ la piste à jouer tout de suite
+                # on remplace l'URL/les méta de l'item courant par la 1ʳᵉ entrée
+                item["title"] = head.get("title") or item.get("title")
+                item["url"] = head.get("url") or item.get("url")
+                item["artist"] = head.get("artist")
+                item["thumb"] = head.get("thumb")
+                item["duration"] = head.get("duration")
+                # le reste de la playlist
+                extras = bundle[1:10]
+
         # 1) Ajout de l'item courant (avec insertion selon priorité)
         _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(queue)}): {[it.get('title') for it in queue]}")
         await loop.run_in_executor(None, pm.add, item)
