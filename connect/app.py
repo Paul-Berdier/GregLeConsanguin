@@ -9,7 +9,7 @@ from flask import (
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 import os, asyncio, requests, time, secrets, re
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urlparse, parse_qs
 
 # --- Imports helpers (compat: exécution directe OU en package) ---
 try:
@@ -217,6 +217,110 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         except Exception:
             pass
         return (None, None, None)
+
+        # --- helpers méta (comme l’autocomplete) ---------------------------------
+    def _normalize_duration(v):
+        if v is None:
+            return None
+        try:
+            iv = int(v)
+            return iv // 1000 if iv > 86400 else iv
+        except Exception:
+            pass
+        if isinstance(v, str) and re.match(r"^\d+:\d{2}$", v):
+            m, s = v.split(":")
+            return int(m) * 60 + int(s)
+        return None
+
+    def _oembed_enrich_play(page_url: str):
+        """Retourne (title, artist, thumb) via oEmbed YT/SC si possible."""
+        try:
+            host = re.sub(r"^www\.", "", urlparse(page_url).hostname or "")
+            if "soundcloud.com" in host:
+                oe = requests.get(
+                    "https://soundcloud.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+            if "youtube.com" in host or "youtu.be" in host or "music.youtube.com" in host:
+                oe = requests.get(
+                    "https://www.youtube.com/oembed",
+                    params={"format": "json", "url": page_url},
+                    timeout=4
+                ).json()
+                return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
+        except Exception:
+            pass
+        return None, None, None
+
+    def _enrich_item_from_url_like_autocomplete(page_url: str) -> dict:
+        """
+        Récupère un dict normalisé {title,url,webpage_url,artist,duration,thumb,provider}
+        en reproduisant la logique d’autocomplete (oEmbed + yt-dlp flat).
+        """
+        from yt_dlp import YoutubeDL
+        provider = "unknown"
+        try:
+            host = (urlparse(page_url).hostname or "").lower()
+            if any(h in host for h in ("youtube.com", "youtu.be", "music.youtube.com")):
+                provider = "youtube"
+            elif "soundcloud.com" in host:
+                provider = "soundcloud"
+        except Exception:
+            pass
+        # base vide
+        title, artist, thumb, duration = None, None, None, None
+        # 1) oEmbed (rapide)
+        t2, a2, th2 = _oembed_enrich_play(page_url)
+        title = title or t2
+        artist = artist or a2
+        thumb = thumb or th2
+        # 2) yt-dlp flat pour la duration (et compléter si oEmbed n’a pas tout)
+        try:
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": True,
+                "noplaylist": False,  # important pour une URL playlist
+            }
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(page_url, download=False)
+            # si playlist: choisir l’entrée cliquée (v=) ou la première
+            v_id = None
+            try:
+                u = urlparse(page_url); v_id = (parse_qs(u.query).get("v") or [None])[0]
+            except Exception:
+                pass
+            entry = None
+            if info and "entries" in info:
+                entries = info.get("entries") or []
+                if v_id:
+                    entry = next((e for e in entries if (e.get("id") or e.get("url")) == v_id), None)
+                entry = entry or (entries[0] if entries else None)
+            else:
+                entry = info
+            if entry:
+                duration = duration or _normalize_duration(entry.get("duration"))
+                if not title:
+                    title = entry.get("title")
+                if not artist:
+                    artist = entry.get("uploader") or entry.get("channel") or entry.get("uploader_id")
+                if not thumb:
+                    thumb = (entry.get("thumbnail")
+                             or (entry.get("thumbnails") or [{}])[-1].get("url"))
+        except Exception:
+            pass
+        return {
+            "title": title or page_url or "Sans titre",
+            "url": page_url,  # on garde l’URL de page (utile pour playlist/mix)
+            "webpage_url": page_url,
+            "artist": artist,
+            "duration": _normalize_duration(duration),
+            "thumb": thumb,
+            "provider": provider,
+        }
         # ------------------------ Pages HTML --------------------------
 
     @app.route("/")
@@ -392,21 +496,29 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     @login_required
     def api_play():
         data = request.get_json(silent=True) or request.form
+
         raw_url = (data or {}).get("url")
         url = _clean_field(raw_url)
-        title = _clean_field((data or {}).get("title")) or url
+        page_url = _clean_field((data or {}).get("webpage_url")) or url
         guild_id = (data or {}).get("guild_id")
+
+        # si le front a déjà tout mis, on les lira pour override plus bas
+        in_title = _clean_field((data or {}).get("title"))
+        in_artist = _clean_field((data or {}).get("artist"))
+        in_thumb = _clean_field((data or {}).get("thumb"))
+        in_provider = _clean_field((data or {}).get("provider"))
+        in_duration = (data or {}).get("duration")
 
         u = current_user()
         user_id = u["id"] if u else None
 
-        _dbg(f"[api_play] RAW url={raw_url!r}, CLEAN url={url!r}")
-        _dbg(f"POST /api/play — title={title!r}, url={url!r}, guild={guild_id}, user_session={user_id}")
+        _dbg(f"[api_play] RAW url={raw_url!r}, CLEAN url={url!r}, PAGE={page_url!r}")
+        _dbg(f"POST /api/play — guild={guild_id}, user_session={user_id}")
 
-        if not all([title, url, guild_id, user_id]):
-            return _bad_request("Paramètres manquants : title, url, guild_id (et session utilisateur)")
+        if not all([url, guild_id, user_id]):
+            return _bad_request("Paramètres manquants : url, guild_id (et session utilisateur)")
 
-        # ------ NEW: pré-check vocal (retourne 409 si l'user n'est pas en vocal) ------
+        # ------ pré-check vocal ------
         try:
             gid_int = int(guild_id)
         except Exception:
@@ -424,53 +536,47 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 member = None
 
         if not getattr(member, "voice", None) or not getattr(member.voice, "channel", None):
-            # 409 = Conflict: état requis manquant
             return jsonify(
                 ok=False,
                 error="Tu dois être connecté à un salon vocal sur ce serveur pour lancer une musique.",
                 error_code="USER_NOT_IN_VOICE"
             ), 409
-        # -------------------------------------------------------------------------------
+        # -----------------------------
 
         music_cog, err = _music_cog_required()
         if err:
             return err
 
         try:
-            extra = {}
-            for k in ("thumb", "artist", "duration"):
-                v = _clean_field((data or {}).get(k))
-                if v is None:
-                    continue
-                if k == "duration":
-                    try:
-                        v = int(float(v))
-                    except Exception:
-                        v = None
-                extra[k] = v
+            # Enrichir comme l’autocomplete
+            base = _enrich_item_from_url_like_autocomplete(page_url)
 
-            # --- ENRICHISSEMENT QUAND ON N’A QUE L’URL (suivre autocomplete/oEmbed) ---
-            # Cas typique: le front a envoyé {title:url, url} sans artist/thumb.
-            needs_enrich = (title == url) or ("artist" not in extra) or ("thumb" not in extra)
-            if needs_enrich and url:
-                t2, a2, th2 = _oembed_enrich_play(url)
-                # Si le titre est juste l’URL → remplace par le titre oEmbed
-                if t2 and (not title or title == url):
-                    title = t2
-                # Ne remplace pas ce que le client a explicitement fourni
-                if a2 and "artist" not in extra:
-                    extra["artist"] = a2
-                if th2 and "thumb" not in extra:
-                    extra["thumb"] = th2
-            # --------------------------------------------------------------------------
+            # Respecter ce que le client a explicitement fourni
+            # (on écrase seulement si front a donné la valeur)
+            if in_title:    base["title"] = in_title
+            if in_artist:   base["artist"] = in_artist
+            if in_thumb:    base["thumb"] = in_thumb
+            if in_provider: base["provider"] = in_provider
+            try:
+                if in_duration is not None:
+                    base["duration"] = _normalize_duration(in_duration)
+            except Exception:
+                pass
 
+            item = {
+                "title": base["title"] or page_url or "Sans titre",
+                "url": base["url"] or page_url,
+                "webpage_url": base["webpage_url"] or page_url,
+                "artist": base.get("artist"),
+                "duration": base.get("duration"),
+                "thumb": base.get("thumb"),
+                "provider": base.get("provider") or "unknown",
+            }
 
-            item = {"title": title, "url": url, **extra}
-            _dbg(f"[api_play] ITEM FINAL: {item}")
+            _dbg(f"[api_play] ITEM FINAL (normalized): {item}")
 
             result = _dispatch(music_cog.play_for_user(guild_id, user_id, item), timeout=90)
 
-            # NEW: normaliser la réponse potentielle du cog
             if isinstance(result, dict):
                 if not result.get("ok", True):
                     code = result.get("error_code") or "PLAY_FAILED"
@@ -482,12 +588,12 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
                 return jsonify(ok=False, error="Lecture impossible.", error_code="PLAY_FAILED"), 400
 
             return jsonify(ok=True)
+
         except PermissionError as e:
             return jsonify(ok=False, error=str(e), error_code="PERMISSION_DENIED"), 403
         except Exception as e:
-            msg = str(e)
-            low = msg.lower()
-            if "pas en vocal" in msg or "not in a voice" in low or "join a voice" in low:
+            low = str(e).lower()
+            if "not in a voice" in low or "join a voice" in low or "pas en vocal" in low:
                 return jsonify(ok=False, error="Tu dois être connecté à un salon vocal.",
                                error_code="USER_NOT_IN_VOICE"), 409
             _dbg(f"POST /api/play — 💥 Exception : {e}")
