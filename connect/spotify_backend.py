@@ -305,6 +305,47 @@ def _create_playlist(access_token: str, user_id: str, name: str, public: bool, d
     _log("Create playlist", owner=user_id, name=name, public=bool(public))
     return _sp_post(access_token, f"/users/{user_id}/playlists", body)
 
+def _sp_delete(access_token: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """DELETE générique sur Web API Spotify. JSON facultatif (utile pour /tracks)."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    r = requests.delete("https://api.spotify.com/v1" + path, headers=headers, json=json_body or {}, timeout=10)
+    # Beaucoup d’endpoints DELETE renvoient 200/204 sans corps → on tolère l’absence de JSON
+    if r.status_code >= 400:
+        r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        return {}
+
+def _unfollow_playlist(access_token: str, playlist_id: str) -> Dict[str, Any]:
+    """
+    'Supprimer' une playlist côté utilisateur = se désabonner (DELETE /playlists/{id}/followers).
+    Si l’utilisateur est le propriétaire, elle disparaît de sa bibliothèque.
+    """
+    return _sp_delete(access_token, f"/playlists/{playlist_id}/followers")
+
+def _remove_tracks_from_playlist(access_token: str, playlist_id: str, uris: List[str]) -> Dict[str, Any]:
+    """
+    Supprime des éléments d’une playlist via DELETE /playlists/{id}/tracks
+    Par paquets de 100 URIs.
+    """
+    last = {}
+    batch = []
+    for uri in uris:
+        if not uri:
+            continue
+        batch.append({"uri": uri})
+        # Spotify limite le payload
+        if len(batch) >= 100:
+            last = _sp_delete(access_token, f"/playlists/{playlist_id}/tracks", {"tracks": batch})
+            batch.clear()
+    if batch:
+        last = _sp_delete(access_token, f"/playlists/{playlist_id}/tracks", {"tracks": batch})
+    return last
+
 def _build_track_query(title: Optional[str], artist: Optional[str]) -> str:
     t = (title or "").strip()
     a = (artist or "").strip()
@@ -881,3 +922,101 @@ def register_spotify_routes(app, socketio=None):
         _del_user_tokens(u["id"])
         _log("Unlinked Spotify", uid=u["id"])
         return jsonify(ok=True)
+
+    @app.route("/api/spotify/playlist_delete", methods=["POST"])
+    @login_required
+    def api_spotify_playlist_delete():
+        """
+        'Supprime' une playlist pour l'utilisateur courant (unfollow).
+        """
+        print("[spotify] /api/spotify/playlist_delete called")
+        u = current_user()
+        data = request.get_json(force=True) or {}
+        pid = (data.get("playlist_id") or "").strip()
+        if not pid:
+            print("[spotify] missing playlist_id")
+            return jsonify(error="missing playlist_id"), 400
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+            _unfollow_playlist(access, pid)
+            print(f"[spotify] unfollowed playlist {pid}")
+            return jsonify(ok=True)
+        except Exception as e:
+            print(f"[spotify] playlist_delete error: {e}")
+            return jsonify(ok=False, error=str(e)), 400
+
+    @app.route("/api/spotify/playlist_remove_tracks", methods=["POST"])
+    @login_required
+    def api_spotify_playlist_remove_tracks():
+        """
+        Supprime une ou plusieurs pistes d'une playlist (via URIs ou IDs).
+        Body:
+          - playlist_id (str)
+          - track_uris (list[str])  OU  track_ids (list[str])
+        """
+        print("[spotify] /api/spotify/playlist_remove_tracks called")
+        u = current_user()
+        data = request.get_json(force=True) or {}
+        pid = (data.get("playlist_id") or "").strip()
+        uris = data.get("track_uris") or []
+        ids  = data.get("track_ids")  or []
+
+        if not pid or (not uris and not ids):
+            print("[spotify] missing params")
+            return jsonify(error="missing playlist_id/track_uris|track_ids"), 400
+
+        # Normalise en URIs
+        norm_uris: List[str] = []
+        for x in (uris or []):
+            s = str(x or "").strip()
+            if s:
+                norm_uris.append(s)
+        for i in (ids or []):
+            s = str(i or "").strip()
+            if s:
+                norm_uris.append(f"spotify:track:{s}")
+
+        if not norm_uris:
+            return jsonify(error="no_valid_uris"), 400
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+            res = _remove_tracks_from_playlist(access, pid, norm_uris)
+            removed = len(norm_uris)
+            print(f"[spotify] removed {removed} tracks from {pid}")
+            return jsonify(ok=True, removed=removed, snapshot_id=res.get("snapshot_id"))
+        except Exception as e:
+            print(f"[spotify] playlist_remove_tracks error: {e}")
+            return jsonify(ok=False, error=str(e)), 400
+
+    @app.route("/api/spotify/playlist_clear", methods=["POST"])
+    @login_required
+    def api_spotify_playlist_clear():
+        """
+        Vide complètement la playlist (remove all).
+        """
+        print("[spotify] /api/spotify/playlist_clear called")
+        u = current_user()
+        data = request.get_json(force=True) or {}
+        pid = (data.get("playlist_id") or "").strip()
+        if not pid:
+            return jsonify(error="missing playlist_id"), 400
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+            rows = _playlist_tracks(access, pid, limit=1000)
+            uris = []
+            for it in rows:
+                tr = it.get("track") or {}
+                uri = tr.get("uri")
+                if uri:
+                    uris.append(uri)
+            if not uris:
+                return jsonify(ok=True, removed=0)
+            res = _remove_tracks_from_playlist(access, pid, uris)
+            print(f"[spotify] cleared {len(uris)} items from {pid}")
+            return jsonify(ok=True, removed=len(uris), snapshot_id=res.get("snapshot_id"))
+        except Exception as e:
+            print(f"[spotify] playlist_clear error: {e}")
+            return jsonify(ok=False, error=str(e)), 400
