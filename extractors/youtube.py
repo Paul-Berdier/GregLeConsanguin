@@ -322,72 +322,79 @@ def expand_bundle(
     limit_total: Optional[int] = None,
     limit: Optional[int] = None,
     cookies_file: Optional[str] = None,
-    cookies_from_browser: Optional[object] = None,  # kept for signature parity
+    cookies_from_browser: Optional[str] = None,  # kept for API parity
 ) -> List[Dict]:
-    """
-    Returns up to N tracks from a playlist/mix URL as a list of dicts:
-    {title, url, artist, thumb, duration}.
-
-    - Respects the clicked video's position (if v= present), putting it first.
-    - Uses yt_dlp in extract_flat mode (no download).
-    """
     import yt_dlp
+    from urllib.parse import urlparse, parse_qs
 
     N = int(limit_total or limit or 10)
-    # yt-dlp flat extraction of playlist
+
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "extract_flat": True,            # don't resolve media URLs
-        "noplaylist": False,
-        "playlistend": N,                # soft limit, we’ll re-slice after reordering
+        "extract_flat": True,   # on veut la liste sans résoudre les flux
+        "noplaylist": False,    # IMPORTANT: autoriser l’extraction de playlist
+        "playlistend": N,
     }
     if cookies_file:
         ydl_opts["cookiefile"] = cookies_file
+    # cookies_from_browser si dispo
+    if cookies_from_browser:
+        ydl_opts["cookiesfrombrowser"] = tuple(
+            cookies_from_browser.split(":", 1)
+        ) if ":" in cookies_from_browser else (cookies_from_browser,)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(page_url, download=False)
-
-    # If the user pasted a watch URL with &list=..., info may be a 'video' depending on yt-dlp heuristics.
-    # Force resolving the surrounding playlist when needed.
-    if info and info.get("_type") == "url" and "playlist" in (info.get("ie_key") or "").lower():
+    def _extract(u):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(info["url"], download=False)
+            return ydl.extract_info(u, download=False)
 
-    if not info:
+    info = _extract(page_url)  # 1er essai
+
+    # --- si “watch?…&list=…” → yt-dlp renvoie souvent un objet “video”
+    # On reconstruit /playlist?list=... pour récupérer les entries
+    list_id = None
+    try:
+        q = parse_qs(urlparse(page_url).query)
+        list_id = (q.get("list") or [None])[0]
+    except Exception:
+        list_id = None
+
+    if (not info or not info.get("entries")) and list_id:
+        playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
+        info2 = _extract(playlist_url)
+        if info2 and info2.get("entries"):
+            info = info2
+
+    # Dernier fallback : certains mixes “RD…” arrivent via un redirect “url”
+    if (not info or not info.get("entries")) and info and info.get("_type") == "url":
+        try:
+            info3 = _extract(info["url"])
+            if info3 and info3.get("entries"):
+                info = info3
+        except Exception:
+            pass
+
+    entries = (info or {}).get("entries") or []
+    if not entries:
         return []
 
-    # Determine playlist id & entries
-    list_id = info.get("id") if info.get("_type") == "playlist" else None
-    entries = info.get("entries") or []
-
-    # Fallback: if flat entry with "webpage_url" that still points to a playlist, try again
-    if not entries and is_playlist_or_mix_url(page_url):
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(page_url, download=False)
-        entries = (info or {}).get("entries") or []
-        if not entries:
-            return []
-
-    # Reorder so the clicked video is first if the URL had v=...
+    # Réordonner pour commencer sur le v= cliqué s’il est dans la playlist
     v_id = None
     try:
-        u = urlparse(page_url)
-        v_id = (parse_qs(u.query).get("v") or [None])[0]
+        v_id = (parse_qs(urlparse(page_url).query).get("v") or [None])[0]
     except Exception:
         v_id = None
 
     if v_id:
         try:
-            i = next((i for i, e in enumerate(entries)
-                      if (e.get("id") or e.get("url")) == v_id), None)
-            if i is not None:
-                entries = entries[i:] + entries[:i]
+            idx = next((i for i, e in enumerate(entries)
+                        if (e.get("id") or e.get("url")) == v_id), None)
+            if idx is not None:
+                entries = entries[idx:] + entries[:idx]
         except Exception:
             pass
 
-    # Normalize items
     out: List[Dict] = []
     for e in entries:
         vid = e.get("id") or e.get("url")
@@ -401,9 +408,13 @@ def expand_bundle(
             or None
         )
         dur = e.get("duration")
+        url = f"https://www.youtube.com/watch?v={vid}"
+        if list_id:
+            url += f"&list={list_id}"
         out.append({
-            "title": title or _yt_watch_url(vid, list_id),
-            "url": _yt_watch_url(vid, list_id),
+            "title": title or url,
+            "url": url,
+            "webpage_url": url,
             "artist": artist,
             "thumb": thumb,
             "duration": dur,

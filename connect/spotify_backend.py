@@ -368,6 +368,43 @@ def register_spotify_routes(app, socketio=None):
     if socketio is None:
         socketio = getattr(app, "socketio", None)
 
+    # --- helpers: read playlist + editability ---------------------------------
+    import requests
+
+    def _get_playlist(access_token: str, playlist_id: str, fields: str | None = None) -> dict:
+        """
+        GET /v1/playlists/{playlist_id}
+        Retourne le JSON de la playlist (raise si 4xx/5xx).
+        """
+        url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {}
+        if fields:
+            params["fields"] = fields
+        r = requests.get(url, headers=headers, params=params, timeout=8)
+        if r.status_code == 404:
+            raise ValueError("playlist_not_found")
+        r.raise_for_status()
+        return r.json()
+
+    def _assert_can_edit_playlist(access_token: str, user_spotify_id: str, playlist_id: str) -> dict:
+        """
+        Vérifie que l’utilisateur peut modifier la playlist :
+          - owner == user_spotify_id  OU  playlist collaborative.
+        Retourne l’objet playlist (au passage).
+        """
+        pl = _get_playlist(
+            access_token,
+            playlist_id,
+            fields="id,name,owner(id),collaborative,public,uri"
+        )
+        owner_id = (pl.get("owner") or {}).get("id")
+        is_collab = bool(pl.get("collaborative"))
+        if not (owner_id == user_spotify_id or is_collab):
+            # 403 "Forbidden" côté Spotify arrive aussi si scopes insuffisants.
+            raise PermissionError("not_owner_or_collaborator")
+        return pl
+
     def _emit(event: str, data: Dict[str, Any], sid: Optional[str], uid: Optional[str]):
         if not socketio:
             _log("SocketIO not available; skip emit", event=event)
@@ -380,6 +417,13 @@ def register_spotify_routes(app, socketio=None):
             _log("Socket emit done", event=event, sid=bool(sid), uid=bool(uid))
         except Exception as e:
             _log("Socket emit failed", event=event, error=str(e))
+
+    def _playlist_is_editable(access_token: str, playlist_id: str, me_id: str) -> bool:
+        info = _get_playlist(access_token, playlist_id)  # GET /v1/playlists/{id}
+        owner_id = ((info or {}).get("owner") or {}).get("id")
+        is_collab = bool((info or {}).get("collaborative"))
+        return (owner_id == me_id) or is_collab
+
 
     # -------------------------------------------------------------------------
     @app.route("/spotify/login")
@@ -949,43 +993,43 @@ def register_spotify_routes(app, socketio=None):
     @app.route("/api/spotify/playlist_remove_tracks", methods=["POST"])
     @login_required
     def api_spotify_playlist_remove_tracks():
-        """
-        Supprime une ou plusieurs pistes d'une playlist (via URIs ou IDs).
-        Body:
-          - playlist_id (str)
-          - track_uris (list[str])  OU  track_ids (list[str])
-        """
         print("[spotify] /api/spotify/playlist_remove_tracks called")
         u = current_user()
         data = request.get_json(force=True) or {}
+
         pid = (data.get("playlist_id") or "").strip()
-        uris = data.get("track_uris") or []
-        ids  = data.get("track_ids")  or []
+        uris = list(data.get("track_uris") or [])
+        ids = list(data.get("track_ids") or [])
+
+        # NEW: also accept single
+        uri_single = (data.get("track_uri") or "").strip()
+        id_single = (data.get("track_id") or "").strip()
+        if uri_single: uris.append(uri_single)
+        if id_single:  ids.append(id_single)
 
         if not pid or (not uris and not ids):
-            print("[spotify] missing params")
             return jsonify(error="missing playlist_id/track_uris|track_ids"), 400
 
-        # Normalise en URIs
-        norm_uris: List[str] = []
-        for x in (uris or []):
-            s = str(x or "").strip()
-            if s:
-                norm_uris.append(s)
-        for i in (ids or []):
-            s = str(i or "").strip()
-            if s:
-                norm_uris.append(f"spotify:track:{s}")
+        # Normalize all to URIs
+        norm_uris = []
+        for s in uris:
+            s = str(s or "").strip()
+            if s: norm_uris.append(s)
+        for s in ids:
+            s = str(s or "").strip()
+            if s: norm_uris.append(f"spotify:track:{s}")
 
         if not norm_uris:
             return jsonify(error="no_valid_uris"), 400
 
         try:
             access, _ = _ensure_access_token(u["id"])
+            me = _get_me(access)
+            if not _playlist_is_editable(access, pid, me["id"]):
+                return jsonify(ok=False, error="Tu ne peux pas modifier cette playlist.", code="NOT_OWNER"), 403
+
             res = _remove_tracks_from_playlist(access, pid, norm_uris)
-            removed = len(norm_uris)
-            print(f"[spotify] removed {removed} tracks from {pid}")
-            return jsonify(ok=True, removed=removed, snapshot_id=res.get("snapshot_id"))
+            return jsonify(ok=True, removed=len(norm_uris), snapshot_id=res.get("snapshot_id"))
         except Exception as e:
             print(f"[spotify] playlist_remove_tracks error: {e}")
             return jsonify(ok=False, error=str(e)), 400
