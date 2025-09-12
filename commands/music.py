@@ -1071,24 +1071,39 @@ class Music(commands.Cog):
     # =====================================================================
 
     async def play_for_user(self, guild_id, user_id, item):
+        import asyncio, time
+        t0 = time.monotonic()
         gid = self._gid(guild_id)
-        _greg_print(f"API play_for_user(guild={gid}, user={user_id}) — {item}")
+
+        def _sum_item(it):
+            try:
+                return f"title={it.get('title')!r}, artist={it.get('artist')!r}, dur={it.get('duration')}, url={it.get('url')!r}, prio={it.get('priority')}, by={it.get('added_by')}"
+            except Exception:
+                return repr(it)
+
+        _greg_print("=" * 72)
+        _greg_print(f"[play_for_user] START guild={gid}, user={user_id}")
+        _greg_print(f"[play_for_user] RAW item: {item}")
+
         guild = self.bot.get_guild(gid)
         if not guild:
-            _greg_print("Serveur introuvable.")
+            _greg_print("[play_for_user] ❌ Serveur introuvable.")
             return
+
         member = guild.get_member(int(user_id))
         if not member or not member.voice or not member.voice.channel:
-            _greg_print("Utilisateur pas en vocal.")
+            _greg_print("[play_for_user] ❌ Utilisateur pas en vocal.")
             return {"ok": False, "error_code": "USER_NOT_IN_VOICE", "message": "Tu dois être en vocal."}
+        _greg_print(f"[play_for_user] ✔️ User voice channel: {member.voice.channel.name}")
 
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             try:
-                _greg_print(f"Greg rejoint le vocal {member.voice.channel.name} (via web API).")
+                _greg_print(f"[play_for_user] 🔌 Connexion au vocal {member.voice.channel.name}…")
                 await member.voice.channel.connect()
+                _greg_print("[play_for_user] 🔌 Connecté.")
             except Exception as e:
-                _greg_print(f"Connexion vocal échouée: {e}")
+                _greg_print(f"[play_for_user] ❌ Connexion vocal échouée: {e}")
                 return {"ok": False, "error_code": "VOICE_CONNECT_FAILED",
                         "message": "Impossible de rejoindre le vocal."}
 
@@ -1098,76 +1113,96 @@ class Music(commands.Cog):
         # enrichir + normaliser + priorité/quotas (pour l'ITEM COURANT)
         item = dict(item or {})
         item["added_by"] = str(user_id)
+        _greg_print(f"[play_for_user] ↪ avant normalize: {_sum_item(item)}")
         item = self._normalize_like_api(item)
+        _greg_print(f"[play_for_user] ↪ après  normalize: {_sum_item(item)}")
+
         weight = int(get_member_weight(self.bot, gid, int(user_id)))
         item["priority"] = weight
+        _greg_print(f"[play_for_user] priorité calculée (weight) = {weight}")
 
+        # État playlist courant
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
+        _greg_print(f"[play_for_user] Etat queue AVANT ajout: n={len(queue)}")
+        try:
+            cnt_user = self._count_user_in_queue(queue, int(user_id))
+        except Exception as e:
+            cnt_user = -1
+            _greg_print(f"[play_for_user] (warn) _count_user_in_queue KO: {e}")
+        _greg_print(f"[play_for_user] Items de l'utilisateur dans la queue (avant): {cnt_user} (cap={PER_USER_CAP})")
 
         # Quota : on compte AVANT ajout (l'item courant prendra 1 slot)
         if not can_bypass_quota(self.bot, gid, int(user_id)):
-            if self._count_user_in_queue(queue, int(user_id)) >= PER_USER_CAP:
-                _greg_print(f"[PlaylistManager {gid}] quota atteint ({PER_USER_CAP}) pour user={user_id}")
+            if cnt_user >= PER_USER_CAP:
+                _greg_print(f"[play_for_user] ❌ Quota atteint ({PER_USER_CAP}) pour user={user_id}")
                 return
 
         # === Détection playlist/mix et expansion (10 éléments) ===
-        extras: list[dict] = []
         page_url = item.get("url") or ""
+        is_bundle = is_bundle_url(page_url)
+        _greg_print(f"[play_for_user] bundle? {is_bundle} — url={page_url!r}")
 
-        # 🔴 NOUVEAU : si l'URL est une playlist/mix, on remplace l'item courant
-        # par la 1ʳᵉ piste (reordonnée si v= présent), puis on garde le reste en extras.
-        if is_bundle_url(page_url):
+        bundle_entries = []
+        if is_bundle:
+            _greg_print("[play_for_user] 🧩 Expansion playlist/mix (expand_bundle)…")
             try:
-                bundle = expand_bundle(
+                bundle_entries = expand_bundle(
                     page_url,
                     limit=10,
                     cookies_file=self.youtube_cookies_file,
                     cookies_from_browser=self.cookies_from_browser,
                 ) or []
+                _greg_print(f"[play_for_user] 🧩 expand_bundle → {len(bundle_entries)} entrées")
+                if bundle_entries[:3]:
+                    _greg_print("[play_for_user] 🧩 premiers éléments: " + " | ".join(
+                        (be.get("title") or "?") for be in bundle_entries[:3]
+                    ))
             except Exception as e:
-                _greg_print(f"[bundle] expansion failed: {e}")
-                bundle = []
+                _greg_print(f"[play_for_user] 🧩 expand_bundle failed: {e}")
+                bundle_entries = []
 
-            if bundle:
-                head = bundle[0]  # ★ la piste à jouer tout de suite
+            if bundle_entries:
+                head = bundle_entries[0]  # ★ la piste à jouer tout de suite
+                _greg_print("[play_for_user] 🧩 head (1ère piste) = " + _sum_item(head))
                 # on remplace l'URL/les méta de l'item courant par la 1ʳᵉ entrée
                 item["title"] = head.get("title") or item.get("title")
                 item["url"] = head.get("url") or item.get("url")
                 item["artist"] = head.get("artist")
                 item["thumb"] = head.get("thumb")
                 item["duration"] = head.get("duration")
-                # le reste de la playlist
-                extras = bundle[1:10]
+                _greg_print(f"[play_for_user] 🧩 item remplacé par head: {_sum_item(item)}")
 
         # 1) Ajout de l'item courant (avec insertion selon priorité)
-        _greg_print(f"[DEBUG play_for_user] Queue avant ajout ({len(queue)}): {[it.get('title') for it in queue]}")
+        _greg_print(f"[play_for_user] ➕ Ajout de l'item courant…")
+        _greg_print(f"[play_for_user]    item final: {_sum_item(item)}")
         await loop.run_in_executor(None, pm.add, item)
+
         new_queue = await loop.run_in_executor(None, pm.get_queue)
-        _greg_print(
-            f"[DEBUG play_for_user] Queue après ajout ({len(new_queue)}): {[it.get('title') for it in new_queue]}")
+        _greg_print(f"[play_for_user] Etat queue APRÈS ajout: n={len(new_queue)}")
+        try:
+            cnt_user_after = self._count_user_in_queue(new_queue, int(user_id))
+        except Exception as e:
+            cnt_user_after = -1
+            _greg_print(f"[play_for_user] (warn) _count_user_in_queue après ajout KO: {e}")
+        _greg_print(f"[play_for_user] Items de l'utilisateur (après) : {cnt_user_after}/{PER_USER_CAP}")
 
         new_idx = len(new_queue) - 1
         target_idx = self._compute_insert_index(new_queue, weight)
+        _greg_print(
+            f"[play_for_user] 🎯 insert rebalancing: new_idx={new_idx}, target_idx={target_idx}, n={len(new_queue)}")
         if 0 <= target_idx < len(new_queue) and target_idx != new_idx:
             ok = await loop.run_in_executor(None, pm.move, new_idx, target_idx)
+            _greg_print(f"[play_for_user]   move({new_idx}->{target_idx}) → {ok}")
             if not ok:
-                _greg_print(
-                    f"[PlaylistManager {gid}] ❌ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
+                _greg_print(f"[play_for_user] ⚠️ move invalide: src={new_idx}, dst={target_idx}, n={len(new_queue)}")
 
         # 2) Si c'est une playlist/mix → enfile les 9 suivantes (respect du quota)
-        if is_bundle_url(page_url):
-            try:
-                bundle = expand_bundle(
-                    page_url,
-                    limit=10,
-                    cookies_file=self.youtube_cookies_file,
-                    cookies_from_browser=self.cookies_from_browser,
-                ) or []
-                extras = bundle[1:10]  # on a déjà ajouté la 1ère
-            except Exception as e:
-                _greg_print(f"[bundle] expansion failed: {e}")
-                extras = []
+        extras = []
+        if is_bundle:
+            # on réutilise le résultat déjà calculé
+            extras = bundle_entries[1:10]
+            _greg_print(f"[play_for_user] 🧩 extras init (après head): {len(extras)}")
 
             if extras:
                 for it in extras:
@@ -1177,11 +1212,21 @@ class Music(commands.Cog):
                 remaining = PER_USER_CAP
                 if not can_bypass_quota(self.bot, gid, int(user_id)):
                     remaining = max(0, PER_USER_CAP - self._count_user_in_queue(new_queue, int(user_id)))
+                _greg_print(f"[play_for_user] 🧮 slots restants (quota) = {remaining}")
+
                 extras = extras[:remaining] if remaining > 0 else []
+                _greg_print(f"[play_for_user] 🧩 extras après quota-cut: {len(extras)}")
 
                 if extras:
-                    await loop.run_in_executor(None, pm.add_many, extras, str(user_id))
-                    _greg_print(f"[bundle] +{len(extras)} piste(s) ajoutée(s).")
+                    try:
+                        await loop.run_in_executor(None, pm.add_many, extras, str(user_id))
+                        _greg_print(f"[play_for_user] 🧩 +{len(extras)} piste(s) ajoutée(s) depuis la playlist/mix.")
+                        # petit aperçu
+                        _greg_print("[play_for_user]    extras titres: " + " | ".join(
+                            (e.get("title") or "?") for e in extras[:5]
+                        ))
+                    except Exception as e:
+                        _greg_print(f"[play_for_user] ❌ add_many(extras) failed: {e}")
 
         # 3) Démarrer si rien ne joue
         class FakeInteraction:
@@ -1189,10 +1234,19 @@ class Music(commands.Cog):
 
             async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
 
-        if not self.is_playing.get(gid, False):
+        playing_state = self.is_playing.get(gid, False)
+        _greg_print(f"[play_for_user] ▶️ is_playing[{gid}]={playing_state}")
+        if not playing_state:
+            _greg_print("[play_for_user] ▶️ Lancement play_next() (rien en cours).")
             await self.play_next(FakeInteraction(guild))
+        else:
+            _greg_print("[play_for_user] ▶️ Rien à lancer (déjà en cours).")
 
         self.emit_playlist_update(gid)
+
+        dt = time.monotonic() - t0
+        _greg_print(f"[play_for_user] DONE in {dt * 1000:.1f} ms")
+        _greg_print("=" * 72)
 
     async def play_at_for_web(self, guild_id: int | str, requester_id: int | str, index: int):
         gid = int(guild_id)
