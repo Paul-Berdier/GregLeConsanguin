@@ -758,7 +758,12 @@ def register_spotify_routes(app, socketio=None):
             _log("Add current: no current item")
             return jsonify(error="no_current_item"), 404
 
-        access, _ = _ensure_access_token(u["id"])
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("Add current: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
+
         q = _build_track_query(title, artist)
         items = _search_tracks(access, q, limit=1)
         if not items:
