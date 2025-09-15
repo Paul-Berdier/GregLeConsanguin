@@ -37,6 +37,48 @@ SPOTIFY_SCOPES = os.getenv(
 )
 STATE_SECRET = os.getenv("SPOTIFY_STATE_SECRET", "").encode("utf-8")
 
+import re
+
+_NOISE_RE = re.compile(
+    r'\s*[\(\[\{][^\)\]\}]*\b(official|clip|lyrics?|paroles|audio|vid(éo|eo)|hd|4k|visualizer)[^\)\]\}]*[\)\]\}]\s*',
+    re.I
+)
+
+def _clean_title_artist(title: str | None, artist: str | None) -> tuple[str, str]:
+    t = (title or "").strip()
+    a = (artist or "").strip()
+
+    # 1) si le titre est "ARTISTE - Titre", on isole le vrai titre
+    if " - " in t:
+        left, right = t.split(" - ", 1)
+        # si artist vide ou left ≈ artist -> on fait confiance au right
+        if not a or left.lower().startswith(a.lower()):
+            a = a or left
+            t = right
+
+    # 2) virer préfixes de piste type "Θ. " / "A. " / "1. "
+    t = re.sub(r'^\s*(?:[A-Za-zÀ-ÿΑ-Ωα-ω]\.|[IVXLCDM]+\.|\d+\.)\s*', '', t)
+
+    # 3) virer le bruit entre ()/[]/{} (clip officiel, lyrics, etc.)
+    t = _NOISE_RE.sub(' ', t)
+    t = re.sub(r'\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*', ' ', t)  # reste des ()/[]/{}
+    t = re.sub(r'\s+', ' ', t).strip()
+
+    # 4) nettoyer artiste (ex: "le rappeur damso" -> "damso"; "Damso - Topic" -> "Damso")
+    a = re.sub(r'(?i)\b(le|la|les)\s+rappeur(?:euse)?\b', '', a)
+    a = re.sub(r'(?i)\s*-\s*topic$', '', a)
+    a = re.sub(r'\s+', ' ', a).strip()
+
+    return t, a
+
+def _build_spotify_query(title: str, artist: str) -> str:
+    # privilégier la syntaxe champée (beaucoup plus précise)
+    if title and artist:
+        return f'track:"{title}" artist:"{artist}"'
+    if title:
+        return f'track:"{title}"'
+    return artist  # fallback
+
 # Small helper for consistent logs
 def _log(msg: str, **kw: Any) -> None:
     """
@@ -287,11 +329,15 @@ def _sp_post(access_token: str, path: str, json_body: Optional[Dict[str, Any]] =
         # Some endpoints return 201 with empty body; normalize to {}
         return {}
 
-def _search_tracks(access_token: str, q: str, limit: int = 5) -> List[Dict[str, Any]]:
-    data = _sp_get(access_token, "/search", params={"q": q, "type": "track", "limit": min(limit, 50)})
+def _search_tracks(access_token: str, q: str, limit: int = 5, market: str = "from_token") -> List[Dict[str, Any]]:
+    params = {"q": q, "type": "track", "limit": min(limit, 50)}
+    if market:
+        params["market"] = market
+    data = _sp_get(access_token, "/search", params=params)
     rows = (data.get("tracks") or {}).get("items") or []
     _log("Search tracks", q=q, results=len(rows))
     return rows
+
 
 def _add_tracks_to_playlist(access_token: str, playlist_id: str, uris: List[str]) -> Dict[str, Any]:
     # Spotify limite à 100 URIs par appel
@@ -753,9 +799,128 @@ def register_spotify_routes(app, socketio=None):
     @login_required
     def api_spotify_add_current_to_playlist():
         """
-        Takes the current 'Now Playing' (title/artist) from the guild's PlaylistManager
-        and adds the first Spotify search match to the given playlist.
+        Ajoute le 'Now Playing' courant à une playlist Spotify :
+        - nettoie title/artist (YouTube → bruit),
+        - construit des requêtes précises,
+        - choisit le meilleur résultat via scoring (titre, artiste, durée).
         """
+        import re, unicodedata
+
+        def _strip_accents(s: str) -> str:
+            try:
+                return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+            except Exception:
+                return s or ""
+
+        def _norm(s: str) -> str:
+            s = _strip_accents(s or "").lower()
+            s = re.sub(r'[\(\[\{].*?[\)\]\}]', ' ', s)  # vire tout ce qui est entre ()/[]/{}
+            s = re.sub(r'[^a-z0-9\s]+', ' ', s)  # ponctuation
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+
+        _NOISE_RE = re.compile(
+            r'\s*[\(\[\{][^\)\]\}]*\b(official|officiel|clip|lyrics?|paroles|audio|video|vid[ée]o|visualizer|hd|4k)\b[^\)\]\}]*[\)\]\}]\s*',
+            re.I
+        )
+
+        def _clean_title_artist(title: str | None, artist: str | None) -> tuple[str, str]:
+            t = (title or "").strip()
+            a = (artist or "").strip()
+
+            # Cas "Artist - Title" dans t
+            if " - " in t:
+                left, right = t.split(" - ", 1)
+                if not a or left.lower().startswith(a.lower()):
+                    a = a or left
+                    t = right
+
+            # Préfixes de piste type "Θ." / "1." / "A." / "IV."
+            t = re.sub(r'^\s*(?:[A-Za-zÀ-ÿΑ-Ωα-ω]|[IVXLCDM]+|\d+)\.\s*', '', t)
+
+            # Bruit entre ()/[]/{}
+            t = _NOISE_RE.sub(' ', t)
+            t = re.sub(r'\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*', ' ', t)
+            t = re.sub(r'\s*[-–—]\s*$', '', t)
+            t = re.sub(r'\s+', ' ', t).strip()
+
+            # Artiste : “le rappeur …”, “- Topic”, “official”
+            a = re.sub(r'(?i)\b(le|la|les)\s+rappeur(?:euse)?\b', '', a)
+            a = re.sub(r'(?i)\s*-\s*topic$', '', a)
+            a = re.sub(r'(?i)\b(official|officiel)\b', '', a)
+            a = re.sub(r'\s+', ' ', a).strip()
+            return t, a
+
+        def _queries_for(title: str, artist: str) -> list[str]:
+            qs: list[str] = []
+            if title and artist:
+                qs += [
+                    f'track:"{title}" artist:"{artist}"',
+                    f'"{title}" "{artist}"',
+                    f'{title} {artist}',
+                    f'artist:"{artist}" {title}',
+                ]
+            if title:
+                qs += [f'track:"{title}"', title]
+            # dédupe en gardant l’ordre
+            seen = set();
+            out = []
+            for q in qs:
+                if q not in seen:
+                    seen.add(q);
+                    out.append(q)
+            return out
+
+        def _sec_to_ms(x):
+            try:
+                fx = float(x)
+                # si ça ressemble déjà à des ms géants (rare), garde tel quel
+                return int(fx if fx > 10000 else fx * 1000)
+            except Exception:
+                return None
+
+        def _score_candidate(r: dict, ttoks: set[str], atoks: set[str], target_ms: int | None) -> float:
+            # Similarité titre (overlap de tokens)
+            r_title = _norm(r.get("name") or "")
+            r_ttoks = set(r_title.split())
+            title_overlap = len(ttoks & r_ttoks) / (len(ttoks) or 1)
+
+            # Similarité artiste (max sur les artistes du track)
+            r_artists = [a.get("name") for a in (r.get("artists") or []) if a.get("name")]
+            art_scores = []
+            for ra in r_artists:
+                ra_toks = set(_norm(ra).split())
+                if atoks:
+                    art_scores.append(len(atoks & ra_toks) / (len(atoks) or 1))
+                else:
+                    art_scores.append(1.0 if ra_toks & r_ttoks else 0.0)
+            artist_overlap = max(art_scores) if art_scores else 0.0
+
+            # Proximité de durée (optionnelle)
+            dur_score = 0.5
+            if target_ms:
+                d = r.get("duration_ms") or 0
+                if d:
+                    window = max(7000, int(target_ms * 0.12))  # ±7s ou ±12%
+                    diff = abs(d - target_ms)
+                    if diff <= window:
+                        dur_score = 1 - (diff / window) * 0.5  # 0.5..1
+                    else:
+                        dur_score = max(0.0, 0.5 - (diff - window) / (4 * window))
+
+            # Pondération : titre > artiste > durée
+            w_dur = 0.10 if target_ms else 0.0
+            w_title, w_artist = 0.55, 0.35
+            total = w_title * title_overlap + w_artist * artist_overlap + w_dur * dur_score
+
+            # Petits bonus
+            if r_title == " ".join(ttoks):  # égalité stricte après normalisation
+                total += 0.05
+            if atoks and any(_norm(a) == " ".join(atoks) for a in r_artists):
+                total += 0.05
+            total += (r.get("popularity") or 0) / 10000.0  # tie-breaker
+            return total
+
         _log("Route /api/spotify/add_current_to_playlist")
         u = current_user()
         data = request.get_json(force=True) or {}
@@ -763,9 +928,9 @@ def register_spotify_routes(app, socketio=None):
         gid = (data.get("guild_id") or "").strip()
         if not pid or not gid:
             _log("Add current: missing playlist_id/guild_id", pid=bool(pid), gid=bool(gid))
-            return jsonify(error="missing playlist_id/guild_id"), 400
+            return jsonify(error="missing_playlist_id/guild_id"), 400
 
-        # Pull current from PM (same source as /api/playlist)
+        # Récupération du Now Playing depuis le PM
         try:
             pm = app.get_pm(int(gid))
             payload = pm.to_dict()
@@ -774,61 +939,83 @@ def register_spotify_routes(app, socketio=None):
             return jsonify(error="guild_not_found"), 404
 
         current = payload.get("current") or {}
-        title = (current.get("title") or "").strip()
-        artist = (current.get("artist") or "").strip()
+        raw_title = (current.get("title") or "").strip()
+        raw_artist = (current.get("artist") or "").strip() or (
+                    current.get("uploader") or current.get("author") or "").strip()
 
-        if not title and not artist:
+        if not raw_title and not raw_artist:
             _log("Add current: no current item")
             return jsonify(error="no_current_item"), 404
 
+        # Spotify auth
         try:
             access, _ = _ensure_access_token(u["id"])
         except Exception as e:
             _log("Add current: spotify not linked / token invalid", error=str(e))
             return jsonify(ok=False, error="spotify_not_linked"), 401
 
-        # Vérifier que l’utilisateur peut éditer la playlist (proprio OU collaborative)
-        try:
-            me = _me(access)
-            _assert_can_edit_playlist(access, me.get("id"), pid)
-        except ValueError:
-            # _get_playlist → 404
-            return jsonify(ok=False, error="playlist_not_found"), 404
-        except PermissionError:
-            return jsonify(ok=False, error="not_owner_or_collaborator", code="NOT_OWNER"), 403
-        except Exception as e:
-            _log("Add current: playlist check failed", error=str(e))
-            return jsonify(ok=False, error="playlist_check_failed"), 400
+        # Nettoyage
+        title, artist = _clean_title_artist(raw_title, raw_artist)
+        target_ms = _sec_to_ms(current.get("duration"))
 
-        q = _build_track_query(title, artist)
-        items = _search_tracks(access, q, limit=1)
-        if not items:
-            _log("Add current: no Spotify match", q=q)
+        # Construit une liste de requêtes, puis cherche
+        queries = _queries_for(title, artist)
+        candidates: list[dict] = []
+        seen_ids = set()
+
+        for q in queries:
+            try:
+                rows = _search_tracks(access, q, limit=10, market="from_token")  # si ta signature accepte 'market'
+            except TypeError:
+                rows = _search_tracks(access, q, limit=10)  # fallback si pas d'arg market
+
+            for r in rows or []:
+                rid = r.get("id")
+                if not rid or rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                candidates.append(r)
+
+            if candidates:
+                break  # on a déjà des candidats pertinents → inutile de multiplier les variantes
+
+        # Fallback ultime avec le brut si rien
+        if not candidates:
+            fb = f"{raw_title} {raw_artist}".strip()
+            try:
+                candidates = _search_tracks(access, fb, limit=10, market="from_token") or []
+            except TypeError:
+                candidates = _search_tracks(access, fb, limit=10) or []
+
+        if not candidates:
+            _log("Add current: no Spotify match", q=(queries[0] if queries else (raw_title or raw_artist)))
             return jsonify(ok=False, error="no_spotify_match"), 404
 
-        tr = items[0]
-        uri = tr.get("uri") or f"spotify:track:{tr.get('id')}"
+        # Scoring
+        ttoks = set(_norm(title or raw_title).split())
+        atoks = set(_norm(artist or raw_artist).split()) if (artist or raw_artist) else set()
+        candidates.sort(key=lambda r: _score_candidate(r, ttoks, atoks, target_ms), reverse=True)
+        best = candidates[0]
 
-        try:
-            res = _add_tracks_to_playlist(access, pid, [uri])
-        except requests.HTTPError as e:
-            st = getattr(e.response, "status_code", 400)
-            txt = getattr(e.response, "text", "")
-            _log("Add current: Spotify API error", status=st, text=txt)
-            if st == 403:
-                return jsonify(ok=False, error="forbidden_or_not_editable", code="FORBIDDEN"), 403
-            if st == 404:
-                return jsonify(ok=False, error="playlist_or_track_not_found", code="NOT_FOUND"), 404
-            return jsonify(ok=False, error=f"spotify_http_{st}"), 400
-        except Exception as e:
-            _log("Add current: unexpected error on add", error=str(e))
-            return jsonify(ok=False, error="add_failed"), 500
+        uri = best.get("uri") or f"spotify:track:{best.get('id')}"
+        res = _add_tracks_to_playlist(access, pid, [uri])
 
-        _log("Add current: added", pid=pid, q=q, uri=uri)
+        _log("Add current: added", pid=pid, chosen=best.get("name"), uri=uri)
         return jsonify(
             ok=True,
             snapshot_id=res.get("snapshot_id"),
-            matched={"title": title, "artist": artist},
+            matched={
+                "title_raw": raw_title, "artist_raw": raw_artist,
+                "title_used": title, "artist_used": artist,
+                "target_duration_ms": target_ms,
+            },
+            picked={
+                "id": best.get("id"),
+                "name": best.get("name"),
+                "artists": [a.get("name") for a in (best.get("artists") or []) if a.get("name")],
+                "duration_ms": best.get("duration_ms"),
+                "uri": uri,
+            },
             added_uri=uri
         )
 
