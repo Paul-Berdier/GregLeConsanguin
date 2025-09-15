@@ -810,7 +810,7 @@ def register_spotify_routes(app, socketio=None):
         uri = tr.get("uri") or f"spotify:track:{tr.get('id')}"
 
         try:
-                res = _add_tracks_to_playlist(access, pid, [uri])
+            res = _add_tracks_to_playlist(access, pid, [uri])
         except requests.HTTPError as e:
             st = getattr(e.response, "status_code", 400)
             txt = getattr(e.response, "text", "")
@@ -822,7 +822,7 @@ def register_spotify_routes(app, socketio=None):
             return jsonify(ok=False, error=f"spotify_http_{st}"), 400
         except Exception as e:
             _log("Add current: unexpected error on add", error=str(e))
-        return jsonify(ok=False, error="add_failed"), 500
+            return jsonify(ok=False, error="add_failed"), 500
 
         _log("Add current: added", pid=pid, q=q, uri=uri)
         return jsonify(
