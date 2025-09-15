@@ -787,6 +787,19 @@ def register_spotify_routes(app, socketio=None):
             _log("Add current: spotify not linked / token invalid", error=str(e))
             return jsonify(ok=False, error="spotify_not_linked"), 401
 
+        # Vérifier que l’utilisateur peut éditer la playlist (proprio OU collaborative)
+        try:
+            me = _me(access)
+            _assert_can_edit_playlist(access, me.get("id"), pid)
+        except ValueError:
+            # _get_playlist → 404
+            return jsonify(ok=False, error="playlist_not_found"), 404
+        except PermissionError:
+            return jsonify(ok=False, error="not_owner_or_collaborator", code="NOT_OWNER"), 403
+        except Exception as e:
+            _log("Add current: playlist check failed", error=str(e))
+            return jsonify(ok=False, error="playlist_check_failed"), 400
+
         q = _build_track_query(title, artist)
         items = _search_tracks(access, q, limit=1)
         if not items:
@@ -795,7 +808,22 @@ def register_spotify_routes(app, socketio=None):
 
         tr = items[0]
         uri = tr.get("uri") or f"spotify:track:{tr.get('id')}"
-        res = _add_tracks_to_playlist(access, pid, [uri])
+
+        try:
+                res = _add_tracks_to_playlist(access, pid, [uri])
+        except requests.HTTPError as e:
+            st = getattr(e.response, "status_code", 400)
+            txt = getattr(e.response, "text", "")
+            _log("Add current: Spotify API error", status=st, text=txt)
+            if st == 403:
+                return jsonify(ok=False, error="forbidden_or_not_editable", code="FORBIDDEN"), 403
+            if st == 404:
+                return jsonify(ok=False, error="playlist_or_track_not_found", code="NOT_FOUND"), 404
+            return jsonify(ok=False, error=f"spotify_http_{st}"), 400
+        except Exception as e:
+            _log("Add current: unexpected error on add", error=str(e))
+        return jsonify(ok=False, error="add_failed"), 500
+
         _log("Add current: added", pid=pid, q=q, uri=uri)
         return jsonify(
             ok=True,
