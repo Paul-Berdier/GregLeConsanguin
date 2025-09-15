@@ -542,7 +542,12 @@ def register_spotify_routes(app, socketio=None):
     def api_spotify_me():
         _log("Route /api/spotify/me")
         u = current_user()
-        access, _ = _ensure_access_token(u["id"])
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("/me: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
+
         data = _me(access)
         _log("/me fetched", id=data.get("id"))
         return jsonify(data)
@@ -554,7 +559,13 @@ def register_spotify_routes(app, socketio=None):
         _log("Route /api/spotify/playlists")
         u = current_user()
         limit = int(request.args.get("limit", 50))
-        access, _ = _ensure_access_token(u["id"])
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("Playlists: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
+
         pls = _playlists(access, limit=limit)
         out = []
         for p in pls:
@@ -585,7 +596,13 @@ def register_spotify_routes(app, socketio=None):
         if not pid:
             _log("Missing playlist_id")
             return jsonify(error="missing playlist_id"), 400
-        access, _ = _ensure_access_token(u["id"])
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("Playlists tracks: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
+
         rows = _playlist_tracks(access, pid, limit=int(request.args.get("limit", 100)))
         out = []
         for it in rows:
@@ -703,7 +720,13 @@ def register_spotify_routes(app, socketio=None):
         if not pid or not (title or artist):
             _log("Add by query: missing params", pid=bool(pid), title=bool(title), artist=bool(artist))
             return jsonify(error="missing playlist_id/title|artist"), 400
-        access, _ = _ensure_access_token(u["id"])
+
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("Add by query: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
+
         q = _build_track_query(title, artist)
         items = _search_tracks(access, q, limit=1)
         if not items:
@@ -811,7 +834,11 @@ def register_spotify_routes(app, socketio=None):
             _log("Add queue: empty queue")
             return jsonify(error="queue_empty"), 400
 
-        access, _ = _ensure_access_token(u["id"])
+        try:
+            access, _ = _ensure_access_token(u["id"])
+        except Exception as e:
+            _log("Add queue: spotify not linked / token invalid", error=str(e))
+            return jsonify(ok=False, error="spotify_not_linked"), 401
 
         added, skipped = [], []
         for it in queue[:max(1, max_items)]:
@@ -1029,7 +1056,7 @@ def register_spotify_routes(app, socketio=None):
 
         try:
             access, _ = _ensure_access_token(u["id"])
-            me = _get_me(access)
+            me = _me(access)
             if not _playlist_is_editable(access, pid, me["id"]):
                 return jsonify(ok=False, error="Tu ne peux pas modifier cette playlist.", code="NOT_OWNER"), 403
 
