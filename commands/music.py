@@ -75,6 +75,15 @@ def _build_ffmpeg_out_options(afilter: str | None) -> str:
         opts += f" -af {shlex.quote(afilter)}"
     return opts
 
+# === JOIN SFX ===
+# MP3 joué automatiquement à CHAQUE connexion au vocal
+JOIN_SFX_CANDIDATES = [
+    os.path.join("assets", "Ouais_c’est_greg.mp3"),     # avec apostrophe typographique
+    os.path.join("assets", "Ouais_c'est_greg.mp3"),     # apostrophe ASCII
+    os.path.join("assets", "Ouais_cest_greg.mp3"),      # sans apostrophe
+]
+JOIN_SFX_ENV = os.getenv("GREG_JOIN_SFX")  # permet de surcharger le chemin si besoin
+
 class Music(commands.Cog):
     """
     Cog musical unique.
@@ -382,6 +391,78 @@ class Music(commands.Cog):
         }
         return payload
 
+    # === JOIN SFX ===
+    def _find_join_sfx_path(self) -> Optional[str]:
+        """
+        Résout le chemin du SFX de join :
+        - variable d'env GREG_JOIN_SFX prioritaire
+        - sinon on teste plusieurs variantes dans assets/
+        """
+        cand = []
+        if JOIN_SFX_ENV:
+            cand.append(JOIN_SFX_ENV)
+        cand.extend(JOIN_SFX_CANDIDATES)
+        for p in cand:
+            try:
+                if p and os.path.exists(p) and os.path.isfile(p):
+                    return p
+            except Exception:
+                pass
+        return None
+
+    async def _play_join_sfx(self, guild: discord.Guild):
+        """
+        Joue le MP3 local de bienvenue dès la connexion au vocal, puis enchaîne
+        automatiquement sur la lecture normale s'il y a une file.
+        Ne touche pas à self.is_playing / current_song.
+        """
+        try:
+            vc = guild.voice_client
+            if not vc or not vc.is_connected():
+                return
+            sfx = self._find_join_sfx_path()
+            if not sfx:
+                _greg_print("[JOIN SFX] aucun fichier trouvé (configuré ou assets/).")
+                return
+
+            # Si quelque chose joue déjà (ex: reconnect rapide), on ne force pas par-dessus
+            if vc.is_playing() or vc.is_paused():
+                _greg_print("[JOIN SFX] ignoré: déjà en lecture.")
+                return
+
+            opts = "-vn -ar 48000 -ac 2"
+            try:
+                source = discord.FFmpegPCMAudio(executable=self.ffmpeg_path, source=sfx, options=opts)
+            except Exception as e:
+                _greg_print(f"[JOIN SFX] FFmpegPCMAudio KO: {e}")
+                return
+
+            gid = self._gid(guild.id)
+
+            def _after(e: Exception | None):
+                # Quand le SFX se termine, si la queue contient des éléments et que le player
+                # principal n'a pas démarré, on lance play_next().
+                async def _resume():
+                    try:
+                        pm = self.get_pm(gid)
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, pm.reload)
+                        q = await loop.run_in_executor(None, pm.get_queue)
+                        if q and not self.is_playing.get(gid, False):
+                            class FakeInteraction:
+                                def __init__(self, g): self.guild = g; self.followup = self
+                                async def send(self, msg): _greg_print(f"[JOIN SFX→Discord] {msg}")
+                            await self.play_next(FakeInteraction(guild))
+                    except Exception as ex2:
+                        _greg_print(f"[JOIN SFX] resume fail: {ex2}")
+
+                self.bot.loop.create_task(_resume())
+
+            vc.play(source, after=_after)
+            _greg_print(f"[JOIN SFX] playing: {sfx}")
+        except Exception as e:
+            _greg_print(f"[JOIN SFX] erreur: {e}")
+
     async def _enqueue_bundle_after_first(self, interaction_like, first_item: dict, bundle: list[dict]):
         """
         Ajoute 'first_item' via le chemin normal (quota + insertion par priorité),
@@ -544,6 +625,8 @@ class Music(commands.Cog):
                 await interaction.followup.send(
                     f"🎤 *Greg rejoint le bouge :* **{interaction.user.voice.channel.name}**"
                 )
+                # === JOIN SFX ===
+                await self._play_join_sfx(interaction.guild)
             else:
                 return await interaction.followup.send("❌ *Tu n'es même pas en vocal, vermine…*")
 
@@ -1102,6 +1185,8 @@ class Music(commands.Cog):
                 _greg_print(f"[play_for_user] 🔌 Connexion au vocal {member.voice.channel.name}…")
                 await member.voice.channel.connect()
                 _greg_print("[play_for_user] 🔌 Connecté.")
+                # === JOIN SFX ===
+                await self._play_join_sfx(guild)
             except Exception as e:
                 _greg_print(f"[play_for_user] ❌ Connexion vocal échouée: {e}")
                 return {"ok": False, "error_code": "VOICE_CONNECT_FAILED",
