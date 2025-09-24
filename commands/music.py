@@ -83,6 +83,8 @@ JOIN_SFX_CANDIDATES = [
     os.path.join("assets", "Ouais_cest_greg.mp3"),      # sans apostrophe
 ]
 JOIN_SFX_ENV = os.getenv("GREG_JOIN_SFX")  # permet de surcharger le chemin si besoin
+JOIN_SFX_VOLUME = float(os.getenv("GREG_JOIN_SFX_VOLUME", "1.6"))  # 1.0=normal, 1.6≈+4 dB, 2.0≈+6 dB
+JOIN_SFX_DELAY  = float(os.getenv("GREG_JOIN_SFX_DELAY", "4"))     # secondes
 
 class Music(commands.Cog):
     """
@@ -411,37 +413,38 @@ class Music(commands.Cog):
         return None
 
     async def _play_join_sfx(self, guild: discord.Guild):
-        """
-        Joue le MP3 local de bienvenue dès la connexion au vocal, puis enchaîne
-        automatiquement sur la lecture normale s'il y a une file.
-        Ne touche pas à self.is_playing / current_song.
-        """
         try:
             vc = guild.voice_client
             if not vc or not vc.is_connected():
                 return
+
             sfx = self._find_join_sfx_path()
             if not sfx:
                 _greg_print("[JOIN SFX] aucun fichier trouvé (configuré ou assets/).")
                 return
 
-            # Si quelque chose joue déjà (ex: reconnect rapide), on ne force pas par-dessus
-            if vc.is_playing() or vc.is_paused():
-                _greg_print("[JOIN SFX] ignoré: déjà en lecture.")
-                return
+            # --- Délai avant de jouer (par ex. 4 s)
+            if JOIN_SFX_DELAY > 0:
+                await asyncio.sleep(JOIN_SFX_DELAY)
+                # Entre-temps, de la musique a peut-être démarré → on ne force pas
+                vc = guild.voice_client
+                if not vc or not vc.is_connected() or vc.is_playing() or vc.is_paused():
+                    _greg_print("[JOIN SFX] ignoré après délai: lecture déjà en cours.")
+                    return
 
+            # Options FFmpeg "propres" pour Discord
             opts = "-vn -ar 48000 -ac 2"
             try:
-                source = discord.FFmpegPCMAudio(executable=self.ffmpeg_path, source=sfx, options=opts)
+                base = discord.FFmpegPCMAudio(executable=self.ffmpeg_path, source=sfx, options=opts)
             except Exception as e:
                 _greg_print(f"[JOIN SFX] FFmpegPCMAudio KO: {e}")
                 return
 
+            # --- Gain (1.0=normal). 1.6 ≈ +4 dB ; 2.0 ≈ +6 dB
+            source = discord.PCMVolumeTransformer(base, volume=JOIN_SFX_VOLUME)
             gid = self._gid(guild.id)
 
             def _after(e: Exception | None):
-                # Quand le SFX se termine, si la queue contient des éléments et que le player
-                # principal n'a pas démarré, on lance play_next().
                 async def _resume():
                     try:
                         pm = self.get_pm(gid)
@@ -451,7 +454,9 @@ class Music(commands.Cog):
                         if q and not self.is_playing.get(gid, False):
                             class FakeInteraction:
                                 def __init__(self, g): self.guild = g; self.followup = self
+
                                 async def send(self, msg): _greg_print(f"[JOIN SFX→Discord] {msg}")
+
                             await self.play_next(FakeInteraction(guild))
                     except Exception as ex2:
                         _greg_print(f"[JOIN SFX] resume fail: {ex2}")
@@ -459,7 +464,7 @@ class Music(commands.Cog):
                 self.bot.loop.create_task(_resume())
 
             vc.play(source, after=_after)
-            _greg_print(f"[JOIN SFX] playing: {sfx}")
+            _greg_print(f"[JOIN SFX] playing (vol={JOIN_SFX_VOLUME}, delay={JOIN_SFX_DELAY}s): {sfx}")
         except Exception as e:
             _greg_print(f"[JOIN SFX] erreur: {e}")
 
