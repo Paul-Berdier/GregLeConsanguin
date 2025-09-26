@@ -452,12 +452,26 @@ class Music(commands.Cog):
                         if q and not self.is_playing.get(gid, False):
                             class FakeInteraction:
                                 def __init__(self, g): self.guild = g; self.followup = self
+
                                 async def send(self, msg): _greg_print(f"[JOIN SFX→Discord] {msg}")
+
                             await self.play_next(FakeInteraction(guild))
                     except Exception as ex2:
                         _greg_print(f"[JOIN SFX] resume fail: {ex2}")
 
-                asyncio.create_task(_resume())
+                try:
+                    # ✅ planifie la reprise sur l'event loop du bot depuis ce thread
+                    fut = asyncio.run_coroutine_threadsafe(_resume(), self.bot.loop)
+
+                    # (optionnel) log en cas d’exception dans la task:
+                    def _done(f):
+                        ex = f.exception()
+                        if ex:
+                            _greg_print(f"[JOIN SFX] resume task raised: {ex}")
+
+                    fut.add_done_callback(_done)
+                except Exception as ex_sched:
+                    _greg_print(f"[JOIN SFX] schedule fail: {ex_sched}")
 
             vc.play(source, after=_after)
             _greg_print(f"[JOIN SFX] playing (vol={JOIN_SFX_VOLUME}, delay={JOIN_SFX_DELAY}s): {sfx}")
@@ -1019,13 +1033,13 @@ class Music(commands.Cog):
 
                 def _after_direct(e: Exception | None):
                     try:
-                        self._kill_stream_proc(gid)  # no-op for direct (proc=None)
+                        self._kill_stream_proc(gid)
                     finally:
                         try:
                             self.current_source.pop(gid, None)
                         except Exception:
                             pass
-                        asyncio.create_task(self.play_next(interaction_like))
+                        asyncio.run_coroutine_threadsafe(self.play_next(interaction_like), self.bot.loop)
 
                 vc.play(srcp, after=_after_direct)
 
@@ -1079,7 +1093,7 @@ class Music(commands.Cog):
                             self.current_source.pop(gid, None)
                         except Exception:
                             pass
-                        asyncio.create_task(self.play_next(interaction_like))
+                        asyncio.run_coroutine_threadsafe(self.play_next(interaction_like), self.bot.loop)
 
                 vc.play(srcp, after=_after_pipe)
 
