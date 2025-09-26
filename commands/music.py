@@ -13,7 +13,6 @@ import time
 import asyncio
 import inspect
 from typing import Optional
-import shlex
 
 import discord
 from discord import app_commands
@@ -68,13 +67,6 @@ AUDIO_EQ_PRESETS = {
 }
 
 
-def _build_ffmpeg_out_options(afilter: str | None) -> str:
-    # options 'après -i' → sortie PCM pour Discord (48 kHz stéréo) + filtre éventuel
-    opts = "-vn -ar 48000 -ac 2"
-    if afilter:
-        opts += f" -af {shlex.quote(afilter)}"
-    return opts
-
 # === JOIN SFX ===
 # MP3 joué automatiquement à CHAQUE connexion au vocal
 JOIN_SFX_CANDIDATES = [
@@ -98,9 +90,9 @@ class Music(commands.Cog):
         self.managers = {}        # {guild_id(str): PlaylistManager}
         self.is_playing = {}      # {guild_id(int): bool}
         self.current_song = {}    # {guild_id(int): dict(title,url,artist?,thumb?,duration?,added_by?,priority?)}
-        self._locks = {}  # {guild_id:int -> asyncio.Lock} (anti double play_next)
+        self._locks = {}          # {guild_id:int -> asyncio.Lock} (anti double play_next)
         self.search_results = {}  # {user_id: last_results}
-        self.audio_mode = {}  # {guild_id:int -> "music" | "off"}
+        self.audio_mode = {}      # {guild_id:int -> "music" | "off"}
         self.ffmpeg_path = self.detect_ffmpeg()
         self.emit_fn = emit_fn
 
@@ -124,8 +116,14 @@ class Music(commands.Cog):
                 os.getenv("YTDLP_COOKIES_FILE")
                 or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
         )
-        _greg_print(f"[YT cookies] file={self.youtube_cookies_file or 'none'}")
 
+        # --- yt-dlp rate limit (optionnel, ENV) ---
+        try:
+            self.yt_ratelimit = int(os.getenv("YTDLP_LIMIT_BPS", "2500000"))
+        except Exception:
+            self.yt_ratelimit = 2_500_000
+
+        _greg_print(f"[YT cookies] file={self.youtube_cookies_file or 'none'}")
         _greg_print("Initialisation du cog Music… *Quelle joie contenue…*")
 
     # ---------- Utilitaires ----------
@@ -306,7 +304,7 @@ class Music(commands.Cog):
             finally:
                 self._progress_task.pop(gid, None)
 
-        self._progress_task[gid] = self.bot.loop.create_task(_runner())
+        self._progress_task[gid] = asyncio.create_task(_runner())
 
     # ---------- Overlay payload ----------
 
@@ -454,14 +452,12 @@ class Music(commands.Cog):
                         if q and not self.is_playing.get(gid, False):
                             class FakeInteraction:
                                 def __init__(self, g): self.guild = g; self.followup = self
-
                                 async def send(self, msg): _greg_print(f"[JOIN SFX→Discord] {msg}")
-
                             await self.play_next(FakeInteraction(guild))
                     except Exception as ex2:
                         _greg_print(f"[JOIN SFX] resume fail: {ex2}")
 
-                self.bot.loop.create_task(_resume())
+                asyncio.create_task(_resume())
 
             vc.play(source, after=_after)
             _greg_print(f"[JOIN SFX] playing (vol={JOIN_SFX_VOLUME}, delay={JOIN_SFX_DELAY}s): {sfx}")
@@ -575,7 +571,6 @@ class Music(commands.Cog):
     # ---------- Verrouillage par guilde ----------
 
     def _guild_lock(self, gid: int):
-        import asyncio
         lock = self._locks.get(gid)
         if not lock:
             lock = asyncio.Lock()
@@ -716,6 +711,7 @@ class Music(commands.Cog):
             reply = await self.bot.wait_for("message", check=check, timeout=30.0)
             idx = int(reply.content) - 1
             selected = self.search_results[interaction.user.id][idx]
+            self.search_results.pop(interaction.user.id, None)  # purge
             sel_url = _clean_url(selected.get("webpage_url", selected.get("url")))
             await self.add_to_queue(interaction, {
                 "title": selected.get("title", "Titre inconnu"),
@@ -907,16 +903,11 @@ class Music(commands.Cog):
         - Sérialisation par guilde pour éviter les doublons
         - Repeat ALL géré
         """
-        import asyncio
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
 
         # -------- Verrou par guilde --------
-        locks = getattr(self, "_play_locks", None)
-        if locks is None:
-            locks = {}
-            setattr(self, "_play_locks", locks)
-        lock = locks.setdefault(gid, asyncio.Lock())
+        lock = self._guild_lock(gid)
 
         async with lock:
             loop = asyncio.get_running_loop()
@@ -999,7 +990,7 @@ class Music(commands.Cog):
                 except Exception:
                     pass
                 # enchaîne la suivante
-                self.bot.loop.create_task(self.play_next(interaction_like))
+                asyncio.create_task(self.play_next(interaction_like))
                 return
 
             # kwargs communs
@@ -1007,7 +998,7 @@ class Music(commands.Cog):
                 extractor, "stream",
                 cookies_file=self.youtube_cookies_file,
                 cookies_from_browser=self.cookies_from_browser,
-                ratelimit_bps=2_500_000,
+                ratelimit_bps=self.yt_ratelimit,
                 afilter=self._afilter_for(gid),
             )
 
@@ -1034,12 +1025,11 @@ class Music(commands.Cog):
                             self.current_source.pop(gid, None)
                         except Exception:
                             pass
-                        self.bot.loop.create_task(self.play_next(interaction_like))
+                        asyncio.create_task(self.play_next(interaction_like))
 
                 vc.play(srcp, after=_after_direct)
-                self._cancel_ticker(gid)
-                self._ensure_ticker(gid)
 
+                self._cancel_ticker(gid)
                 self.play_start[gid] = time.monotonic()
                 self.paused_total[gid] = 0.0
                 self.paused_since.pop(gid, None)
@@ -1063,7 +1053,7 @@ class Music(commands.Cog):
                     extractor, "stream_pipe",
                     cookies_file=self.youtube_cookies_file,
                     cookies_from_browser=self.cookies_from_browser,
-                    ratelimit_bps=2_500_000,
+                    ratelimit_bps=self.yt_ratelimit,
                     afilter=self._afilter_for(gid),
                 )
 
@@ -1089,13 +1079,11 @@ class Music(commands.Cog):
                             self.current_source.pop(gid, None)
                         except Exception:
                             pass
-                        self.bot.loop.create_task(self.play_next(interaction_like))
+                        asyncio.create_task(self.play_next(interaction_like))
 
                 vc.play(srcp, after=_after_pipe)
+
                 self._cancel_ticker(gid)
-                self._ensure_ticker(gid)
-
-
                 self.play_start[gid] = time.monotonic()
                 self.paused_total[gid] = 0.0
                 self.paused_since.pop(gid, None)
@@ -1115,7 +1103,7 @@ class Music(commands.Cog):
                     await interaction_like.followup.send(f"⚠️ *Stream KO (direct+pipe).* `{ex_pipe}`")
                 except Exception:
                     pass
-                self.bot.loop.create_task(self.play_next(interaction_like))
+                asyncio.create_task(self.play_next(interaction_like))
                 return
 
     async def _do_skip(self, guild: discord.Guild, send_fn):
@@ -1358,7 +1346,6 @@ class Music(commands.Cog):
         # 3) Démarrer si rien ne joue
         class FakeInteraction:
             def __init__(self, g): self.guild = g; self.followup = self
-
             async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
 
         playing_state = self.is_playing.get(gid, False)
@@ -1408,9 +1395,7 @@ class Music(commands.Cog):
         else:
             class FakeInteraction:
                 def __init__(self, g): self.guild = g; self.followup = self
-
                 async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
-
             await self.play_next(FakeInteraction(guild))
 
         self.emit_playlist_update(gid)
@@ -1673,4 +1658,4 @@ class Music(commands.Cog):
 
 async def setup(bot, emit_fn=None):
     await bot.add_cog(Music(bot, emit_fn))
-    _greg_print("✅ Cog 'Music' chargé — stream prioritaire (YT→SC), fallback download, extracteur auto par URL.")
+    _greg_print("✅ Cog 'Music' chargé — stream prioritaire (YT→SC), fallback pipe, extracteur auto par URL.")
