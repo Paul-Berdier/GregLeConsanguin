@@ -901,16 +901,17 @@ class Music(commands.Cog):
 
     async def play_next(self, interaction_like):
         """
-        Lit la piste suivante en mode UNIQUE: STREAM_PIPE (yt-dlp → FFmpeg).
-        Pas de tentative "direct" ni "download".
-        - sérialisation par guilde pour éviter les doublons (slash + overlay)
-        - reprise auto sur la piste suivante en cas d'échec
+        Lit la piste suivante :
+        1) tente STREAM direct (FFmpeg URL directe)
+        2) si échec → fallback STREAM_PIPE (yt-dlp → FFmpeg via pipe)
+        - Sérialisation par guilde pour éviter les doublons
+        - Repeat ALL géré
         """
         import asyncio
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
 
-        # -------- Verrou par guilde (anti double démarrage) --------
+        # -------- Verrou par guilde --------
         locks = getattr(self, "_play_locks", None)
         if locks is None:
             locks = {}
@@ -921,7 +922,7 @@ class Music(commands.Cog):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, pm.reload)
 
-            # Si déjà en lecture → on ne relance pas
+            # si déjà en lecture → ne pas relancer
             try:
                 vc = interaction_like.guild.voice_client
                 if vc and (vc.is_playing() or vc.is_paused()):
@@ -930,7 +931,6 @@ class Music(commands.Cog):
             except Exception:
                 pass
 
-            # Vérif VC connecté
             vc = interaction_like.guild.voice_client
             if not vc:
                 try:
@@ -939,8 +939,7 @@ class Music(commands.Cog):
                     pass
                 return
 
-
-            # Pop élément suivant
+            # Pop suivant
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
                 self.is_playing[gid] = False
@@ -961,7 +960,7 @@ class Music(commands.Cog):
 
             _greg_print(f"[DEBUG play_next] ITEM sélectionné: {item}")
 
-            # Repeat all → on remet la piste en fin de file
+            # Repeat all → remettre la piste en fin
             if self.repeat_all.get(gid):
                 await loop.run_in_executor(None, pm.add, item)
                 _greg_print("[DEBUG play_next] Repeat ALL actif → remis en fin de file")
@@ -992,92 +991,129 @@ class Music(commands.Cog):
             }
             self.emit_playlist_update(gid)
 
-            # Choix de l'extracteur pour l'URL
+            # Choix extracteur
             extractor = get_extractor(url)
             if extractor is None:
                 try:
                     await interaction_like.followup.send("❌ *Aucun extracteur ne veut de ta soupe…*")
                 except Exception:
                     pass
-                # On passe à la suivante
+                # enchaîne la suivante
                 self.bot.loop.create_task(self.play_next(interaction_like))
                 return
 
-            # ---------- STREAM_PIPE uniquement ----------
+            # kwargs communs
+            kwp = self._extractor_kwargs(
+                extractor, "stream",
+                cookies_file=self.youtube_cookies_file,
+                cookies_from_browser=self.cookies_from_browser,
+                ratelimit_bps=2_500_000,
+                afilter=self._afilter_for(gid),
+            )
+
+            # 1) STREAM direct
             try:
-                # kwargs pour l’extracteur
-                kwp = self._extractor_kwargs(
-                    extractor, "stream_pipe",
-                    cookies_file=self.youtube_cookies_file,
-                    cookies_from_browser=self.cookies_from_browser,
-                    ratelimit_bps=2_500_000,
-                    afilter=self._afilter_for(gid),  # ★
-                )
-                # Si un égaliseur est dispo côté cog, on l’injecte
-                af = None
-                if hasattr(self, "_afilter_for"):
-                    try:
-                        af = self._afilter_for(gid)
-                    except Exception:
-                        af = None
-                if af:
-                    kwp["afilter"] = af
-
                 srcp, real_title = await self._call_extractor(
-                    extractor, "stream_pipe", url, self.ffmpeg_path, **kwp
+                    extractor, "stream", url, self.ffmpeg_path, **kwp
                 )
-
-                # Mettre à jour le titre si l’extracteur en a un plus propre
                 if real_title and isinstance(real_title, str):
                     self.current_song[gid]["title"] = real_title
                     self.now_playing[gid]["title"] = real_title
 
-                # Stop l’ancienne source si besoin
                 vc2 = interaction_like.guild.voice_client
                 if vc2 and (vc2.is_playing() or vc2.is_paused()):
                     vc2.stop()
 
-                # Conserver la source courante (pour cleanup/kills)
                 self.current_source[gid] = srcp
 
-                def _after_pipe(e: Exception | None):
+                def _after_direct(e: Exception | None):
                     try:
-                        # Tue yt-dlp si présent sur la source
-                        self._kill_stream_proc(gid)
+                        self._kill_stream_proc(gid)  # no-op for direct (proc=None)
                     finally:
-                        # Libère la source pour ce gid
                         try:
                             self.current_source.pop(gid, None)
                         except Exception:
                             pass
-                        # Enchaîne vers la piste suivante
                         self.bot.loop.create_task(self.play_next(interaction_like))
 
-                vc.play(srcp, after=_after_pipe)
-                # Ticker unique de progression
+                vc.play(srcp, after=_after_direct)
                 self._cancel_ticker(gid)
                 self._ensure_ticker(gid)
 
-                # Démarre la progression
                 self.play_start[gid] = time.monotonic()
                 self.paused_total[gid] = 0.0
                 self.paused_since.pop(gid, None)
                 self._ensure_ticker(gid)
 
                 try:
-                    await interaction_like.followup.send(f"▶️ *Streaming (pipe)* : **{self.current_song[gid]['title']}**")
+                    await interaction_like.followup.send(
+                        f"▶️ *Streaming (direct)* : **{self.current_song[gid]['title']}**")
                 except Exception:
                     pass
                 self.emit_playlist_update(gid)
                 return
 
-            except Exception as ex:
-                _greg_print(f"[DEBUG stream_pipe KO] {ex}")
+            except Exception as ex_direct:
+                _greg_print(f"[DEBUG stream direct KO] {ex_direct}")
+
+            # 2) Fallback STREAM_PIPE
+            try:
+                # réutilise les mêmes kwargs mais pour stream_pipe (mêmes noms)
+                kwp_pipe = self._extractor_kwargs(
+                    extractor, "stream_pipe",
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.cookies_from_browser,
+                    ratelimit_bps=2_500_000,
+                    afilter=self._afilter_for(gid),
+                )
+
+                srcp, real_title = await self._call_extractor(
+                    extractor, "stream_pipe", url, self.ffmpeg_path, **kwp_pipe
+                )
+
+                if real_title and isinstance(real_title, str):
+                    self.current_song[gid]["title"] = real_title
+                    self.now_playing[gid]["title"] = real_title
+
+                vc2 = interaction_like.guild.voice_client
+                if vc2 and (vc2.is_playing() or vc2.is_paused()):
+                    vc2.stop()
+
+                self.current_source[gid] = srcp
+
+                def _after_pipe(e: Exception | None):
+                    try:
+                        self._kill_stream_proc(gid)
+                    finally:
+                        try:
+                            self.current_source.pop(gid, None)
+                        except Exception:
+                            pass
+                        self.bot.loop.create_task(self.play_next(interaction_like))
+
+                vc.play(srcp, after=_after_pipe)
+                self._cancel_ticker(gid)
+                self._ensure_ticker(gid)
+
+                self.play_start[gid] = time.monotonic()
+                self.paused_total[gid] = 0.0
+                self.paused_since.pop(gid, None)
+                self._ensure_ticker(gid)
+
                 try:
-                    await interaction_like.followup.send(f"⚠️ *Stream (pipe) KO.* `{ex}`")
+                    await interaction_like.followup.send(
+                        f"▶️ *Streaming (pipe)* : **{self.current_song[gid]['title']}**")
                 except Exception:
                     pass
-                # On passe directement à la piste suivante (pas de download)
+                self.emit_playlist_update(gid)
+                return
+
+            except Exception as ex_pipe:
+                _greg_print(f"[DEBUG stream_pipe KO] {ex_pipe}")
+                try:
+                    await interaction_like.followup.send(f"⚠️ *Stream KO (direct+pipe).* `{ex_pipe}`")
+                except Exception:
+                    pass
                 self.bot.loop.create_task(self.play_next(interaction_like))
                 return
 
