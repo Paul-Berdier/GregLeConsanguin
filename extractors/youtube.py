@@ -898,6 +898,7 @@ def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
         "--extractor-args", ea,
         "-o", "-",
     ]
+
     if _FORCE_IPV4:
         ytcmd += ["--force-ipv4"]
     if _HTTP_PROXY:

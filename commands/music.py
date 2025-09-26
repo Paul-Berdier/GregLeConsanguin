@@ -1095,6 +1095,7 @@ class Music(commands.Cog):
                 self._cancel_ticker(gid)
                 self._ensure_ticker(gid)
 
+
                 self.play_start[gid] = time.monotonic()
                 self.paused_total[gid] = 0.0
                 self.paused_since.pop(gid, None)
