@@ -51,6 +51,28 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
     app = Flask(__name__, static_folder="static", template_folder="templates")
     CORS(app, supports_credentials=True)
 
+    # ---- Performance: compression + faster JSON (optional) ----
+    try:
+        from flask_compress import Compress  # type: ignore
+        Compress(app)
+    except Exception:
+        pass  # compression optional
+
+    try:
+        import orjson  # type: ignore
+        from flask.json.provider import DefaultJSONProvider
+        class ORJSONProvider(DefaultJSONProvider):
+            def dumps(self, obj, **kwargs):
+                return orjson.dumps(obj, option=orjson.OPT_NON_STR_KEYS).decode("utf-8")
+            def loads(self, s, **kwargs):
+                return orjson.loads(s)
+        app.json = ORJSONProvider(app)
+    except Exception:
+        pass  # orjson optional
+
+    # Aggressive static caching (API routes remain no-store by client code)
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000
+
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-key-override-me")
     app.config.update(
         SESSION_COOKIE_NAME=os.getenv("SESSION_COOKIE_NAME", "gregsid"),
@@ -102,8 +124,10 @@ def create_web_app(get_pm: Callable[[str | int], Any]):
         )
 
     # ------------------------ Helpers ----------------------------
+    DEBUG_WEB = os.getenv("WEB_DEBUG", "0") == "1"
     def _dbg(msg: str) -> None:
-        print(f"🤦‍♂️ [WEB] {msg}")
+        if DEBUG_WEB:
+            print(f"🤦‍♂️ [WEB] {msg}")
 
     def _bad_request(msg: str, code: int = 400):
         _dbg(f"Requête pourrie ({code}) : {msg}")

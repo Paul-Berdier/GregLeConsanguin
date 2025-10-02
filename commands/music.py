@@ -285,11 +285,39 @@ class Music(commands.Cog):
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
 
-                    # Envoie un payload "léger" pour ne mettre à jour que la progression côté overlay
+                    # Envoie un payload *minimal* pour ne mettre à jour que la progression côté overlay
                     try:
-                        payload = self._overlay_payload(gid)
-                        payload["only_elapsed"] = True
-                        payload["guild_id"] = gid
+                        # Calcul d'elapsed depuis play_start / paused_since / paused_total
+                        start = self.play_start.get(gid)
+                        paused_since = self.paused_since.get(gid)
+                        paused_total = self.paused_total.get(gid, 0.0)
+                        if start:
+                            base = paused_since or time.monotonic()
+                            elapsed = max(0, int(base - start - paused_total))
+                        else:
+                            elapsed = 0
+
+                        # Durée depuis les métadonnées connues
+                        duration = None
+                        meta = self.current_meta.get(gid, {}) or {}
+                        if isinstance(meta.get("duration"), (int, float)):
+                            duration = int(meta["duration"])
+                        else:
+                            cur = self.current_song.get(gid) or {}
+                            d = cur.get("duration")
+                            if isinstance(d, (int, float)):
+                                duration = int(d)
+
+                        g = self.bot.get_guild(int(gid))
+                        vc = g.voice_client if g else None
+
+                        payload = {
+                            "guild_id": gid,
+                            "only_elapsed": True,
+                            "is_paused": bool(vc and vc.is_paused()),
+                            "progress": { "elapsed": elapsed, "duration": duration },
+                        }
+
                         if self.emit_fn:
                             try:
                                 self.emit_fn("playlist_update", payload, guild_id=gid)
