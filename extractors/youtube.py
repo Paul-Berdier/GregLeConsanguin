@@ -381,7 +381,19 @@ def expand_bundle(
     import yt_dlp
 
     N = int(limit_total or limit or 10)
+    #--- Paramètres playlist: list & index (YouTube: index est 1-based)
+    parsed = urlparse(page_url)
+    q = parse_qs(parsed.query)
+    list_id = (q.get("list") or [None])[0]
+    start_idx: Optional[int] = None
 
+    try:
+        raw_idx = (q.get("index") or [None])[0]
+
+        if raw_idx is not None:
+                    start_idx = max(1, int(raw_idx))
+    except Exception:
+        start_idx = None
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -389,6 +401,7 @@ def expand_bundle(
         "extract_flat": True,
         "noplaylist": False,
         "playlistend": N,
+        "noplaylist": False,
         "extractor_args": {
             "youtube": {
                 "player_client": list(_CLIENTS_ORDER),
@@ -410,13 +423,6 @@ def expand_bundle(
             return ydl.extract_info(u, download=False)
 
     info = _extract(page_url)
-
-    list_id = None
-    try:
-        q = parse_qs(urlparse(page_url).query)
-        list_id = (q.get("list") or [None])[0]
-    except Exception:
-        list_id = None
 
     if (not info or not info.get("entries")) and list_id:
         playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
@@ -442,7 +448,9 @@ def expand_bundle(
     except Exception:
         v_id = None
 
-    if v_id:
+    # Si aucun index explicite : on aligne sur v_id en tournant la liste,
+    # sinon yt-dlp nous a déjà renvoyé index..index+N-1 dans le bon ordre.
+    if v_id and not start_idx:
         try:
             idx = next((i for i, e in enumerate(entries)
                         if (e.get("id") or e.get("url")) == v_id), None)

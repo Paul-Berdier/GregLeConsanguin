@@ -694,7 +694,12 @@ class Music(commands.Cog):
                     first = {**bundle[0], "mode": play_mode}
                     await self._enqueue_bundle_after_first(interaction, first, bundle)
                     return
-
+                else:
+                    # Feedback explicite si la playlist/mix est vide inaccessible
+                    try:
+                        await interaction.followup.send("Playlist/Mix introuvable")
+                    except Exception:
+                        pass
             # sinon: ajout simple
             await self.add_to_queue(
                 interaction,
