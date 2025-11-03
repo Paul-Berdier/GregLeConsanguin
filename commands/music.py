@@ -39,7 +39,7 @@ def _infer_provider_from_url(u: str) -> Optional[str]:
         return None
     if "soundcloud.com" in u or "sndcdn.com" in u:
         return "soundcloud"
-    if "youtube.com" in u or "youtu.be" in u:
+    if "youtube.com" in u or "youtu.be" in u or "music.youtube.com" in u:
         return "youtube"
     return None
 
@@ -54,29 +54,20 @@ def _clean_url(u: Optional[str]) -> Optional[str]:
     return u
 
 # ---- Presets d'égalisation (FFmpeg -af) ----
-# "music" = basses + normalisation dynamique + limiteur doux
 AUDIO_EQ_PRESETS = {
     "off":   None,
-
-    # Hip-hop / Phonk — EQ statique, aucun ride de volume
-    # - highpass : enlève le sub (<30–35 Hz) qui déclenche le pumping
-    # - volume -6 dB : crée de la marge pour le boost de basses (évite que le limiteur travaille)
-    # - bass +4 dB vers 95 Hz : plus de coffre sans baver
-    # - alimiter : attrape seulement un pic rarissime (attaque/release courts pour rester transparent)
     "music": "highpass=f=32,volume=-6dB,bass=g=4:f=95:w=1.0,alimiter=limit=0.98:attack=5:release=50",
 }
 
-
 # === JOIN SFX ===
-# MP3 joué automatiquement à CHAQUE connexion au vocal
 JOIN_SFX_CANDIDATES = [
-    os.path.join("assets", "Ouais_c’est_greg.mp3"),     # avec apostrophe typographique
-    os.path.join("assets", "Ouais_c'est_greg.mp3"),     # apostrophe ASCII
-    os.path.join("assets", "Ouais_cest_greg.mp3"),      # sans apostrophe
+    os.path.join("assets", "Ouais_c’est_greg.mp3"),
+    os.path.join("assets", "Ouais_c'est_greg.mp3"),
+    os.path.join("assets", "Ouais_cest_greg.mp3"),
 ]
-JOIN_SFX_ENV = os.getenv("GREG_JOIN_SFX")  # permet de surcharger le chemin si besoin
-JOIN_SFX_VOLUME = float(os.getenv("GREG_JOIN_SFX_VOLUME", "1.6"))  # 1.0=normal, 1.6≈+4 dB, 2.0≈+6 dB
-JOIN_SFX_DELAY  = float(os.getenv("GREG_JOIN_SFX_DELAY", "4"))     # secondes
+JOIN_SFX_ENV = os.getenv("GREG_JOIN_SFX")
+JOIN_SFX_VOLUME = float(os.getenv("GREG_JOIN_SFX_VOLUME", "1.6"))
+JOIN_SFX_DELAY  = float(os.getenv("GREG_JOIN_SFX_DELAY", "4"))
 
 class Music(commands.Cog):
     """
@@ -87,12 +78,12 @@ class Music(commands.Cog):
     """
     def __init__(self, bot, emit_fn=None):
         self.bot = bot
-        self.managers = {}        # {guild_id(str): PlaylistManager}
-        self.is_playing = {}      # {guild_id(int): bool}
-        self.current_song = {}    # {guild_id(int): dict(title,url,artist?,thumb?,duration?,added_by?,priority?)}
-        self._locks = {}          # {guild_id:int -> asyncio.Lock} (anti double play_next)
-        self.search_results = {}  # {user_id: last_results}
-        self.audio_mode = {}      # {guild_id:int -> "music" | "off"}
+        self.managers = {}
+        self.is_playing = {}
+        self.current_song = {}
+        self._locks = {}
+        self.search_results = {}
+        self.audio_mode = {}
         self.ffmpeg_path = self.detect_ffmpeg()
         self.emit_fn = emit_fn
 
@@ -104,20 +95,17 @@ class Music(commands.Cog):
         self.current_meta = {}
         self.repeat_all = {}
         self.now_playing = {}
-        self.current_source = {}   # {guild_id: FFmpegPCMAudio} (pour tuer un stream en cours)
+        self.current_source = {}   # FFmpegPCMAudio courant
 
-        # Ticker de progression par guilde (évite doublons)
-        self._progress_task = {}  # {gid: asyncio.Task}
+        self._progress_task = {}
 
         # --- Cookies YouTube ---
-        # Sur Railway on s'appuie sur le fichier déposé par /yt_cookies_update
-        self.cookies_from_browser = None  # (optionnel en local)
+        self.cookies_from_browser = None
         self.youtube_cookies_file = (
-                os.getenv("YTDLP_COOKIES_FILE")
-                or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
+            os.getenv("YTDLP_COOKIES_FILE")
+            or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
         )
 
-        # --- yt-dlp rate limit (optionnel, ENV) ---
         try:
             self.yt_ratelimit = int(os.getenv("YTDLP_LIMIT_BPS", "2500000"))
         except Exception:
@@ -151,14 +139,13 @@ class Music(commands.Cog):
 
     def _get_current_owner_id(self, gid: int) -> int:
         try:
-            cur = (self.current_song.get(gid) or {})  # source de vérité côté web
+            cur = (self.current_song.get(gid) or {})
             return int(cur.get("added_by") or 0)
         except Exception:
             return 0
 
     def _get_audio_mode(self, guild_id: int) -> str:
         gid = self._gid(guild_id)
-        # défaut = "music" (mode musique activé)
         return self.audio_mode.get(gid, "music")
 
     def _afilter_for(self, guild_id: int) -> str | None:
@@ -195,7 +182,7 @@ class Music(commands.Cog):
                     timeout=4
                 ).json()
                 return oe.get("title"), oe.get("author_name"), oe.get("thumbnail_url")
-            if "youtube.com" in host or "youtu.be" in host:
+            if "youtube.com" in host or "youtu.be" in host or "music.youtube.com" in host:
                 oe = requests.get(
                     "https://www.youtube.com/oembed",
                     params={"format": "json", "url": page_url},
@@ -345,19 +332,16 @@ class Music(commands.Cog):
         - Métadonnées fusionnées avec current_meta si dispo.
         """
         gid = self._gid(guild_id)
-
-        # Harmonise les clés sur int
         for d in (
-                self.is_playing, self.current_song, self.play_start,
-                self.paused_since, self.paused_total, self.current_meta,
-                self.repeat_all, getattr(self, "now_playing", {})
+            self.is_playing, self.current_song, self.play_start,
+            self.paused_since, self.paused_total, self.current_meta,
+            self.repeat_all, getattr(self, "now_playing", {})
         ):
             self._migrate_keys_to_int(d, gid)
 
         pm = self.get_pm(gid)
         data = pm.to_dict()
 
-        # État du voice client
         try:
             g = self.bot.get_guild(gid)
             vc = g.voice_client if g else None
@@ -375,20 +359,18 @@ class Music(commands.Cog):
         # Nouveau critère: on montre 'current' si on a une intention claire de jouer,
         # pas uniquement quand le voice est actif.
         should_show_current = (
-                voice_active
-                or bool(self.is_playing.get(gid, False))
-                or bool(self.current_song.get(gid))
-                or bool(nowp.get(gid))
+            voice_active
+            or bool(self.is_playing.get(gid, False))
+            or bool(self.current_song.get(gid))
+            or bool(nowp.get(gid))
         )
 
         if not should_show_current:
-            # vocal inactif ET pas d'intention → pas de current
             current = None
             elapsed = 0
             duration = None
             thumb = None
         else:
-            # Progression
             start = self.play_start.get(gid)
             paused_since = self.paused_since.get(gid)
             paused_total = self.paused_total.get(gid, 0.0)
@@ -397,7 +379,6 @@ class Music(commands.Cog):
                 base = paused_since or time.monotonic()
                 elapsed = max(0, int(base - start - paused_total))
 
-            # Métadonnées
             meta = self.current_meta.get(gid, {})
             duration = meta.get("duration")
             thumb = meta.get("thumbnail")
@@ -449,16 +430,13 @@ class Music(commands.Cog):
                 _greg_print("[JOIN SFX] aucun fichier trouvé (configuré ou assets/).")
                 return
 
-            # --- Délai avant de jouer (par ex. 4 s)
             if JOIN_SFX_DELAY > 0:
                 await asyncio.sleep(JOIN_SFX_DELAY)
-                # Entre-temps, de la musique a peut-être démarré → on ne force pas
                 vc = guild.voice_client
                 if not vc or not vc.is_connected() or vc.is_playing() or vc.is_paused():
                     _greg_print("[JOIN SFX] ignoré après délai: lecture déjà en cours.")
                     return
 
-            # Options FFmpeg "propres" pour Discord
             opts = "-vn -ar 48000 -ac 2"
             try:
                 base = discord.FFmpegPCMAudio(executable=self.ffmpeg_path, source=sfx, options=opts)
@@ -466,7 +444,6 @@ class Music(commands.Cog):
                 _greg_print(f"[JOIN SFX] FFmpegPCMAudio KO: {e}")
                 return
 
-            # --- Gain (1.0=normal). 1.6 ≈ +4 dB ; 2.0 ≈ +6 dB
             source = discord.PCMVolumeTransformer(base, volume=JOIN_SFX_VOLUME)
             gid = self._gid(guild.id)
 
@@ -480,23 +457,17 @@ class Music(commands.Cog):
                         if q and not self.is_playing.get(gid, False):
                             class FakeInteraction:
                                 def __init__(self, g): self.guild = g; self.followup = self
-
                                 async def send(self, msg): _greg_print(f"[JOIN SFX→Discord] {msg}")
-
                             await self.play_next(FakeInteraction(guild))
                     except Exception as ex2:
                         _greg_print(f"[JOIN SFX] resume fail: {ex2}")
 
                 try:
-                    # ✅ planifie la reprise sur l'event loop du bot depuis ce thread
                     fut = asyncio.run_coroutine_threadsafe(_resume(), self.bot.loop)
-
-                    # (optionnel) log en cas d’exception dans la task:
                     def _done(f):
                         ex = f.exception()
                         if ex:
                             _greg_print(f"[JOIN SFX] resume task raised: {ex}")
-
                     fut.add_done_callback(_done)
                 except Exception as ex_sched:
                     _greg_print(f"[JOIN SFX] schedule fail: {ex_sched}")
@@ -514,10 +485,8 @@ class Music(commands.Cog):
         gid = self._gid(interaction_like.guild.id)
         uid = int((getattr(interaction_like, "user", None) or getattr(interaction_like, "author", None)).id)
 
-        # Ajout de la 1ère (logique habituelle)
         await self.add_to_queue(interaction_like, first_item)
 
-        # Si rien d’autre → fini
         extras = (bundle or [])[1:]
         if not extras:
             return
@@ -527,7 +496,6 @@ class Music(commands.Cog):
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
 
-        # Quota restant
         if not can_bypass_quota(self.bot, gid, uid):
             already = self._count_user_in_queue(queue, uid)
             remaining = max(0, PER_USER_CAP - already)
@@ -535,7 +503,6 @@ class Music(commands.Cog):
                 return
             extras = extras[:remaining]
 
-        # Pose le même poids sur chaque item avant add_many
         w = get_member_weight(self.bot, gid, uid)
         for it in extras:
             it["added_by"] = str(uid)
@@ -549,20 +516,13 @@ class Music(commands.Cog):
         gid = self._gid(guild_id)
         if not self.emit_fn:
             return
-
-        # payload complet par défaut
         if payload is None:
             payload = self._overlay_payload(gid)
-
         payload["guild_id"] = gid
-
         try:
-            # nouvelle signature (avec kwargs)
             self.emit_fn("playlist_update", payload, guild_id=gid)
         except TypeError:
-            # compat ancienne signature
             self.emit_fn("playlist_update", payload)
-
         try:
             print(
                 f"[EMIT] playlist_update gid={gid} "
@@ -731,7 +691,6 @@ class Music(commands.Cog):
             if not results:
                 return await interaction.followup.send("❌ *Rien. Même les rats ont fui cette piste…*")
 
-        # Propose 3 choix
         self.search_results[interaction.user.id] = [{"provider": chosen, **r} for r in results]
         msg = f"**🔍 Résultats {chosen.capitalize()} :**\n"
         for i, item in enumerate(results[:3], 1):
@@ -844,7 +803,6 @@ class Music(commands.Cog):
         g = interaction.guild
         vc = g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            # au lieu de: vc.stop()
             await self.restart_current_for_web(g.id)
 
     # =====================================================================
@@ -948,14 +906,12 @@ class Music(commands.Cog):
         gid = self._gid(interaction_like.guild.id)
         pm = self.get_pm(gid)
 
-        # -------- Verrou par guilde --------
         lock = self._guild_lock(gid)
 
         async with lock:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, pm.reload)
 
-            # si déjà en lecture → ne pas relancer
             try:
                 vc = interaction_like.guild.voice_client
                 if vc and (vc.is_playing() or vc.is_paused()):
@@ -972,7 +928,6 @@ class Music(commands.Cog):
                     pass
                 return
 
-            # Pop suivant
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
                 self.is_playing[gid] = False
@@ -981,7 +936,6 @@ class Music(commands.Cog):
                     await interaction_like.followup.send("📍 *Plus rien à jouer. Enfin une pause…*")
                 except Exception:
                     pass
-                # Nettoyage état
                 for d in (self.current_song, self.play_start, self.paused_since,
                           self.paused_total, self.current_meta, getattr(self, "now_playing", {})):
                     try:
@@ -993,7 +947,6 @@ class Music(commands.Cog):
 
             _greg_print(f"[DEBUG play_next] ITEM sélectionné: {item}")
 
-            # Repeat all → remettre la piste en fin
             if self.repeat_all.get(gid):
                 await loop.run_in_executor(None, pm.add, item)
                 _greg_print("[DEBUG play_next] Repeat ALL actif → remis en fin de file")
@@ -1001,7 +954,6 @@ class Music(commands.Cog):
             self.is_playing[gid] = True
 
             url = item.get("url")
-            # État courant + méta min
             self.current_song[gid] = {
                 "title": item.get("title", url),
                 "url": url,
@@ -1024,18 +976,15 @@ class Music(commands.Cog):
             }
             self.emit_playlist_update(gid)
 
-            # Choix extracteur
             extractor = get_extractor(url)
             if extractor is None:
                 try:
                     await interaction_like.followup.send("❌ *Aucun extracteur ne veut de ta soupe…*")
                 except Exception:
                     pass
-                # enchaîne la suivante
                 asyncio.create_task(self.play_next(interaction_like))
                 return
 
-            # kwargs communs
             kwp = self._extractor_kwargs(
                 extractor, "stream",
                 cookies_file=self.youtube_cookies_file,
@@ -1090,7 +1039,6 @@ class Music(commands.Cog):
 
             # 2) Fallback STREAM_PIPE
             try:
-                # réutilise les mêmes kwargs mais pour stream_pipe (mêmes noms)
                 kwp_pipe = self._extractor_kwargs(
                     extractor, "stream_pipe",
                     cookies_file=self.youtube_cookies_file,
@@ -1158,16 +1106,13 @@ class Music(commands.Cog):
             self._kill_stream_proc(gid)
             vc.stop()  # after -> play_next
         else:
-            # kill éventuel stream zombie
             self._kill_stream_proc(gid)
-
             class FakeInteraction:
                 def __init__(self, g):
                     self.guild = g
                     self.followup = self
                 async def send(self, msg):
                     _greg_print(f"[WEB->Discord] {msg}")
-
             await self.play_next(FakeInteraction(guild))
 
         self.emit_playlist_update(gid)
@@ -1183,7 +1128,6 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
-        # assassine tout process yt-dlp restant
         self._kill_stream_proc(gid)
 
         self.current_song.pop(gid, None)
@@ -1203,7 +1147,7 @@ class Music(commands.Cog):
             vc.pause()
             if not self.paused_since.get(gid):
                 self.paused_since[gid] = time.monotonic()
-            self.emit_playlist_update(gid)  # pousse l'état tout de suite
+            self.emit_playlist_update(gid)
             await self._safe_send(send_fn, "⏸ *Enfin une pause…*")
         else:
             await self._safe_send(send_fn, "❌ *Rien à mettre en pause, hélas…*")
@@ -1278,7 +1222,6 @@ class Music(commands.Cog):
         item["priority"] = weight
         _greg_print(f"[play_for_user] priorité calculée (weight) = {weight}")
 
-        # État playlist courant
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
         _greg_print(f"[play_for_user] Etat queue AVANT ajout: n={len(queue)}")
@@ -1289,13 +1232,11 @@ class Music(commands.Cog):
             _greg_print(f"[play_for_user] (warn) _count_user_in_queue KO: {e}")
         _greg_print(f"[play_for_user] Items de l'utilisateur dans la queue (avant): {cnt_user} (cap={PER_USER_CAP})")
 
-        # Quota : on compte AVANT ajout (l'item courant prendra 1 slot)
         if not can_bypass_quota(self.bot, gid, int(user_id)):
             if cnt_user >= PER_USER_CAP:
                 _greg_print(f"[play_for_user] ❌ Quota atteint ({PER_USER_CAP}) pour user={user_id}")
                 return
 
-        # === Détection playlist/mix et expansion (10 éléments) ===
         page_url = item.get("url") or ""
         is_bundle = is_bundle_url(page_url)
         _greg_print(f"[play_for_user] bundle? {is_bundle} — url={page_url!r}")
@@ -1378,14 +1319,12 @@ class Music(commands.Cog):
                     try:
                         await loop.run_in_executor(None, pm.add_many, extras, str(user_id))
                         _greg_print(f"[play_for_user] 🧩 +{len(extras)} piste(s) ajoutée(s) depuis la playlist/mix.")
-                        # petit aperçu
                         _greg_print("[play_for_user]    extras titres: " + " | ".join(
                             (e.get("title") or "?") for e in extras[:5]
                         ))
                     except Exception as e:
                         _greg_print(f"[play_for_user] ❌ add_many(extras) failed: {e}")
 
-        # 3) Démarrer si rien ne joue
         class FakeInteraction:
             def __init__(self, g): self.guild = g; self.followup = self
             async def send(self, msg): _greg_print(f"[WEB->Discord] {msg}")
@@ -1409,28 +1348,23 @@ class Music(commands.Cog):
         rid = int(requester_id)
         guild = self.bot.get_guild(gid)
 
-        # Récup file & borne
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         queue = await loop.run_in_executor(None, pm.get_queue)
         if not (0 <= index < len(queue)):
             raise IndexError("index hors bornes")
 
-        # Poids du propriétaire de l'item + droit du demandeur
         item = queue[index] or {}
         owner_id = int(item.get("added_by") or 0)
         owner_weight = get_member_weight(self.bot, gid, owner_id)
 
-        # Autorisé si admin/manage_guild OU si requester.weight > owner_weight
         if not can_user_bump_over(self.bot, gid, rid, owner_weight):
             raise PermissionError("Insufficient priority for this action.")
 
-        # Déplacement en tête
         ok = await loop.run_in_executor(None, pm.move, index, 0)
         if not ok:
             raise RuntimeError("Déplacement impossible.")
 
-        # Lancer la lecture (ou passer à la suivante si déjà en cours)
         vc = guild.voice_client if guild else None
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()  # after -> play_next()
@@ -1442,7 +1376,6 @@ class Music(commands.Cog):
 
         self.emit_playlist_update(gid)
         return True
-
 
     async def pause_for_web(self, guild_id: int | str):
         gid = int(guild_id)
@@ -1472,7 +1405,6 @@ class Music(commands.Cog):
         gid = int(guild_id)
         rid = int(requester_id)
 
-        # ⚖️ priorité globale : on regarde le poids max (queue + current)
         pm = self.get_pm(gid)
         loop = asyncio.get_running_loop()
         q = await loop.run_in_executor(None, pm.get_queue)
@@ -1501,7 +1433,6 @@ class Music(commands.Cog):
         if max_weight > 0 and not can_user_bump_over(self.bot, gid, rid, max_weight):
             raise PermissionError("Insufficient priority to stop the player.")
 
-        # ⏹ arrêt propre
         await loop.run_in_executor(None, pm.stop)
 
         g = self.bot.get_guild(gid)
@@ -1526,7 +1457,6 @@ class Music(commands.Cog):
         gid = int(guild_id)
         rid = int(requester_id)
 
-        # ⚖️ contrôle de priorité sur le morceau courant
         owner_id = self._get_current_owner_id(gid)
         if owner_id and owner_id != rid:
             owner_weight = get_member_weight(self.bot, gid, owner_id)
@@ -1538,16 +1468,14 @@ class Music(commands.Cog):
 
         if vc and (vc.is_playing() or vc.is_paused()):
             self._kill_stream_proc(gid)
-            vc.stop()  # after -> play_next
+            vc.stop()
         else:
-            # Si rien ne joue, force la suivante
             self._kill_stream_proc(gid)
 
             class FakeInteraction:
                 def __init__(self, gg):
                     self.guild = gg
                     self.followup = self
-
                 async def send(self, msg):
                     _greg_print(f"[WEB->Discord] {msg}")
 
@@ -1557,7 +1485,6 @@ class Music(commands.Cog):
         return True
 
     async def toggle_pause_for_web(self, guild_id: int | str):
-
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
@@ -1636,7 +1563,6 @@ class Music(commands.Cog):
         item = queue[index] or {}
         owner_id = int(item.get("added_by") or 0)
 
-        # propriétaire → OK direct
         if rid != owner_id:
             owner_weight = get_member_weight(self.bot, gid, owner_id)
             if not can_user_bump_over(self.bot, gid, rid, owner_weight):
@@ -1676,17 +1602,14 @@ class Music(commands.Cog):
         requester_weight = get_member_weight(self.bot, gid, rid)
         owner_weight     = get_member_weight(self.bot, gid, owner_id)
 
-        # Si on déplace l’item de quelqu’un d’autre → il faut être plus lourd
         if rid != owner_id and not can_user_bump_over(self.bot, gid, rid, owner_weight):
             raise PermissionError("Insufficient priority to move this item.")
 
-        # Si on monte (dst < src), on ne doit pas dépasser des items de poids >= au nôtre
         if dst < src:
             for i in range(dst, src):
                 it = queue[i] or {}
                 it_owner_id = int(it.get("added_by") or 0)
                 if it_owner_id == rid:
-                    # on a le droit de dépasser nos propres items
                     continue
                 it_owner_weight = get_member_weight(self.bot, gid, it_owner_id)
                 if it_owner_weight >= requester_weight:

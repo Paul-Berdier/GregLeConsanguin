@@ -115,25 +115,24 @@ class EasterEggs(commands.Cog):
         try:
             n, d, k = _parse_dice(expr)
         except ValueError as e:
-            return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return await interaction.response.send_message(f"❌ {e}")
         rolls = [random.randint(1, d) for _ in range(n)]
         total = sum(rolls) + k
         detail = " + ".join(map(str, rolls))
         if k:
             detail += f" {'+' if k>0 else ''}{k}"
         await interaction.response.send_message(
-            f"🎲 **{expr}** → **{total}**  ({detail})",
-            ephemeral=True
+            f"🎲 **{expr}** → **{total}**  ({detail})"
         )
 
     @app_commands.command(name="coin", description="Pile ou face, sans triche (promis).")
     @_guild_only()
     async def coin(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defe
         await asyncio.sleep(0.5)
         side = random.choice(["Pile", "Face"])
         flair = "👑" if side == "Face" else "🪙"
-        await interaction.followup.send(f"{flair} **{side}** !", ephemeral=True)
+        await interaction.followup.send(f"{flair} **{side}** !")
 
     @app_commands.command(name="tarot", description="Tire une carte de tarot (upright/reversed).")
     @_guild_only()
@@ -144,7 +143,7 @@ class EasterEggs(commands.Cog):
         arrow = "↑" if upright else "↓"
         color = discord.Color.from_str("#66d9e8") if upright else discord.Color.from_str("#e8590c")
         embed = discord.Embed(title=f"🃏 {name} {arrow}", description=meaning, color=color)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="curse", description="Jette une (fausse) malédiction taillée sur mesure.")
     @app_commands.describe(user="La victime consentante.", theme="Choisis un thème (facultatif).")
@@ -156,8 +155,7 @@ class EasterEggs(commands.Cog):
         text = _curse_text(chosen, user.mention)
         await interaction.response.send_message(
             text,
-            allowed_mentions=discord.AllowedMentions(users=[user]),
-            ephemeral=True
+            allowed_mentions=discord.AllowedMentions(users=[user])
         )
 
     @app_commands.command(name="praise", description="Accorde un compliment rare (ne t’habitue pas).")
@@ -167,7 +165,7 @@ class EasterEggs(commands.Cog):
         await interaction.response.send_message(
             f"✨ {user.mention} — {random.choice(PRAISES)}",
             allowed_mentions=discord.AllowedMentions(users=[user]),
-            ephemeral=True
+
         )
 
     @app_commands.command(name="shame", description="La cloche retentit. 🔔")
@@ -176,23 +174,16 @@ class EasterEggs(commands.Cog):
     async def shame(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message(
             f"🔔 **Shame!** {user.mention}",
-            allowed_mentions=discord.AllowedMentions(users=[user]),
-            ephemeral=True
+            allowed_mentions=discord.AllowedMentions(users=[user])
         )
         for _ in range(2):
             await asyncio.sleep(1.2)
-            await interaction.followup.send("🔔 **Shame!**", allowed_mentions=discord.AllowedMentions.none(), ephemeral=True)
-
-    @app_commands.command(name="skullrain", description="Déclenche une pluie de crânes (overlay si dispo).")
-    @_guild_only()
-    async def skullrain(self, interaction: discord.Interaction):
-        self._emit("fx_skullrain", {"intensity": random.randint(3, 8)})
-        await interaction.response.send_message("💀 *Pluie de crânes invoquée.* (si l’overlay écoute)", ephemeral=True)
+            await interaction.followup.send("🔔 **Shame!**", allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="gregquote", description="Une petite maxime méprisante de Greg.")
     @_guild_only()
     async def gregquote(self, interaction: discord.Interaction):
-        await interaction.response.send_message(f"💬 {random.choice(QUIPS)}", ephemeral=True)
+        await interaction.response.send_message(f"💬 {random.choice(QUIPS)}")
 
     # Gestion propre des erreurs (silencieux, en DM éphémère)
     @commands.Cog.listener()
@@ -201,9 +192,9 @@ class EasterEggs(commands.Cog):
         if isinstance(error, app_commands.CheckFailure):
             try:
                 if not interaction.response.is_done():
-                    await interaction.response.send_message("⛔", ephemeral=True)
+                    await interaction.response.send_message("⛔")
                 else:
-                    await interaction.followup.send("⛔", ephemeral=True)
+                    await interaction.followup.send("⛔")
             except Exception:
                 pass
 

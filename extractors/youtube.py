@@ -1,16 +1,15 @@
 # extractors/youtube.py
 #
-# YouTube robuste (Greg le Consanguin) — DEBUG MAX + Contournements 403 + PO Token
-# - Clients sûrs (évite SABR): ios → android → web_creator → web → web_mobile
-# - PO Token: pris depuis l'ENV (brut) et décliné en ios.gvs+/android.gvs+/web.gvs+ automatiquement
-# - STREAM direct: URL + headers → FFmpeg (anti-403) (+ -http_proxy si défini)
-# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (fallback)
-# - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre (itag 18 si besoin)
-# - Cookies: navigateur (cookiesfrombrowser) prioritaire, sinon fichier Netscape
-# - Proxies/VPN: YTDLP_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY → yt-dlp & FFmpeg
-# - IPv4: forçage source_address=0.0.0.0 + --force-ipv4 pour le PIPE
+# YouTube robuste (Greg le Consanguin) — DEBUG MAX + Contournements 403/153 + PO Token
+# - Clients sûrs: ios → android → web_creator → web → web_mobile
+# - PO Token: ENV (brut ou préfixé), déclinaisons auto ios.gvs+/android.gvs+/web.gvs+
+# - STREAM direct: URL + headers → FFmpeg (Referer/Origin requis par YT 2025)
+# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (fallback) avec --add-header Referer/Origin
+# - DOWNLOAD: MP3 (192 kbps, 48 kHz), fallback itag 18 si besoin
+# - Cookies: navigateur prioritaire, sinon fichier Netscape ou b64 ENV
+# - Proxy/IPv4: variables *_PROXY propagées (yt-dlp & FFmpeg)
 # - Recherche: ytsearch5 (flat)
-# - DEBUG: traces complètes [YTDBG], HTTP probe optionnelle (HEAD/GET Range)
+# - DEBUG: traces [YTDBG], probe HTTP optionnelle
 from __future__ import annotations
 
 import base64
@@ -99,7 +98,6 @@ def _collect_po_tokens() -> List[str]:
     raw_candidates = []
     prefixed_candidates = []
 
-    # brut ou déjà préfixé
     for k in ("YT_PO_TOKEN", "YTDLP_PO_TOKEN"):
         v = (os.getenv(k) or "").strip()
         if not v:
@@ -109,7 +107,6 @@ def _collect_po_tokens() -> List[str]:
         else:
             raw_candidates.append(v)
 
-    # spécifiques bruts
     ios = (os.getenv("YT_PO_TOKEN_IOS") or "").strip()
     if ios:
         raw_candidates.append(("ios.gvs", ios))
@@ -120,34 +117,27 @@ def _collect_po_tokens() -> List[str]:
     if web:
         raw_candidates.append(("web.gvs", web))
 
-    # déjà préfixé explicite
     v_pref = (os.getenv("YT_PO_TOKEN_PREFIXED") or "").strip()
     if v_pref:
         prefixed_candidates.append(v_pref)
 
     tokens: List[str] = []
-
-    # si on a un brut “simple” (sans préciser le préfixe), on crée plusieurs variantes
     for raw in raw_candidates:
         if isinstance(raw, tuple):
-            # (prefix, token)
             prefix, tok = raw
             if tok:
                 tokens.append(f"{prefix}+{tok}")
         else:
-            # pas de prefix connu → on tente plusieurs clients
             tok = raw
             if tok:
                 tokens.append(f"ios.gvs+{tok}")
                 tokens.append(f"android.gvs+{tok}")
                 tokens.append(f"web.gvs+{tok}")
 
-    # + tokens déjà préfixés
     for p in prefixed_candidates:
         if p:
             tokens.append(p)
 
-    # dédup
     out = []
     seen = set()
     for t in tokens:
@@ -251,9 +241,11 @@ def _mk_opts(
         "retries": 5,
         "fragment_retries": 5,
         "source_address": "0.0.0.0" if _FORCE_IPV4 else None,
+        # 🔑 En-têtes exigés par YT (erreur 153 si Referer absent côté "client")
         "http_headers": {
             "User-Agent": _YT_UA,
             "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
         },
         "extractor_args": {
             "youtube": {
@@ -389,6 +381,11 @@ def expand_bundle(
         "extract_flat": True,
         "noplaylist": False,
         "playlistend": N,
+        "http_headers": {  # 👈 assure Referer/Origin pendant l’expansion
+            "User-Agent": _YT_UA,
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
+        },
         "extractor_args": {
             "youtube": {
                 "player_client": list(_CLIENTS_ORDER),
@@ -625,6 +622,7 @@ async def stream(
     headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
     headers.setdefault("Accept-Language", "en-us,en;q=0.5")
     headers.setdefault("Sec-Fetch-Mode", "navigate")
+    # 🔑 indispensables contre l’erreur 153 côté “client”
     headers.setdefault("Referer", "https://www.youtube.com/")
     headers.setdefault("Origin", "https://www.youtube.com")
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
@@ -634,13 +632,15 @@ async def stream(
     except Exception as e:
         _dbg(f"http_probe error: {e}")
 
+    # before_options: ajout explicite -referer (en plus de -headers) par prudence
     before_opts = (
         "-nostdin "
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
         f"-headers {shlex.quote(hdr_blob)} "
+        f"-referer {shlex.quote('https://www.youtube.com/') } "
         "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
         "-rw_timeout 15000000 "
-        "-probesize 32k -analyzeduration 0 "
+        "-probesize 64k -analyzeduration 0 "
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
     )
@@ -650,7 +650,7 @@ async def stream(
     _dbg(f"FFMPEG before_options={before_opts}")
     _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
 
-    out_opts = "-vn -ar 48000 -ac 2 -loglevel debug"
+    out_opts = "-vn -ar 48000 -ac 2 -loglevel error"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
@@ -684,7 +684,6 @@ async def stream_pipe(
     _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
 
     loop = asyncio.get_running_loop()
-    # on résout quand même info pour le titre (non bloquant si None)
     info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
@@ -710,6 +709,9 @@ async def stream_pipe(
         "--newline",
         "--user-agent", _YT_UA,
         "--extractor-args", ea,
+        # 🔑 anti-153: injecter Referer/Origin côté yt-dlp aussi
+        "--add-header", "Referer:https://www.youtube.com/",
+        "--add-header", "Origin:https://www.youtube.com",
         "-o", "-",
     ]
     if _FORCE_IPV4:
@@ -762,7 +764,7 @@ async def stream_pipe(
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
         executable=ff_exec,
-        before_options="-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+        before_options="-nostdin -re -probesize 64k -analyzeduration 0 -fflags nobuffer -flags low_delay",
         options=out_opts,
         pipe=True,
     )
@@ -863,9 +865,10 @@ def _ffmpeg_pull_test(url: str, headers: Dict[str, str], ffmpeg_path: str, secon
         "-nostdin",
         "-user_agent", headers.get("User-Agent", _YT_UA),
         "-headers", hdr_blob,
+        "-referer", "https://www.youtube.com/",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-rw_timeout", "15000000",
-        "-probesize", "32k", "-analyzeduration", "0",
+        "-probesize", "64k", "-analyzeduration", "0",
         "-fflags", "nobuffer", "-flags", "low_delay",
         "-seekable", "0",
     ]
@@ -896,6 +899,8 @@ def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
         "--newline",
         "--user-agent", _YT_UA,
         "--extractor-args", ea,
+        "--add-header", "Referer:https://www.youtube.com/",
+        "--add-header", "Origin:https://www.youtube.com",
         "-o", "-",
     ]
 
@@ -918,7 +923,7 @@ def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
     ff = subprocess.Popen(
-        [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
+        [ff_exec, "-nostdin", "-probesize", "64k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
          "-i", "pipe:0", "-t", str(seconds), "-f", "null", "-"],
         stdin=yt.stdout,
         stdout=subprocess.PIPE,
@@ -969,12 +974,12 @@ if __name__ == "__main__":
     p_search = sub.add_parser("search", help="Recherche ytsearch5")
     p_search.add_argument("query")
 
-    p_stream = sub.add_parser("stream", help="Tester un pull direct FFmpeg (headers anti-403)")
+    p_stream = sub.add_parser("stream", help="Tester un pull direct FFmpeg (headers anti-403/153)")
     p_stream.add_argument("url")
     p_stream.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg (exe OU dossier)")
     p_stream.add_argument("--seconds", type=int, default=3)
 
-    p_pipe = sub.add_parser("pipe", help="Tester un pull PIPE yt-dlp → ffmpeg")
+    p_pipe = sub.add_parser("pipe", help="Tester un pull PIPE yt-dlp → ffmpeg (headers côté yt-dlp)")
     p_pipe.add_argument("url")
     p_pipe.add_argument("--ffmpeg", required=True, help="Chemin vers ffmpeg (exe OU dossier)")
     p_pipe.add_argument("--seconds", type=int, default=3)
