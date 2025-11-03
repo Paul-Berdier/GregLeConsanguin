@@ -1,15 +1,16 @@
 # extractors/youtube.py
 #
-# YouTube robuste (Greg le Consanguin) — DEBUG MAX + Contournements 403/153 + PO Token
-# - Clients sûrs: ios → android → web_creator → web → web_mobile
-# - PO Token: ENV (brut ou préfixé), déclinaisons auto ios.gvs+/android.gvs+/web.gvs+
-# - STREAM direct: URL + headers → FFmpeg (Referer/Origin requis par YT 2025)
-# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (fallback) avec --add-header Referer/Origin
-# - DOWNLOAD: MP3 (192 kbps, 48 kHz), fallback itag 18 si besoin
-# - Cookies: navigateur prioritaire, sinon fichier Netscape ou b64 ENV
-# - Proxy/IPv4: variables *_PROXY propagées (yt-dlp & FFmpeg)
+# YouTube robuste (Greg le Consanguin) — DEBUG MAX + Contournements 403 + PO Token
+# - Clients sûrs (évite SABR): ios → android → web_creator → web → web_mobile
+# - PO Token: pris depuis l'ENV (brut) et décliné en ios.gvs+/android.gvs+/web.gvs+ automatiquement
+# - STREAM direct: URL + headers → FFmpeg (anti-403) (+ -http_proxy si défini)
+# - STREAM (PIPE): yt-dlp → stdout → FFmpeg (fallback)
+# - DOWNLOAD: MP3 (192 kbps, 48 kHz) avec fallback propre (itag 18 si besoin)
+# - Cookies: navigateur (cookiesfrombrowser) prioritaire, sinon fichier Netscape
+# - Proxies/VPN: YTDLP_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY → yt-dlp & FFmpeg
+# - IPv4: forçage source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
-# - DEBUG: traces [YTDBG], probe HTTP optionnelle
+# - DEBUG: traces complètes [YTDBG], HTTP probe optionnelle (HEAD/GET Range)
 from __future__ import annotations
 
 import base64
@@ -98,6 +99,7 @@ def _collect_po_tokens() -> List[str]:
     raw_candidates = []
     prefixed_candidates = []
 
+    # brut ou déjà préfixé
     for k in ("YT_PO_TOKEN", "YTDLP_PO_TOKEN"):
         v = (os.getenv(k) or "").strip()
         if not v:
@@ -107,6 +109,7 @@ def _collect_po_tokens() -> List[str]:
         else:
             raw_candidates.append(v)
 
+    # spécifiques bruts
     ios = (os.getenv("YT_PO_TOKEN_IOS") or "").strip()
     if ios:
         raw_candidates.append(("ios.gvs", ios))
@@ -117,27 +120,34 @@ def _collect_po_tokens() -> List[str]:
     if web:
         raw_candidates.append(("web.gvs", web))
 
+    # déjà préfixé explicite
     v_pref = (os.getenv("YT_PO_TOKEN_PREFIXED") or "").strip()
     if v_pref:
         prefixed_candidates.append(v_pref)
 
     tokens: List[str] = []
+
+    # si on a un brut “simple” (sans préciser le préfixe), on crée plusieurs variantes
     for raw in raw_candidates:
         if isinstance(raw, tuple):
+            # (prefix, token)
             prefix, tok = raw
             if tok:
                 tokens.append(f"{prefix}+{tok}")
         else:
+            # pas de prefix connu → on tente plusieurs clients
             tok = raw
             if tok:
                 tokens.append(f"ios.gvs+{tok}")
                 tokens.append(f"android.gvs+{tok}")
                 tokens.append(f"web.gvs+{tok}")
 
+    # + tokens déjà préfixés
     for p in prefixed_candidates:
         if p:
             tokens.append(p)
 
+    # dédup
     out = []
     seen = set()
     for t in tokens:
@@ -370,10 +380,28 @@ def expand_bundle(
     cookies_file: Optional[str] = None,
     cookies_from_browser: Optional[str] = None,
 ) -> List[Dict]:
+    """
+    Déplie une URL YouTube playlist/mix en N=10 éléments *consécutifs*.
+    - Si ?index=K est présent (1-based côté YouTube), on prend K..K+9.
+    - Sinon, on commence sur la vidéo v=... si fournie, puis on prend 10 au total.
+    """
     import yt_dlp
 
     N = int(limit_total or limit or 10)
 
+    # --- Paramètres playlist: list & index (YouTube: index est 1-based)
+    parsed = urlparse(page_url)
+    q = parse_qs(parsed.query)
+    list_id = (q.get("list") or [None])[0]
+    start_idx: Optional[int] = None
+    try:
+        raw_idx = (q.get("index") or [None])[0]
+        if raw_idx is not None:
+            start_idx = max(1, int(raw_idx))
+    except Exception:
+        start_idx = None
+
+    # --- Options yt-dlp dédiées "bundle"
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -392,6 +420,15 @@ def expand_bundle(
             }
         }
     }
+    if start_idx:
+        # on récupère exactement index..index+N-1
+        ydl_opts["playliststart"] = start_idx
+        ydl_opts["playlistend"]   = start_idx + N - 1
+    else:
+        # sinon: les N premières
+        ydl_opts["playlistend"] = N
+
+    # PO token + cookies si dispo
     if _PO_TOKENS:
         ydl_opts["extractor_args"]["youtube"]["po_token"] = ",".join(_PO_TOKENS)
 
@@ -406,21 +443,17 @@ def expand_bundle(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(u, download=False)
 
+    # 1) tentative directe sur l'URL donnée
     info = _extract(page_url)
 
-    list_id = None
-    try:
-        q = parse_qs(urlparse(page_url).query)
-        list_id = (q.get("list") or [None])[0]
-    except Exception:
-        list_id = None
-
+    # 2) fallback explicite /playlist?list=...
     if (not info or not info.get("entries")) and list_id:
         playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
         info2 = _extract(playlist_url)
         if info2 and info2.get("entries"):
             info = info2
 
+    # 3) certains watch-pages redirigent vers une autre URL de type playlist
     if (not info or not info.get("entries")) and info and info.get("_type") == "url":
         try:
             info3 = _extract(info["url"])
@@ -433,13 +466,14 @@ def expand_bundle(
     if not entries:
         return []
 
+    # Si aucun index explicite, on aligne la 1ʳᵉ sur v=...
     v_id = None
     try:
         v_id = (parse_qs(urlparse(page_url).query).get("v") or [None])[0]
     except Exception:
         v_id = None
 
-    if v_id:
+    if v_id and not start_idx:
         try:
             idx = next((i for i, e in enumerate(entries)
                         if (e.get("id") or e.get("url")) == v_id), None)
@@ -464,6 +498,7 @@ def expand_bundle(
         url = f"https://www.youtube.com/watch?v={vid}"
         if list_id:
             url += f"&list={list_id}"
+
         out.append({
             "title": title or url,
             "url": url,
@@ -585,12 +620,17 @@ async def stream(
     ratelimit_bps: Optional[int] = None,
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
+    """
+    Résout un flux bestaudio stable (clients web/android) puis lance FFmpeg
+    avec les *mêmes headers* que yt-dlp (anti-403/googlevideo).
+    """
     import asyncio
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM request: url_or_query={url_or_query!r}")
     _dbg(f"ENV: UA={_YT_UA[:60]}...")
-    _dbg(f"ENV: cookies_from_browser={cookies_from_browser or os.getenv('YTDLP_COOKIES_BROWSER')}, cookies_file={cookies_file}, proxy={_HTTP_PROXY or 'none'}, ipv4={_FORCE_IPV4}")
+    _dbg(f"ENV: cookies_from_browser={cookies_from_browser or os.getenv('YTDLP_COOKIES_BROWSER')}, "
+         f"cookies_file={cookies_file}, proxy={_HTTP_PROXY or 'none'}, ipv4={_FORCE_IPV4}")
     _dbg(f"FFmpeg exec resolved: {ff_exec}")
     _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
 
@@ -614,9 +654,11 @@ async def stream(
 
     qs = _parse_qs(stream_url)
     _dbg(f"yt-dlp client_used={client_used}, title={title!r}")
-    _dbg(f"URL host={_url.urlsplit(stream_url).hostname}, itag={qs.get('itag')} mime={qs.get('mime')} dur={qs.get('dur')} clen={qs.get('clen')} ip={qs.get('ip')}")
+    _dbg(f"URL host={_url.urlsplit(stream_url).hostname}, itag={qs.get('itag')} "
+         f"mime={qs.get('mime')} dur={qs.get('dur')} clen={qs.get('clen')} ip={qs.get('ip')}")
     _dbg(f"URL expire={qs.get('expire')}")
 
+    # Headers exacts retournés par yt-dlp (incluant cookies si besoin)
     headers = (info.get("http_headers") or {})
     headers.setdefault("User-Agent", _YT_UA)
     headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -627,12 +669,12 @@ async def stream(
     headers.setdefault("Origin", "https://www.youtube.com")
     hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
 
+    # Optionnel: sonde HTTP (HEAD/GET range) pour debug
     try:
         _http_probe(stream_url, headers)
     except Exception as e:
         _dbg(f"http_probe error: {e}")
 
-    # before_options: ajout explicite -referer (en plus de -headers) par prudence
     before_opts = (
         "-nostdin "
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
@@ -676,6 +718,10 @@ async def stream_pipe(
     ratelimit_bps: Optional[int] = None,
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
+    """
+    Fallback "pipe" : yt-dlp télécharge/concatène en stdout, FFmpeg lit sur pipe.
+    Utile quand les URLs directes retournent 403 ou expirent agressivement.
+    """
     import asyncio
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
@@ -684,6 +730,7 @@ async def stream_pipe(
     _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
 
     loop = asyncio.get_running_loop()
+    # on résout quand même info pour le titre (non bloquant si None)
     info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
