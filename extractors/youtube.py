@@ -30,6 +30,7 @@ from typing import Optional, Tuple, Dict, Any, List
 import discord
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
+from urllib.parse import urlparse, parse_qs
 
 # ====== DEBUG TOGGLES ======
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
@@ -346,8 +347,6 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
         return _normalize_search_entries(entries)
 
 # ------------------------ playlist / mix expansion ------------------------
-from urllib.parse import urlparse, parse_qs
-from typing import List, Dict, Optional
 
 def is_playlist_or_mix_url(url: str) -> bool:
     try:
@@ -675,26 +674,26 @@ async def stream(
     except Exception as e:
         _dbg(f"http_probe error: {e}")
 
+    # === OPTIONS FFMPEG DIRECT ===
     before_opts = (
         "-nostdin "
         f"-user_agent {shlex.quote(headers['User-Agent'])} "
         f"-headers {shlex.quote(hdr_blob)} "
-        f"-referer {shlex.quote('https://www.youtube.com/') } "
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 5 "
         "-rw_timeout 15000000 "
-        "-probesize 64k -analyzeduration 0 "
+        "-probesize 32k -analyzeduration 0 "
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
     )
     if _HTTP_PROXY:
         before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
 
-    _dbg(f"FFMPEG before_options={before_opts}")
-    _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
-
-    out_opts = "-vn -ar 48000 -ac 2 -loglevel error"
+    out_opts = "-vn -ar 48000 -ac 2 -loglevel warning"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
+
+    _dbg(f"FFMPEG before_options={before_opts}")
+    _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
 
     source = discord.FFmpegPCMAudio(
         stream_url,
@@ -784,6 +783,7 @@ async def stream_pipe(
         stderr=subprocess.PIPE,
         text=False,
         bufsize=0,
+        close_fds=True,
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
 
@@ -804,14 +804,14 @@ async def stream_pipe(
 
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
-    out_opts = "-vn -ar 48000 -ac 2 -f s16le"
+    out_opts = "-vn -ar 48000 -ac 2 -f s16le -loglevel warning"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
         executable=ff_exec,
-        before_options="-nostdin -re -probesize 64k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+        before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
         options=out_opts,
         pipe=True,
     )
@@ -915,7 +915,7 @@ def _ffmpeg_pull_test(url: str, headers: Dict[str, str], ffmpeg_path: str, secon
         "-referer", "https://www.youtube.com/",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-rw_timeout", "15000000",
-        "-probesize", "64k", "-analyzeduration", "0",
+        "-probesize", "32k", "-analyzeduration", "0",
         "-fflags", "nobuffer", "-flags", "low_delay",
         "-seekable", "0",
     ]
@@ -970,7 +970,7 @@ def _ytdlp_pipe_pull_test(url: str, ffmpeg_path: str, seconds: int = 3) -> int:
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
     ff = subprocess.Popen(
-        [ff_exec, "-nostdin", "-probesize", "64k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
+        [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
          "-i", "pipe:0", "-t", str(seconds), "-f", "null", "-"],
         stdin=yt.stdout,
         stdout=subprocess.PIPE,
