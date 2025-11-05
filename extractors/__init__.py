@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import Any, List, Optional
 from . import youtube, soundcloud
+from .token_fetcher import fetch_po_token  # facultatif
 
 try:
     from . import spotify as _spotify

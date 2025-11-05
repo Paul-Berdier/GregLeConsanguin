@@ -14,6 +14,7 @@ eventlet
 simple-websocket
 
 typing_extensions==4.12.2
+playwright
 
 # === Discord + voix ===
 PyNaCl==1.5.0

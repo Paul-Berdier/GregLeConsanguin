@@ -24,7 +24,8 @@ COPY . .
 # Met à jour pip et installe la version dev de discord.py avec l'extra [voice]
 RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    python -m playwright install --with-deps chromium \
 
 # Commande de démarrage du bot
 CMD ["python", "main.py"]
