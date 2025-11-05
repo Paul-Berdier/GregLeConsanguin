@@ -1,5 +1,5 @@
 # discord.py==2.5.2  Pas encore à jour
-yt-dlp==2024.10.22
+yt-dlp
 ffmpeg-python
 numpy>=2.2.0
 gtts
