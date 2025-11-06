@@ -1,37 +1,38 @@
-# Utilise une image Python récente
-FROM python:3.12-slim
+# Image Python slim + ffmpeg + Playwright Chromium (headless)
+FROM python:3.11-slim
 
-# Évite l'écriture de fichiers .pyc et active le mode verbeux
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Définit le répertoire de travail
+# OS deps (ffmpeg, playwright deps)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg curl ca-certificates gnupg wget \
+        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+        libxkbcommon0 libasound2 libxcomposite1 libxdamage1 libxfixes3 \
+        libxrandr2 libgbm1 libpango-1.0-0 libpangocairo-1.0-0 \
+        libgtk-3-0 fonts-liberation && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Installe git, ffmpeg et les libs nécessaires à l'audio (PyNaCl)
-RUN apt-get update && apt-get install -y \
-    ffmpeg ca-certificates curl \
-    libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
-    libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-6 libx11-xcb1 \
-    libxcb-dri3-0 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-    libxkbcommon0 libxrandr2 libxshmfence1 libpango-1.0-0 libxrender1 \
-    git \
-    libffi-dev \
-    libsodium-dev \
-    build-essential \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copie les fichiers de l'app
-COPY . .
-
-# Met à jour pip et installe la version dev de discord.py avec l'extra [voice]
+# Requirements
+COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install -r /app/requirements.txt && \
+    python -m playwright install --with-deps chromium
 
-RUN python -m playwright install chromium
+# Code
+COPY . /app
 
+# Expose (si Flask)
+EXPOSE 8000
 
-# Commande de démarrage du bot
-CMD ["python", "main.py"]
+# Variables d'env utiles (adapter si besoin)
+# YTDLP_COOKIES_BROWSER=chrome:Default
+# YTDLP_COOKIES_B64=<netscape_cookie_file_base64>
+# YT_PO_TOKEN=<fallback_token_si_auto_fetch_échoue>
+
+# Commande (exemple Flask + eventlet). Adapte à ton entrypoint.
+CMD ["python", "app.py"]

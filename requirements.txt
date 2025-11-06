@@ -1,27 +1,28 @@
-# discord.py==2.5.2  Pas encore à jour
-yt-dlp
-ffmpeg-python
-numpy>=2.2.0
-gtts
-python-dotenv
-PyNaCl
-flask
-flask-socketio       # <--- Ajoute-le !
-python-socketio[client]  # <--- Et celui-là aussi !
+# === Core bot / web ===
+discord.py>=2.3.2
+Flask>=3.0.0
+flask-cors>=4.0.0
+flask-socketio>=5.3.6
+python-socketio[client]>=5.11.3
+eventlet>=0.35.2
 requests==2.32.3
-flask_cors
-eventlet
-simple-websocket
+python-dotenv>=1.0.1
 
-typing_extensions==4.12.2
-playwright
-
-# === Discord + voix ===
+# === Audio / YouTube ===
+yt-dlp>=2024.10.22
+ffmpeg-python>=0.2.0
 PyNaCl==1.5.0
-
-# === Réseau async utilisé par discord.py (pinner pour éviter des breaks) ===
+gtts>=2.5.1
 aiohttp==3.10.5
 
-# Utilisé uniquement pour les tests unitaires et l'automatisation CI
-pytest
-pytest-asyncio
+# === Automatisation PO token ===
+playwright>=1.47.0
+
+# === Utils ===
+numpy>=2.2.0
+simple-websocket>=1.0.0
+typing_extensions==4.12.2
+
+# === Tests (optionnel) ===
+pytest>=8.2.0
+pytest-asyncio>=0.23.8
