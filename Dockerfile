@@ -10,7 +10,11 @@ WORKDIR /app
 
 # Installe git, ffmpeg et les libs nécessaires à l'audio (PyNaCl)
 RUN apt-get update && apt-get install -y \
-    ffmpeg \
+    ffmpeg ca-certificates curl \
+    libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+    libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-6 libx11-xcb1 \
+    libxcb-dri3-0 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+    libxkbcommon0 libxrandr2 libxshmfence1 libpango-1.0-0 libxrender1 \
     git \
     libffi-dev \
     libsodium-dev \
@@ -26,7 +30,7 @@ RUN pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
     pip install --no-cache-dir -r requirements.txt
 
-RUN python -m playwright install --with-deps chromium
+RUN python -m playwright install chromium
 
 
 # Commande de démarrage du bot

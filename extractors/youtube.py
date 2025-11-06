@@ -314,6 +314,86 @@ def _mk_opts(
             del ydl_opts[k]
     return ydl_opts
 
+# --- Helpers format pour le PIPE (yt-dlp) ---
+
+def _format_with_itag18(fmt: str) -> str:
+    """
+    S'assure que la chaîne de formats termine par '/18' (MP4 H.264/AAC ~ fréquemment dispo).
+    Si l'ENV YTDLP_FORMAT force déjà un format, on lui ajoute '/18' s'il manque.
+    """
+    fmt = (fmt or "").strip()
+    if not fmt:
+        return "bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/251/140/bestaudio/18"
+    parts = [p.strip() for p in fmt.split("/") if p.strip()]
+    if "18" not in parts:
+        parts.append("18")
+    return "/".join(parts)
+
+def _build_extract_args_for_cli() -> str:
+    """
+    Construit la valeur de --extractor-args youtube:... pour le CLI yt-dlp,
+    en réutilisant l'ordre de clients et les po_tokens éventuels.
+    """
+    ea_parts = [f"player_client={','.join(_CLIENTS_ORDER)}"]
+    if _PO_TOKENS:
+        ea_parts.append(f"po_token={','.join(_PO_TOKENS)}")
+    return "youtube:" + ";".join(ea_parts)
+
+def _pick_pipe_format(url: str,
+                      cookies_file: Optional[str],
+                      cookies_from_browser: Optional[str]) -> str:
+    """
+    Pré-sonde yt-dlp en CLI pour savoir si la chaîne de formats passe.
+    - Si yt-dlp répond "Requested format is not available" → on bascule en '18'
+    - Sinon, on garde la chaîne (avec '/18' garanti en fin).
+    Cette sonde est rapide (--get-url) et évite un échec juste après le démarrage de ffmpeg.
+    """
+    import subprocess, shlex
+
+    base_fmt = os.getenv("YTDLP_FORMAT", _FORMAT_CHAIN)
+    fmt = _format_with_itag18(base_fmt)
+
+    ea = _build_extract_args_for_cli()
+    cmd = _resolve_ytdlp_cli() + [
+        "-f", fmt,
+        "--no-playlist",
+        "--no-check-certificates",
+        "--retries", "2",
+        "--fragment-retries", "2",
+        "--user-agent", _YT_UA,
+        "--extractor-args", ea,
+        "--add-header", "Referer:https://www.youtube.com/",
+        "--add-header", "Origin:https://www.youtube.com",
+        "--get-url", url
+    ]
+    if _FORCE_IPV4:
+        cmd += ["--force-ipv4"]
+    if _HTTP_PROXY:
+        cmd += ["--proxy", _HTTP_PROXY]
+
+    spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
+    if spec:
+        cmd += ["--cookies-from-browser", spec]
+    elif cookies_file and os.path.exists(cookies_file):
+        cmd += ["--cookies", cookies_file]
+    elif os.path.exists(_COOKIE_FILE_DEFAULT):
+        cmd += ["--cookies", _COOKIE_FILE_DEFAULT]
+
+    try:
+        # petite sonde 5s max
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if cp.returncode == 0 and (cp.stdout or "").strip():
+            return fmt
+        # message d'erreur typique de yt-dlp
+        err = (cp.stderr or "") + (cp.stdout or "")
+        if "Requested format is not available" in err:
+            _dbg("[PIPE/FMT] fallback → itag 18 (Requested format is not available)")
+            return "18"
+    except Exception as e:
+        _dbg(f"[PIPE/FMT] probe error (ignore, keep chain): {e}")
+
+    return fmt
+
 # ====== HTTP probe (debug) ======
 def _http_probe(url: str, headers: Dict[str, str]) -> None:
     if not _YTDBG_HTTP_PROBE:
@@ -433,12 +513,14 @@ async def stream(
         "-fflags nobuffer -flags low_delay "
         "-seekable 0"
     )
-    if _HTTP_PROXY:
-        before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
+    # ... juste après la construction de before_opts et hdr_blob ...
 
     out_opts = "-vn -ar 48000 -ac 2 -loglevel warning"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
+
+    if _HTTP_PROXY:
+        before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
 
     _dbg(f"FFMPEG before_options={before_opts}")
     _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
@@ -462,14 +544,18 @@ async def stream_pipe(
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     """
-    Fallback PIPE : yt-dlp sort sur stdout, FFmpeg lit depuis le pipe.
+    Fallback "pipe" : yt-dlp → stdout → FFmpeg.
+    + Pré-sonde la chaîne de formats et force '18' si indisponible (évite l'erreur immédiate).
     """
-    import asyncio
-    _ensure_po_tokens_for(url_or_query)
+    import asyncio, subprocess, shlex, threading
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
+    _dbg(f"STREAM_PIPE request: {url_or_query!r}")
+    _dbg(f"FFmpeg exec resolved: {ff_exec}")
+    _dbg(f"yt-dlp ffmpeg_location: {ff_loc or '-'}")
 
     loop = asyncio.get_running_loop()
+    # récupère le titre via la meilleure info dispo (non bloquant si None)
     info = await loop.run_in_executor(None, functools.partial(
         _best_info_with_fallbacks,
         url_or_query,
@@ -480,13 +566,14 @@ async def stream_pipe(
     ))
     title = (info or {}).get("title", "Musique inconnue")
 
-    ea_parts = [f"player_client={','.join(_CLIENTS_ORDER)}"]
-    if _PO_TOKENS:
-        ea_parts.append(f"po_token={','.join(_PO_TOKENS)}")
-    ea = "youtube:" + ";".join(ea_parts)
+    # détermine le format à utiliser (chaîne + '/18' garanti) avec fallback '18' si indispo
+    fmt = _pick_pipe_format(url_or_query, cookies_file, cookies_from_browser)
+
+    # --extractor-args : player_client + po_token (si dispo)
+    ea = _build_extract_args_for_cli()
 
     cmd = _resolve_ytdlp_cli() + [
-        "-f", _FORMAT_CHAIN,
+        "-f", fmt,
         "--no-playlist",
         "--no-check-certificates",
         "--retries", "5",
@@ -497,11 +584,13 @@ async def stream_pipe(
         "--add-header", "Referer:https://www.youtube.com/",
         "--add-header", "Origin:https://www.youtube.com",
         "-o", "-",
+        url_or_query,
     ]
     if _FORCE_IPV4:
         cmd += ["--force-ipv4"]
     if _HTTP_PROXY:
         cmd += ["--proxy", _HTTP_PROXY]
+
     spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
     if spec:
         cmd += ["--cookies-from-browser", spec]
@@ -509,9 +598,9 @@ async def stream_pipe(
         cmd += ["--cookies", cookies_file]
     elif os.path.exists(_COOKIE_FILE_DEFAULT):
         cmd += ["--cookies", _COOKIE_FILE_DEFAULT]
+
     if ratelimit_bps:
         cmd += ["--limit-rate", str(int(ratelimit_bps))]
-    cmd += [url_or_query]
 
     _dbg(f"yt-dlp PIPE cmd: {' '.join(shlex.quote(c) for c in cmd)}")
 
@@ -546,13 +635,19 @@ async def stream_pipe(
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
+    # ⚠️ IMPORTANT: pas de '-re' ici ; on garde un pipe bas-latence.
+    before_opts = "-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
+
     src = discord.FFmpegPCMAudio(
         source=yt.stdout,
         executable=ff_exec,
-        before_options="-nostdin -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay",
+        before_options=before_opts,
         options=out_opts,
         pipe=True,
     )
+
+    _dbg(f"FFMPEG source created (PIPE, fmt={fmt}).")
+
     setattr(src, "_ytdlp_proc", yt)
     setattr(src, "_title", title)
     return src, title
