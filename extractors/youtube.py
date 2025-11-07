@@ -529,41 +529,68 @@ async def stream(
     if not stream_url:
         raise RuntimeError("Flux audio indisponible (clients bloqués).")
 
-    headers = (info.get("http_headers") or {})
-    headers.setdefault("User-Agent", _YT_UA)
-    headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-    headers.setdefault("Accept-Language", "en-us,en;q=0.5")
-    headers.setdefault("Sec-Fetch-Mode", "navigate")
-    headers.setdefault("Referer", "https://www.youtube.com/")
-    headers.setdefault("Origin", "https://www.youtube.com")
-    hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+    # --- headers minimaux & pas de double UA ---
+    headers = dict(info.get("http_headers") or {})
+    ua = headers.pop("User-Agent", _YT_UA)  # on retire le UA du blob, on le met SEULEMENT via -user_agent
+    # impose au minimum Referer/Origin (le reste est inutile et parfois nuisible)
+    headers["Referer"] = "https://www.youtube.com/"
+    headers["Origin"] = "https://www.youtube.com"
+    # NE PAS remettre Accept/Accept-Language/Sec-Fetch-*
+    hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
 
-    # Probe HTTP avant de lancer FFmpeg — si 403/410 → fallback PIPE (si activé)
-    code = _http_probe(stream_url, headers) or 200
+    # Probe HTTP rapide
+    code = _http_probe(stream_url, {"User-Agent": ua, "Referer": "https://www.youtube.com/",
+                                    "Origin": "https://www.youtube.com"}) or 200
     if _AUTO_PIPE_ON_403 and code in (403, 410):
         _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
-        # Re-bascule immédiatement sur la version PIPE (yt-dlp → ffmpeg)
         return await stream_pipe(
-            url_or_query,
-            ffmpeg_path,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=ratelimit_bps,
-            afilter=afilter,
+            url_or_query, ffmpeg_path,
+            cookies_file=cookies_file, cookies_from_browser=cookies_from_browser,
+            ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
+    # --- preflight 2s FFmpeg→null : si ça bloque, on fallback PIPE ---
+    def _preflight_direct_ok() -> bool:
+        try:
+            cmd = [
+                ff_exec,
+                "-nostdin",
+                "-user_agent", ua,
+                "-headers", hdr_blob,
+                "-probesize", "32k",
+                "-analyzeduration", "0",
+                # flags allégés (PLUS de -avioflags direct, PLUS de -http_persistent 0)
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-rw_timeout", "15000000",  # 15 sec
+                "-protocol_whitelist", "file,https,tcp,tls,crypto",
+                "-i", stream_url,
+                "-t", "2",
+                "-f", "null", "-"
+            ]
+            # seconds(2) + marge réseau 12–15 s
+            cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=18)
+            return cp.returncode == 0
+        except Exception as e:
+            _dbg(f"preflight direct failed: {e}")
+            return False
+
+    if not _preflight_direct_ok():
+        _dbg("STREAM: direct preflight failed → fallback to PIPE")
+        return await stream_pipe(
+            url_or_query, ffmpeg_path,
+            cookies_file=cookies_file, cookies_from_browser=cookies_from_browser,
+            ratelimit_bps=ratelimit_bps, afilter=afilter,
+        )
+
+    # --- options finales (direct) : UA via -user_agent, headers/min, flags soft ---
     before_opts = (
         "-nostdin "
-        f"-user_agent {shlex.quote(headers['User-Agent'])} "
+        f"-user_agent {shlex.quote(ua)} "
         f"-headers {shlex.quote(hdr_blob)} "
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 5 "
-        "-rw_timeout 15000000 "
         "-probesize 32k -analyzeduration 0 "
         "-fflags nobuffer -flags low_delay "
-        "-seekable 0 "
-        "-http_persistent 0 "      # ★ évite certaines connexions réutilisées instables
-        "-max_reload 5 "
-        "-avioflags direct "
+        "-rw_timeout 15000000 "
         "-protocol_whitelist file,https,tcp,tls,crypto"
     )
     if _HTTP_PROXY:
@@ -574,7 +601,8 @@ async def stream(
         out_opts += f" -af {shlex.quote(afilter)}"
 
     _dbg(f"FFMPEG before_options={before_opts}")
-    _dbg(f"FFMPEG headers (redacted)={_redact_headers(headers)}")
+    _dbg(
+        f"FFMPEG headers (redacted)={_redact_headers({'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com'})}")
 
     source = discord.FFmpegPCMAudio(
         stream_url,
@@ -1005,22 +1033,28 @@ def _diag_player_resolution(query_or_url: str, ffmpeg_hint: Optional[str]):
 def _diag_gvs_pull(stream_url: str, headers: Dict[str, str], ffmpeg_exec: str, seconds: int = 3):
     print("=== STEP 2: GVS PULL (FFmpeg direct) ===")
     try:
-        hdr_blob = "\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n"
+        ua = headers.get("User-Agent", _YT_UA)
+        hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
+
         before_opts = [
             "-nostdin",
-            "-user_agent", headers.get("User-Agent", _YT_UA),
+            "-user_agent", ua,
             "-headers", hdr_blob,
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_at_eof", "1", "-reconnect_delay_max", "5",
             "-rw_timeout", "15000000",
             "-probesize", "32k", "-analyzeduration", "0",
             "-fflags", "nobuffer", "-flags", "low_delay",
-            "-seekable", "0",
+            # retiré: "-seekable","0", "-http_persistent","0", "-avioflags","direct",
+            "-protocol_whitelist", "file,https,tcp,tls,crypto",
         ]
         if _HTTP_PROXY:
             before_opts += ["-http_proxy", _HTTP_PROXY]
+
         cmd = [ffmpeg_exec] + before_opts + ["-i", stream_url, "-t", str(seconds), "-f", "null", "-"]
-        print("FFmpeg cmd   :", " ".join(shlex.quote(c) for c in cmd[:10]), "...")  # abrégé
-        cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=seconds+10)
+        print("FFmpeg cmd   :", " ".join(shlex.quote(c) for c in cmd[:10]), "...")
+
+        # seconds + marge réseau (au moins 18–20)
+        cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=seconds + 20)
         rc = cp.returncode
         print("FFmpeg rc    :", rc)
         tail = (cp.stdout or "")
@@ -1194,15 +1228,36 @@ if __name__ == "__main__":
 
     if args.cmd == "direct":
         ff = _ffmpeg_version(args.ffmpeg)
+
         if not ff:
-            sys.exit(2)
+                sys.exit(2)
+        # Accepter indifféremment une URL YouTube (page) OU une URL GVS (manifest.googlevideo...)
+        url = args.url.strip()
         hdrs = {
-            "User-Agent": _YT_UA,
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com",
-        }
-        _diag_gvs_pull(args.url, hdrs, ff, seconds=args.seconds)
-        sys.exit(0)
+                "User-Agent": _YT_UA,
+                "Referer": "https://www.youtube.com/",
+                "Origin": "https://www.youtube.com",
+            }
+        try:
+            if ("youtube.com" in url) or ("youtu.be" in url) or ("music.youtube.com" in url):
+                info = _best_info_with_fallbacks(
+                                    url,
+                                    cookies_file = _COOKIE_FILE_DEFAULT if os.path.exists(
+                        _COOKIE_FILE_DEFAULT) else None,
+                                cookies_from_browser = os.getenv("YTDLP_COOKIES_BROWSER"),
+                                ffmpeg_path = ff,
+                                ratelimit_bps = None,
+                            )
+                if not info or not info.get("url"):
+                    print("Direct: impossible de résoudre l’URL de flux depuis la page YouTube.")
+                    sys.exit(3)
+                if info.get("http_headers"):
+                    hdrs.update(info["http_headers"])
+                url = info["url"]
+        except Exception as e:
+            print("Direct: résolution Player → GVS échouée:", e)
+            sys.exit(3)
+        _diag_gvs_pull(url, hdrs, ff, seconds=args.seconds)
 
     if args.cmd == "pipe":
         ff = _ffmpeg_version(args.ffmpeg)
