@@ -1,45 +1,72 @@
-# backend/api/blueprints/playlist.py
+# api/blueprints/playlist.py
 from __future__ import annotations
 
-from ..auth.session import require_login
-from ..services import playlist_manager as PM
-from ..services.search import autocomplete
 from flask import Blueprint, jsonify, request, current_app
 
 bp = Blueprint("playlist", __name__)
 
+def PM():
+    return current_app.extensions["pm"]  # APIPMAdapter
+
+def _gid_from(req):
+    return (
+        req.args.get("guild_id")
+        or req.headers.get("X-Guild-ID")
+        or (req.json or {}).get("guild_id")
+    )
+
 @bp.get("/playlist")
 def get_playlist_state():
-    PM = current_app.extensions["pm"]  # APIPMAdapter
-    gid = request.args.get("guild_id") or request.headers.get("X-Guild-ID")
-    return jsonify({"ok": True, "state": PM.get_state(guild_id=gid)}), 200
+    gid = _gid_from(request)
+    state = PM().get_state(guild_id=gid)
+    return jsonify({"ok": True, "state": state}), 200
 
-
-@bp.post("/playlist/enqueue")
-@require_login
-def enqueue():
+@bp.post("/queue/add")
+def add_to_queue():
     data = request.get_json(silent=True) or {}
-    q = data.get("query")
-    if not q:
-        return jsonify({"ok": False, "error": "Missing 'query'"}), 400
-    result = PM.enqueue(q)
-    return jsonify({"ok": True, "result": result})
+    query = data.get("query") or data.get("url") or data.get("title")
+    if not query:
+        return jsonify({"ok": False, "error": "missing query"}), 400
+    gid = _gid_from(request)
+    uid = data.get("user_id") or request.headers.get("X-User-ID")
+    res = PM().enqueue(query, user_id=uid, guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200
 
+@bp.post("/queue/skip")
+def skip_track():
+    gid = _gid_from(request)
+    res = PM().skip(guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200
 
-@bp.post("/playlist/skip")
-@require_login
-def skip():
-    return jsonify({"ok": True, "result": PM.skip()})
+@bp.post("/queue/stop")
+def stop_playback():
+    gid = _gid_from(request)
+    res = PM().stop(guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200
 
+# (optionnel) si tu veux exposer remove/move/next:
+@bp.post("/queue/remove")
+def remove_at():
+    data = request.get_json(silent=True) or {}
+    idx = data.get("index")
+    if idx is None:
+        return jsonify({"ok": False, "error": "missing index"}), 400
+    gid = _gid_from(request)
+    res = PM().remove_at(int(idx), guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200
 
-@bp.post("/playlist/stop")
-@require_login
-def stop():
-    return jsonify({"ok": True, "result": PM.stop()})
+@bp.post("/queue/move")
+def move_item():
+    data = request.get_json(silent=True) or {}
+    src = data.get("src"); dst = data.get("dst")
+    if src is None or dst is None:
+        return jsonify({"ok": False, "error": "missing src/dst"}), 400
+    gid = _gid_from(request)
+    res = PM().move(int(src), int(dst), guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200
 
-
-@bp.get("/autocomplete")
-def auto():
-    q = request.args.get("q", "")
-    limit = int(request.args.get("limit", "8"))
-    return jsonify({"ok": True, "items": autocomplete(q, limit=limit)})
+@bp.post("/queue/next")
+def pop_next():
+    gid = _gid_from(request)
+    res = PM().pop_next(guild_id=gid)
+    return jsonify({"ok": True, "result": res}), 200

@@ -45,10 +45,10 @@ def get_pm(guild_id: int | str) -> PlaylistManager:
 # Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
 class APIPMAdapter:
     """
-    Façade utilisée par l'API.
-    Toutes les méthodes acceptent un guild_id optionnel (str|int).
-    Si non fourni, on tombe sur DEFAULT_GUILD_ID.
+    Façade API au-dessus de utils.PlaylistManager.
+    Toutes les méthodes acceptent un guild_id optionnel.
     """
+
     def __init__(self, default_gid: str | None = None):
         self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
 
@@ -59,21 +59,48 @@ class APIPMAdapter:
             return get_pm(self.default_gid)
         raise RuntimeError(
             "DEFAULT_GUILD_ID non défini pour l'API. "
-            "Définis la variable d'environnement DEFAULT_GUILD_ID."
+            "Définis la variable d'environnement DEFAULT_GUILD_ID ou passe guild_id."
         )
 
-    # Methods expected by the API layer
+    # ---- État de la playlist ----
     def get_state(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        return self._pm(guild_id).get_state()
+        pm = self._pm(guild_id)
+        # ton PM expose to_dict() → snapshot prêt pour l’API
+        return pm.to_dict()
 
+    # ---- Enqueue ----
     def enqueue(self, query: str, user_id: str | None = None, guild_id: str | int | None = None) -> dict[str, Any]:
-        return self._pm(guild_id).enqueue(query=query, user_id=user_id)
+        pm = self._pm(guild_id)
+        pm.add(query, added_by=user_id)
+        return {"ok": True, "length": pm.length()}
 
+    # ---- Skip ----
     def skip(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        return self._pm(guild_id).skip()
+        pm = self._pm(guild_id)
+        pm.skip()
+        return {"ok": True, "length": pm.length()}
 
+    # ---- Stop ----
     def stop(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        return self._pm(guild_id).stop()
+        pm = self._pm(guild_id)
+        pm.stop()
+        return {"ok": True, "length": pm.length()}
+
+    # (optionnel) expose aussi remove/move/next si tu crées les routes:
+    def remove_at(self, index: int, guild_id: str | int | None = None) -> dict[str, Any]:
+        pm = self._pm(guild_id)
+        ok = pm.remove_at(index)
+        return {"ok": bool(ok), "length": pm.length()}
+
+    def move(self, src: int, dst: int, guild_id: str | int | None = None) -> dict[str, Any]:
+        pm = self._pm(guild_id)
+        ok = pm.move(src, dst)
+        return {"ok": bool(ok), "length": pm.length()}
+
+    def pop_next(self, guild_id: str | int | None = None) -> dict[str, Any]:
+        pm = self._pm(guild_id)
+        it = pm.pop_next()
+        return {"ok": True, "item": it}
 
 # -----------------------------------------------------------------------------
 # Bot Discord
