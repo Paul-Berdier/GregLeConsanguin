@@ -325,8 +325,7 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         try:
-            global app, socketio
-            app, socketio = build_web_app()
+            app, socketio = build_web_app()   # <-- PAS de 'global' ici
             app.bot = bot
             bot.web_app = app
             logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
