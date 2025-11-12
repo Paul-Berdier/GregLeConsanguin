@@ -45,37 +45,35 @@ def get_pm(guild_id: int | str) -> PlaylistManager:
 # Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
 class APIPMAdapter:
     """
-    Façade minimaliste utilisée par l'API (backend.api.services.playlist_manager)
-    qui attend un objet doté de: get_state(), enqueue(query, user_id=None),
-    skip(), stop().
-
-    - Sélectionne la guilde par défaut via l'env DEFAULT_GUILD_ID.
-    - Si non défini, lève une erreur claire (503 côté API).
+    Façade utilisée par l'API.
+    Toutes les méthodes acceptent un guild_id optionnel (str|int).
+    Si non fourni, on tombe sur DEFAULT_GUILD_ID.
     """
-
     def __init__(self, default_gid: str | None = None):
         self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
 
-    def _pm(self) -> PlaylistManager:
-        if not self.default_gid:
-            raise RuntimeError(
-                "DEFAULT_GUILD_ID non défini pour l'API. "
-                "Définis la variable d'environnement DEFAULT_GUILD_ID."
-            )
-        return get_pm(self.default_gid)
+    def _pm(self, gid: str | int | None) -> PlaylistManager:
+        if gid is not None and str(gid).strip():
+            return get_pm(gid)
+        if self.default_gid:
+            return get_pm(self.default_gid)
+        raise RuntimeError(
+            "DEFAULT_GUILD_ID non défini pour l'API. "
+            "Définis la variable d'environnement DEFAULT_GUILD_ID."
+        )
 
-    # Méthodes requises par l'API
-    def get_state(self) -> dict[str, Any]:
-        return self._pm().get_state()
+    # Methods expected by the API layer
+    def get_state(self, guild_id: str | int | None = None) -> dict[str, Any]:
+        return self._pm(guild_id).get_state()
 
-    def enqueue(self, query: str, user_id: str | None = None) -> dict[str, Any]:
-        return self._pm().enqueue(query=query, user_id=user_id)
+    def enqueue(self, query: str, user_id: str | None = None, guild_id: str | int | None = None) -> dict[str, Any]:
+        return self._pm(guild_id).enqueue(query=query, user_id=user_id)
 
-    def skip(self) -> dict[str, Any]:
-        return self._pm().skip()
+    def skip(self, guild_id: str | int | None = None) -> dict[str, Any]:
+        return self._pm(guild_id).skip()
 
-    def stop(self) -> dict[str, Any]:
-        return self._pm().stop()
+    def stop(self, guild_id: str | int | None = None) -> dict[str, Any]:
+        return self._pm(guild_id).stop()
 
 # -----------------------------------------------------------------------------
 # Bot Discord

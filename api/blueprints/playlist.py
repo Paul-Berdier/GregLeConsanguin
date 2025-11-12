@@ -1,18 +1,18 @@
 # backend/api/blueprints/playlist.py
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
-
 from ..auth.session import require_login
 from ..services import playlist_manager as PM
 from ..services.search import autocomplete
+from flask import Blueprint, jsonify, request, current_app
 
 bp = Blueprint("playlist", __name__)
 
-
 @bp.get("/playlist")
 def get_playlist_state():
-    return jsonify({"ok": True, "state": PM.get_state()})
+    PM = current_app.extensions["pm"]  # APIPMAdapter
+    gid = request.args.get("guild_id") or request.headers.get("X-Guild-ID")
+    return jsonify({"ok": True, "state": PM.get_state(guild_id=gid)}), 200
 
 
 @bp.post("/playlist/enqueue")
