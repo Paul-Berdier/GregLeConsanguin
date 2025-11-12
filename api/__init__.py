@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Optional
 
-from flask import Flask
+from flask import Flask, redirect, request
 
 from .core.config import Settings
 from .core.errors import register_error_handlers
 from .core.extensions import init_extensions
 from .core.logging import configure_logging
-
 
 log = logging.getLogger(__name__)
 
@@ -39,17 +38,17 @@ def create_app(pm: Optional[object] = None) -> Flask:
     # Erreurs
     register_error_handlers(app)
 
-    # Ajoute quelque part après create_app
+    # Health
     @app.get("/healthz")
     def _healthz():
         return {"ok": True}, 200
 
-    log.info("API created (env=%s, debug=%s)", app.config["ENV"], app.config["DEBUG"])
+    log.info("API created (env=%s, debug=%s)", app.config.get("ENV"), app.config.get("DEBUG"))
     return app
 
 
-
 def _register_blueprints(app: Flask) -> None:
+    # Blueprints “réels”
     from .auth.blueprint import bp as auth_bp
     from .blueprints.users import bp as users_bp
     from .blueprints.guilds import bp as guilds_bp
@@ -58,29 +57,42 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
 
     api_prefix = app.config.get("API_PREFIX", "/api/v1")
-    api_alias  = app.config.get("API_ALIAS", "/api")  # mets "" ou None pour désactiver
-    use_alias  = bool(api_alias) and (api_alias != api_prefix)
+    api_alias = app.config.get("API_ALIAS", "/api")  # mets "" ou None pour désactiver
+    use_alias = bool(api_alias) and (api_alias != api_prefix)
 
+    # Auth hors /api_prefix (ex: /auth/login, /auth/callback…)
     app.register_blueprint(auth_bp, url_prefix="/auth")
 
+    # Enregistrement canonique
     blueprints = [users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp]
-
-    # Canonique
     for bp in blueprints:
         app.register_blueprint(bp, url_prefix=api_prefix)
 
-    # Alias /api/* (compat), avec nom distinct pour éviter le conflit
+    # Alias /api/* → redirection 307 vers /api_prefix/*
+    # (on NE ré-enregistre PAS les mêmes blueprints une 2e fois)
     if use_alias:
-        for bp in blueprints:
-            app.register_blueprint(bp, url_prefix=api_alias, name=f"{bp.name}@alias")
+        alias_base = api_alias.rstrip("/")
+        canon_base = api_prefix.rstrip("/")
+
+        # /api  → /api/v1
+        @app.route(f"{alias_base}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+        def _api_alias_root():
+            qs = ("?" + request.query_string.decode()) if request.query_string else ""
+            return redirect(f"{canon_base}/{qs}".rstrip("?"), code=307)
+
+        # /api/* → /api/v1/*
+        @app.route(f"{alias_base}/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+        def _api_alias(path: str):
+            qs = ("?" + request.query_string.decode()) if request.query_string else ""
+            return redirect(f"{canon_base}/{path}{qs}", code=307)
 
 
 def _register_socketio(app: Flask) -> None:
     from .core.extensions import socketio
-    from .ws import events  # noqa: F401 side-effects: enregistre les handlers
+    from .ws import events  # noqa: F401  (side-effects: enregistre les handlers)
 
     # Si init non fait dans init_extensions(), on l’assure ici
-    if not getattr(socketio, 'server', None):
+    if not getattr(socketio, "server", None):
         socketio.init_app(
             app,
             async_mode=app.config.get("SOCKETIO_MODE", "threading"),
@@ -88,12 +100,10 @@ def _register_socketio(app: Flask) -> None:
         )
 
 
-
 def _init_stores(app: Flask) -> None:
     """
     Initialise le store (JSON par défaut, Redis si REDIS_URL).
     """
-    import os
     from .storage.json_store import JsonTokenStore
     from .storage.redis_store import RedisTokenStore
 
@@ -101,8 +111,6 @@ def _init_stores(app: Flask) -> None:
     if app.config.get("REDIS_URL"):
         stores["tokens"] = RedisTokenStore(app.config["REDIS_URL"])
     else:
-        json_path = app.config["JSON_STORE_PATH"]
-        os.makedirs(os.path.dirname(json_path), exist_ok=True)
-        stores["tokens"] = JsonTokenStore(json_path)
+        stores["tokens"] = JsonTokenStore(app.config["JSON_STORE_PATH"])
 
     app.extensions["stores"].update(stores)

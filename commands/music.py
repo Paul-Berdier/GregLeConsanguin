@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Optional, Callable
 
 import discord
 from discord import app_commands
@@ -11,19 +11,46 @@ from discord.ext import commands
 from api.services.player_service import PlayerService
 from utils.priority_rules import PER_USER_CAP  # pour feedback
 
+
 def _u(interaction: discord.Interaction):
     return getattr(interaction, "user", getattr(interaction, "author", None))
 
+
 class Music(commands.Cog):
-    """Cog FIN: délègue tout au PlayerService."""
-    def __init__(self, bot: commands.Bot, service: Optional[PlayerService] = None, emit_fn=None):
+    """Cog FIN: délègue tout au PlayerService.
+    - FIX: emit_fn est une propriété. Quand main.py assigne cog.emit_fn, on propage
+           immédiatement au PlayerService via set_emit_fn(...).
+    """
+    def __init__(self, bot: commands.Bot, service: Optional[PlayerService] = None, emit_fn: Optional[Callable] = None):
         self.bot = bot
-        self.emit_fn = emit_fn             # sera rempli par main.py (setup_emit_fn)
+        self._emit_fn: Optional[Callable] = None  # stockage interne
         self.svc: PlayerService = service or getattr(bot, "player_service", None) or PlayerService(bot)
 
         # expose service sur le bot si absent
         if not getattr(bot, "player_service", None):
             bot.player_service = self.svc
+
+        # si un emit_fn est déjà fourni à l'init → setter va propager au service
+        if emit_fn:
+            self.emit_fn = emit_fn  # passe par le @property.setter
+
+    # --- propriété pour propager emit_fn → PlayerService dès assignation ---
+    @property
+    def emit_fn(self) -> Optional[Callable]:
+        return self._emit_fn
+
+    @emit_fn.setter
+    def emit_fn(self, fn: Optional[Callable]) -> None:
+        self._emit_fn = fn
+        # propage immédiatement au service si possible
+        try:
+            if fn and hasattr(self.svc, "set_emit_fn"):
+                self.svc.set_emit_fn(fn)
+                self.bot.log if hasattr(self.bot, "log") else None
+        except Exception as e:
+            # pas critique: on log juste via le logger du module commands.ext
+            import logging
+            logging.getLogger(__name__).warning("emit_fn propagation failed: %s", e)
 
     async def cog_load(self):
         # si l’app web existe, expose aussi le service pour REST
@@ -31,11 +58,23 @@ class Music(commands.Cog):
         if app and not getattr(app, "player_service", None):
             app.player_service = self.svc
 
+        # si emit_fn était déjà fixé avant cog_load, on s’assure que le service l’a bien reçu
+        if self._emit_fn and hasattr(self.svc, "set_emit_fn"):
+            try:
+                self.svc.set_emit_fn(self._emit_fn)
+            except Exception:
+                pass
+
     @commands.Cog.listener()
     async def on_ready(self):
-        # dès que main.py aura injecté emit_fn sur ce Cog, on le relaie au service
-        if self.emit_fn and hasattr(self.svc, "set_emit_fn"):
-            self.svc.set_emit_fn(self.emit_fn)
+        # Par sécurité: si emit_fn a été injecté après le premier on_ready() du cog,
+        # la propriété setter a déjà propagé au service. On n’a plus besoin de faire
+        # de la logique ici. On garde un mini sanity check :
+        if self._emit_fn and hasattr(self.svc, "set_emit_fn"):
+            try:
+                self.svc.set_emit_fn(self._emit_fn)
+            except Exception:
+                pass
 
     # ----------------- SLASH COMMANDS -----------------
 
@@ -63,7 +102,12 @@ class Music(commands.Cog):
             if not res:
                 return await interaction.followup.send("❌ Rien trouvé.")
             top = res[0]
-            item = {"url": top["url"], "title": top.get("title"), "duration": top.get("duration"), "thumb": top.get("thumbnail")}
+            item = {
+                "url": top["url"],
+                "title": top.get("title"),
+                "duration": top.get("duration"),
+                "thumb": top.get("thumbnail"),
+            }
 
         r = await self.svc.enqueue(interaction.guild_id, interaction.user.id, item)
         if not r.get("ok"):
