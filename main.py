@@ -175,7 +175,13 @@ class GregBot(commands.Bot):
         # 4) Overlay HTTP
         try:
             if not os.getenv("DISABLE_WEB", "0") == "1":
-                r = requests.get("http://127.0.0.1:3000/", timeout=2)
+                try:
+                    r = requests.get("http://127.0.0.1:3000/healthz", timeout=2)
+                except Exception:
+                    r = None
+                if r is None or r.status_code == 404:
+                    r = requests.get("http://127.0.0.1:3000/", timeout=2)
+
                 ok = r.status_code < 500
                 results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
             else:

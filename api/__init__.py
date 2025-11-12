@@ -19,7 +19,8 @@ def create_app(pm: Optional[object] = None) -> Flask:
     """
     App factory. Injecte éventuellement un PlaylistManager (pm).
     """
-    configure_logging()
+    if not logging.getLogger().handlers:
+        configure_logging()
     app = Flask(__name__)
     app.config.from_object(Settings())
 
@@ -38,8 +39,14 @@ def create_app(pm: Optional[object] = None) -> Flask:
     # Erreurs
     register_error_handlers(app)
 
+    # Ajoute quelque part après create_app
+    @app.get("/healthz")
+    def _healthz():
+        return {"ok": True}, 200
+
     log.info("API created (env=%s, debug=%s)", app.config["ENV"], app.config["DEBUG"])
     return app
+
 
 
 def _register_blueprints(app: Flask) -> None:
@@ -51,20 +58,35 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
 
     api_prefix = app.config.get("API_PREFIX", "/api/v1")
-    api_alias = app.config.get("API_ALIAS", "/api")
+    api_alias  = app.config.get("API_ALIAS", "/api")  # mets "" ou None pour désactiver
+    use_alias  = bool(api_alias) and (api_alias != api_prefix)
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
 
-    for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp):
+    blueprints = [users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp]
+
+    # Canonique
+    for bp in blueprints:
         app.register_blueprint(bp, url_prefix=api_prefix)
-        # Alias de compatibilité (expose aussi /api/*)
-        app.register_blueprint(bp, url_prefix=api_alias)
+
+    # Alias /api/* (compat), avec nom distinct pour éviter le conflit
+    if use_alias:
+        for bp in blueprints:
+            app.register_blueprint(bp, url_prefix=api_alias, name=f"{bp.name}@alias")
 
 
 def _register_socketio(app: Flask) -> None:
     from .core.extensions import socketio
-    from .ws import events  # noqa: F401  # side-effects: enregistre les handlers
-    socketio.server_options = socketio.server_options or {}
+    from .ws import events  # noqa: F401 side-effects: enregistre les handlers
+
+    # Si init non fait dans init_extensions(), on l’assure ici
+    if not getattr(socketio, 'server', None):
+        socketio.init_app(
+            app,
+            async_mode=app.config.get("SOCKETIO_MODE", "threading"),
+            cors_allowed_origins="*",
+        )
+
 
 
 def _init_stores(app: Flask) -> None:
