@@ -12,11 +12,24 @@ from api.core.extensions import socketio
 
 log = logging.getLogger(__name__)
 
-
 def _room_for(gid: Union[str, int]) -> str:
     """Room Socket.IO pour une guilde."""
     return f"guild:{int(gid)}"
 
+# -----------------------------------------------------------------------------
+# API publique (utilisée par d'autres modules)
+def broadcast_playlist_update(payload: dict[str, Any], guild_id: Union[str, int, None] = None) -> None:
+    """
+    Diffuse un 'playlist_update' soit à toute la socket, soit à la room d'une guilde.
+    Ex: broadcast_playlist_update({"queue": [...]}, guild_id=1234567890)
+    """
+    try:
+        if guild_id is not None and str(guild_id).strip():
+            socketio.emit("playlist_update", payload, room=_room_for(guild_id))
+        else:
+            socketio.emit("playlist_update", payload)
+    except Exception as e:
+        log.warning("broadcast_playlist_update failed: %s", e)
 
 # -----------------------------------------------------------------------------
 # Événements de base (connexion / déconnexion)
@@ -25,15 +38,12 @@ def _room_for(gid: Union[str, int]) -> str:
 def on_connect():
     sid = flask_request.sid
     log.debug("[ws] connect sid=%s ua=%s", sid, flask_request.headers.get("User-Agent", ""))
-    # Optionnel: message de bienvenue uniquement au client
     emit("welcome", {"sid": sid, "t": time.time()})
-
 
 @socketio.on("disconnect")
 def on_disconnect():
     sid = flask_request.sid
     log.debug("[ws] disconnect sid=%s", sid)
-
 
 # -----------------------------------------------------------------------------
 # Overlay ↔ serveur (rooms par guild, ping/pong)
@@ -55,9 +65,7 @@ def on_overlay_register(data: Optional[dict[str, Any]] = None):
     else:
         log.debug("[ws] overlay_register sid=%s (no guild)", sid)
 
-    # Réponse au client (uniquement à l'émetteur)
     emit("overlay_registered", {"sid": sid, "guild_id": gid, "t": time.time()})
-
 
 @socketio.on("overlay_subscribe_guild")
 def on_overlay_subscribe_guild(data: Optional[dict[str, Any]] = None):
@@ -75,7 +83,6 @@ def on_overlay_subscribe_guild(data: Optional[dict[str, Any]] = None):
     log.debug("[ws] subscribe sid=%s → %s", flask_request.sid, room)
     emit("overlay_joined", {"ok": True, "guild_id": gid})
 
-
 @socketio.on("overlay_unsubscribe_guild")
 def on_overlay_unsubscribe_guild(data: Optional[dict[str, Any]] = None):
     """
@@ -92,12 +99,10 @@ def on_overlay_unsubscribe_guild(data: Optional[dict[str, Any]] = None):
     log.debug("[ws] unsubscribe sid=%s ← %s", flask_request.sid, room)
     emit("overlay_left", {"ok": True, "guild_id": gid})
 
-
 @socketio.on("overlay_ping")
 def on_overlay_ping(data: Optional[dict[str, Any]] = None):
     """Ping depuis le client overlay → renvoie un pong (au même client)."""
     emit("overlay_pong", {"t": time.time()})
-
 
 # -----------------------------------------------------------------------------
 # (Optionnel) Echo pour diagnostics
@@ -106,11 +111,3 @@ def on_overlay_ping(data: Optional[dict[str, Any]] = None):
 def on_echo(data: Optional[dict[str, Any]] = None):
     """Renvoie les données au seul émetteur (utile en debug)."""
     emit("echo", {"data": data or {}, "t": time.time()})
-
-
-# -----------------------------------------------------------------------------
-# Notes:
-# - Les mises à jour serveur → clients se font côté code via:
-#       socketio.emit("playlist_update", payload, room=f"guild:{gid}")
-#   (voir main.py: emit_fn et PlayerService._emit_playlist_update)
-# - Ici, on ne gère pas de registry de présence avec TTL: c’est volontairement minimal.
