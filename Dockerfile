@@ -22,6 +22,11 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# ★ Runtime JS pour yt-dlp (requis pour le déchiffrement EJS) → Deno
+RUN curl -fsSL https://deno.land/install.sh | sh -s -- -y
+ENV DENO_INSTALL=/root/.deno
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+
 # Copie les fichiers de l'app
 COPY . .
 

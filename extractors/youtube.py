@@ -21,7 +21,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import urllib.parse as _url
 import urllib.request as _ureq
 from typing import Optional, Tuple, Dict, Any, List
@@ -72,15 +71,13 @@ _CLIENTS_ORDER = ["web_mobile", "web", "ios", "android", "web_creator" ]
 
 _FORMAT_CHAIN = os.getenv(
     "YTDLP_FORMAT",
-    # opus/webm prioritaire, puis m4a; secours ID; et enfin HLS/best génériques (utile quand SABR casse le reste)
     "bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/251/140/18/best[protocol^=m3u8]/best"
 )
 _COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
 
-# Fallback auto → passer sur PIPE si 403/410 détecté en pré-sondage GVS
 _AUTO_PIPE_ON_403 = os.getenv("YTDLP_AUTO_PIPE_ON_403", "1").lower() not in ("0", "false", "")
 
-# ==== PO tokens (peuvent être remplis dynamiquement) ====
+# ==== PO tokens ====
 _PO_TOKENS: List[str] = []
 
 def _collect_po_tokens_from_env() -> List[str]:
@@ -93,7 +90,7 @@ def _collect_po_tokens_from_env() -> List[str]:
         out.append(raw)
     if prefixed:
         out.append(prefixed)
-    # dédup
+    # dedup
     seen = set()
     dedup = []
     for t in out:
@@ -189,7 +186,7 @@ def _mk_opts(
             }
         },
         "youtube_include_dash_manifest": True,
-        "hls_prefer_native": True,   # ★ évite certaines régressions quand YT force SABR
+        "hls_prefer_native": True,
         "format": _FORMAT_CHAIN,
     }
 
@@ -252,11 +249,9 @@ def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None
     if _PO_TOKENS:
         return
 
-    # 1) tentative AUTO d'abord
     vid = _extract_video_id(query_or_url)
 
     if not vid:
-        # récupère via yt-dlp l'id si on a une recherche/titre
         try:
             with YoutubeDL(_mk_opts()) as ydl:
                 info = ydl.extract_info(query_or_url, download=False)
@@ -288,7 +283,6 @@ def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None
     elif token_from_env:
         final += token_from_env
 
-    # dédup
     seen = set()
     _PO_TOKENS = [t for t in final if (t and (t not in seen) and not seen.add(t))]
     if _PO_TOKENS:
@@ -462,12 +456,7 @@ def expand_bundle(
     return out
 
 def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
-    """
-    HEAD puis GET Range pour tester rapidement l’accessibilité GVS.
-    Retourne le code HTTP significatif (ex. 200, 206, 403, 410, …) ou None si indéterminé.
-    """
     if not _YTDBG_HTTP_PROBE:
-        # En mode normal, on fait quand même un HEAD court pour lire le code
         pass
     opener = None
     try:
@@ -529,22 +518,14 @@ async def stream(
     if not stream_url:
         raise RuntimeError("Flux audio indisponible (clients bloqués).")
 
-    # --- headers minimaux & pas de double UA ---
     headers = dict(info.get("http_headers") or {})
-    ua = headers.pop("User-Agent", _YT_UA)  # UA uniquement via -user_agent
+    ua = headers.pop("User-Agent", _YT_UA)
     headers["Referer"] = "https://www.youtube.com/"
     headers["Origin"] = "https://www.youtube.com"
     hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
 
-    # Probe HTTP rapide → en executor pour ne pas bloquer l'event loop
-    code = await loop.run_in_executor(
-        None,
-        functools.partial(
-            _http_probe,
-            stream_url,
-            {"User-Agent": ua, "Referer": "https://www.youtube.com/", "Origin": "https://www.youtube.com"},
-        ),
-    ) or 200
+    code = _http_probe(stream_url, {"User-Agent": ua, "Referer": "https://www.youtube.com/",
+                                    "Origin": "https://www.youtube.com"}) or 200
     if _AUTO_PIPE_ON_403 and code in (403, 410):
         _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
         return await stream_pipe(
@@ -553,7 +534,6 @@ async def stream(
             ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
-    # --- preflight 2s FFmpeg→null : exécuter en executor pour ne PAS bloquer l'event loop ---
     def _preflight_direct_ok() -> bool:
         try:
             cmd = [
@@ -565,7 +545,7 @@ async def stream(
                 "-analyzeduration", "0",
                 "-fflags", "nobuffer",
                 "-flags", "low_delay",
-                "-rw_timeout", "15000000",  # 15 sec
+                "-rw_timeout", "15000000",
                 "-protocol_whitelist", "file,https,tcp,tls,crypto",
                 "-i", stream_url,
                 "-t", "2",
@@ -577,8 +557,7 @@ async def stream(
             _dbg(f"preflight direct failed: {e}")
             return False
 
-    ok = await loop.run_in_executor(None, _preflight_direct_ok)
-    if not ok:
+    if not _preflight_direct_ok():
         _dbg("STREAM: direct preflight failed → fallback to PIPE")
         return await stream_pipe(
             url_or_query, ffmpeg_path,
@@ -586,7 +565,6 @@ async def stream(
             ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
-    # --- options finales (direct) ---
     before_opts = (
         "-nostdin "
         f"-user_agent {shlex.quote(ua)} "
@@ -599,7 +577,8 @@ async def stream(
     if _HTTP_PROXY:
         before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
 
-    out_opts = "-vn -ar 48000 -ac 2 -loglevel warning"
+    # ⚠️ NE PAS redéfinir -ar/-ac/-f ici : discord.py le fera déjà (sinon “Multiple -ar/-ac options”).
+    out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
@@ -683,7 +662,7 @@ def _best_info_with_fallbacks(
             _dbg(f"client={c} → no direct url")
     return None
 
-# ==== STREAM PIPE (préflight + fallback itag18) ====
+# ==== STREAM PIPE ====
 async def stream_pipe(
     url_or_query: str,
     ffmpeg_path: str,
@@ -723,7 +702,7 @@ async def stream_pipe(
             "--no-check-certificates",
             "--retries", "5",
             "--fragment-retries", "5",
-            "--concurrent-fragments", "1",  # ★ limite la pression réseau
+            "--concurrent-fragments", "1",
             "--newline",
             "--user-agent", _YT_UA,
             "--extractor-args", ea,
@@ -748,7 +727,6 @@ async def stream_pipe(
         return cmd
 
     def _preflight_and_choose_format() -> str:
-        """Teste le chainage yt-dlp -> ffmpeg pendant ~2s. Si échec → fallback 18."""
         primary_fmt = _FORMAT_CHAIN
         for attempt, fmt in enumerate([primary_fmt, "18"]):
             cmd = _build_cmd(fmt)
@@ -767,10 +745,14 @@ async def stream_pipe(
             try:
                 out = ff.communicate(timeout=6)[0] or ""
             except subprocess.TimeoutExpired:
-                try: ff.kill()
-                except: pass
-                try: yt.kill()
-                except: pass
+                try:
+                    ff.kill()
+                except Exception:
+                    pass
+                try:
+                    yt.kill()
+                except Exception:
+                    pass
                 return fmt if attempt == 0 else "18"
 
             rc = ff.returncode
@@ -789,16 +771,11 @@ async def stream_pipe(
             _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
         return "18"
 
-    # >>> NE PAS BLOQUER L'EVENT LOOP ICI <<<
-    chosen_fmt = await loop.run_in_executor(None, _preflight_and_choose_format)
+    chosen_fmt = _preflight_and_choose_format()
     _dbg(f"PIPE chosen format: {chosen_fmt}")
 
-    # Lance la vraie lecture pour Discord
-    cmd = _build_cmd(chosen_fmt)
-    _dbg(f"yt-dlp PIPE cmd: {' '.join(shlex.quote(c) for c in cmd)}")
-
     yt = subprocess.Popen(
-        cmd,
+        _build_cmd(chosen_fmt),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=False,
@@ -825,7 +802,8 @@ async def stream_pipe(
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
     before_opts = "-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
-    out_opts = "-vn -ar 48000 -ac 2 -f s16le"
+    # ⚠️ Ici aussi : ne pas réimposer -ar/-ac/-f (discord.py le fera).
+    out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
@@ -906,368 +884,3 @@ def download(
                 _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
         raise RuntimeError(f"Échec download YouTube: {e}") from e
-
-
-
-# ==== DIAGNOSTICS / TESTS LOCAUX ===========================================
-# Usage (depuis le repo):
-#   python -m extractors.youtube diag --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-#   python -m extractors.youtube diag --query "lofi hip hop"
-#   python -m extractors.youtube env
-#   python -m extractors.youtube token --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-#   python -m extractors.youtube direct --url "..." --ffmpeg /usr/bin/ffmpeg --seconds 3
-#   python -m extractors.youtube pipe --url "..." --ffmpeg /usr/bin/ffmpeg --seconds 3
-#   python -m extractors.youtube download --url "..." --ffmpeg /usr/bin/ffmpeg --out /tmp
-#
-# Astuces utiles en local:
-#   setx YTDLP_COOKIES_BROWSER "chrome:Default"         # Windows (PowerShell)
-#   export YTDLP_COOKIES_BROWSER="chromium:Default"     # Linux
-#   export YTDLP_COOKIES_B64="$(base64 -w0 cookies.txt)" # Netscape cookies
-#   export YT_PO_TOKEN="..."                            # fallback si auto-fetch échoue
-#   export YTDLP_HTTP_PROXY="http://127.0.0.1:8888"     # proxy (mitm/proxy rési)
-# ===========================================================================
-
-def _print_env_summary_local():
-    import platform
-    print("\n=== ENV / VERSIONS ===")
-    print("Python        :", sys.version.replace("\n", " "))
-    try:
-        import yt_dlp as _yt
-        print("yt-dlp        :", getattr(_yt, "__version__", "?"))
-    except Exception as e:
-        print("yt-dlp        : <import FAIL>", e)
-    try:
-        import discord as _dc
-        print("discord.py    :", getattr(_dc, "__version__", "?"))
-    except Exception as e:
-        print("discord.py    : <import FAIL>", e)
-    print("Platform      :", platform.platform())
-    print("IPv4 forced   :", _FORCE_IPV4)
-    print("User-Agent    :", _YT_UA[:120] + ("..." if len(_YT_UA) > 120 else ""))
-    print("Proxy         :", _HTTP_PROXY or "none")
-    print("CookiesFromBr :", os.getenv("YTDLP_COOKIES_BROWSER") or "none")
-    print("CookiesB64    :", "set" if os.getenv("YTDLP_COOKIES_B64") else "unset")
-    print("YT_PO_TOKEN   :", "set" if (os.getenv("YT_PO_TOKEN") or os.getenv("YTDLP_PO_TOKEN") or os.getenv("YT_PO_TOKEN_PREFIXED")) else "unset")
-    print("=======================\n")
-
-def _dns_check(hosts: List[str]):
-    import socket
-    print("=== DNS CHECK ===")
-    for h in hosts:
-        try:
-            fam = socket.AF_INET if _FORCE_IPV4 else 0
-            res = socket.getaddrinfo(h, 443, fam, socket.SOCK_STREAM)
-            addrs = sorted({r[4][0] for r in res})
-            print(f"{h:40s} -> {', '.join(addrs[:5])}" + (" ..." if len(addrs) > 5 else ""))
-        except Exception as e:
-            print(f"{h:40s} -> <DNS FAIL> {e}")
-    print("=================\n")
-
-def _ffmpeg_version(ffmpeg_hint: Optional[str] = None):
-    try:
-        ff_exec, _ = _resolve_ffmpeg_paths(ffmpeg_hint)
-        cp = subprocess.run([ff_exec, "-version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5)
-        line0 = (cp.stdout or "").splitlines()[0] if cp.stdout else ""
-        print("FFmpeg        :", line0.strip() or f"<rc {cp.returncode}>")
-        return ff_exec
-    except Exception as e:
-        print("FFmpeg        : <NOT FOUND>", e)
-        return None
-
-def _classify_common_failure(text: str) -> str:
-    t = text.lower()
-    if "requested format is not available" in t:
-        return "yt-dlp: Requested format not available (essaye -f 18 / cookies / autre client)."
-    if "http error 403" in t or "403 forbidden" in t or "permission denied" in t:
-        return "403: SABR/geo/cookies/UA/Referer/Origin — tente PO-token, cookies, proxy résident, clients iOS/Android."
-    if "http error 410" in t or "410 gone" in t:
-        return "410: URL GVS expirée — re-résoudre puis lancer rapidement FFmpeg."
-    if "unknown error" in t and "innertube" in t:
-        return "Innertube player: blocage côté Player — change de client/PO-token/cookies."
-    if "ssl" in t and ("cert" in t or "handshake" in t):
-        return "TLS/SSL: certif/proxy — vérifie proxy MITM ou certs système."
-    if "name or service not known" in t or "temporary failure in name resolution" in t:
-        return "DNS: résolution hôte cassée — résout googlevideo.com / youtube.com."
-    if "connection reset" in t or "broken pipe" in t:
-        return "Réseau instable / proxy — active reconnect FFmpeg, change d’IP/proxy."
-    return "Inconnu: ouvrir logs YTDBG et observer étapes Player → GVS."
-
-def _diag_player_resolution(query_or_url: str, ffmpeg_hint: Optional[str]):
-    print("=== STEP 1: PLAYER RESOLUTION (yt-dlp) ===")
-    try:
-        info = _best_info_with_fallbacks(
-            query_or_url,
-            cookies_file=_COOKIE_FILE_DEFAULT if os.path.exists(_COOKIE_FILE_DEFAULT) else None,
-            cookies_from_browser=os.getenv("YTDLP_COOKIES_BROWSER"),
-            ffmpeg_path=_resolve_ffmpeg_paths(ffmpeg_hint)[0] if ffmpeg_hint else None,
-            ratelimit_bps=None,
-        )
-        if not info:
-            print("Player: <NO INFO> — aucun format résolu.")
-            return None
-        url = info.get("url")
-        title = info.get("title")
-        client = info.get("_dbg_client_used")
-        headers = info.get("http_headers") or {}
-        print("Player: OK")
-        print("  title  :", title)
-        print("  client :", client)
-        print("  hasURL :", bool(url))
-        print("  headers:", _redact_headers(headers))
-        return info
-    except Exception as e:
-        print("Player: <FAIL>", e)
-        return None
-    finally:
-        print("===============================\n")
-
-def _diag_gvs_pull(stream_url: str, headers: Dict[str, str], ffmpeg_exec: str, seconds: int = 3):
-    print("=== STEP 2: GVS PULL (FFmpeg direct) ===")
-    try:
-        ua = headers.get("User-Agent", _YT_UA)
-        hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
-
-        before_opts = [
-            "-nostdin",
-            "-user_agent", ua,
-            "-headers", hdr_blob,
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_at_eof", "1", "-reconnect_delay_max", "5",
-            "-rw_timeout", "15000000",
-            "-probesize", "32k", "-analyzeduration", "0",
-            "-fflags", "nobuffer", "-flags", "low_delay",
-            "-protocol_whitelist", "file,https,tcp,tls,crypto",
-        ]
-        if _HTTP_PROXY:
-            before_opts += ["-http_proxy", _HTTP_PROXY]
-
-        cmd = [ffmpeg_exec] + before_opts + ["-i", stream_url, "-t", str(seconds), "-f", "null", "-"]
-        print("FFmpeg cmd   :", " ".join(shlex.quote(c) for c in cmd[:10]), "...")
-
-        cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=seconds + 20)
-        rc = cp.returncode
-        print("FFmpeg rc    :", rc)
-        tail = (cp.stdout or "")
-        print("FFmpeg tail  :\n", "\n".join(tail.splitlines()[-12:]))
-        if rc != 0:
-            print("Diagnosis    :", _classify_common_failure(tail))
-        else:
-            print("Diagnosis    : GVS direct OK (headers valides).")
-    except Exception as e:
-        print("GVS pull     : <FAIL>", e)
-        print("Diagnosis    :", _classify_common_failure(str(e)))
-    finally:
-        print("===============================\n")
-
-def _diag_pipe_preflight(url_or_query: str, ffmpeg_exec: str, seconds: int = 3):
-    print("=== STEP 3: PIPE PRE-FLIGHT (yt-dlp → FFmpeg) ===")
-    try:
-        ea_parts = [f"player_client={','.join(_CLIENTS_ORDER)}"]
-        if _PO_TOKENS:
-            ea_parts.append(f"po_token={','.join(_PO_TOKENS)}")
-        ea = "youtube:" + ";".join(ea_parts)
-
-        def build_cmd(fmt: str) -> List[str]:
-            cmd = _resolve_ytdlp_cli() + [
-                "-f", fmt,
-                "--no-playlist",
-                "--no-check-certificates",
-                "--retries", "3",
-                "--fragment-retries", "3",
-                "--newline",
-                "--user-agent", _YT_UA,
-                "--extractor-args", ea,
-                "--add-header", "Referer:https://www.youtube.com/",
-                "--add-header", "Origin:https://www.youtube.com",
-                "-o", "-",
-                url_or_query,
-            ]
-            if _FORCE_IPV4:
-                cmd += ["--force-ipv4"]
-            if _HTTP_PROXY:
-                cmd += ["--proxy", _HTTP_PROXY]
-            spec = os.getenv("YTDLP_COOKIES_BROWSER")
-            if spec:
-                cmd += ["--cookies-from-browser", spec]
-            elif os.path.exists(_COOKIE_FILE_DEFAULT):
-                cmd += ["--cookies", _COOKIE_FILE_DEFAULT]
-            return cmd
-
-        for attempt, fmt in enumerate([_FORMAT_CHAIN, "18"]):
-            print(f"Attempt {attempt}: fmt={fmt}")
-            yt = subprocess.Popen(build_cmd(fmt), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
-            ff = subprocess.Popen(
-                [ffmpeg_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0", "-fflags", "nobuffer", "-flags", "low_delay",
-                 "-i", "pipe:0", "-t", str(seconds), "-f", "null", "-"],
-                stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-            )
-            try:
-                out = ff.communicate(timeout=seconds+6)[0] or ""
-            except subprocess.TimeoutExpired:
-                try: ff.kill()
-                except: pass
-                try: yt.kill()
-                except: pass
-                print("Preflight    : TIMEOUT>OK (flux se maintient) — fmt valide.")
-                return
-            finally:
-                try: yt.kill()
-                except: pass
-
-            rc = ff.returncode
-            err = ""
-            try:
-                err = (yt.stderr.read() or b"").decode("utf-8", errors="replace")
-            except Exception:
-                pass
-
-            print("rc           :", rc)
-            if rc == 0 and "Requested format is not available" not in err:
-                print("Diagnosis    : PIPE OK (fmt accepté).")
-                return
-            if "Requested format is not available" in err:
-                print("Diagnosis    : fmt indisponible → on essaie itag 18.")
-                continue
-            print("Tail (ff)    :\n", "\n".join(out.splitlines()[-8:]))
-            print("Tail (yt)    :\n", "\n".join(err.splitlines()[-8:]))
-            print("Diagnosis    :", _classify_common_failure(out + "\n" + err))
-        print("Final        : PIPE KO même avec -f 18 — voir cookies/PO-token/proxy/IP.")
-    except Exception as e:
-        print("PIPE         : <FAIL>", e)
-        print("Diagnosis    :", _classify_common_failure(str(e)))
-    finally:
-        print("===============================\n")
-
-def _diag_all(url: Optional[str], query: Optional[str], ffmpeg_hint: Optional[str], seconds: int):
-    _print_env_summary_local()
-    _dns_check(["www.youtube.com", "m.youtube.com", "music.youtube.com", "r5---sn-25ge7nzk.googlevideo.com", "googlevideo.com"])
-    ff_exec = _ffmpeg_version(ffmpeg_hint)
-    if not ff_exec:
-        print("⛔ FFmpeg introuvable — installe-le ou donne --ffmpeg.")
-        return
-
-    subject = url or query or "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    print("Sujet        :", subject)
-
-    # PO-token (auto puis env)
-    try:
-        _ensure_po_tokens_for(subject, ffmpeg_hint)
-    except Exception as e:
-        print("PO-token     : auto-fetch FAIL", e)
-
-    info = _diag_player_resolution(subject, ffmpeg_hint)
-    if info and info.get("url"):
-        hdrs = info.get("http_headers") or {}
-        hdrs.setdefault("User-Agent", _YT_UA)
-        hdrs.setdefault("Referer", "https://www.youtube.com/")
-        hdrs.setdefault("Origin", "https://www.youtube.com")
-        _diag_gvs_pull(info["url"], hdrs, ff_exec, seconds=seconds)
-    else:
-        print("⟶ Skip GVS direct: pas d’URL Player.")
-
-    _diag_pipe_preflight(subject, ff_exec, seconds=seconds)
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser("YouTube extractor diagnostics")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser("env", help="Afficher info ENV/versions/DNS/FFmpeg")
-
-    p_diag = sub.add_parser("diag", help="Diagnostic complet (Player→GVS + PIPE)")
-    p_diag.add_argument("--url")
-    p_diag.add_argument("--query")
-    p_diag.add_argument("--ffmpeg")
-    p_diag.add_argument("--seconds", type=int, default=3)
-
-    p_tok = sub.add_parser("token", help="Essai d'auto-récupération PO-token + ENV")
-    p_tok.add_argument("--url", required=True)
-
-    p_direct = sub.add_parser("direct", help="Test GVS direct (FFmpeg null sink)")
-    p_direct.add_argument("--url", required=True)
-    p_direct.add_argument("--ffmpeg", required=True)
-    p_direct.add_argument("--seconds", type=int, default=3)
-
-    p_pipe = sub.add_parser("pipe", help="Test PIPE (yt-dlp→ffmpeg) sur 2–3 s")
-    p_pipe.add_argument("--url", required=True)
-    p_pipe.add_argument("--ffmpeg", required=True)
-    p_pipe.add_argument("--seconds", type=int, default=3)
-
-    p_dl = sub.add_parser("download", help="Télécharger & convertir (mp3)")
-    p_dl.add_argument("--url", required=True)
-    p_dl.add_argument("--ffmpeg")
-    p_dl.add_argument("--out", default="downloads")
-
-    args = parser.parse_args()
-
-    if args.cmd == "env":
-        _print_env_summary_local()
-        _dns_check(["www.youtube.com", "m.youtube.com", "music.youtube.com", "googlevideo.com"])
-        _ffmpeg_version()
-        sys.exit(0)
-
-    if args.cmd == "token":
-        _print_env_summary_local()
-        _ensure_po_tokens_for(args.url, None)
-        print("PO tokens    :", _PO_TOKENS or "<none>")
-        sys.exit(0)
-
-    if args.cmd == "diag":
-        _diag_all(args.url, args.query, args.ffmpeg, args.seconds)
-        sys.exit(0)
-
-    if args.cmd == "direct":
-        ff = _ffmpeg_version(args.ffmpeg)
-
-        if not ff:
-                sys.exit(2)
-        # Accepter indifféremment une URL YouTube (page) OU une URL GVS (manifest.googlevideo...)
-        url = args.url.strip()
-        hdrs = {
-                "User-Agent": _YT_UA,
-                "Referer": "https://www.youtube.com/",
-                "Origin": "https://www.youtube.com",
-            }
-        try:
-            if ("youtube.com" in url) or ("youtu.be" in url) or ("music.youtube.com" in url):
-                info = _best_info_with_fallbacks(
-                                    url,
-                                    cookies_file = _COOKIE_FILE_DEFAULT if os.path.exists(
-                        _COOKIE_FILE_DEFAULT) else None,
-                                cookies_from_browser = os.getenv("YTDLP_COOKIES_BROWSER"),
-                                ffmpeg_path = ff,
-                                ratelimit_bps = None,
-                            )
-                if not info or not info.get("url"):
-                    print("Direct: impossible de résoudre l’URL de flux depuis la page YouTube.")
-                    sys.exit(3)
-                if info.get("http_headers"):
-                    hdrs.update(info["http_headers"])
-                url = info["url"]
-        except Exception as e:
-            print("Direct: résolution Player → GVS échouée:", e)
-            sys.exit(3)
-        _diag_gvs_pull(url, hdrs, ff, seconds=args.seconds)
-
-    if args.cmd == "pipe":
-        ff = _ffmpeg_version(args.ffmpeg)
-        if not ff:
-            sys.exit(2)
-        _diag_pipe_preflight(args.url, ff, seconds=args.seconds)
-        sys.exit(0)
-
-    if args.cmd == "download":
-        _print_env_summary_local()
-        ff = args.ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
-        try:
-            path, title, dur = download(
-                args.url, ff,
-                cookies_file=_COOKIE_FILE_DEFAULT if os.path.exists(_COOKIE_FILE_DEFAULT) else None,
-                cookies_from_browser=os.getenv("YTDLP_COOKIES_BROWSER"),
-                out_dir=args.out,
-            )
-            print("Download OK  :", path, "|", title, "|", dur)
-            sys.exit(0)
-        except Exception as e:
-            print("Download FAIL:", e)
-            print("Diagnosis    :", _classify_common_failure(str(e)))
-            sys.exit(3)
