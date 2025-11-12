@@ -1,6 +1,5 @@
-# priority_rules.py
 import os, json
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 # Poids par défaut (plus haut = plus prioritaire)
 DEFAULT_WEIGHTS: Dict[str, int] = {
@@ -18,10 +17,13 @@ OWNER_WEIGHT = 10_000  # bien plus haut que n'importe quel rôle
 CONFIG_PATH = os.getenv("PRIORITY_FILE", "data/priority.json")
 
 def _to_int(v):
-    try: return int(v)
+    try:
+        return int(v)
     except Exception:
-        try: return int(str(v).strip())
-        except Exception: return None
+        try:
+            return int(str(v).strip())
+        except Exception:
+            return None
 
 def is_owner(user_id) -> bool:
     oid = _to_int(os.getenv("GREG_OWNER_ID", ""))
@@ -92,14 +94,12 @@ def _init_state():
 
 _init_state()
 
-# === API publique ===
+# === API publique (config) ===
 
 def get_overrides():
-    """Retourne les overrides persistés (copie)."""
     return {"weights": dict(_OVERRIDES.get("weights", {})), "cap": int(PER_USER_CAP)}
 
 def list_keys():
-    """Clés spéciales configurables via /priority setkey …"""
     return ["__ADMIN__", "__MANAGE_GUILD__", "__DEFAULT__"]
 
 def get_weights() -> Dict[str, int]:
@@ -108,7 +108,6 @@ def get_weights() -> Dict[str, int]:
     return w
 
 def set_role_weight(name: str, weight: int) -> Dict[str, int]:
-    """Override (ou crée) le poids d'un rôle Discord classique."""
     name = str(name).strip()
     CUSTOM[name] = int(weight)
     _OVERRIDES["weights"][name] = int(weight)
@@ -123,7 +122,6 @@ def reset_role_weight(name: str) -> Dict[str, int]:
     return get_weights()
 
 def set_key_weight(key: str, weight: int) -> Dict[str, int]:
-    """Override une clé spéciale (__ADMIN__, __MANAGE_GUILD__, __DEFAULT__)."""
     key = str(key).strip()
     if key not in list_keys():
         raise ValueError("Clé inconnue")
@@ -133,25 +131,26 @@ def set_key_weight(key: str, weight: int) -> Dict[str, int]:
     return get_weights()
 
 def set_per_user_cap(n: int) -> int:
-    """Met à jour le quota par utilisateur (persisté)."""
     global PER_USER_CAP
     PER_USER_CAP = max(0, int(n))
     _OVERRIDES["cap"] = PER_USER_CAP
     _save_overrides_file()
     return PER_USER_CAP
 
-# --- logique de poids / droits (utilisée par la musique) ---
+# === logique de poids / droits ===
+
+def _member_roles_names(member) -> list[str]:
+    try:
+        return [r.name for r in (getattr(member, "roles", []) or []) if r and r.name and r.name != "@everyone"]
+    except Exception:
+        return []
 
 def get_member_weight(bot, guild_id: int, user_id: int) -> int:
-    """
-    Calcule le poids d'un membre en se basant sur les rôles du serveur + flags admin.
-    """
     if is_owner(user_id):
         return OWNER_WEIGHT
 
     weights = get_weights()
     guild = bot.get_guild(int(guild_id)) if bot else None
-
     if not guild:
         return int(weights.get("__DEFAULT__", 10))
     member = guild.get_member(int(user_id)) if guild else None
@@ -189,3 +188,62 @@ def can_user_bump_over(bot, guild_id: int, requester_id: int, owner_weight: int)
     if can_bypass_quota(bot, guild_id, requester_id):
         return True
     return req_w > int(owner_weight or 0)
+
+# === helpers d’objets (utiles au service & API) ===
+
+def build_user_meta(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
+    """
+    Métadonnées légères pour la logique de file/priorité.
+    """
+    guild = bot.get_guild(int(guild_id)) if bot else None
+    member = guild.get_member(int(user_id)) if guild else None
+
+    roles = _member_roles_names(member) if member else []
+    is_admin = bool(member and (member.guild_permissions.administrator or member.guild_permissions.manage_guild))
+    weight = get_member_weight(bot, guild_id, user_id)
+
+    return {
+        "user_id": str(user_id),
+        "roles": roles,
+        "weight": int(weight),
+        "is_admin": is_admin,
+        "is_owner": bool(is_owner(user_id)),
+        "can_bypass": bool(is_admin or is_owner(user_id)),
+    }
+
+def build_user_out(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
+    """
+    Construit un dict compatible avec api.schemas.user.UserOut (pour exposer à l’UI).
+    """
+    guild = bot.get_guild(int(guild_id)) if bot else None
+    member = guild.get_member(int(user_id)) if guild else None
+
+    if member:
+        username = getattr(member, "name", str(user_id))
+        # avatar url
+        try:
+            avatar = str(member.display_avatar.url) if getattr(member, "display_avatar", None) else None
+        except Exception:
+            avatar = None
+        discriminator = getattr(member, "discriminator", None)
+        roles = _member_roles_names(member)
+        is_admin = bool(member.guild_permissions.administrator or member.guild_permissions.manage_guild)
+    else:
+        username, avatar, discriminator, roles, is_admin = str(user_id), None, None, [], False
+
+    return {
+        "id": str(user_id),
+        "username": username,
+        "avatar": avatar,
+        "discriminator": discriminator,
+        "roles": roles,
+        "weight": int(get_member_weight(bot, guild_id, user_id)),
+        "is_admin": bool(is_admin),
+        "is_owner": bool(is_owner(user_id)),
+    }
+
+def build_track_prio(item: Dict[str, Any], user_meta: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(item or {})
+    out["priority"] = int(user_meta.get("weight", 0))
+    out["added_by"] = user_meta.get("user_id")
+    return out

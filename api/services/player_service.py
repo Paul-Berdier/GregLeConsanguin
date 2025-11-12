@@ -1,4 +1,3 @@
-# api/services/player_service.py
 from __future__ import annotations
 
 import os
@@ -10,13 +9,15 @@ from typing import Any, Optional, Dict, List
 import discord
 
 from utils.playlist_manager import PlaylistManager
+from api.schemas.user import UserOut
+from api.schemas.track import TrackOut, TrackPriorityOut
 from utils.priority_rules import (
-    get_member_weight, PER_USER_CAP, can_bypass_quota, can_user_bump_over
+    PER_USER_CAP, get_member_weight, can_bypass_quota,
+    build_user_meta, build_user_out, build_track_prio
 )
 from utils.ffmpeg import detect_ffmpeg
 from api.services.oembed import oembed
 
-# tes extracteurs existants (YT only si besoin)
 from extractors import get_extractor, get_search_module, is_bundle_url, expand_bundle
 
 log = logging.getLogger(__name__)
@@ -27,15 +28,6 @@ AUDIO_EQ_PRESETS = {
 }
 
 class PlayerService:
-    """
-    Service unique pour gérer la musique:
-      - queue/PM par guild
-      - stream (direct → fallback pipe)
-      - ticker (progress elapsed) → overlay emit
-      - règles de priorité/quota
-    Pensé pour être appelé par **commands/** ET **API REST**.
-    """
-
     def __init__(self, bot: discord.Client, emit_fn=None):
         self.bot = bot
         self.emit_fn = emit_fn
@@ -43,13 +35,12 @@ class PlayerService:
         self.pm_map: Dict[str, PlaylistManager] = {}
         self.ffmpeg_path = detect_ffmpeg()
 
-        # états par guilde
         self.is_playing: Dict[int, bool] = {}
         self.current_song: Dict[int, dict] = {}
         self.current_meta: Dict[int, dict] = {}
         self.now_playing: Dict[int, dict] = {}
         self.repeat_all: Dict[int, bool] = {}
-        self.audio_mode: Dict[int, str] = {}  # "music"|"off"
+        self.audio_mode: Dict[int, str] = {}
 
         self.play_start: Dict[int, float] = {}
         self.paused_since: Dict[int, float] = {}
@@ -58,7 +49,6 @@ class PlayerService:
         self._progress_task: Dict[int, asyncio.Task] = {}
         self._locks: Dict[int, asyncio.Lock] = {}
 
-        # YouTube cookies & ratelimit
         self.youtube_cookies_file = (
             os.getenv("YTDLP_COOKIES_FILE")
             or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
@@ -68,11 +58,9 @@ class PlayerService:
         except Exception:
             self.yt_ratelimit = 2_500_000
 
-    # --------- wiring ---------
     def set_emit_fn(self, emit_fn):
         self.emit_fn = emit_fn
 
-    # --------- utils de base ---------
     @staticmethod
     def _gid(v) -> int:
         return int(v)
@@ -106,24 +94,22 @@ class PlayerService:
         try:
             self.emit_fn("playlist_update", payload, guild_id=gid)
         except TypeError:
-            # compat “vieux” emit sans room
             self.emit_fn("playlist_update", payload)
 
-    # --------- normalisation / enrichissement ---------
+    # ---------- normalisation ----------
     def _normalize_item(self, it: dict) -> dict:
         url = (it.get("url") or "").strip() or None
         title = (it.get("title") or "").strip()
         artist = (it.get("artist") or "").strip() or None
         thumb = (it.get("thumb") or it.get("thumbnail") or None)
+        provider = it.get("provider")
 
-        # Enrichissement léger via oEmbed si champs manquants
         if url and (not title or not artist or not thumb):
             oe = oembed(url) or {}
             title = title or oe.get("title") or url
             artist = artist or oe.get("author_name")
             thumb = thumb or oe.get("thumbnail_url")
 
-        # durée: accepte int/str "M:SS" etc.
         duration = it.get("duration")
         if isinstance(duration, str) and duration.isdigit():
             duration = int(duration)
@@ -144,20 +130,19 @@ class PlayerService:
             "artist": artist,
             "thumb": thumb,
             "duration": duration,
+            "provider": provider,
         }
-        # pass-through utiles
-        for k in ("provider", "mode", "added_by", "priority"):
+        for k in ("mode", "added_by", "priority", "ts"):
             if k in it:
                 out[k] = it[k]
         return out
 
-    # --------- overlay payload & ticker ---------
+    # ---------- overlay payload ----------
     def _overlay_payload(self, gid: int) -> dict:
         g = self.bot.get_guild(int(gid))
         vc = g.voice_client if g else None
         is_paused_vc = bool(vc and vc.is_paused())
 
-        # elapsed
         start = self.play_start.get(gid)
         paused_since = self.paused_since.get(gid)
         paused_total = self.paused_total.get(gid, 0.0)
@@ -166,8 +151,7 @@ class PlayerService:
             base = paused_since or time.monotonic()
             elapsed = max(0, int(base - start - paused_total))
 
-        # duration & thumb
-        meta = self.current_meta.get(gid, {})
+        meta = self.current_meta.get(gid, {}) or {}
         duration = meta.get("duration")
         thumb = meta.get("thumbnail")
 
@@ -177,13 +161,41 @@ class PlayerService:
                 duration = int(cur["duration"])
             thumb = thumb or cur.get("thumb") or cur.get("thumbnail")
 
+        # ---- enrichissements user ----
+        requested_by_user = None
+        if isinstance(cur, dict) and cur.get("added_by"):
+            try:
+                requested_by_user = build_user_out(self.bot, gid, int(cur["added_by"]))
+            except Exception:
+                requested_by_user = None
+
+        # Collecte des metas user pour ceux présents dans la queue
+        queue = self._get_pm(gid).to_dict().get("queue", [])
+        uniq_ids = []
+        for it in queue:
+            uid = (it or {}).get("requested_by") or (it or {}).get("added_by")
+            if uid and uid not in uniq_ids:
+                uniq_ids.append(uid)
+            if len(uniq_ids) >= 25:  # limite de payload raisonnable
+                break
+
+        queue_users: Dict[str, Dict[str, Any]] = {}
+        for s in uniq_ids:
+            try:
+                queue_users[str(s)] = build_user_out(self.bot, gid, int(s))
+            except Exception:
+                pass
+
         return {
-            "queue": self._get_pm(gid).to_dict().get("queue", []),
+            "queue": queue,
             "current": cur,
             "is_paused": is_paused_vc,
             "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
+            # nouveaux champs :
+            "requested_by_user": requested_by_user,  # UserOut-like pour le morceau courant
+            "queue_users": queue_users,              # {user_id: UserOut-like}
         }
 
     def _ticker_running(self, gid: int) -> bool:
@@ -207,7 +219,6 @@ class PlayerService:
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
 
-                    # envoie minimaliste: only_elapsed
                     start = self.play_start.get(gid)
                     paused_since = self.paused_since.get(gid)
                     paused_total = self.paused_total.get(gid, 0.0)
@@ -236,7 +247,7 @@ class PlayerService:
 
         self._progress_task[gid] = asyncio.create_task(_runner())
 
-    # --------- opérations publiques (API + Commands) ---------
+    # ---------- opérations publiques ----------
     async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.VoiceChannel]) -> bool:
         vc = guild.voice_client
         if vc and vc.is_connected():
@@ -271,7 +282,6 @@ class PlayerService:
 
         await loop.run_in_executor(None, pm.add, item)
 
-        # réinsertion par priorité
         new_queue = await loop.run_in_executor(None, pm.get_queue)
         new_idx = len(new_queue) - 1
         target_idx = 0
@@ -300,11 +310,10 @@ class PlayerService:
 
             vc = guild.voice_client
             if vc and (vc.is_playing() or vc.is_paused()):
-                return  # déjà en cours
+                return
 
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
-                # fin de queue
                 self.is_playing[gid] = False
                 for d in (self.current_song, self.play_start, self.paused_since,
                           self.paused_total, self.current_meta, self.now_playing):
@@ -336,7 +345,6 @@ class PlayerService:
                 self._emit_playlist_update(gid)
                 return
 
-            # kwargs compatibles avec ta signature
             def _kw(method):
                 import inspect
                 fn = getattr(extractor, method, None)
@@ -354,7 +362,6 @@ class PlayerService:
                 except Exception:
                     return {}
 
-            # 1) STREAM direct
             try:
                 srcp, real_title = await self._call_extractor(extractor, "stream", url, self.ffmpeg_path, **_kw("stream"))
                 if real_title and isinstance(real_title, str):
@@ -365,7 +372,6 @@ class PlayerService:
             except Exception as ex_direct:
                 log.debug("[stream direct KO] %s", ex_direct)
 
-            # 2) PIPE fallback
             srcp, real_title = await self._call_extractor(extractor, "stream_pipe", url, self.ffmpeg_path, **_kw("stream_pipe"))
             if real_title and isinstance(real_title, str):
                 self.current_song[gid]["title"] = real_title
@@ -406,7 +412,7 @@ class PlayerService:
         self._ensure_ticker(gid)
         self._emit_playlist_update(gid)
 
-    # === commandes basiques (API/Discord) ===
+    # === commandes
     async def stop(self, guild_id: int):
         gid = int(guild_id)
         pm = self._get_pm(gid)
@@ -479,11 +485,7 @@ class PlayerService:
         self.audio_mode[gid] = new_mode
         return new_mode == "music"
 
-    # Helpers webhook/API
     async def play_for_user(self, guild_id: int, user_id: int, item: dict):
-        """
-        Version API: connecte, enfile et déclenche play si idle.
-        """
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
         if not g:
@@ -496,7 +498,6 @@ class PlayerService:
         if not await self.ensure_connected(g, member.voice.channel):
             return {"ok": False, "error": "VOICE_CONNECT_FAILED"}
 
-        # playlist/mix expansion si besoin
         url = (item or {}).get("url") or ""
         bundle_entries = []
         if is_bundle_url(url):
@@ -514,6 +515,7 @@ class PlayerService:
                     "artist": head.get("artist"),
                     "thumb": head.get("thumb"),
                     "duration": head.get("duration"),
+                    "provider": head.get("provider") or "youtube",
                 }}
 
         res = await self.enqueue(gid, int(user_id), item)

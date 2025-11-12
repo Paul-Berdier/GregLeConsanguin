@@ -1,5 +1,3 @@
-# utils/playlist_manager.py
-
 import os
 import json
 import time
@@ -137,10 +135,12 @@ class PlaylistManager:
             # Normalisation
             item["title"] = title
             item["url"] = url
-            item["artist"] = item.get("artist") or None
+            item["artist"] = item.get("artist") or item.get("uploader") or item.get("channel") or None
             item["thumb"] = item.get("thumb") or item.get("thumbnail") or None
             item["duration"] = dur
             item.setdefault("added_by", None)
+            item.setdefault("priority", item.get("priority"))
+            item.setdefault("provider", item.get("provider"))
             item.setdefault("ts", int(time.time()))
             return item
 
@@ -153,6 +153,8 @@ class PlaylistManager:
                 "thumb": None,
                 "duration": None,
                 "added_by": None,
+                "priority": None,
+                "provider": None,
                 "ts": int(time.time()),
             }
 
@@ -166,6 +168,8 @@ class PlaylistManager:
             "thumb": None,
             "duration": None,
             "added_by": None,
+            "priority": None,
+            "provider": None,
             "ts": int(time.time()),
         }
 
@@ -270,18 +274,23 @@ class PlaylistManager:
 
     def to_dict(self) -> Dict[str, Any]:
         """Snapshot sérialisable pour l'API."""
+        def _expose(track: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if not isinstance(track, dict):
+                return None
+            t = dict(track)
+            # duplique pour l’API : requested_by (alias lisible de added_by)
+            t["requested_by"] = t.get("added_by")
+            return t
+
         with self.lock:
-            now_play = dict(self.now_playing) if isinstance(getattr(self, "now_playing", None), dict) else None
+            now_play = _expose(self.now_playing)
             payload = {
-                # compat nouvelle/ancienne API
                 "now_playing": now_play,
-                "current": now_play,  # ← clé attendue par l’overlay/app
-                "queue": [dict(it) for it in self.queue]
+                "current": now_play,  # compat overlay/app
+                "queue": [_expose(it) for it in self.queue],
             }
-            # DEBUG non intrusif
             try:
-                print(
-                    f"[DEBUG to_dict {self.guild_id}] queue={len(payload['queue'])} / current={'oui' if payload['current'] else 'non'}")
+                print(f"[DEBUG to_dict {self.guild_id}] queue={len(payload['queue'])} / current={'oui' if payload['current'] else 'non'}")
             except Exception:
                 pass
             return payload
@@ -290,13 +299,10 @@ class PlaylistManager:
 # Test rapide (synchrone)
 if __name__ == "__main__":
     pm = PlaylistManager(123456789)
-    pm.add("https://soundcloud.com/truc/chanson1", added_by="42")
-    pm.add({"title": "Test YT", "url": "https://youtu.be/abc", "added_by": "me", "duration": "215;"})
+    pm.add("https://youtu.be/abc", added_by="42")
+    pm.add({"title": "Test YT", "url": "https://youtu.be/def", "added_by": "me", "duration": "215;"})
     print("QUEUE :", [q["title"] for q in pm.get_queue()])
-    print("CURRENT (before pop) :", (pm.get_current() or {}).get("title"))
     it = pm.pop_next()
     print("POPPED :", it and it.get("title"))
     print("CURRENT (after pop) :", (pm.get_current() or {}).get("title"))
-    pm.skip()
     pm.stop()
-    print("VIDÉ :", pm.get_queue())
