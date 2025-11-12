@@ -32,15 +32,20 @@ logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 playlist_managers: dict[str, PlaylistManager] = {}  # {guild_id: PlaylistManager}
 RESTART_MARKER = ".greg_restart.json"
 
-def get_pm(guild_id: int | str) -> PlaylistManager:
-    gid = str(int(guild_id))
-    pm = playlist_managers.get(gid)
-    if pm is None:
-        pm = PlaylistManager(gid)
-        playlist_managers[gid] = pm
-        logger.info("PlaylistManager créée pour guild %s", gid)
-    return pm
+_pm_lock = threading.Lock()
 
+def get_pm(guild_id: int | str) -> PlaylistManager:
+    gid = str(guild_id).strip()             # évite le int() qui peut lever si ça arrive déjà en str
+    pm = playlist_managers.get(gid)
+    if pm is not None:
+        return pm
+    with _pm_lock:
+        pm = playlist_managers.get(gid)
+        if pm is None:
+            pm = PlaylistManager(gid)
+            playlist_managers[gid] = pm
+            logger.info("PlaylistManager créée pour guild %s", gid)
+        return pm
 # -----------------------------------------------------------------------------
 # Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
 class APIPMAdapter:
