@@ -1,15 +1,17 @@
 # main.py
-import asyncio
+from __future__ import annotations
+
 import logging
 import os
 import threading
 import time
 import socket
 import subprocess
+from typing import Any
+
 import requests
 import discord
 from discord.ext import commands
-from typing import Any
 
 from utils.playlist_manager import PlaylistManager
 import config
@@ -27,17 +29,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-# Windows: boucle événementielle plus stable pour discord.py
-if os.name == "nt":
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
-
 # -----------------------------------------------------------------------------
+# PlaylistManager multi-serveur
 playlist_managers: dict[str, PlaylistManager] = {}  # {guild_id: PlaylistManager}
-RESTART_MARKER = ".greg_restart.json"
 _pm_lock = threading.Lock()
+
 
 def get_pm(guild_id: int | str) -> PlaylistManager:
     gid = str(guild_id).strip()
@@ -52,8 +48,15 @@ def get_pm(guild_id: int | str) -> PlaylistManager:
             logger.info("PlaylistManager créée pour guild %s", gid)
         return pm
 
+
 # -----------------------------------------------------------------------------
+# Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
 class APIPMAdapter:
+    """
+    Façade API au-dessus de utils.PlaylistManager.
+    Toutes les méthodes acceptent un guild_id optionnel.
+    """
+
     def __init__(self, default_gid: str | None = None):
         self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
 
@@ -67,24 +70,35 @@ class APIPMAdapter:
             "Définis la variable d'environnement DEFAULT_GUILD_ID ou passe guild_id."
         )
 
+    # ---- État de la playlist ----
     def get_state(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        return self._pm(guild_id).to_dict()
+        pm = self._pm(guild_id)
+        return pm.to_dict()
 
-    def enqueue(self, query: str, user_id: str | None = None, guild_id: str | int | None = None) -> dict[str, Any]:
+    # ---- Enqueue ----
+    def enqueue(
+        self,
+        query: str,
+        user_id: str | None = None,
+        guild_id: str | int | None = None,
+    ) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.add(query, added_by=user_id)
         return {"ok": True, "length": pm.length()}
 
+    # ---- Skip ----
     def skip(self, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.skip()
         return {"ok": True, "length": pm.length()}
 
+    # ---- Stop ----
     def stop(self, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.stop()
         return {"ok": True, "length": pm.length()}
 
+    # ---- Remove / Move / Next (si routes exposées) ----
     def remove_at(self, index: int, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         ok = pm.remove_at(index)
@@ -96,16 +110,20 @@ class APIPMAdapter:
         return {"ok": bool(ok), "length": pm.length()}
 
     def pop_next(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        it = self._pm(guild_id).pop_next()
+        pm = self._pm(guild_id)
+        it = pm.pop_next()
         return {"ok": True, "item": it}
 
+
 # -----------------------------------------------------------------------------
+# Bot Discord
 INTENTS = discord.Intents.default()
 INTENTS.message_content = False
 INTENTS.members = True
 INTENTS.presences = False
 INTENTS.guilds = True
 INTENTS.voice_states = True
+
 
 class GregBot(commands.Bot):
     def __init__(self):
@@ -114,16 +132,15 @@ class GregBot(commands.Bot):
             intents=INTENTS,
             application_id=int(config.DISCORD_APP_ID),
         )
-        self.web_app = None  # Flask app
-        self._emit_fn_bridged = False
+        self.web_app = None
 
     async def _load_ext_dir(self, dirname: str):
-        import pkgutil, importlib, sys
+        """Charge toutes les extensions (cogs) d'un dossier si présent."""
+        import pkgutil
+        import importlib  # noqa: F401 (utile si side-effects d'import)
+
         if not os.path.isdir(dirname):
             return
-        # Assure que le dossier est sur le path
-        if dirname not in sys.path:
-            sys.path.insert(0, os.getcwd())
         for _, modname, ispkg in pkgutil.iter_modules([dirname]):
             if ispkg:
                 continue
@@ -135,6 +152,7 @@ class GregBot(commands.Bot):
                 logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
 
     async def setup_hook(self):
+        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
         for dir_name in ("commands", "cogs"):
             await self._load_ext_dir(dir_name)
         await self.tree.sync()
@@ -149,18 +167,22 @@ class GregBot(commands.Bot):
             logger.debug("Selftest skipped: %s", e)
 
     async def post_restart_selftest(self):
-        """
-        Self-test non bloquant : HTTP via thread, SocketIO via self.web_app si dispo.
-        """
+        """Check rapide de l'environnement, utile après redémarrage."""
         results: list[tuple[str, bool, str]] = []
 
         # 1) Cogs présents
         expected_cogs = [
-            "Music", "Voice", "General", "EasterEggs", "Spook", "SpotifyAccount", "CookieGuardian"
+            "Music",
+            "Voice",
+            "General",
+            "EasterEggs",
+            "Spook",
+            "SpotifyAccount",
+            "CookieGuardian",
         ]
         for name in expected_cogs:
             ok = self.get_cog(name) is not None
-            results.append(("Cog:"+name, ok, "" if ok else "non chargé"))
+            results.append(("Cog:" + name, ok, "" if ok else "non chargé"))
 
         # 2) Slash commands
         try:
@@ -170,35 +192,66 @@ class GregBot(commands.Bot):
             names = set()
             results.append(("Slash:fetch_commands", False, str(e)))
         expected_cmds = [
-            "play","pause","resume","skip","stop","playlist","current",
-            "ping","greg","web","help","restart",
-            "roll","coin","tarot","curse","praise","shame","skullrain","gregquote",
-            "spook_enable","spook_settings","spook_status",
-            "spook_test","spook_files","spook_reload","spook_scare",
-            "yt_cookies_update","yt_cookies_check",
+            # music/voice/general
+            "play",
+            "pause",
+            "resume",
+            "skip",
+            "stop",
+            "playlist",
+            "current",
+            "ping",
+            "greg",
+            "web",
+            "help",
+            "restart",
+            # easter eggs
+            "roll",
+            "coin",
+            "tarot",
+            "curse",
+            "praise",
+            "shame",
+            "skullrain",
+            "gregquote",
+            # spook
+            "spook_enable",
+            "spook_settings",
+            "spook_status",
+            "spook_test",
+            "spook_files",
+            "spook_reload",
+            "spook_scare",
+            # guardian yt cookies
+            "yt_cookies_update",
+            "yt_cookies_check",
         ]
         missing = [c for c in expected_cmds if c not in names]
-        results.append(("Slash:manquants", len(missing) == 0, "" if not missing else ", ".join(missing)))
+        if missing:
+            results.append(("Slash:manquants", False, ", ".join(missing)))
+        else:
+            results.append(("Slash:manquants", True, ""))
 
         # 3) FFmpeg
         try:
             music_cog = self.get_cog("Music")
             ff = music_cog.detect_ffmpeg() if music_cog and hasattr(music_cog, "detect_ffmpeg") else "ffmpeg"
             cp = subprocess.run([ff, "-version"], capture_output=True, text=True, timeout=3)
-            ok = (cp.returncode == 0)
+            ok = cp.returncode == 0
             results.append(("FFmpeg", ok, "" if ok else (cp.stderr or cp.stdout)[:200]))
         except Exception as e:
             results.append(("FFmpeg", False, str(e)))
 
-        # 4) Overlay HTTP (non bloquant)
-        async def http_get(url, timeout=2):
-            return await asyncio.to_thread(requests.get, url, timeout=timeout)
-
+        # 4) Overlay HTTP
         try:
-            if os.getenv("DISABLE_WEB", "0") != "1":
-                r = await http_get("http://127.0.0.1:3000/healthz", timeout=2)
-                if r.status_code == 404:
-                    r = await http_get("http://127.0.0.1:3000/", timeout=2)
+            if not os.getenv("DISABLE_WEB", "0") == "1":
+                try:
+                    r = requests.get("http://127.0.0.1:3000/healthz", timeout=2)
+                except Exception:
+                    r = None
+                if r is None or r.status_code == 404:
+                    r = requests.get("http://127.0.0.1:3000/", timeout=2)
+
                 ok = r.status_code < 500
                 results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
             else:
@@ -206,17 +259,18 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
 
-        # 5) SocketIO emit (ne dépend pas de __main__)
+        # 5) SocketIO emit
         try:
-            si = getattr(self.web_app, "socketio", None)
-            if si:
-                si.emit("selftest_ping", {"ok": True, "t": time.time()})
+            from __main__ import socketio  # disponible quand exécuté en script
+            if socketio:
+                socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
                 results.append(("SocketIO:emit", True, "emit ok"))
             else:
                 results.append(("SocketIO:instance", False, "socketio=None"))
         except Exception as e:
             results.append(("SocketIO:emit", False, str(e)))
 
+        # Dump résultat
         for name, ok, info in results:
             logger.info("Selftest %-22s : %s %s", name, "OK" if ok else "KO", ("" if ok else f"({info})"))
 
@@ -229,9 +283,8 @@ class GregBot(commands.Bot):
     async def setup_emit_fn(self):
         """
         Branche un emit(event, data, guild_id=...) utilisable par les Cogs.
+        L’émetteur cible la room Socket.IO 'guild:{gid}' pour éviter les collisions.
         """
-        if self._emit_fn_bridged:
-            return
 
         def _resolve_socketio():
             try:
@@ -262,13 +315,14 @@ class GregBot(commands.Bot):
                 cog.emit_fn = _emit
                 logger.info("emit_fn branché sur %s", cog_name)
 
-        self._emit_fn_bridged = True
-
-        # Self-test asynchrone de confort (optionnel)
+        # Self-test post restart (optionnel)
         try:
+            import asyncio
+
             asyncio.create_task(run_post_restart_selftest(self))
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
+
 
 async def run_post_restart_selftest(bot: GregBot):
     try:
@@ -276,10 +330,13 @@ async def run_post_restart_selftest(bot: GregBot):
     except Exception as e:
         logger.debug("Self-test (async) non lancé: %s", e)
 
+
 # -----------------------------------------------------------------------------
+# Flask + SocketIO (overlay web)
 DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
 app = None
 socketio = None
+
 
 def build_web_app():
     """Construit l'app Flask API + retourne l'instance Socket.IO partagée."""
@@ -293,6 +350,7 @@ def build_web_app():
     api_app.socketio = api_socketio
     return api_app, api_socketio
 
+
 def run_web():
     if socketio and app:
         mode = getattr(socketio, "async_mode", "threading")
@@ -301,6 +359,7 @@ def run_web():
             socketio.run(app, host="0.0.0.0", port=3000)
         else:
             socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+
 
 def wait_for_web():
     for i in range(30):
@@ -314,6 +373,9 @@ def wait_for_web():
     logger.critical("Serveur web jamais prêt !")
     raise SystemExit("[FATAL] Serveur web jamais prêt !")
 
+
+# -----------------------------------------------------------------------------
+# Main
 if __name__ == "__main__":
     # Garde-fous ENV utiles
     if not getattr(config, "DISCORD_TOKEN", None):
@@ -325,10 +387,12 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         try:
-            app, socketio = build_web_app()   # <-- PAS de 'global' ici
+            # Pas de 'global' ici : on est déjà au scope module
+            app, socketio = build_web_app()
             app.bot = bot
             bot.web_app = app
             logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
+
             threading.Thread(target=run_web, daemon=True).start()
             wait_for_web()
         except Exception as e:
