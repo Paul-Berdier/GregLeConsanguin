@@ -1,20 +1,21 @@
 # main.py
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
 import time
 import socket
 import subprocess
-from typing import Any
+from typing import Any, Optional, Dict
 
 import requests
 import discord
 from discord.ext import commands
 
-from utils.playlist_manager import PlaylistManager
 import config
+from api.services.player_service import PlayerService
 
 # -----------------------------------------------------------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -30,88 +31,88 @@ logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
 # -----------------------------------------------------------------------------
-# PlaylistManager multi-serveur
-playlist_managers: dict[str, PlaylistManager] = {}  # {guild_id: PlaylistManager}
-_pm_lock = threading.Lock()
-
-
-def get_pm(guild_id: int | str) -> PlaylistManager:
-    gid = str(guild_id).strip()
-    pm = playlist_managers.get(gid)
-    if pm is not None:
-        return pm
-    with _pm_lock:
-        pm = playlist_managers.get(gid)
-        if pm is None:
-            pm = PlaylistManager(gid)
-            playlist_managers[gid] = pm
-            logger.info("PlaylistManager créée pour guild %s", gid)
-        return pm
-
-
-# -----------------------------------------------------------------------------
-# Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
-class APIPMAdapter:
+# Bridge API → PlayerService : source de vérité unique
+class PlayerAPIBridge:
     """
-    Façade API au-dessus de utils.PlaylistManager.
-    Toutes les méthodes acceptent un guild_id optionnel.
+    Façade API au-dessus de api.services.player_service.PlayerService.
+    Toutes les méthodes acceptent un guild_id optionnel et appellent
+    le PlayerService attaché au bot (unique source de vérité).
     """
-
-    def __init__(self, default_gid: str | None = None):
-        self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
-
-    def _pm(self, gid: str | int | None) -> PlaylistManager:
-        if gid is not None and str(gid).strip():
-            return get_pm(gid)
+    def __init__(self, default_gid: Optional[str] = None):
+        self.default_gid = (default_gid or os.getenv("DEFAULT_GUILD_ID"))
         if self.default_gid:
-            return get_pm(self.default_gid)
-        raise RuntimeError(
-            "DEFAULT_GUILD_ID non défini pour l'API. "
-            "Définis la variable d'environnement DEFAULT_GUILD_ID ou passe guild_id."
-        )
+            self.default_gid = str(self.default_gid).strip()
 
-    # ---- État de la playlist ----
-    def get_state(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        return pm.to_dict()
+    def _gid(self, gid: Optional[str | int]) -> int:
+        if gid is not None and str(gid).strip():
+            return int(gid)
+        if self.default_gid:
+            return int(self.default_gid)
+        raise RuntimeError("DEFAULT_GUILD_ID non défini. Passez guild_id dans l’appel API.")
 
-    # ---- Enqueue ----
-    def enqueue(
-        self,
-        query: str,
-        user_id: str | None = None,
-        guild_id: str | int | None = None,
-    ) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        pm.add(query, added_by=user_id)
-        return {"ok": True, "length": pm.length()}
+    def _svc(self):
+        # Récupère le PlayerService déjà attaché au bot par commands/Music (ou par main)
+        b = globals().get("bot")
+        svc = getattr(b, "player_service", None) if b else None
+        if not svc:
+            raise RuntimeError("PlayerService indisponible (bot.player_service est None).")
+        return svc, b
 
-    # ---- Skip ----
-    def skip(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        pm.skip()
-        return {"ok": True, "length": pm.length()}
+    def _call(self, coro):
+        # Exécute une coroutine du PlayerService dans la loop Discord (thread-safe)
+        _, b = self._svc()
+        fut = asyncio.run_coroutine_threadsafe(coro, b.loop)
+        return fut.result(timeout=20)
 
-    # ---- Stop ----
-    def stop(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        pm.stop()
-        return {"ok": True, "length": pm.length()}
+    # ---- lecture d’état (utilisé par l’overlay / API GET) ----
+    def get_state(self, guild_id: Optional[str | int] = None) -> Dict[str, Any]:
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        return svc._overlay_payload(gid)
 
-    # ---- Remove / Move / Next (si routes exposées) ----
-    def remove_at(self, index: int, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        ok = pm.remove_at(index)
+    # ---- enqueue ----
+    def enqueue(self, query: str | Dict[str, Any], user_id: Optional[str] = None, guild_id: Optional[str | int] = None):
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        item = query if isinstance(query, dict) else {"url": str(query)}
+        uid = int(user_id) if user_id is not None and str(user_id).strip() else 0
+        return self._call(svc.enqueue(gid, uid, item))
+
+    # ---- skip/stop ----
+    def skip(self, guild_id: Optional[str | int] = None):
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        return self._call(svc.skip(gid))
+
+    def stop(self, guild_id: Optional[str | int] = None):
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        return self._call(svc.stop(gid))
+
+    # ---- remove/move/pop_next (optionnel selon tes routes) ----
+    def remove_at(self, index: int, guild_id: Optional[str | int] = None):
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        pm = svc._get_pm(gid)
+        ok = pm.remove_at(int(index))
+        svc._emit_playlist_update(gid)
         return {"ok": bool(ok), "length": pm.length()}
 
-    def move(self, src: int, dst: int, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        ok = pm.move(src, dst)
+    def move(self, src: int, dst: int, guild_id: Optional[str | int] = None):
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        pm = svc._get_pm(gid)
+        ok = pm.move(int(src), int(dst))
+        svc._emit_playlist_update(gid)
         return {"ok": bool(ok), "length": pm.length()}
 
-    def pop_next(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
+    def pop_next(self, guild_id: Optional[str | int] = None):
+        # Exposition rarement utile publiquement, conservée pour compat
+        svc, _ = self._svc()
+        gid = self._gid(guild_id)
+        pm = svc._get_pm(gid)
         it = pm.pop_next()
+        svc._emit_playlist_update(gid)
         return {"ok": True, "item": it}
 
 
@@ -133,6 +134,8 @@ class GregBot(commands.Bot):
             application_id=int(config.DISCORD_APP_ID),
         )
         self.web_app = None
+        # ✅ Crée le PlayerService dès maintenant pour qu’il soit partagé
+        self.player_service: PlayerService = PlayerService(self)
 
     async def _load_ext_dir(self, dirname: str):
         """Charge toutes les extensions (cogs) d'un dossier si présent."""
@@ -318,7 +321,6 @@ class GregBot(commands.Bot):
         # Self-test post restart (optionnel)
         try:
             import asyncio
-
             asyncio.create_task(run_post_restart_selftest(self))
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
@@ -343,7 +345,8 @@ def build_web_app():
     from api import create_app as create_api_app
     from api.core.extensions import socketio as api_socketio
 
-    pm_adapter = APIPMAdapter()
+    # 🔗 Bridge API→PlayerService (plus de APIPMAdapter)
+    pm_adapter = PlayerAPIBridge(default_gid=os.getenv("DEFAULT_GUILD_ID"))
     api_app = create_api_app(pm=pm_adapter)
 
     # Attache pour accès via bot.web_app.socketio
@@ -387,10 +390,11 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         try:
-            # Pas de 'global' ici : on est déjà au scope module
             app, socketio = build_web_app()
             app.bot = bot
             bot.web_app = app
+            # Expose PlayerService sur l’app pour d’éventuelles routes directes
+            app.player_service = bot.player_service
             logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
 
             threading.Thread(target=run_web, daemon=True).start()
