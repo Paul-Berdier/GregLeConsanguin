@@ -1,0 +1,2 @@
+# backend/api/schemas/__init__.py
+# (vide)

@@ -68,7 +68,7 @@ _YT_UA = os.getenv("YTDLP_FORCE_UA") or (
 _FORCE_IPV4 = os.getenv("YTDLP_FORCE_IPV4", "1").lower() not in ("0", "false", "")
 _HTTP_PROXY = os.getenv("YTDLP_HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY")
 
-_CLIENTS_ORDER = ["ios", "android", "web_creator", "web", "web_mobile"]
+_CLIENTS_ORDER = ["web_mobile", "web", "ios", "android", "web_creator" ]
 
 _FORMAT_CHAIN = os.getenv(
     "YTDLP_FORMAT",

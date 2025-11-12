@@ -1,17 +1,17 @@
+# main.py
 import logging
 import os
 import threading
 import time
 import socket
-import json
 import subprocess
 import requests
 import discord
 from discord.ext import commands
+from typing import Any
 
 from utils.playlist_manager import PlaylistManager
 import config
-from typing import Any
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -21,15 +21,15 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("greg.log", encoding="utf-8")
+        logging.FileHandler("greg.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # PlaylistManager multi-serveur
-playlist_managers = {}  # {guild_id: PlaylistManager}
+playlist_managers: dict[str, PlaylistManager] = {}  # {guild_id: PlaylistManager}
 RESTART_MARKER = ".greg_restart.json"
 
 def get_pm(guild_id: int | str) -> PlaylistManager:
@@ -41,7 +41,43 @@ def get_pm(guild_id: int | str) -> PlaylistManager:
         logger.info("PlaylistManager créée pour guild %s", gid)
     return pm
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
+class APIPMAdapter:
+    """
+    Façade minimaliste utilisée par l'API (backend.api.services.playlist_manager)
+    qui attend un objet doté de: get_state(), enqueue(query, user_id=None),
+    skip(), stop().
+
+    - Sélectionne la guilde par défaut via l'env DEFAULT_GUILD_ID.
+    - Si non défini, lève une erreur claire (503 côté API).
+    """
+
+    def __init__(self, default_gid: str | None = None):
+        self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
+
+    def _pm(self) -> PlaylistManager:
+        if not self.default_gid:
+            raise RuntimeError(
+                "DEFAULT_GUILD_ID non défini pour l'API. "
+                "Définis la variable d'environnement DEFAULT_GUILD_ID."
+            )
+        return get_pm(self.default_gid)
+
+    # Méthodes requises par l'API
+    def get_state(self) -> dict[str, Any]:
+        return self._pm().get_state()
+
+    def enqueue(self, query: str, user_id: str | None = None) -> dict[str, Any]:
+        return self._pm().enqueue(query=query, user_id=user_id)
+
+    def skip(self) -> dict[str, Any]:
+        return self._pm().skip()
+
+    def stop(self) -> dict[str, Any]:
+        return self._pm().stop()
+
+# -----------------------------------------------------------------------------
 # Bot Discord
 INTENTS = discord.Intents.default()
 INTENTS.message_content = False
@@ -117,8 +153,6 @@ class GregBot(commands.Bot):
             # spook
             "spook_enable","spook_settings","spook_status",
             "spook_test","spook_files","spook_reload","spook_scare",
-            # spotify account
-            "set_spotify_account","unset_spotify_account",
             # guardian yt cookies
             "yt_cookies_update","yt_cookies_check",
         ]
@@ -175,7 +209,6 @@ class GregBot(commands.Bot):
         Branche un emit(event, data, guild_id=...) utilisable par les Cogs.
         L’émetteur cible la room Socket.IO 'guild:{gid}' pour éviter les collisions.
         """
-        # ---- Wire emit_fn to Socket.IO (no fragile __main__ import) ----
         def _resolve_socketio():
             try:
                 si = globals().get("socketio")
@@ -193,7 +226,6 @@ class GregBot(commands.Bot):
             try:
                 gid = kwargs.get("guild_id")
                 if gid is not None:
-                    # target all overlays for this guild
                     si.emit(event, data, room=f"guild:{gid}")
                 else:
                     si.emit(event, data)
@@ -219,20 +251,33 @@ async def run_post_restart_selftest(bot: GregBot):
     except Exception as e:
         logger.debug("Self-test (async) non lancé: %s", e)
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Flask + SocketIO (overlay web)
 DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
 app = None
 socketio = None
 
+def build_web_app():
+    """Construit l'app Flask API + retourne l'instance Socket.IO partagée."""
+    # Import ici pour éviter side-effects avant la config
+    from api import create_app as create_api_app
+    from api.core.extensions import socketio as api_socketio
+
+    # Injecte un adaptateur PM “global” (guilde par défaut via DEFAULT_GUILD_ID)
+    pm_adapter = APIPMAdapter()
+    api_app = create_api_app(pm=pm_adapter)
+
+    # Attache la réf socketio sur l'app (utile pour bot.web_app.socketio)
+    api_app.socketio = api_socketio
+    return api_app, api_socketio
+
 if not DISABLE_WEB:
     try:
-        from connect import create_web_app
-        app, socketio = create_web_app(get_pm)
+        app, socketio = build_web_app()
         app.bot = None  # attaché plus tard
         logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
-    except ImportError:
-        logger.warning("Overlay désactivé : module 'connect' introuvable")
+    except ImportError as e:
+        logger.warning("Overlay désactivé : api introuvable (%s)", e)
         DISABLE_WEB = True
 
 def run_web():
@@ -256,7 +301,7 @@ def wait_for_web():
     logger.critical("Serveur web jamais prêt !")
     raise SystemExit("[FATAL] Serveur web jamais prêt !")
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Main
 if __name__ == "__main__":
     bot = GregBot()
