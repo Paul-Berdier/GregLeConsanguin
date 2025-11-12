@@ -1,42 +1,40 @@
 # Utilise une image Python récente
 FROM python:3.12-slim
 
-# Évite l'écriture de fichiers .pyc et active le mode verbeux
+# Evite les .pyc et active stdout non bufferisé
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
 
-# Définit le répertoire de travail
 WORKDIR /app
 
-# Installe git, ffmpeg et les libs nécessaires à l'audio (PyNaCl)
-RUN apt-get update && apt-get install -y \
-    ffmpeg ca-certificates curl \
+# Dépendances système (ffmpeg, curl, unzip pour Deno, libs audio/GUI, build)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg ca-certificates curl unzip \
     libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
     libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-6 libx11-xcb1 \
     libxcb-dri3-0 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
     libxkbcommon0 libxrandr2 libxshmfence1 libpango-1.0-0 libxrender1 \
-    git \
-    libffi-dev \
-    libsodium-dev \
-    build-essential \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    git libffi-dev libsodium-dev build-essential \
+  && rm -rf /var/lib/apt/lists/*
 
-# ★ Runtime JS pour yt-dlp (requis pour le déchiffrement EJS) → Deno
-RUN curl -fsSL https://deno.land/install.sh | sh -s -- -y
-ENV DENO_INSTALL=/root/.deno
-ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+# Installe Deno (EJS yt-dlp) dans /usr/local/bin (pas besoin de modifier le PATH)
+ENV DENO_INSTALL=/usr/local
+RUN curl -fsSL https://deno.land/install.sh | sh -s -- -y && deno --version
 
-# Copie les fichiers de l'app
+# Copie l'app
 COPY . .
 
-# Met à jour pip et installe la version dev de discord.py avec l'extra [voice]
-RUN pip install --upgrade pip && \
+# Dépendances Python
+# - discord.py[voice] (dev) + requirements.txt
+# - yt-dlp[default] pour activer le runtime JS (EJS/cipher) côté yt-dlp
+RUN python -m pip install --upgrade pip && \
     pip install "discord.py[voice] @ git+https://github.com/Rapptz/discord.py@master" && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install -U "yt-dlp[default]"
 
-RUN python -m playwright install chromium
+# (Si tu utilises Playwright ailleurs) — sinon commente cette ligne
+RUN python -m playwright install chromium || true
 
-
-# Commande de démarrage du bot
+# Lancement
 CMD ["python", "main.py"]
