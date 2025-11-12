@@ -1,4 +1,5 @@
 # main.py
+import asyncio
 import logging
 import os
 import threading
@@ -14,7 +15,6 @@ from utils.playlist_manager import PlaylistManager
 import config
 
 # -----------------------------------------------------------------------------
-# Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -27,15 +27,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
+# Windows: boucle événementielle plus stable pour discord.py
+if os.name == "nt":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 # -----------------------------------------------------------------------------
-# PlaylistManager multi-serveur
 playlist_managers: dict[str, PlaylistManager] = {}  # {guild_id: PlaylistManager}
 RESTART_MARKER = ".greg_restart.json"
-
 _pm_lock = threading.Lock()
 
 def get_pm(guild_id: int | str) -> PlaylistManager:
-    gid = str(guild_id).strip()             # évite le int() qui peut lever si ça arrive déjà en str
+    gid = str(guild_id).strip()
     pm = playlist_managers.get(gid)
     if pm is not None:
         return pm
@@ -46,14 +51,9 @@ def get_pm(guild_id: int | str) -> PlaylistManager:
             playlist_managers[gid] = pm
             logger.info("PlaylistManager créée pour guild %s", gid)
         return pm
-# -----------------------------------------------------------------------------
-# Adaptateur pour exposer un PM “global” à l’API (fallback par DEFAULT_GUILD_ID)
-class APIPMAdapter:
-    """
-    Façade API au-dessus de utils.PlaylistManager.
-    Toutes les méthodes acceptent un guild_id optionnel.
-    """
 
+# -----------------------------------------------------------------------------
+class APIPMAdapter:
     def __init__(self, default_gid: str | None = None):
         self.default_gid = default_gid or os.getenv("DEFAULT_GUILD_ID")
 
@@ -67,31 +67,24 @@ class APIPMAdapter:
             "Définis la variable d'environnement DEFAULT_GUILD_ID ou passe guild_id."
         )
 
-    # ---- État de la playlist ----
     def get_state(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        # ton PM expose to_dict() → snapshot prêt pour l’API
-        return pm.to_dict()
+        return self._pm(guild_id).to_dict()
 
-    # ---- Enqueue ----
     def enqueue(self, query: str, user_id: str | None = None, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.add(query, added_by=user_id)
         return {"ok": True, "length": pm.length()}
 
-    # ---- Skip ----
     def skip(self, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.skip()
         return {"ok": True, "length": pm.length()}
 
-    # ---- Stop ----
     def stop(self, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         pm.stop()
         return {"ok": True, "length": pm.length()}
 
-    # (optionnel) expose aussi remove/move/next si tu crées les routes:
     def remove_at(self, index: int, guild_id: str | int | None = None) -> dict[str, Any]:
         pm = self._pm(guild_id)
         ok = pm.remove_at(index)
@@ -103,12 +96,10 @@ class APIPMAdapter:
         return {"ok": bool(ok), "length": pm.length()}
 
     def pop_next(self, guild_id: str | int | None = None) -> dict[str, Any]:
-        pm = self._pm(guild_id)
-        it = pm.pop_next()
+        it = self._pm(guild_id).pop_next()
         return {"ok": True, "item": it}
 
 # -----------------------------------------------------------------------------
-# Bot Discord
 INTENTS = discord.Intents.default()
 INTENTS.message_content = False
 INTENTS.members = True
@@ -123,13 +114,16 @@ class GregBot(commands.Bot):
             intents=INTENTS,
             application_id=int(config.DISCORD_APP_ID),
         )
-        self.web_app = None
+        self.web_app = None  # Flask app
+        self._emit_fn_bridged = False
 
     async def _load_ext_dir(self, dirname: str):
-        """Charge toutes les extensions (cogs) d'un dossier si présent."""
-        import pkgutil, importlib
+        import pkgutil, importlib, sys
         if not os.path.isdir(dirname):
             return
+        # Assure que le dossier est sur le path
+        if dirname not in sys.path:
+            sys.path.insert(0, os.getcwd())
         for _, modname, ispkg in pkgutil.iter_modules([dirname]):
             if ispkg:
                 continue
@@ -141,7 +135,6 @@ class GregBot(commands.Bot):
                 logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
 
     async def setup_hook(self):
-        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
         for dir_name in ("commands", "cogs"):
             await self._load_ext_dir(dir_name)
         await self.tree.sync()
@@ -156,7 +149,9 @@ class GregBot(commands.Bot):
             logger.debug("Selftest skipped: %s", e)
 
     async def post_restart_selftest(self):
-        """Check rapide de l'environnement, utile après redémarrage."""
+        """
+        Self-test non bloquant : HTTP via thread, SocketIO via self.web_app si dispo.
+        """
         results: list[tuple[str, bool, str]] = []
 
         # 1) Cogs présents
@@ -175,22 +170,15 @@ class GregBot(commands.Bot):
             names = set()
             results.append(("Slash:fetch_commands", False, str(e)))
         expected_cmds = [
-            # music/voice/general habituels…
             "play","pause","resume","skip","stop","playlist","current",
             "ping","greg","web","help","restart",
-            # easter eggs
             "roll","coin","tarot","curse","praise","shame","skullrain","gregquote",
-            # spook
             "spook_enable","spook_settings","spook_status",
             "spook_test","spook_files","spook_reload","spook_scare",
-            # guardian yt cookies
             "yt_cookies_update","yt_cookies_check",
         ]
         missing = [c for c in expected_cmds if c not in names]
-        if missing:
-            results.append(("Slash:manquants", False, ", ".join(missing)))
-        else:
-            results.append(("Slash:manquants", True, ""))
+        results.append(("Slash:manquants", len(missing) == 0, "" if not missing else ", ".join(missing)))
 
         # 3) FFmpeg
         try:
@@ -202,16 +190,15 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("FFmpeg", False, str(e)))
 
-        # 4) Overlay HTTP
-        try:
-            if not os.getenv("DISABLE_WEB", "0") == "1":
-                try:
-                    r = requests.get("http://127.0.0.1:3000/healthz", timeout=2)
-                except Exception:
-                    r = None
-                if r is None or r.status_code == 404:
-                    r = requests.get("http://127.0.0.1:3000/", timeout=2)
+        # 4) Overlay HTTP (non bloquant)
+        async def http_get(url, timeout=2):
+            return await asyncio.to_thread(requests.get, url, timeout=timeout)
 
+        try:
+            if os.getenv("DISABLE_WEB", "0") != "1":
+                r = await http_get("http://127.0.0.1:3000/healthz", timeout=2)
+                if r.status_code == 404:
+                    r = await http_get("http://127.0.0.1:3000/", timeout=2)
                 ok = r.status_code < 500
                 results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
             else:
@@ -219,18 +206,17 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
 
-        # 5) SocketIO emit
+        # 5) SocketIO emit (ne dépend pas de __main__)
         try:
-            from __main__ import socketio
-            if socketio:
-                socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
+            si = getattr(self.web_app, "socketio", None)
+            if si:
+                si.emit("selftest_ping", {"ok": True, "t": time.time()})
                 results.append(("SocketIO:emit", True, "emit ok"))
             else:
                 results.append(("SocketIO:instance", False, "socketio=None"))
         except Exception as e:
             results.append(("SocketIO:emit", False, str(e)))
 
-        # Dump résultat
         for name, ok, info in results:
             logger.info("Selftest %-22s : %s %s", name, "OK" if ok else "KO", ("" if ok else f"({info})"))
 
@@ -243,8 +229,10 @@ class GregBot(commands.Bot):
     async def setup_emit_fn(self):
         """
         Branche un emit(event, data, guild_id=...) utilisable par les Cogs.
-        L’émetteur cible la room Socket.IO 'guild:{gid}' pour éviter les collisions.
         """
+        if self._emit_fn_bridged:
+            return
+
         def _resolve_socketio():
             try:
                 si = globals().get("socketio")
@@ -274,9 +262,10 @@ class GregBot(commands.Bot):
                 cog.emit_fn = _emit
                 logger.info("emit_fn branché sur %s", cog_name)
 
-        # Self-test post restart (optionnel)
+        self._emit_fn_bridged = True
+
+        # Self-test asynchrone de confort (optionnel)
         try:
-            import asyncio
             asyncio.create_task(run_post_restart_selftest(self))
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
@@ -288,33 +277,21 @@ async def run_post_restart_selftest(bot: GregBot):
         logger.debug("Self-test (async) non lancé: %s", e)
 
 # -----------------------------------------------------------------------------
-# Flask + SocketIO (overlay web)
 DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
 app = None
 socketio = None
 
 def build_web_app():
     """Construit l'app Flask API + retourne l'instance Socket.IO partagée."""
-    # Import ici pour éviter side-effects avant la config
     from api import create_app as create_api_app
     from api.core.extensions import socketio as api_socketio
 
-    # Injecte un adaptateur PM “global” (guilde par défaut via DEFAULT_GUILD_ID)
     pm_adapter = APIPMAdapter()
     api_app = create_api_app(pm=pm_adapter)
 
-    # Attache la réf socketio sur l'app (utile pour bot.web_app.socketio)
+    # Attache pour accès via bot.web_app.socketio
     api_app.socketio = api_socketio
     return api_app, api_socketio
-
-if not DISABLE_WEB:
-    try:
-        app, socketio = build_web_app()
-        app.bot = None  # attaché plus tard
-        logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
-    except ImportError as e:
-        logger.warning("Overlay désactivé : api introuvable (%s)", e)
-        DISABLE_WEB = True
 
 def run_web():
     if socketio and app:
@@ -337,21 +314,31 @@ def wait_for_web():
     logger.critical("Serveur web jamais prêt !")
     raise SystemExit("[FATAL] Serveur web jamais prêt !")
 
-# -----------------------------------------------------------------------------
-# Main
 if __name__ == "__main__":
+    # Garde-fous ENV utiles
+    if not getattr(config, "DISCORD_TOKEN", None):
+        raise SystemExit("DISCORD_TOKEN manquant dans config.py / env")
+    if not getattr(config, "DISCORD_APP_ID", None):
+        raise SystemExit("DISCORD_APP_ID manquant dans config.py / env")
+
     bot = GregBot()
 
     if not DISABLE_WEB:
-        app.bot = bot
-        bot.web_app = app
-        threading.Thread(target=run_web, daemon=True).start()
-        wait_for_web()
+        try:
+            global app, socketio
+            app, socketio = build_web_app()
+            app.bot = bot
+            bot.web_app = app
+            logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
+            threading.Thread(target=run_web, daemon=True).start()
+            wait_for_web()
+        except Exception as e:
+            logger.warning("Overlay désactivé (fallback) : %s", e)
 
-    # Branche l'emit_fn après que les cogs soient chargés et les slash sync
+    # Wrapper pour brancher emit_fn puis appeler le on_ready d'origine
     @bot.event
     async def on_ready():
-        await bot.setup_emit_fn()  # branche emit_fn
-        await GregBot.on_ready(bot)  # call parent handler
+        await bot.setup_emit_fn()
+        await GregBot.on_ready(bot)
 
     bot.run(config.DISCORD_TOKEN)

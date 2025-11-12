@@ -93,6 +93,7 @@ def _init_stores(app: Flask) -> None:
     """
     Initialise le store (JSON par défaut, Redis si REDIS_URL).
     """
+    import os
     from .storage.json_store import JsonTokenStore
     from .storage.redis_store import RedisTokenStore
 
@@ -100,6 +101,8 @@ def _init_stores(app: Flask) -> None:
     if app.config.get("REDIS_URL"):
         stores["tokens"] = RedisTokenStore(app.config["REDIS_URL"])
     else:
-        stores["tokens"] = JsonTokenStore(app.config["JSON_STORE_PATH"])
+        json_path = app.config["JSON_STORE_PATH"]
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        stores["tokens"] = JsonTokenStore(json_path)
 
     app.extensions["stores"].update(stores)
