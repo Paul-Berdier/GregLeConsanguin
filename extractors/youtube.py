@@ -252,7 +252,7 @@ def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None
     if _PO_TOKENS:
         return
 
-    # 1) tentative ENV d'abord ? → non, on tente AUTO d'abord (comme demandé)
+    # 1) tentative AUTO d'abord
     vid = _extract_video_id(query_or_url)
 
     if not vid:
@@ -531,16 +531,20 @@ async def stream(
 
     # --- headers minimaux & pas de double UA ---
     headers = dict(info.get("http_headers") or {})
-    ua = headers.pop("User-Agent", _YT_UA)  # on retire le UA du blob, on le met SEULEMENT via -user_agent
-    # impose au minimum Referer/Origin (le reste est inutile et parfois nuisible)
+    ua = headers.pop("User-Agent", _YT_UA)  # UA uniquement via -user_agent
     headers["Referer"] = "https://www.youtube.com/"
     headers["Origin"] = "https://www.youtube.com"
-    # NE PAS remettre Accept/Accept-Language/Sec-Fetch-*
     hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
 
-    # Probe HTTP rapide
-    code = _http_probe(stream_url, {"User-Agent": ua, "Referer": "https://www.youtube.com/",
-                                    "Origin": "https://www.youtube.com"}) or 200
+    # Probe HTTP rapide → en executor pour ne pas bloquer l'event loop
+    code = await loop.run_in_executor(
+        None,
+        functools.partial(
+            _http_probe,
+            stream_url,
+            {"User-Agent": ua, "Referer": "https://www.youtube.com/", "Origin": "https://www.youtube.com"},
+        ),
+    ) or 200
     if _AUTO_PIPE_ON_403 and code in (403, 410):
         _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
         return await stream_pipe(
@@ -549,7 +553,7 @@ async def stream(
             ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
-    # --- preflight 2s FFmpeg→null : si ça bloque, on fallback PIPE ---
+    # --- preflight 2s FFmpeg→null : exécuter en executor pour ne PAS bloquer l'event loop ---
     def _preflight_direct_ok() -> bool:
         try:
             cmd = [
@@ -559,7 +563,6 @@ async def stream(
                 "-headers", hdr_blob,
                 "-probesize", "32k",
                 "-analyzeduration", "0",
-                # flags allégés (PLUS de -avioflags direct, PLUS de -http_persistent 0)
                 "-fflags", "nobuffer",
                 "-flags", "low_delay",
                 "-rw_timeout", "15000000",  # 15 sec
@@ -568,14 +571,14 @@ async def stream(
                 "-t", "2",
                 "-f", "null", "-"
             ]
-            # seconds(2) + marge réseau 12–15 s
             cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=18)
             return cp.returncode == 0
         except Exception as e:
             _dbg(f"preflight direct failed: {e}")
             return False
 
-    if not _preflight_direct_ok():
+    ok = await loop.run_in_executor(None, _preflight_direct_ok)
+    if not ok:
         _dbg("STREAM: direct preflight failed → fallback to PIPE")
         return await stream_pipe(
             url_or_query, ffmpeg_path,
@@ -583,7 +586,7 @@ async def stream(
             ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
-    # --- options finales (direct) : UA via -user_agent, headers/min, flags soft ---
+    # --- options finales (direct) ---
     before_opts = (
         "-nostdin "
         f"-user_agent {shlex.quote(ua)} "
@@ -601,8 +604,7 @@ async def stream(
         out_opts += f" -af {shlex.quote(afilter)}"
 
     _dbg(f"FFMPEG before_options={before_opts}")
-    _dbg(
-        f"FFMPEG headers (redacted)={_redact_headers({'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com'})}")
+    _dbg(f"FFMPEG headers (redacted)={_redact_headers({'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com'})}")
 
     source = discord.FFmpegPCMAudio(
         stream_url,
@@ -746,10 +748,7 @@ async def stream_pipe(
         return cmd
 
     def _preflight_and_choose_format() -> str:
-        """ Teste le chainage yt-dlp -> ffmpeg pendant ~2s.
-            Si ffmpeg échoue vite ou si yt-dlp log 'Requested format is not available'
-            → fallback itag 18. """
-        # 1) essai format chaîne
+        """Teste le chainage yt-dlp -> ffmpeg pendant ~2s. Si échec → fallback 18."""
         primary_fmt = _FORMAT_CHAIN
         for attempt, fmt in enumerate([primary_fmt, "18"]):
             cmd = _build_cmd(fmt)
@@ -759,7 +758,6 @@ async def stream_pipe(
                 text=False, bufsize=0, close_fds=True,
                 creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
-            # ffmpeg → nul (2 secondes)
             ff = subprocess.Popen(
                 [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0",
                  "-fflags", "nobuffer", "-flags", "low_delay",
@@ -769,18 +767,12 @@ async def stream_pipe(
             try:
                 out = ff.communicate(timeout=6)[0] or ""
             except subprocess.TimeoutExpired:
-                try:
-                    ff.kill()
-                except Exception:
-                    pass
-                try:
-                    yt.kill()
-                except Exception:
-                    pass
-                # si ça tourne encore >6s, c'est bon signe -> on garde primary_fmt
+                try: ff.kill()
+                except: pass
+                try: yt.kill()
+                except: pass
                 return fmt if attempt == 0 else "18"
 
-            # if ffmpeg exit != 0 or yt-dlp said format not available → retry fmt=18
             rc = ff.returncode
             stderr_join = ""
             try:
@@ -797,7 +789,8 @@ async def stream_pipe(
             _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
         return "18"
 
-    chosen_fmt = _preflight_and_choose_format()
+    # >>> NE PAS BLOQUER L'EVENT LOOP ICI <<<
+    chosen_fmt = await loop.run_in_executor(None, _preflight_and_choose_format)
     _dbg(f"PIPE chosen format: {chosen_fmt}")
 
     # Lance la vraie lecture pour Discord
@@ -913,8 +906,6 @@ def download(
                 _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
         raise RuntimeError(f"Échec download YouTube: {e}") from e
-
-
 
 
 
@@ -1044,7 +1035,6 @@ def _diag_gvs_pull(stream_url: str, headers: Dict[str, str], ffmpeg_exec: str, s
             "-rw_timeout", "15000000",
             "-probesize", "32k", "-analyzeduration", "0",
             "-fflags", "nobuffer", "-flags", "low_delay",
-            # retiré: "-seekable","0", "-http_persistent","0", "-avioflags","direct",
             "-protocol_whitelist", "file,https,tcp,tls,crypto",
         ]
         if _HTTP_PROXY:
@@ -1053,7 +1043,6 @@ def _diag_gvs_pull(stream_url: str, headers: Dict[str, str], ffmpeg_exec: str, s
         cmd = [ffmpeg_exec] + before_opts + ["-i", stream_url, "-t", str(seconds), "-f", "null", "-"]
         print("FFmpeg cmd   :", " ".join(shlex.quote(c) for c in cmd[:10]), "...")
 
-        # seconds + marge réseau (au moins 18–20)
         cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=seconds + 20)
         rc = cp.returncode
         print("FFmpeg rc    :", rc)

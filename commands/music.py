@@ -17,7 +17,8 @@ def _u(interaction: discord.Interaction):
 
 
 class Music(commands.Cog):
-    """Cog FIN: délègue tout au PlayerService.
+    """
+    Cog FIN: délègue tout au PlayerService.
     - FIX: emit_fn est une propriété. Quand main.py assigne cog.emit_fn, on propage
            immédiatement au PlayerService via set_emit_fn(...).
     """
