@@ -33,6 +33,9 @@ def set_oauth_session(tokens: Dict[str, Any]) -> None:
     }
 
 
+def get_oauth_payload() -> Dict[str, Any]:
+    return session.get("oauth", {})  # stocké via set_oauth_session()
+
 def clear_session() -> None:
     session.pop(SESSION_USER_KEY, None)
     session.pop(SESSION_OAUTH_KEY, None)

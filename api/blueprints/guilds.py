@@ -4,6 +4,7 @@ import time
 from flask import Blueprint, jsonify, current_app
 from ..auth.session import require_login, get_access_token
 from ..auth.discord_oauth import fetch_user_me, fetch_user_guilds
+from requests import HTTPError
 
 bp = Blueprint("guilds", __name__)
 TTL = 60
@@ -22,7 +23,14 @@ def guilds():
     if entry and now - entry["t"] < TTL:
         return jsonify(entry["data"]), 200
 
-    data = fetch_user_guilds(token)  # peut lever → laisser ton error handler 500 la catcher/logguer
+    try:
+        data = fetch_user_guilds(token)
+    except HTTPError as e:
+        if e.response is not None and e.response.status_code == 429 and entry:
+            # Serve cache si on en a un
+            return jsonify(entry["data"]), 200
+        raise  # laisser l’error handler global logguer
+
     payload = {"ok": True, "guilds": data}
     cache[key] = {"t": now, "data": payload}
     return jsonify(payload), 200
