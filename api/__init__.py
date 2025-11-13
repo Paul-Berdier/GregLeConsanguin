@@ -63,6 +63,7 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.playlist import bp as playlist_bp
     from .blueprints.admin import bp as admin_bp
     from .blueprints.spotify import bp as spotify_bp
+    from .blueprints.search import bp as search_bp
 
     # 1) Auth monté SANS prefix → /auth/login, /auth/callback, et /api/v1/me (car défini ainsi dans le BP)
     app.register_blueprint(auth_bp)  # <— pas de url_prefix ici
