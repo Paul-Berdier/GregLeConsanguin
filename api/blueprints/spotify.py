@@ -14,13 +14,7 @@ from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from flask import Blueprint, current_app, request, jsonify, redirect, session
-
-# Auth helpers (session)
-try:
-    from api.auth.session import current_user, require_login  # standard
-except Exception:
-    # Back-compat if your module exposes `require_login`
-    from api.auth.session import current_user, require_login as login_required  # type: ignore
+from api.auth.session import current_user, require_login  # standard
 
 # Player service (source de vérité)
 try:
@@ -527,7 +521,7 @@ def _player_payload_for_guild(gid: int) -> Dict[str, Any]:
 #                      ROUTES (Blueprint, sans /api prefix)
 # =============================================================================
 @bp.get("/spotify/login")
-@login_required
+@require_login
 def spotify_login():
     _log("Route /spotify/login")
     try:
@@ -615,7 +609,7 @@ def spotify_callback():
 
 
 @bp.get("/spotify/status")
-@login_required
+@require_login
 def api_spotify_status():
     _log("Route /spotify/status")
     u = current_user()
@@ -634,7 +628,7 @@ def api_spotify_status():
 
 
 @bp.get("/spotify/me")
-@login_required
+@require_login
 def api_spotify_me():
     _log("Route /spotify/me")
     u = current_user()
@@ -649,7 +643,7 @@ def api_spotify_me():
 
 
 @bp.get("/spotify/playlists")
-@login_required
+@require_login
 def api_spotify_playlists():
     _log("Route /spotify/playlists")
     u = current_user()
@@ -682,7 +676,7 @@ def api_spotify_playlists():
 
 
 @bp.get("/spotify/playlist_tracks")
-@login_required
+@require_login
 def api_spotify_playlist_tracks():
     _log("Route /spotify/playlist_tracks", args=dict(request.args))
     u = current_user()
@@ -722,7 +716,7 @@ def api_spotify_playlist_tracks():
 
 
 @bp.get("/spotify/search_tracks")
-@login_required
+@require_login
 def api_spotify_search_tracks():
     _log("Route /spotify/search_tracks", args=dict(request.args))
     u = current_user()
@@ -755,7 +749,7 @@ def api_spotify_search_tracks():
 
 
 @bp.post("/spotify/playlist_create")
-@login_required
+@require_login
 def api_spotify_playlist_create():
     _log("Route /spotify/playlist_create")
     u = current_user()
@@ -781,7 +775,7 @@ def api_spotify_playlist_create():
 
 
 @bp.post("/spotify/playlist_add_track")
-@login_required
+@require_login
 def api_spotify_playlist_add_track():
     _log("Route /spotify/playlist_add_track")
     u = current_user()
@@ -806,7 +800,7 @@ def api_spotify_playlist_add_track():
 
 
 @bp.post("/spotify/playlist_add_by_query")
-@login_required
+@require_login
 def api_spotify_playlist_add_by_query():
     _log("Route /spotify/playlist_add_by_query")
     u = current_user()
@@ -885,7 +879,7 @@ def api_spotify_playlist_add_by_query():
 
 
 @bp.post("/spotify/add_current_to_playlist")
-@login_required
+@require_login
 def api_spotify_add_current_to_playlist():
     _log("Route /spotify/add_current_to_playlist")
     u = current_user()
@@ -979,7 +973,7 @@ def api_spotify_add_current_to_playlist():
 
 
 @bp.post("/spotify/add_queue_to_playlist")
-@login_required
+@require_login
 def api_spotify_add_queue_to_playlist():
     _log("Route /spotify/add_queue_to_playlist")
     u = current_user()
@@ -1068,7 +1062,7 @@ def api_spotify_add_queue_to_playlist():
 
 
 @bp.post("/spotify/quickplay")
-@login_required
+@require_login
 def api_spotify_quickplay():
     import asyncio
     _log("Route /spotify/quickplay")
@@ -1188,7 +1182,7 @@ def api_spotify_quickplay():
 
 
 @bp.post("/spotify/logout")
-@login_required
+@require_login
 def api_spotify_logout():
     _log("Route /spotify/logout")
     u = current_user()
@@ -1198,7 +1192,7 @@ def api_spotify_logout():
 
 
 @bp.post("/spotify/playlist_delete")
-@login_required
+@require_login
 def api_spotify_playlist_delete():
     _log("Route /spotify/playlist_delete")
     u = current_user()
@@ -1221,7 +1215,7 @@ def api_spotify_playlist_delete():
 
 
 @bp.post("/spotify/playlist_remove_tracks")
-@login_required
+@require_login
 def api_spotify_playlist_remove_tracks():
     _log("Route /spotify/playlist_remove_tracks")
     u = current_user()
@@ -1276,7 +1270,7 @@ def api_spotify_playlist_remove_tracks():
 
 
 @bp.post("/spotify/playlist_clear")
-@login_required
+@require_login
 def api_spotify_playlist_clear():
     _log("Route /spotify/playlist_clear")
     u = current_user()
