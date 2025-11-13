@@ -1,107 +1,128 @@
 # api/auth/blueprint.py
-
 from __future__ import annotations
 
 import secrets
-import time
-from typing import Any, Dict
+import string
+from typing import Any, Dict, Optional
 
-from flask import Blueprint, abort, current_app, jsonify, redirect, request, session
+from flask import Blueprint, jsonify, redirect, request, session, url_for
 
-from ..core.security import make_state, verify_state
-from .discord_oauth import build_authorize_url, exchange_code_for_token, get_user_guilds, get_user_info
-from .session import clear_session, set_current_user
+from .discord_oauth import (
+    make_authorize_url,
+    exchange_code_for_token,
+    fetch_user_me,
+)
+from .session import (
+    set_user_session,
+    set_oauth_session,
+    clear_session,
+    current_user,
+    get_access_token,
+)
 
 bp = Blueprint("auth", __name__)
 
+# Petit "device flow" maison pour Overwolf : le callback marque un device_id comme "prêt".
+_DEVICE_FLOWS: Dict[str, Dict[str, Any]] = {}
 
-# --- Flux OAuth standard (navigateur) -------------------------------------------------
-@bp.get("/login")
-def login_redirect():
-    _check_discord_config()
-    state = make_state(current_app.config["SECRET_KEY"], "discord-login", ttl_seconds=600)
+
+def _rand_state(n: int = 32) -> str:
+    alpha = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alpha) for _ in range(n))
+
+
+@bp.get("/auth/login")
+def auth_login():
+    # Optionnel : on passe device_id pour corréler avec le poll côté overlay
+    device_id = request.args.get("device_id", "")
+    state = _rand_state()
     session["oauth_state"] = state
-    return redirect(build_authorize_url(state))
+    if device_id:
+        session["device_id"] = device_id
+    url = make_authorize_url(state, extra_params={"state": state})
+    return redirect(url, code=302)
 
 
-@bp.get("/callback")
-def login_callback():
-    state = request.args.get("state", "")
-    if not state or not verify_state(current_app.config["SECRET_KEY"], state):
-        abort(400, description="Invalid or expired state.")
+@bp.get("/auth/callback")
+def auth_callback():
+    err = request.args.get("error")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
 
-    code = request.args.get("code")
-    if not code:
-        abort(400, description="Missing 'code'.")
+    state = request.args.get("state") or ""
+    code = request.args.get("code") or ""
+    sess_state = session.pop("oauth_state", None)
+    if not sess_state or sess_state != state:
+        return jsonify({"ok": False, "error": "invalid_state"}), 400
 
-    token = exchange_code_for_token(code)
-    access_token = token["access_token"]
+    try:
+        tokens = exchange_code_for_token(code)
+        user = fetch_user_me(tokens["access_token"])
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"oauth_failed: {e}"}), 400
 
-    user = get_user_info(access_token)
-    guilds = get_user_guilds(access_token)
+    set_oauth_session(tokens)
+    set_user_session(user)
 
-    # Restriction optionnelle à un serveur
-    restrict = current_app.config.get("RESTRICT_TO_GUILD_ID")
-    if restrict and not any(g.get("id") == restrict for g in guilds):
-        abort(403, description="User is not in the required guild.")
+    # Si la connexion a été initiée via device flow (Overwolf), marque le device_id comme prêt
+    device_id = session.pop("device_id", None)
+    if device_id:
+        _DEVICE_FLOWS[device_id] = {
+            "user": user,
+            "tokens": tokens,
+            "ready": True,
+        }
+        # Affiche une petite page simple côté navigateur système
+        return (
+            "<html><body><h3>Connexion réussie ✅</h3>"
+            "<p>Vous pouvez revenir dans l'overlay.</p></body></html>"
+        )
 
-    set_current_user(user, tokens={"discord": token})
-    return redirect(request.args.get("next", "/"))
+    # Sinon, renvoie vers une route "OK" générique
+    return redirect(url_for("auth.me"), code=302)
 
 
-@bp.post("/logout")
-def logout():
+@bp.post("/auth/logout")
+def auth_logout():
     clear_session()
     return jsonify({"ok": True})
 
 
-# --- Device Code (simple "poor-man" flow" pour overlays) ------------------------------
-# NOTE: Ce mini-flux n'est pas le vrai OAuth Device Code. Il génère un 'user_code'
-# que l'overlay affiche et que l'utilisateur valide en se connectant sur /auth/login?u=CODE.
-_DEVICE_TICKETS: dict[str, dict[str, Any]] = {}
+@bp.get("/api/v1/me")
+def me():
+    return jsonify(current_user() or {}), 200
 
 
-@bp.post("/device/start")
-def device_start():
-    user_code = secrets.token_urlsafe(6)
-    _DEVICE_TICKETS[user_code] = {"created": time.time(), "user": None}
-    return jsonify({"ok": True, "user_code": user_code})
+# === Device Flow (utilisé par l'overlay-core.js) =============================
+
+@bp.post("/auth/device/start")
+def auth_device_start():
+    device_id = secrets.token_urlsafe(24)
+    _DEVICE_FLOWS[device_id] = {"ready": False, "user": None, "tokens": None}
+    # L'overlay va ouvrir cette URL dans un navigateur externe
+    login_url = url_for("auth.auth_login", device_id=device_id, _external=True)
+    return jsonify({"device_id": device_id, "login_url": login_url})
 
 
-@bp.post("/device/poll")
-def device_poll():
-    data = request.get_json(silent=True) or {}
-    user_code = data.get("user_code")
-    if not user_code or user_code not in _DEVICE_TICKETS:
-        abort(400, description="Invalid user_code.")
+@bp.get("/auth/device/poll")
+def auth_device_poll():
+    device_id = request.args.get("device_id") or ""
+    if not device_id or device_id not in _DEVICE_FLOWS:
+        return jsonify({"ok": False, "error": "invalid_device"}), 400
 
-    ticket = _DEVICE_TICKETS[user_code]
-    if ticket["user"]:
-        return jsonify({"ok": True, "linked": True, "user": ticket["user"]})
-    return jsonify({"ok": True, "linked": False})
+    st = _DEVICE_FLOWS[device_id]
+    if not st.get("ready"):
+        return jsonify({"ok": False, "ready": False}), 200
 
+    # TRANSFERT des droits dans **la session de l'overlay** (celle qui poll)
+    if st.get("tokens"):
+        set_oauth_session(st["tokens"])
+    if st.get("user"):
+        set_user_session(st["user"])
 
-@bp.get("/device/activate")
-def device_activate():
-    """
-    Étape à utiliser après /auth/login classique:
-    /auth/device/activate?u=<user_code>
-    Associe le user courant au code pour permettre à l'overlay de se "lier".
-    """
-    ucode = request.args.get("u")
-    if not ucode or ucode not in _DEVICE_TICKETS:
-        abort(400, description="Invalid activation code.")
+    # On invalide le device token en mémoire
+    st["ready"] = False
+    st["tokens"] = None
+    st["user"] = None
 
-    user = session.get("auth_user")
-    if not user:
-        abort(401, description="Login required before activation.")
-
-    _DEVICE_TICKETS[ucode]["user"] = user
-    return jsonify({"ok": True, "linked": True})
-
-
-def _check_discord_config():
-    need = ("DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_REDIRECT_URI")
-    missing = [k for k in need if not current_app.config.get(k)]
-    if missing:
-        abort(501, description=f"Discord OAuth not configured. Missing: {', '.join(missing)}")
+    return jsonify({"ok": True, "ready": True})
