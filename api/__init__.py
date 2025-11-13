@@ -69,7 +69,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(auth_bp)  # <— pas de url_prefix ici
 
     # 2) Tous les autres sous /api/v1
-    for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp):
+    for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
         app.register_blueprint(bp, url_prefix=API_PREFIX)
 
 
