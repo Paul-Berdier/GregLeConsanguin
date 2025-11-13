@@ -1,33 +1,48 @@
 # api/services/discord.py
-
 from __future__ import annotations
+import time
+import requests
 
-from typing import Any, Dict, List
+DISCORD_API = "https://discord.com/api/v10"
+_GUILDS_CACHE = {}  # token -> (ts, data)
 
-from flask import abort, current_app, session
+class RateLimited(Exception):
+    def __init__(self, retry_after: float | None = None, message: str = "rate_limited"):
+        super().__init__(message)
+        self.retry_after = retry_after
 
-from ..auth.session import current_user
+def get_user_guilds(token: str, ttl: int = 60):
+    """
+    Récupère les guilds de l'utilisateur avec petit cache mémoire et gestion 429.
+    """
+    now = time.time()
+    ts_data = _GUILDS_CACHE.get(token)
+    if ts_data and (now - ts_data[0] < ttl):
+        return ts_data[1]
 
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{DISCORD_API}/users/@me/guilds"
+    resp = requests.get(url, headers=headers, timeout=10)
 
-def _discord_token() -> str:
-    tokens = session.get("auth_tokens") or {}
-    discord = tokens.get("discord") or {}
-    token = discord.get("access_token")
-    if not token:
-        abort(401, description="Discord token missing. Login required.")
-    return token
+    if resp.status_code == 429:
+        retry_after = None
+        try:
+            j = resp.json()
+            retry_after = float(j.get("retry_after", 1))
+        except Exception:
+            pass
+        # Si on a un cache ancien, on le renvoie; sinon on remonte une 429 "contrôlée"
+        if ts_data:
+            return ts_data[1]
+        raise RateLimited(retry_after=retry_after)
 
+    resp.raise_for_status()
+    data = resp.json()
+    _GUILDS_CACHE[token] = (now, data)
+    return data
 
-def get_me() -> Dict[str, Any]:
-    user = current_user()
-    if not user:
-        abort(401, description="Not authenticated.")
-    return user
-
-
-def get_guilds() -> List[Dict[str, Any]]:
-    # Guilds ont été récupérés à l'auth, mais pour simplifier on renvoie "best-effort"
-    from ..auth.discord_oauth import get_user_guilds
-
-    token = _discord_token()
-    return get_user_guilds(token)
+def get_guilds(token: str, ttl: int = 60):
+    """
+    Wrapper existant dans ton code : renvoie juste la liste JSON.
+    """
+    return get_user_guilds(token, ttl=ttl)

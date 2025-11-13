@@ -1,7 +1,8 @@
-# api/wsgi.py
-from __future__ import annotations
+# wsgi.py
+from api import create_app
+from api.core.extensions import socketio
 
-from . import create_app
-
-# Gunicorn entrypoint: gunicorn -w 1 -k eventlet -b :8000 backend.api.wsgi:app
 app = create_app()
+
+if __name__ == "__main__":
+    socketio.run(app, host="0.0.0.0", port=3000)  # eventlet si installé
