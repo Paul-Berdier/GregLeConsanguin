@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from flask import Flask, redirect, request
+from flask import Flask
 
 from .core.config import Settings
 from .core.errors import register_error_handlers
@@ -20,8 +20,13 @@ def create_app(pm: Optional[object] = None) -> Flask:
     """
     if not logging.getLogger().handlers:
         configure_logging()
+
     app = Flask(__name__)
     app.config.from_object(Settings())
+
+    # Force un API prefix versionné et désactive tout alias legacy (/api -> /api/v1)
+    app.config.setdefault("API_PREFIX", "/api/v1")
+    app.config["API_ALIAS"] = ""  # hard-off (pas de 307)
 
     # Extensions
     init_extensions(app)
@@ -57,41 +62,22 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
 
     api_prefix = app.config.get("API_PREFIX", "/api/v1")
-    api_alias = app.config.get("API_ALIAS", "/api")  # mets "" ou None pour désactiver
-    use_alias = bool(api_alias) and (api_alias != api_prefix)
 
     # Auth hors /api_prefix (ex: /auth/login, /auth/callback…)
     app.register_blueprint(auth_bp, url_prefix="/auth")
 
-    # Enregistrement canonique
+    # Enregistrement canonique SEULEMENT sous /api/v1
     blueprints = [users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp]
     for bp in blueprints:
         app.register_blueprint(bp, url_prefix=api_prefix)
 
-    # Alias /api/* → redirection 307 vers /api_prefix/*
-    # (on NE ré-enregistre PAS les mêmes blueprints une 2e fois)
-    if use_alias:
-        alias_base = api_alias.rstrip("/")
-        canon_base = api_prefix.rstrip("/")
-
-        # /api  → /api/v1
-        @app.route(f"{alias_base}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-        def _api_alias_root():
-            qs = ("?" + request.query_string.decode()) if request.query_string else ""
-            return redirect(f"{canon_base}/{qs}".rstrip("?"), code=307)
-
-        # /api/* → /api/v1/*
-        @app.route(f"{alias_base}/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-        def _api_alias(path: str):
-            qs = ("?" + request.query_string.decode()) if request.query_string else ""
-            return redirect(f"{canon_base}/{path}{qs}", code=307)
+    # ATTENTION: plus d'alias /api -> /api/v1. On supprime les 307.
 
 
 def _register_socketio(app: Flask) -> None:
     from .core.extensions import socketio
     from .ws import events  # noqa: F401  (side-effects: enregistre les handlers)
 
-    # Si init non fait dans init_extensions(), on l’assure ici
     if not getattr(socketio, "server", None):
         socketio.init_app(
             app,
