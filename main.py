@@ -264,10 +264,13 @@ class GregBot(commands.Bot):
 
         # 5) SocketIO emit
         try:
-            from __main__ import socketio  # disponible quand exécuté en script
-            if socketio:
-                socketio.emit("selftest_ping", {"ok": True, "t": time.time()})
-                results.append(("SocketIO:emit", True, "emit ok"))
+            si = getattr(self.web_app, "socketio", None) or globals().get("socketio")
+            if si:
+                try:
+                    si.emit("selftest_ping", {"ok": True, "t": time.time()})
+                    results.append(("SocketIO:emit", True, "emit ok"))
+                except Exception as e:
+                    results.append(("SocketIO:emit", False, str(e)))
             else:
                 results.append(("SocketIO:instance", False, "socketio=None"))
         except Exception as e:
@@ -359,9 +362,9 @@ def run_web():
         mode = getattr(socketio, "async_mode", "threading")
         logger.debug("Lancement web… (mode=%s)", mode)
         if mode == "eventlet":
-            socketio.run(app, host="0.0.0.0", port=3000)
+            socketio.run(app, host="0.0.0.0", port=3000, use_reloader=False)
         else:
-            socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True)
+            socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True, use_reloader=False)
 
 
 def wait_for_web():

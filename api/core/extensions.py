@@ -1,51 +1,30 @@
 # api/core/extensions.py
 from __future__ import annotations
-
 import os
-from typing import Iterable, Optional
-
-from flask import Flask
-from flask_cors import CORS
-from flask_compress import Compress
 from flask_socketio import SocketIO
 
+# Par défaut on reste sur threading (Werkzeug) => long-polling
+ASYNC_MODE = os.getenv("SOCKETIO_ASYNC_MODE", "threading").strip() or "threading"
+CORS_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*")
 
-# Extensions uniques (instanciées ici, initialisées dans create_app)
-cors = CORS()
-compress = Compress()
+# NOTE: avec threading, les websockets ne sont pas gérées par Werkzeug.
+# On n'impose donc rien côté serveur ; le client doit accepter 'polling'.
 socketio = SocketIO(
-    async_mode=os.getenv("SOCKETIO_ASYNC_MODE", "threading"),
-    cors_allowed_origins=os.getenv("SOCKETIO_CORS", "*"),
+    async_mode=ASYNC_MODE,
+    cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != "*" else "*",
+    cookie="gregsid",
+    ping_interval=25,
+    ping_timeout=30,
+    max_http_buffer_size=20_000_000,
     logger=False,
     engineio_logger=False,
-    json=None,  # laisser Flask/rapidjson si branché
+    # option engineio: empêche upgrade si le client a démarré en polling;
+    # ne bloque pas un 'websocket only' côté client → d'où le patch front.
+    allow_upgrades=True,
 )
 
-
-def init_extensions(app: Flask) -> None:
-    # CORS
-    allow_origins = _parse_origins(os.getenv("ALLOWED_ORIGINS", "*"))
-    cors.init_app(
-        app,
-        resources={r"/*": {"origins": allow_origins}},
-        supports_credentials=True,
-        always_send=True,
-    )
-    # Compression
-    compress.init_app(app)
-
-    # Socket.IO
-    # Ne pas appeler socketio.init_app trop tôt si on a besoin du 'cors_allowed_origins'
-    socketio.init_app(
-        app,
-        cors_allowed_origins=allow_origins or "*",
-        cookie=os.getenv("SOCKETIO_COOKIE", "gregsid"),
-        ping_interval=20,
-        ping_timeout=25,
-    )
-
-
-def _parse_origins(value: str) -> Optional[Iterable[str]]:
-    if not value or value.strip() == "*":
-        return "*"
-    return [o.strip() for o in value.split(",") if o.strip()]
+def init_extensions(app):
+    # Idempotent : si l'instance a déjà un serveur, on ne réinitialise pas
+    if getattr(socketio, "server", None) is None:
+        socketio.init_app(app, cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != "*" else "*")
+    return app, socketio

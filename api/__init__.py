@@ -1,6 +1,5 @@
 # api/__init__.py
 from __future__ import annotations
-
 import logging
 from typing import Optional
 
@@ -8,32 +7,27 @@ from flask import Flask
 
 from .core.config import Settings
 from .core.errors import register_error_handlers
-from .core.extensions import init_extensions
+from .core.extensions import init_extensions, socketio
 from .core.logging import configure_logging
 
 log = logging.getLogger(__name__)
 
+API_PREFIX = "/api/v1"   # une seule racine d’API
 
 def create_app(pm: Optional[object] = None) -> Flask:
-    """
-    App factory. Injecte éventuellement un PlaylistManager (pm).
-    """
+    """App factory. Injecte éventuellement un PlaylistManager (pm)."""
     if not logging.getLogger().handlers:
         configure_logging()
 
     app = Flask(__name__)
     app.config.from_object(Settings())
 
-    # Force un API prefix versionné et désactive tout alias legacy (/api -> /api/v1)
-    app.config.setdefault("API_PREFIX", "/api/v1")
-    app.config["API_ALIAS"] = ""  # hard-off (pas de 307)
-
     # Extensions
     init_extensions(app)
 
-    # Attach external dependencies
-    app.extensions["pm"] = pm  # PlaylistManager externe (bot)
-    app.extensions.setdefault("stores", {})  # sera rempli par storage config
+    # Attach external deps
+    app.extensions["pm"] = pm
+    app.extensions.setdefault("stores", {})
     _init_stores(app)
 
     # Blueprints & WS
@@ -48,12 +42,21 @@ def create_app(pm: Optional[object] = None) -> Flask:
     def _healthz():
         return {"ok": True}, 200
 
+    # Compat : certains modules importent encore 'require_login'
+    try:
+        from .auth.session import login_required as _lr
+        # alias exporté dans le module (si besoin)
+        import api.auth.session as _sessmod
+        setattr(_sessmod, "require_login", _lr)
+    except Exception:
+        pass
+
     log.info("API created (env=%s, debug=%s)", app.config.get("ENV"), app.config.get("DEBUG"))
     return app
 
 
 def _register_blueprints(app: Flask) -> None:
-    # Blueprints “réels”
+    # NOTE: respecte TA structure de modules
     from .auth.blueprint import bp as auth_bp
     from .blueprints.users import bp as users_bp
     from .blueprints.guilds import bp as guilds_bp
@@ -61,23 +64,16 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.admin import bp as admin_bp
     from .blueprints.spotify import bp as spotify_bp
 
-    api_prefix = app.config.get("API_PREFIX", "/api/v1")
+    # 1) Auth monté SANS prefix → /auth/login, /auth/callback, et /api/v1/me (car défini ainsi dans le BP)
+    app.register_blueprint(auth_bp)  # <— pas de url_prefix ici
 
-    # Auth hors /api_prefix (ex: /auth/login, /auth/callback…)
-    app.register_blueprint(auth_bp, url_prefix="/auth")
-
-    # Enregistrement canonique SEULEMENT sous /api/v1
-    blueprints = [users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp]
-    for bp in blueprints:
-        app.register_blueprint(bp, url_prefix=api_prefix)
-
-    # ATTENTION: plus d'alias /api -> /api/v1. On supprime les 307.
+    # 2) Tous les autres sous /api/v1
+    for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp):
+        app.register_blueprint(bp, url_prefix=API_PREFIX)
 
 
 def _register_socketio(app: Flask) -> None:
-    from .core.extensions import socketio
-    from .ws import events  # noqa: F401  (side-effects: enregistre les handlers)
-
+    # L’instance est déjà créée dans core/extensions.py
     if not getattr(socketio, "server", None):
         socketio.init_app(
             app,
@@ -87,9 +83,7 @@ def _register_socketio(app: Flask) -> None:
 
 
 def _init_stores(app: Flask) -> None:
-    """
-    Initialise le store (JSON par défaut, Redis si REDIS_URL).
-    """
+    """Initialise le store (JSON par défaut, Redis si REDIS_URL)."""
     from .storage.json_store import JsonTokenStore
     from .storage.redis_store import RedisTokenStore
 

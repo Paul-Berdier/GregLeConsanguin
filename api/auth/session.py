@@ -69,7 +69,7 @@ def get_access_token(auto_refresh: bool = True) -> Optional[str]:
     return token
 
 
-def login_required(fn):
+def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not is_logged_in():
