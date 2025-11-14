@@ -215,7 +215,6 @@ class GregBot(commands.Bot):
             "curse",
             "praise",
             "shame",
-            "skullrain",
             "gregquote",
             # spook
             "spook_enable",

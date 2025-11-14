@@ -1,7 +1,10 @@
 # api/core/extensions.py
+from __future__ import annotations
+import os
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
+# Instance globale (config finale appliquée dans init_app)
 socketio = SocketIO(
     cors_allowed_origins="*",
     logger=False,
@@ -10,7 +13,10 @@ socketio = SocketIO(
 )
 
 def init_extensions(app):
-    # CORS pour API + auth + Socket.IO
+    """
+    - CORS pour API, Auth et Socket.IO
+    - Socket.IO : mode asynchrone via app.config["SOCKETIO_MODE"] ou env, MQ Redis optionnelle
+    """
     CORS(
         app,
         resources={
@@ -20,9 +26,13 @@ def init_extensions(app):
         },
         supports_credentials=True,
     )
-    # Socket.IO
+
+    mode = app.config.get("SOCKETIO_MODE") or os.getenv("SOCKETIO_MODE", "eventlet")  # "eventlet" recommandé
+    message_queue = os.getenv("SOCKETIO_MESSAGE_QUEUE")  # ex: "redis://localhost:6379/0"
+
     socketio.init_app(
         app,
-        async_mode=app.config.get("SOCKETIO_MODE", "threading"),
+        async_mode=mode,
         cors_allowed_origins="*",
+        message_queue=message_queue,
     )

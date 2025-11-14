@@ -36,8 +36,8 @@ SPOTIFY_SCOPES = os.getenv(
     "playlist-modify-public playlist-modify-private "
     "user-read-email"
 )
-STATE_SECRET = os.getenv("SPOTIFY_STATE_SECRET", "").encode("utf-8")
-
+STATE_SECRET_RAW = os.getenv("SPOTIFY_STATE_SECRET", "")
+STATE_SECRET = STATE_SECRET_RAW.encode("utf-8") if STATE_SECRET_RAW else b""
 
 # =============================================================================
 #                               LOGGING
@@ -54,15 +54,12 @@ def _log(msg: str, **kw: Any) -> None:
         else:
             print(f"[SPOTIFY] {msg}")
     except Exception:
-        # évite toute exception de log qui casserait la route
         pass
-
 
 def _json_error(message: str, status: int = 400, **extra: Any):
     payload = {"ok": False, "error": message}
     payload.update(extra or {})
     return jsonify(payload), status
-
 
 _log(
     "Config loaded",
@@ -73,7 +70,6 @@ _log(
     has_state_secret=bool(STATE_SECRET),
 )
 
-
 # =============================================================================
 #                           STRING NORMALIZATION
 # =============================================================================
@@ -82,54 +78,36 @@ _NOISE_RE = re.compile(
     re.I
 )
 
-
 def _strip_accents(s: str) -> str:
     try:
         return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
     except Exception:
         return s or ""
 
-
 def _norm(s: str) -> str:
     s = _strip_accents(s or "").lower()
-    s = re.sub(r'[\(\[\{].*?[\)\]\}]', ' ', s)           # remove (…) […] {…}
-    s = re.sub(r'[^a-z0-9\s]+', ' ', s)                  # punctuation
+    s = re.sub(r'[\(\[\{].*?[\)\]\}]', ' ', s)
+    s = re.sub(r'[^a-z0-9\s]+', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
-
 def _clean_title_artist(title: Optional[str], artist: Optional[str]) -> tuple[str, str]:
-    """
-    Nettoie le couple (title, artist) venant souvent de YouTube :
-      - "ARTIST - Titre" → isole le vrai titre et l’artiste s’il manque
-      - supprime les numéros / lettres de piste (ex: "Θ. ", "A. ", "1. ")
-      - supprime le bruit (clip officiel, paroles, etc.)
-      - nettoie artiste ("- Topic", "official", etc.)
-    """
     t = (title or "").strip()
     a = (artist or "").strip()
-
     if " - " in t:
         left, right = t.split(" - ", 1)
         if not a or left.lower().startswith(a.lower()):
             a = a or left
             t = right
-
-    # Préfixes de piste type "Θ." / "1." / "A." / "IV."
     t = re.sub(r'^\s*(?:[A-Za-zÀ-ÿΑ-Ωα-ω]|[IVXLCDM]+|\d+)\.\s*', '', t)
-
-    # Bruit entre ()/[]/{}
     t = _NOISE_RE.sub(' ', t)
     t = re.sub(r'\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*', ' ', t)
     t = re.sub(r'\s*[-–—]\s*$', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
-
     a = re.sub(r'(?i)\s*-\s*topic$', '', a)
     a = re.sub(r'(?i)\b(official|officiel)\b', '', a)
     a = re.sub(r'\s+', ' ', a).strip()
-
     return t, a
-
 
 def _queries_for(title: str, artist: str) -> list[str]:
     qs: list[str] = []
@@ -142,7 +120,6 @@ def _queries_for(title: str, artist: str) -> list[str]:
         ]
     if title:
         qs += [f'track:"{title}"', title]
-    # dédup en gardant l’ordre
     seen, out = set(), []
     for q in qs:
         if q not in seen:
@@ -150,20 +127,17 @@ def _queries_for(title: str, artist: str) -> list[str]:
             out.append(q)
     return out
 
-
 def _sec_to_ms(x: Any) -> Optional[int]:
     try:
         fx = float(x)
-        return int(fx if fx > 10000 else fx * 1000)  # si déjà très grand → probablement ms
+        return int(fx if fx > 10000 else fx * 1000)
     except Exception:
         return None
-
 
 def _score_candidate(r: dict, ttoks: set[str], atoks: set[str], target_ms: Optional[int]) -> float:
     r_title = _norm(r.get("name") or "")
     r_ttoks = set(r_title.split())
     title_overlap = len(ttoks & r_ttoks) / (len(ttoks) or 1)
-
     r_artists = [a.get("name") for a in (r.get("artists") or []) if a.get("name")]
     art_scores = []
     for ra in r_artists:
@@ -173,35 +147,30 @@ def _score_candidate(r: dict, ttoks: set[str], atoks: set[str], target_ms: Optio
         else:
             art_scores.append(1.0 if ra_toks & r_ttoks else 0.0)
     artist_overlap = max(art_scores) if art_scores else 0.0
-
     dur_score = 0.5
     if target_ms:
         d = r.get("duration_ms") or 0
         if d:
-            window = max(7000, int(target_ms * 0.12))  # ±7s ou ±12%
+            window = max(7000, int(target_ms * 0.12))
             diff = abs(d - target_ms)
             if diff <= window:
-                dur_score = 1 - (diff / window) * 0.5  # 0.5..1
+                dur_score = 1 - (diff / window) * 0.5
             else:
                 dur_score = max(0.0, 0.5 - (diff - window) / (4 * window))
-
     w_dur = 0.10 if target_ms else 0.0
     w_title, w_artist = 0.55, 0.35
     total = w_title * title_overlap + w_artist * artist_overlap + w_dur * dur_score
-
     if r_title == " ".join(ttoks):
         total += 0.05
     if atoks and any(_norm(a) == " ".join(atoks) for a in r_artists):
         total += 0.05
-    total += (r.get("popularity") or 0) / 10000.0  # tiny tie-breaker
+    total += (r.get("popularity") or 0) / 10000.0
     return total
-
 
 # =============================================================================
 #                               TOKEN STORE (DISK)
 # =============================================================================
 _STORE = Path(".spotify_tokens.json")
-
 
 def _load_store() -> Dict[str, Any]:
     try:
@@ -211,17 +180,14 @@ def _load_store() -> Dict[str, Any]:
         _log("Failed to load token store, using empty", error=str(e))
     return {"users": {}}
 
-
 def _save_store(data: Dict[str, Any]) -> None:
     try:
         _STORE.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     except Exception as e:
         _log("Failed to save token store", error=str(e))
 
-
 def _now() -> int:
     return int(time.time())
-
 
 def _require_cfg() -> None:
     missing = []
@@ -237,23 +203,19 @@ def _require_cfg() -> None:
         _log("Missing Spotify env config", missing=missing)
         raise RuntimeError(f"Spotify config manquante: {', '.join(missing)}")
 
-
 # =============================================================================
 #                        STATE (uid + sid) signé HMAC
 # =============================================================================
 def _b64u_encode(d: bytes) -> str:
     return base64.urlsafe_b64encode(d).decode("ascii").rstrip("=")
 
-
 def _b64u_decode(s: str) -> bytes:
     pad = "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s + pad)
 
-
 def _sign(uid: str, sid: str, ts: int) -> str:
     msg = f"{uid}|{sid}|{ts}".encode("utf-8")
     return hmac.new(STATE_SECRET, msg, hashlib.sha256).hexdigest()
-
 
 def _pack_state(uid: str, sid: str) -> str:
     ts = _now()
@@ -262,7 +224,6 @@ def _pack_state(uid: str, sid: str) -> str:
     enc = _b64u_encode(json.dumps(data, separators=(",", ":")).encode("utf-8"))
     _log("STATE packed", uid=str(uid), sid=str(sid or ""), ts=ts)
     return enc
-
 
 def _unpack_state(state: str, max_age: int = 900) -> Tuple[Optional[str], Optional[str]]:
     try:
@@ -286,7 +247,6 @@ def _unpack_state(state: str, max_age: int = 900) -> Tuple[Optional[str], Option
         _log("STATE unpack error", error=str(e))
         return None, None
 
-
 # =============================================================================
 #                           SPOTIFY OAUTH HELPERS
 # =============================================================================
@@ -301,7 +261,6 @@ def _auth_url(state: str) -> str:
     }
     return "https://accounts.spotify.com/authorize?" + urlencode(params, quote_via=quote_plus)
 
-
 def _token_request(data: Dict[str, str]) -> Dict[str, Any]:
     auth_header = base64.b64encode(f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()).decode()
     headers = {"Authorization": f"Basic {auth_header}"}
@@ -310,18 +269,15 @@ def _token_request(data: Dict[str, str]) -> Dict[str, Any]:
     resp.raise_for_status()
     return resp.json()
 
-
 def _exchange_code_for_token(code: str) -> Dict[str, Any]:
     _require_cfg()
     payload = {"grant_type": "authorization_code", "code": code, "redirect_uri": SPOTIFY_REDIRECT_URI}
     return _token_request(payload)
 
-
 def _refresh_token(refresh_token: str) -> Dict[str, Any]:
     _require_cfg()
     payload = {"grant_type": "refresh_token", "refresh_token": refresh_token}
     return _token_request(payload)
-
 
 # =============================================================================
 #                            USER TOKENS (per Discord UID)
@@ -332,13 +288,11 @@ def _get_user_tokens(discord_user_id: str) -> Optional[Dict[str, Any]]:
     _log("Loaded user tokens", uid=str(discord_user_id), exists=bool(tok))
     return tok
 
-
 def _set_user_tokens(discord_user_id: str, tok: Dict[str, Any]) -> None:
     data = _load_store()
     data["users"][str(discord_user_id)] = tok
     _save_store(data)
     _log("Saved user tokens", uid=str(discord_user_id), has_refresh=bool(tok.get("refresh_token")))
-
 
 def _del_user_tokens(discord_user_id: str) -> None:
     data = _load_store()
@@ -346,17 +300,14 @@ def _del_user_tokens(discord_user_id: str) -> None:
     _save_store(data)
     _log("Deleted user tokens", uid=str(discord_user_id), existed=existed)
 
-
 def _ensure_access_token(discord_user_id: str) -> Tuple[str, Dict[str, Any]]:
     tokens = _get_user_tokens(discord_user_id)
     if not tokens:
         _log("Access token requested but account not linked", uid=str(discord_user_id))
         raise RuntimeError("Compte Spotify non lié.")
-
     access_token = tokens.get("access_token")
     expires_at = int(tokens.get("expires_at") or 0)
     refresh_token = tokens.get("refresh_token")
-
     if not access_token or _now() >= expires_at - 15:
         _log("Access token expired or missing, refreshing…", uid=str(discord_user_id))
         if not refresh_token:
@@ -371,9 +322,7 @@ def _ensure_access_token(discord_user_id: str) -> Tuple[str, Dict[str, Any]]:
             tokens["refresh_token"] = new_tok["refresh_token"]
         _set_user_tokens(discord_user_id, tokens)
         _log("Access token refreshed", uid=str(discord_user_id), expires_in=expires_in)
-
     return access_token, tokens
-
 
 # =============================================================================
 #                           SPOTIFY WEB API WRAPPERS
@@ -386,10 +335,8 @@ def _sp_get(access_token: str, path: str, params: Optional[Dict[str, Any]] = Non
     r.raise_for_status()
     return r.json()
 
-
 def _me(access_token: str) -> Dict[str, Any]:
     return _sp_get(access_token, "/me")
-
 
 def _playlists(access_token: str, limit: int = 50) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
@@ -405,7 +352,6 @@ def _playlists(access_token: str, limit: int = 50) -> List[Dict[str, Any]]:
         params["offset"] += params["limit"]
     return items[:limit]
 
-
 def _playlist_tracks(access_token: str, playlist_id: str, limit: int = 100) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     url_path = f"/playlists/{playlist_id}/tracks"
@@ -420,7 +366,6 @@ def _playlist_tracks(access_token: str, playlist_id: str, limit: int = 100) -> L
         params["offset"] += params["limit"]
     return items[:limit]
 
-
 def _sp_post(access_token: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     url = "https://api.spotify.com/v1" + path
@@ -432,7 +377,6 @@ def _sp_post(access_token: str, path: str, json_body: Optional[Dict[str, Any]] =
     except Exception:
         return {}
 
-
 def _sp_delete(access_token: str, path: str, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     r = requests.delete("https://api.spotify.com/v1" + path, headers=headers, json=json_body or {}, timeout=10)
@@ -443,7 +387,6 @@ def _sp_delete(access_token: str, path: str, json_body: Optional[Dict[str, Any]]
     except Exception:
         return {}
 
-
 def _search_tracks(access_token: str, q: str, limit: int = 5, market: str = "from_token") -> List[Dict[str, Any]]:
     params = {"q": q, "type": "track", "limit": min(limit, 50)}
     if market:
@@ -453,11 +396,9 @@ def _search_tracks(access_token: str, q: str, limit: int = 5, market: str = "fro
     _log("Search tracks", q=q, results=len(rows))
     return rows
 
-
 def _add_tracks_to_playlist(access_token: str, playlist_id: str, uris: List[str]) -> Dict[str, Any]:
     _log("Add tracks to playlist", pid=playlist_id, count=len(uris))
     return _sp_post(access_token, f"/playlists/{playlist_id}/tracks", {"uris": uris[:100]})
-
 
 def _create_playlist(access_token: str, user_id: str, name: str, public: bool, description: Optional[str]) -> Dict[str, Any]:
     body = {"name": name, "public": bool(public)}
@@ -466,10 +407,8 @@ def _create_playlist(access_token: str, user_id: str, name: str, public: bool, d
     _log("Create playlist", owner=user_id, name=name, public=bool(public))
     return _sp_post(access_token, f"/users/{user_id}/playlists", body)
 
-
 def _unfollow_playlist(access_token: str, playlist_id: str) -> Dict[str, Any]:
     return _sp_delete(access_token, f"/playlists/{playlist_id}/followers")
-
 
 def _remove_tracks_from_playlist(access_token: str, playlist_id: str, uris: List[str]) -> Dict[str, Any]:
     last = {}
@@ -485,40 +424,41 @@ def _remove_tracks_from_playlist(access_token: str, playlist_id: str, uris: List
         last = _sp_delete(access_token, f"/playlists/{playlist_id}/tracks", {"tracks": batch})
     return last
 
-
 # =============================================================================
 #                          HELPERS: Player / SocketIO
 # =============================================================================
 def _emit(event: str, data: Dict[str, Any], sid: Optional[str], uid: Optional[str]):
-    socketio = getattr(current_app, "socketio", None)
-    if not socketio:
+    sio = getattr(current_app, "socketio", None)
+    if not sio:
         _log("SocketIO not available; skip emit", event=event)
         return
     try:
         if sid:
-            socketio.emit(event, data, room=sid)
+            sio.emit(event, data, room=sid)
         if uid:
-            socketio.emit(event, data, room=f"user:{uid}")
+            sio.emit(event, data, room=f"user:{uid}")
         _log("Socket emit done", event=event, sid=bool(sid), uid=bool(uid))
     except Exception as e:
         _log("Socket emit failed", event=event, error=str(e))
 
-
-def _player_payload_for_guild(gid: int) -> Dict[str, Any]:
-    svc: PlayerService = getattr(current_app, "player_service", None)  # type: ignore
+def _get_player_service() -> PlayerService:
+    # Priorité à l’extension Flask, fallback sur attribut direct
+    svc = (current_app.extensions.get("player") if hasattr(current_app, "extensions") else None) \
+          or getattr(current_app, "player_service", None)
     if not svc:
         raise RuntimeError("player_service_unavailable")
-    # chemin “officiel” si dispo
+    return svc
+
+def _player_payload_for_guild(gid: int) -> Dict[str, Any]:
+    svc: PlayerService = _get_player_service()
     try:
-        return svc._overlay_payload(gid)  # contient {current, queue, ...}
+        return svc._overlay_payload(gid)
     except Exception:
-        # fallback très léger si besoin
         pm = svc._get_pm(gid)
         return pm.to_dict()
 
-
 # =============================================================================
-#                      ROUTES (Blueprint, sans /api prefix)
+#                      ROUTES (Blueprint monté sous /api/v1)
 # =============================================================================
 @bp.get("/spotify/login")
 @require_login
@@ -539,7 +479,6 @@ def spotify_login():
     url = _auth_url(state)
     _log("Redirect to Spotify /authorize", uid=uid, has_sid=bool(sid))
     return redirect(url)
-
 
 @bp.get("/spotify/callback")
 def spotify_callback():
@@ -607,7 +546,6 @@ def spotify_callback():
         _log("Token exchange failed", error=str(e))
         return f"Spotify token exchange failed: {e}", 400
 
-
 @bp.get("/spotify/status")
 @require_login
 def api_spotify_status():
@@ -626,7 +564,6 @@ def api_spotify_status():
         _log("Status: linked but token invalid", error=str(e))
         return jsonify(linked=False, error=str(e))
 
-
 @bp.get("/spotify/me")
 @require_login
 def api_spotify_me():
@@ -640,7 +577,6 @@ def api_spotify_me():
     data = _me(access)
     _log("/me fetched", id=data.get("id"))
     return jsonify(data)
-
 
 @bp.get("/spotify/playlists")
 @require_login
@@ -673,7 +609,6 @@ def api_spotify_playlists():
         })
     _log("Playlists returned", count=len(out))
     return jsonify(playlists=out)
-
 
 @bp.get("/spotify/playlist_tracks")
 @require_login
@@ -714,7 +649,6 @@ def api_spotify_playlist_tracks():
     _log("Playlist tracks returned", pid=pid, count=len(out))
     return jsonify(tracks=out)
 
-
 @bp.get("/spotify/search_tracks")
 @require_login
 def api_spotify_search_tracks():
@@ -747,7 +681,6 @@ def api_spotify_search_tracks():
         })
     return jsonify(tracks=out)
 
-
 @bp.post("/spotify/playlist_create")
 @require_login
 def api_spotify_playlist_create():
@@ -773,7 +706,6 @@ def api_spotify_playlist_create():
         external_url=(created.get("external_urls") or {}).get("spotify"),
     )
 
-
 @bp.post("/spotify/playlist_add_track")
 @require_login
 def api_spotify_playlist_add_track():
@@ -797,7 +729,6 @@ def api_spotify_playlist_add_track():
         return _json_error(f"http_{status}", status)
     _log("Track added by uri/id", pid=pid, uri=uri)
     return jsonify(ok=True, snapshot_id=res.get("snapshot_id"), added=[uri])
-
 
 @bp.post("/spotify/playlist_add_by_query")
 @require_login
@@ -877,7 +808,6 @@ def api_spotify_playlist_add_by_query():
         added_uri=uri
     )
 
-
 @bp.post("/spotify/add_current_to_playlist")
 @require_login
 def api_spotify_add_current_to_playlist():
@@ -889,7 +819,6 @@ def api_spotify_add_current_to_playlist():
     if not pid or not gid:
         return _json_error("missing_playlist_id/guild_id", 400)
 
-    # Récup Now Playing
     try:
         payload = _player_payload_for_guild(int(gid))
     except Exception as e:
@@ -902,18 +831,15 @@ def api_spotify_add_current_to_playlist():
     if not raw_title and not raw_artist:
         return _json_error("no_current_item", 404)
 
-    # Spotify auth
     try:
         access, _ = _ensure_access_token(u["id"])
     except Exception as e:
         _log("Add current: spotify not linked / token invalid", error=str(e))
         return _json_error("spotify_not_linked", 401)
 
-    # Nettoyage + durée
     title, artist = _clean_title_artist(raw_title, raw_artist)
     target_ms = _sec_to_ms(current.get("duration"))
 
-    # Candidats
     queries = _queries_for(title, artist)
     candidates: list[dict] = []
     seen_ids = set()
@@ -971,7 +897,6 @@ def api_spotify_add_current_to_playlist():
         added_uri=uri
     )
 
-
 @bp.post("/spotify/add_queue_to_playlist")
 @require_login
 def api_spotify_add_queue_to_playlist():
@@ -1002,7 +927,6 @@ def api_spotify_add_queue_to_playlist():
 
     added_uris: List[str] = []
     skipped: List[Dict[str, Any]] = []
-
     batch = queue[:max(1, max_items)]
 
     for it in batch:
@@ -1060,7 +984,6 @@ def api_spotify_add_queue_to_playlist():
     _log("Add queue: done", pid=pid, added=len(added_uris), skipped=len(skipped))
     return jsonify(ok=True, snapshot_id=res.get("snapshot_id"), added=len(added_uris), uris=added_uris, skipped=skipped)
 
-
 @bp.post("/spotify/quickplay")
 @require_login
 def api_spotify_quickplay():
@@ -1087,7 +1010,7 @@ def api_spotify_quickplay():
 
     def _yt_first_match(query: str, duration_ms: Optional[int] = None) -> Optional[dict]:
         try:
-            from extractors import get_search_module  # lazy to avoid cycles
+            from extractors import get_search_module
             searcher = get_search_module("youtube")
             rows = searcher.search(query) or []
             _log("YouTube search", q=query, got=len(rows), has_target=bool(duration_ms))
@@ -1180,7 +1103,6 @@ def api_spotify_quickplay():
     return jsonify(ok=True, resolved=item,
                    youtube={"title": yt.get("title"), "url": yt.get("webpage_url") or yt.get("url")})
 
-
 @bp.post("/spotify/logout")
 @require_login
 def api_spotify_logout():
@@ -1189,7 +1111,6 @@ def api_spotify_logout():
     _del_user_tokens(u["id"])
     _log("Unlinked Spotify", uid=u["id"])
     return jsonify(ok=True)
-
 
 @bp.post("/spotify/playlist_delete")
 @require_login
@@ -1212,7 +1133,6 @@ def api_spotify_playlist_delete():
     except Exception as e:
         _log("playlist_delete error", error=str(e))
         return _json_error(str(e), 400)
-
 
 @bp.post("/spotify/playlist_remove_tracks")
 @require_login
@@ -1251,7 +1171,6 @@ def api_spotify_playlist_remove_tracks():
     try:
         access, _ = _ensure_access_token(u["id"])
         me = _me(access)
-        # Vérifie possibilité d'édition (owner/collaborative)
         info = _sp_get(access, f"/playlists/{pid}", params={"fields": "owner(id),collaborative"})
         owner_id = ((info or {}).get("owner") or {}).get("id")
         is_collab = bool((info or {}).get("collaborative"))
@@ -1267,7 +1186,6 @@ def api_spotify_playlist_remove_tracks():
     except Exception as e:
         _log("playlist_remove_tracks error", error=str(e))
         return _json_error(str(e), 400)
-
 
 @bp.post("/spotify/playlist_clear")
 @require_login
