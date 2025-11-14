@@ -1,10 +1,8 @@
-# api/ws/presence.py
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-
 
 @dataclass
 class PresenceEntry:
@@ -13,7 +11,6 @@ class PresenceEntry:
     guild_id: str | None
     meta: dict = field(default_factory=dict)
     last_seen: float = field(default_factory=lambda: time.time())
-
 
 class PresenceRegistry:
     """
@@ -48,7 +45,6 @@ class PresenceRegistry:
             "total": len(self.by_sid),
             "by_guild": _count([e.guild_id or "-" for e in self.by_sid.values()]),
         }
-
 
 def _count(items: List[str]) -> Dict[str, int]:
     out: Dict[str, int] = {}
