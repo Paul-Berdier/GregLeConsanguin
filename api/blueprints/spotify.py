@@ -1010,7 +1010,7 @@ def api_spotify_quickplay():
 
     def _yt_first_match(query: str, duration_ms: Optional[int] = None) -> Optional[dict]:
         try:
-            from extractors import get_search_module
+            from extractors import get_search_module  # lazy to avoid cycles
             searcher = get_search_module("youtube")
             rows = searcher.search(query) or []
             _log("YouTube search", q=query, got=len(rows), has_target=bool(duration_ms))
@@ -1049,14 +1049,12 @@ def api_spotify_quickplay():
         _log("Quickplay: no YouTube match", q=query)
         return _json_error("no_youtube_match", 404)
 
+    # ✅ utilise le PlayerService (source de vérité), pas le cog Music
     bot = getattr(current_app, "bot", None)
-    if not bot:
-        _log("Quickplay: bot unavailable")
-        return _json_error("bot_unavailable", 500)
-    music_cog = bot.get_cog("Music")
-    if not music_cog:
-        _log("Quickplay: music cog missing")
-        return _json_error("music_cog_missing", 500)
+    svc: PlayerService = getattr(current_app, "player_service", None) or getattr(bot, "player_service", None)  # type: ignore
+    if not bot or not svc:
+        _log("Quickplay: player service unavailable")
+        return _json_error("player_service_unavailable", 503)
 
     u = current_user()
     item = {
@@ -1074,16 +1072,14 @@ def api_spotify_quickplay():
     try:
         if loop and loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(
-                music_cog.play_for_user(guild_id, u["id"], item), loop
+                svc.play_for_user(int(guild_id), int(u["id"]), item), loop
             )
             fut.result(timeout=90)
         else:
             new_loop = asyncio.new_event_loop()
             try:
                 asyncio.set_event_loop(new_loop)
-                new_loop.run_until_complete(
-                    music_cog.play_for_user(guild_id, u["id"], item)
-                )
+                new_loop.run_until_complete(svc.play_for_user(int(guild_id), int(u["id"]), item))
             finally:
                 try:
                     new_loop.run_until_complete(asyncio.sleep(0))
@@ -1100,8 +1096,11 @@ def api_spotify_quickplay():
         return _json_error(str(e), 500)
 
     _log("Quickplay: enqueued OK", guild_id=guild_id, title=name)
-    return jsonify(ok=True, resolved=item,
-                   youtube={"title": yt.get("title"), "url": yt.get("webpage_url") or yt.get("url")})
+    return jsonify(
+        ok=True,
+        resolved=item,
+        youtube={"title": yt.get("title"), "url": yt.get("webpage_url") or yt.get("url")}
+    )
 
 @bp.post("/spotify/logout")
 @require_login
