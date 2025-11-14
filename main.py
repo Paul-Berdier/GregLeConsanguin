@@ -398,6 +398,22 @@ if __name__ == "__main__":
             bot.web_app = app
             # Expose PlayerService sur l’app pour d’éventuelles routes directes
             app.player_service = bot.player_service
+
+            # ✅ Expose PlayerService comme extension Flask pour les routes
+            app.extensions["player"] = bot.player_service
+
+            # ✅ Brancher un émetteur Socket.IO pour que PlayerService pousse "playlist_update"
+            def _player_emit(event, payload, guild_id=None):
+                si = getattr(app, "socketio", None) or globals().get("socketio")
+                if not si:
+                    return
+                if guild_id is not None:
+                    si.emit(event, payload, room=f"guild:{guild_id}")
+                else:
+                    si.emit(event, payload)
+
+            bot.player_service.set_emit_fn(_player_emit)
+
             logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
 
             threading.Thread(target=run_web, daemon=True).start()
