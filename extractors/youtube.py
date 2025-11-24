@@ -1,17 +1,18 @@
 # extractors/youtube.py
 #
-# YouTube robuste (Greg le Consanguin) — auto PO_TOKEN + cookies + anti-403/153
-# - Clients sûrs: ios → android → web_creator → web → web_mobile
-# - PO Token: auto via Playwright (m.youtube.com) sinon fallback .env YT_PO_TOKEN
-# - STREAM direct: URL + headers → FFmpeg (reconnect, low-latency)
-# - STREAM PIPE: yt-dlp → stdout → FFmpeg (préflight 2s + fallback -f 18)
+# YouTube robuste (Greg le Consanguin) — auto PO_TOKEN + cookies + anti-403/429/153
+# - Clients (override via YTDLP_CLIENTS): ios, android, web_creator, web, web_mobile
+# - PO Token: auto via extractors.token_fetcher (Playwright) ou fallback .env (YT_PO_TOKEN / YTDLP_PO_TOKEN)
+# - STREAM direct: URL+headers → FFmpeg (low-latency, preflight)
+# - STREAM PIPE: yt-dlp → stdout → FFmpeg (préflight 2s + fallback itag 18)
 # - DOWNLOAD: MP3 (192kbps, 48kHz) avec fallback itag 18
-# - Cookies: YTDLP_COOKIES_BROWSER ou YTDLP_COOKIES_B64 (Netscape)
-# - Proxy: YTDLP_HTTP_PROXY / HTTPS_PROXY / ALL_PROXY propagé à yt-dlp & FFmpeg
+# - Cookies: YTDLP_COOKIES_BROWSER / YOUTUBE_COOKIES_PATH / YTDLP_COOKIES_B64 / youtube.com_cookies.txt
+# - Proxy: YTDLP_HTTP_PROXY/HTTPS_PROXY/ALL_PROXY propagés à yt-dlp & FFmpeg
 # - IPv4: source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
 from __future__ import annotations
 
+import argparse
 import base64
 import functools
 import os
@@ -28,6 +29,13 @@ from typing import Optional, Tuple, Dict, Any, List
 import discord
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
+
+__all__ = [
+    "is_valid", "search",
+    "is_playlist_like", "expand_bundle",
+    "stream", "stream_pipe", "download",
+    "safe_cleanup",
+]
 
 # ==== DEBUG flags ====
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
@@ -67,7 +75,11 @@ _YT_UA = os.getenv("YTDLP_FORCE_UA") or (
 _FORCE_IPV4 = os.getenv("YTDLP_FORCE_IPV4", "1").lower() not in ("0", "false", "")
 _HTTP_PROXY = os.getenv("YTDLP_HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY")
 
-_CLIENTS_ORDER = ["web_mobile", "web", "ios", "android", "web_creator" ]
+_clients_env = os.getenv("YTDLP_CLIENTS")
+if _clients_env:
+    _CLIENTS_ORDER = [c.strip() for c in _clients_env.split(",") if c.strip()]
+else:
+    _CLIENTS_ORDER = ["ios", "android", "web_creator", "web", "web_mobile"]
 
 _FORMAT_CHAIN = os.getenv(
     "YTDLP_FORMAT",
@@ -139,6 +151,21 @@ def _ensure_cookiefile_from_b64(target_path: str) -> Optional[str]:
         _dbg(f"cookies: failed to write from env: {e}")
         return None
 
+def _pick_cookiefile(cookies_file: Optional[str]) -> Optional[str]:
+    """Ordre de priorité: paramètre → env:YOUTUBE_COOKIES_PATH → local → YTDLP_COOKIES_B64."""
+    if cookies_file and os.path.exists(cookies_file):
+        return cookies_file
+    env_path = os.getenv("YOUTUBE_COOKIES_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    if os.path.exists(_COOKIE_FILE_DEFAULT):
+        return _COOKIE_FILE_DEFAULT
+    if os.getenv("YTDLP_COOKIES_B64"):
+        _ensure_cookiefile_from_b64(_COOKIE_FILE_DEFAULT)
+        if os.path.exists(_COOKIE_FILE_DEFAULT):
+            return _COOKIE_FILE_DEFAULT
+    return None
+
 def _parse_cookies_from_browser_spec(spec: Optional[str]):
     if not spec:
         return None
@@ -160,12 +187,7 @@ def _mk_opts(
     extract_flat: bool = False,
 ) -> Dict[str, Any]:
 
-    if (not cookies_file) and os.path.exists(_COOKIE_FILE_DEFAULT):
-        cookies_file = _COOKIE_FILE_DEFAULT
-    if (not cookies_file) and os.getenv("YTDLP_COOKIES_B64"):
-        _ensure_cookiefile_from_b64(_COOKIE_FILE_DEFAULT)
-        if os.path.exists(_COOKIE_FILE_DEFAULT):
-            cookies_file = _COOKIE_FILE_DEFAULT
+    cookies_file = _pick_cookiefile(cookies_file)
 
     ydl_opts: Dict[str, Any] = {
         "quiet": True,
@@ -237,14 +259,14 @@ def _mk_opts(
     return ydl_opts
 
 # ==== PO token auto/fallback ====
-_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{8,})")
+_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
 
 def _extract_video_id(s: str) -> Optional[str]:
     m = _YTID_RE.search(s or "")
     return m.group(1) if m else None
 
 def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None:
-    """ Tente d'obtenir un PO token auto; sinon fallback ENV. """
+    """ Tente d'obtenir un PO token auto; sinon fallback ENV; sinon rien. """
     global _PO_TOKENS
     if _PO_TOKENS:
         return
@@ -263,24 +285,32 @@ def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None
 
     token_from_env = _collect_po_tokens_from_env()
 
-    try:
-        from extractors.token_fetcher import fetch_po_token
-    except Exception:
-        fetch_po_token = None  # type: ignore
-
     auto_token = None
-    if fetch_po_token and vid:
+    if vid:
         try:
-            auto = fetch_po_token(vid, timeout_ms=15000)
-            if auto and isinstance(auto, str) and len(auto) > 10:
-                auto_token = auto
-        except Exception as e:
-            _dbg(f"auto po_token failed: {e}")
+            from extractors.token_fetcher import fetch_po_token
+        except Exception:
+            fetch_po_token = None  # type: ignore
+
+        if fetch_po_token:
+            try:
+                _dbg(f"PO: attempting auto-fetch for video {vid}")
+                auto = fetch_po_token(vid, timeout_ms=15000)
+                if auto and isinstance(auto, str) and len(auto) > 10:
+                    auto_token = auto
+                    _dbg(f"PO: auto-fetch OK (len={len(auto_token)})")
+                else:
+                    _dbg("PO: auto-fetch returned none")
+            except Exception as e:
+                _dbg(f"PO: auto-fetch failed: {e}")
+        else:
+            _dbg("PO: token_fetcher unavailable (not importable)")
 
     final: List[str] = []
     if auto_token:
         final += [f"ios.gvs+{auto_token}", f"android.gvs+{auto_token}", f"web.gvs+{auto_token}"]
     elif token_from_env:
+        _dbg("PO: using env token(s)")
         final += token_from_env
 
     seen = set()
@@ -457,7 +487,7 @@ def expand_bundle(
 
 def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
     if not _YTDBG_HTTP_PROBE:
-        pass
+        return None
     opener = None
     try:
         handlers = []
@@ -526,7 +556,7 @@ async def stream(
 
     code = _http_probe(stream_url, {"User-Agent": ua, "Referer": "https://www.youtube.com/",
                                     "Origin": "https://www.youtube.com"}) or 200
-    if _AUTO_PIPE_ON_403 and code in (403, 410):
+    if _AUTO_PIPE_ON_403 and code in (403, 410, 429):
         _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
         return await stream_pipe(
             url_or_query, ffmpeg_path,
@@ -577,7 +607,6 @@ async def stream(
     if _HTTP_PROXY:
         before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
 
-    # ⚠️ NE PAS redéfinir -ar/-ac/-f ici : discord.py le fera déjà (sinon “Multiple -ar/-ac options”).
     out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
@@ -717,10 +746,10 @@ async def stream_pipe(
         spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
         if spec:
             cmd += ["--cookies-from-browser", spec]
-        elif cookies_file and os.path.exists(cookies_file):
-            cmd += ["--cookies", cookies_file]
-        elif os.path.exists(_COOKIE_FILE_DEFAULT):
-            cmd += ["--cookies", _COOKIE_FILE_DEFAULT]
+        else:
+            picked = _pick_cookiefile(cookies_file)
+            if picked:
+                cmd += ["--cookies", picked]
         if ratelimit_bps:
             cmd += ["--limit-rate", str(int(ratelimit_bps))]
         cmd += [url_or_query]
@@ -743,16 +772,12 @@ async def stream_pipe(
                 stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
             try:
-                out = ff.communicate(timeout=6)[0] or ""
+                _ = ff.communicate(timeout=6)[0] or ""
             except subprocess.TimeoutExpired:
-                try:
-                    ff.kill()
-                except Exception:
-                    pass
-                try:
-                    yt.kill()
-                except Exception:
-                    pass
+                try: ff.kill()
+                except Exception: pass
+                try: yt.kill()
+                except Exception: pass
                 return fmt if attempt == 0 else "18"
 
             rc = ff.returncode
@@ -761,10 +786,8 @@ async def stream_pipe(
                 stderr_join = (yt.stderr.read() or b"").decode("utf-8", errors="replace")
             except Exception:
                 pass
-            try:
-                yt.kill()
-            except Exception:
-                pass
+            try: yt.kill()
+            except Exception: pass
 
             if rc == 0 and "Requested format is not available" not in stderr_join:
                 return fmt
@@ -802,7 +825,6 @@ async def stream_pipe(
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
     before_opts = "-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
-    # ⚠️ Ici aussi : ne pas réimposer -ar/-ac/-f (discord.py le fera).
     out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
@@ -884,3 +906,55 @@ def download(
                 _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
         raise RuntimeError(f"Échec download YouTube: {e}") from e
+
+# ==== Nettoyage sûr des process ====
+def safe_cleanup(src: Any) -> None:
+    try:
+        proc = getattr(src, "_ytdlp_proc", None)
+        if proc and getattr(proc, "poll", lambda: None)() is None:
+            proc.kill()
+    except Exception:
+        pass
+    try:
+        src.cleanup()
+    except Exception:
+        pass
+
+# ===========================
+# === Mode test en local  ===
+# ===========================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Smoke test yt-dlp streaming for Greg")
+    parser.add_argument("--test", choices=["direct", "pipe"], required=True, help="mode de test")
+    parser.add_argument("--url", required=True, help="URL YouTube ou requête de recherche")
+    parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg", help="chemin FFmpeg (exe ou dossier)")
+    parser.add_argument("--cookies", dest="cookies_file", default=None, help="cookiefile Netscape")
+    parser.add_argument("--cookies-from-browser", dest="cookies_from_browser", default=None, help="ex: chrome[:Profile]")
+    parser.add_argument("--ratelimit-bps", type=int, default=None)
+    args = parser.parse_args()
+
+    import asyncio
+
+    async def _amain():
+        if args.test == "direct":
+            src, title = await stream(
+                args.url, args.ffmpeg,
+                cookies_file=args.cookies_file,
+                cookies_from_browser=args.cookies_from_browser,
+                ratelimit_bps=args.ratelimit_bps,
+            )
+        else:
+            src, title = await stream_pipe(
+                args.url, args.ffmpeg,
+                cookies_file=args.cookies_file,
+                cookies_from_browser=args.cookies_from_browser,
+                ratelimit_bps=args.ratelimit_bps,
+            )
+        print(f"[TEST] OK: source créée — title={title!r}")
+        safe_cleanup(src)
+        print("[TEST] Cleanup OK")
+
+    try:
+        asyncio.run(_amain())
+    except KeyboardInterrupt:
+        print("\n[TEST] Interrupted")
