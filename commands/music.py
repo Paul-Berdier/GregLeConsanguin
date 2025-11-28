@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Optional
+from typing import Optional, Dict
 
 import discord
 from discord import app_commands
@@ -12,11 +12,13 @@ from discord.ext import commands
 from api.services.player_service import PlayerService
 from utils.priority_rules import PER_USER_CAP  # feedback quota
 
+
 def _is_url(s: str) -> bool:
     return s.startswith(("http://", "https://"))
 
+
 class Music(commands.Cog):
-    """Cog FIN: délègue au PlayerService (priorités appliquées partout)."""
+    """Cog FIN: délègue au PlayerService (priorités appliquées partout) + verrou des commandes Discord."""
     def __init__(self, bot: commands.Bot, service: Optional[PlayerService] = None, emit_fn=None):
         self.bot = bot
         self.emit_fn = emit_fn
@@ -25,6 +27,46 @@ class Music(commands.Cog):
         # expose service sur le bot si absent
         if not getattr(bot, "player_service", None):
             bot.player_service = self.svc
+
+        # --- Lock des commandes Discord par serveur (guild) ---
+        # True => toutes les commandes musique (de ce Cog) sont refusées aux non-owners
+        self._discord_lock: Dict[int, bool] = {}
+
+        # Greg Owner (seul autorisé à basculer le lock)
+        self._owner_id_env: Optional[str] = os.getenv("GREG_OWNER_ID")  # ex: "522551561591980073"
+
+    # ---------------- internals: owner & lock helpers ----------------
+
+    def _is_owner(self, user: discord.abc.User | discord.Member) -> bool:
+        if not self._owner_id_env:
+            return False
+        try:
+            return str(int(user.id)) == str(int(self._owner_id_env))
+        except Exception:
+            return False
+
+    def _is_locked(self, guild_id: Optional[int]) -> bool:
+        if not guild_id:
+            return False
+        return bool(self._discord_lock.get(int(guild_id), False))
+
+    async def _deny_if_locked(self, interaction: discord.Interaction) -> bool:
+        """
+        Retourne True si la commande doit être refusée (locked & pas owner),
+        après avoir envoyé le message d'info à l'utilisateur.
+        """
+        gid = int(interaction.guild_id) if interaction.guild_id else None
+        if gid and self._is_locked(gid) and not self._is_owner(interaction.user):
+            # on informe en privé pour éviter le spam
+            await interaction.followup.send(
+                "🔒 **Commandes musique désactivées sur Discord pour ce serveur.**\n"
+                "Merci d’utiliser **l’overlay** pour piloter la musique.",
+                ephemeral=True,
+            )
+            return True
+        return False
+
+    # ---------------- lifecycle / wiring ----------------
 
     async def cog_load(self):
         # si l’app web existe, expose aussi le service pour REST
@@ -53,12 +95,42 @@ class Music(commands.Cog):
 
     # ----------------- SLASH COMMANDS -----------------
 
+    # (OWNER) commande pour verrouiller/déverrouiller les commandes musique sur Discord
+    @app_commands.describe(mode="on/off (vide pour basculer)")
+    @app_commands.command(name="discordlock", description="(OWNER) Active/désactive les commandes musique sur Discord pour CE serveur.")
+    async def discordlock(self, interaction: discord.Interaction, mode: Optional[str] = None):
+        # on veut une réponse discrète
+        await interaction.response.defer(ephemeral=True)
+
+        if not self._is_owner(interaction.user):
+            return await interaction.followup.send("⛔ Réservé au **Greg Owner**.", ephemeral=True)
+
+        gid = int(interaction.guild_id) if interaction.guild_id else None
+        if not gid:
+            return await interaction.followup.send("❌ Pas de serveur.", ephemeral=True)
+
+        cur = self._is_locked(gid)
+        if mode in ("on", "true", "1"):
+            new_state = True
+        elif mode in ("off", "false", "0"):
+            new_state = False
+        else:
+            new_state = not cur
+
+        self._discord_lock[gid] = bool(new_state)
+        await interaction.followup.send(
+            f"🔧 **Discord Lock:** {'ON (commandes musique bloquées pour tous sauf owner)' if new_state else 'OFF (commandes actives)'}",
+            ephemeral=True,
+        )
+
     @app_commands.describe(
         query_or_url="Recherche (titre/artiste) ou URL YouTube/playlist/mix",
     )
     @app_commands.command(name="play", description="Joue un son (YouTube). Gère aussi playlist/mix.")
     async def play(self, interaction: discord.Interaction, query_or_url: str):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
 
         # Prépare l'item : si recherche → autocomplete, sinon URL direct
         if _is_url(query_or_url):
@@ -98,6 +170,8 @@ class Music(commands.Cog):
     @app_commands.command(name="skip", description="Passe au morceau suivant (priorité requise).")
     async def skip(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
         try:
             await self.svc.skip(interaction.guild_id, requester_id=interaction.user.id)
             await interaction.followup.send("⏭️ Skip.")
@@ -107,6 +181,8 @@ class Music(commands.Cog):
     @app_commands.command(name="stop", description="Vide la playlist et stoppe la lecture (priorité requise).")
     async def stop(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
         try:
             await self.svc.stop(interaction.guild_id, requester_id=interaction.user.id)
             await interaction.followup.send("⏹️ Stop.")
@@ -116,6 +192,8 @@ class Music(commands.Cog):
     @app_commands.command(name="pause", description="Met la musique en pause (priorité requise).")
     async def pause(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
         try:
             ok = await self.svc.pause(interaction.guild_id, requester_id=interaction.user.id)
             await interaction.followup.send("⏸️ Pause." if ok else "❌ Rien à mettre en pause.")
@@ -125,6 +203,8 @@ class Music(commands.Cog):
     @app_commands.command(name="resume", description="Reprend la musique (priorité requise).")
     async def resume(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
         try:
             ok = await self.svc.resume(interaction.guild_id, requester_id=interaction.user.id)
             await interaction.followup.send("▶️ Resume." if ok else "❌ Rien à reprendre.")
@@ -135,6 +215,8 @@ class Music(commands.Cog):
     @app_commands.describe(index="Index dans /playlist (1, 2, 3…)")
     async def remove(self, interaction: discord.Interaction, index: int):
         await interaction.response.defer(ephemeral=True)
+        if await self._deny_if_locked(interaction):
+            return
         if index <= 0:
             return await interaction.followup.send("❌ Index invalide.")
         try:
@@ -147,6 +229,8 @@ class Music(commands.Cog):
     @app_commands.describe(src="Index source", dst="Nouvelle position")
     async def move(self, interaction: discord.Interaction, src: int, dst: int):
         await interaction.response.defer(ephemeral=True)
+        if await self._deny_if_locked(interaction):
+            return
         if src <= 0 or dst <= 0:
             return await interaction.followup.send("❌ Index invalides.")
         try:
@@ -158,6 +242,8 @@ class Music(commands.Cog):
     @app_commands.command(name="playlist", description="Affiche la file d’attente.")
     async def playlist(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        if await self._deny_if_locked(interaction):
+            return
         data = self.svc._overlay_payload(int(interaction.guild_id))
         q = data.get("queue") or []
         cur = data.get("current")
@@ -173,6 +259,8 @@ class Music(commands.Cog):
     @app_commands.command(name="current", description="Montre le morceau en cours.")
     async def current(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        if await self._deny_if_locked(interaction):
+            return
         cur = self.svc.now_playing.get(int(interaction.guild_id))
         if not cur:
             return await interaction.followup.send("❌ Rien en cours.")
@@ -182,6 +270,8 @@ class Music(commands.Cog):
     @app_commands.command(name="repeat", description="Active/désactive le repeat ALL.")
     async def repeat(self, interaction: discord.Interaction, mode: Optional[str] = None):
         await interaction.response.defer(ephemeral=True)
+        if await self._deny_if_locked(interaction):
+            return
         state = await self.svc.toggle_repeat(interaction.guild_id, mode)
         await interaction.followup.send(f"🔁 Repeat: **{'ON' if state else 'OFF'}**", ephemeral=True)
 
@@ -189,6 +279,8 @@ class Music(commands.Cog):
     @app_commands.command(name="musicmode", description="Rendu audio 'musique' (EQ/limiter).")
     async def musicmode(self, interaction: discord.Interaction, mode: Optional[str] = None):
         await interaction.response.defer(ephemeral=True)
+        if await self._deny_if_locked(interaction):
+            return
         on = await self.svc.set_music_mode(interaction.guild_id, mode)
         # si en lecture → on tente de relancer pour appliquer l'afilter (protégé par priorité)
         g = interaction.guild
