@@ -191,6 +191,34 @@ def can_user_bump_over(bot, guild_id: int, requester_id: int, owner_weight: int)
 
 # === helpers d’objets (utiles au service & API) ===
 
+def is_priority_item(item: dict) -> bool:
+    return bool(item and (item.get("priority") or item.get("pin") or item.get("pinned")))
+
+def first_non_priority_index(queue: list[dict]) -> int:
+    for i, it in enumerate(queue or []):
+        if not is_priority_item(it):
+            return i
+    return len(queue or [])
+
+def can_user_edit_item(bot, guild_id: int, requester_id: int, item: dict) -> bool:
+    # owner OK, admin OK, poids >= owner_weight OK
+    if not item:
+        return False
+    owner_id = str(item.get("added_by") or item.get("owner_id") or "")
+    if owner_id and str(owner_id) == str(requester_id):
+        return True
+    if can_bypass_quota(bot, guild_id, requester_id):
+        return True
+    owner_w = int(item.get("priority") or 0)
+    if owner_w <= 0:
+        # fallback si l'item n'expose pas la priorité
+        try:
+            owner_id_int = int(owner_id)
+            owner_w = get_member_weight(bot, guild_id, owner_id_int)
+        except Exception:
+            owner_w = 0
+    return can_user_bump_over(bot, guild_id, requester_id, owner_w)
+
 def build_user_meta(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
     """
     Métadonnées légères pour la logique de file/priorité.

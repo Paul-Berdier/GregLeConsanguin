@@ -12,9 +12,10 @@ from utils.playlist_manager import PlaylistManager
 from api.schemas.user import UserOut
 from api.schemas.track import TrackOut, TrackPriorityOut
 from utils.priority_rules import (
-    PER_USER_CAP, get_member_weight, can_bypass_quota,
-    build_user_meta, build_user_out, build_track_prio
+    get_member_weight, can_user_bump_over, can_bypass_quota,
+    is_priority_item, first_non_priority_index, can_user_edit_item,
 )
+
 from utils.ffmpeg import detect_ffmpeg
 from api.services.oembed import oembed
 
@@ -176,7 +177,7 @@ class PlayerService:
             uid = (it or {}).get("requested_by") or (it or {}).get("added_by")
             if uid and uid not in uniq_ids:
                 uniq_ids.append(uid)
-            if len(uniq_ids) >= 25:  # limite de payload raisonnable
+            if len(uniq_ids) >= 25:
                 break
 
         queue_users: Dict[str, Dict[str, Any]] = {}
@@ -194,8 +195,8 @@ class PlayerService:
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
             # nouveaux champs :
-            "requested_by_user": requested_by_user,  # UserOut-like pour le morceau courant
-            "queue_users": queue_users,              # {user_id: UserOut-like}
+            "requested_by_user": requested_by_user,
+            "queue_users": queue_users,
         }
 
     def _ticker_running(self, gid: int) -> bool:
@@ -247,6 +248,25 @@ class PlayerService:
 
         self._progress_task[gid] = asyncio.create_task(_runner())
 
+    def _current_owner_weight(self, guild_id: int) -> int:
+        cur = self.now_playing.get(int(guild_id)) or {}
+        w = int(cur.get("priority") or 0)
+        if w > 0:
+            return w
+        owner = cur.get("added_by") or cur.get("owner_id")
+        try:
+            return get_member_weight(self.bot, int(guild_id), int(owner))
+        except Exception:
+            return 0
+
+    async def _ensure_can_control(self, guild_id: int, requester_id: int) -> None:
+        # admin/mod bypass
+        if can_bypass_quota(self.bot, int(guild_id), int(requester_id)):
+            return
+        owner_w = self._current_owner_weight(guild_id)
+        if not can_user_bump_over(self.bot, int(guild_id), int(requester_id), owner_w):
+            raise PermissionError("PRIORITY_FORBIDDEN")
+
     # ---------- opérations publiques ----------
     async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.VoiceChannel]) -> bool:
         vc = guild.voice_client
@@ -272,7 +292,12 @@ class PlayerService:
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
 
+        # NB: PER_USER_CAP défini ailleurs ; on garde le comportement existant
         if not can_bypass_quota(self.bot, gid, int(user_id)):
+            try:
+                from settings import PER_USER_CAP  # si dispo
+            except Exception:
+                PER_USER_CAP = 999999  # fallback neutre si non défini
             user_count = sum(1 for it in queue if str(it.get("added_by")) == str(user_id))
             if user_count >= PER_USER_CAP:
                 return {"ok": False, "error": f"Quota atteint ({PER_USER_CAP})."}
@@ -412,9 +437,13 @@ class PlayerService:
         self._ensure_ticker(gid)
         self._emit_playlist_update(gid)
 
-    # === commandes
-    async def stop(self, guild_id: int):
+    # === commandes protégées par la priorité =====================
+
+    async def stop(self, guild_id: int, requester_id: int | None = None) -> bool:
         gid = int(guild_id)
+        if requester_id is not None:
+            await self._ensure_can_control(gid, int(requester_id))
+
         pm = self._get_pm(gid)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, pm.stop)
@@ -432,8 +461,11 @@ class PlayerService:
         self._emit_playlist_update(gid)
         return True
 
-    async def skip(self, guild_id: int):
+    async def skip(self, guild_id: int, requester_id: int | None = None) -> bool:
         gid = int(guild_id)
+        if requester_id is not None:
+            await self._ensure_can_control(gid, int(requester_id))
+
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
@@ -443,8 +475,11 @@ class PlayerService:
         self._emit_playlist_update(gid)
         return True
 
-    async def pause(self, guild_id: int):
+    async def pause(self, guild_id: int, requester_id: int | None = None) -> bool:
         gid = int(guild_id)
+        if requester_id is not None:
+            await self._ensure_can_control(gid, int(requester_id))
+
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and vc.is_playing():
@@ -454,8 +489,11 @@ class PlayerService:
             return True
         return False
 
-    async def resume(self, guild_id: int):
+    async def resume(self, guild_id: int, requester_id: int | None = None) -> bool:
         gid = int(guild_id)
+        if requester_id is not None:
+            await self._ensure_can_control(gid, int(requester_id))
+
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and vc.is_paused():
@@ -466,6 +504,48 @@ class PlayerService:
             self._emit_playlist_update(gid)
             return True
         return False
+
+    # === édition de queue protégée par la priorité ================
+
+    def remove_at(self, guild_id: int, requester_id: int, index: int) -> bool:
+        gid = int(guild_id)
+        pm = self._get_pm(gid)
+        q = pm.peek_all()
+        if not (0 <= index < len(q)):
+            return False
+        it = q[index]
+        if not can_user_edit_item(self.bot, gid, int(requester_id), it):
+            raise PermissionError("PRIORITY_FORBIDDEN")
+        ok = pm.remove_at(index)
+        if ok:
+            self._emit_playlist_update(gid)
+        return ok
+
+    def move(self, guild_id: int, requester_id: int, src: int, dst: int) -> bool:
+        gid = int(guild_id)
+        pm = self._get_pm(gid)
+        q = pm.peek_all()
+        if not (0 <= src < len(q) and 0 <= dst < len(q)):
+            return False
+
+        barrier = first_non_priority_index(q)
+        src_prio, dst_prio = src < barrier, dst < barrier
+
+        # Interdiction de franchir la barrière prio sans bypass
+        if src_prio != dst_prio and not can_bypass_quota(self.bot, gid, int(requester_id)):
+            raise PermissionError("PRIORITY_FORBIDDEN")
+
+        # Édition de l'item : s'il n'est pas à l'appelant, contrôle du poids relatif
+        it = q[src]
+        if not can_user_edit_item(self.bot, gid, int(requester_id), it):
+            raise PermissionError("PRIORITY_FORBIDDEN")
+
+        ok = pm.move(src, dst)
+        if ok:
+            self._emit_playlist_update(gid)
+        return ok
+
+    # === réglages ================================================
 
     async def toggle_repeat(self, guild_id: int, mode: Optional[str] = None) -> bool:
         gid = int(guild_id)
@@ -485,6 +565,8 @@ class PlayerService:
         self.audio_mode[gid] = new_mode
         return new_mode == "music"
 
+    # === entrée principale (commande / web) ======================
+
     async def play_for_user(self, guild_id: int, user_id: int, item: dict):
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
@@ -499,7 +581,7 @@ class PlayerService:
             return {"ok": False, "error": "VOICE_CONNECT_FAILED"}
 
         url = (item or {}).get("url") or ""
-        bundle_entries = []
+        bundle_entries: List[dict] = []
         if is_bundle_url(url):
             try:
                 bundle_entries = expand_bundle(
@@ -507,6 +589,8 @@ class PlayerService:
                 ) or []
             except Exception:
                 bundle_entries = []
+
+            # si on a des entrées, on remplit l'item principal avec la 1re
             if bundle_entries:
                 head = bundle_entries[0]
                 item = {**item, **{
@@ -518,9 +602,27 @@ class PlayerService:
                     "provider": head.get("provider") or "youtube",
                 }}
 
+        # enqueue de l'item principal
         res = await self.enqueue(gid, int(user_id), item)
         if not res.get("ok"):
             return res
+
+        # enqueue des entrées suivantes d’une playlist/mix (jusqu’à 9 de plus)
+        if bundle_entries and len(bundle_entries) > 1:
+            tail = bundle_entries[1:10]
+            for e in tail:
+                try:
+                    _ = await self.enqueue(gid, int(user_id), {
+                        "title": e.get("title"),
+                        "url": e.get("url"),
+                        "artist": e.get("artist"),
+                        "thumb": e.get("thumb"),
+                        "duration": e.get("duration"),
+                        "provider": e.get("provider") or "youtube",
+                    })
+                except Exception:
+                    pass
+            self._emit_playlist_update(gid)
 
         if not self.is_playing.get(gid, False):
             await self.play_next(g)

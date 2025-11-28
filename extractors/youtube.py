@@ -356,14 +356,23 @@ def is_playlist_or_mix_url(url: str) -> bool:
         u = urlparse(url)
         if not u.netloc:
             return False
-        if "youtube.com" not in u.netloc and "youtu.be" not in u.netloc and "music.youtube.com" not in u.netloc:
+        host = u.netloc.lower()
+        if ("youtube.com" not in host) and ("youtu.be" not in host) and ("music.youtube.com" not in host):
             return False
         q = parse_qs(u.query)
-        lst = (q.get("list") or [None])[0]
-        if lst:
+
+        # cas 1: vraies playlists
+        if (q.get("list") or [None])[0]:
             return True
-        if u.path.strip("/").lower() == "playlist" and lst:
+
+        # cas 2: "radio/mix" partagé sans list= (start_radio=1 & rv=…)
+        if (q.get("start_radio") or ["0"])[0] in ("1", "true"):
             return True
+
+        # cas 3: page playlist directe
+        if u.path.strip("/").lower() == "playlist":
+            return True
+
         return False
     except Exception:
         return False
