@@ -436,6 +436,7 @@ class General(commands.Cog):
     # =======================
 
     @app_commands.command(name="restart", description="Redémarre complètement Greg et poste un auto-diagnostic.")
+    @_owner_only()  # ← ← ← OWNER ONLY
     async def restart(self, interaction: discord.Interaction):
         """
         Redémarre TOUT le process (bot + API + SocketIO) puis exécute un self-test au boot
