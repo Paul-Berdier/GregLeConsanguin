@@ -100,24 +100,37 @@ def add_to_queue():
         return jsonify({"ok": False, "error": str(e)}), 500
 
     # autoplay si la file était vide → connexion & play_next
+    autoplay = {"attempted": False, "ok": False, "reason": None}
+
     if was_empty:
         async def _auto_play():
             g = player.bot.get_guild(int(gid))
-            m = g.get_member(int(uid)) if g else None
+            if not g:
+                return {"ok": False, "reason": "GUILD_NOT_FOUND"}
+
+            m = g.get_member(int(uid))
             ch = m.voice.channel if (m and m.voice) else None
-            if not (g and ch):
-                return
+            if not ch:
+                return {"ok": False, "reason": "USER_NOT_IN_VOICE"}
+
             ok = await player.ensure_connected(g, ch)
-            if ok:
-                await player.play_next(g)
+            if not ok:
+                return {"ok": False, "reason": "VOICE_CONNECT_FAILED"}
+
+            # IMPORTANT: play_next ne démarre pas si vc.is_playing() ou vc.is_paused()
+            await player.play_next(g)
+            return {"ok": True, "reason": None}
+
+        fut2 = asyncio.run_coroutine_threadsafe(_auto_play(), player.bot.loop)
+        autoplay["attempted"] = True
         try:
-            asyncio.run_coroutine_threadsafe(_auto_play(), player.bot.loop)
-        except Exception:
-            pass
+            autoplay.update(fut2.result(timeout=12) or {})
+        except Exception as e:
+            autoplay.update({"ok": False, "reason": f"AUTOPLAY_ERROR:{e}"})
 
     _broadcast(gid)
     http_code = 200 if res.get("ok") else 409
-    return jsonify({"ok": bool(res.get("ok")), "result": res}), http_code
+    return jsonify({"ok": bool(res.get("ok")), "result": res, "autoplay": autoplay}), http_code
 
 # --- skip/stop pilotés par le PlayerService (PRIORITY) -----------------------
 @bp.post("/queue/skip")

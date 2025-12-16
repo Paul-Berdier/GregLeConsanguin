@@ -1,3 +1,5 @@
+# api/services/player_service.py
+
 from __future__ import annotations
 
 import os
@@ -13,7 +15,7 @@ from api.schemas.user import UserOut
 from api.schemas.track import TrackOut, TrackPriorityOut
 from utils.priority_rules import (
     get_member_weight, can_user_bump_over, can_bypass_quota,
-    is_priority_item, first_non_priority_index, can_user_edit_item,
+    is_priority_item, first_non_priority_index, can_user_edit_item, build_user_out
 )
 
 from utils.ffmpeg import detect_ffmpeg
@@ -268,17 +270,26 @@ class PlayerService:
             raise PermissionError("PRIORITY_FORBIDDEN")
 
     # ---------- opérations publiques ----------
-    async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.VoiceChannel]) -> bool:
-        vc = guild.voice_client
-        if vc and vc.is_connected():
-            return True
-        if not channel:
+    async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.abc.GuildChannel]) -> bool:
+        if not channel or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             return False
+
+        vc = guild.voice_client
+
         try:
+            # déjà connecté : move si besoin
+            if vc and vc.is_connected():
+                if getattr(vc, "channel", None) and int(vc.channel.id) == int(channel.id):
+                    return True
+                await vc.move_to(channel)
+                return True
+
+            # pas connecté : connect
             await channel.connect()
             return True
+
         except Exception as e:
-            log.warning("Connexion vocale impossible: %s", e)
+            log.warning("Connexion/Move vocal impossible: %s", e)
             return False
 
     async def enqueue(self, guild_id: int, user_id: int, item: dict) -> dict:
@@ -334,8 +345,11 @@ class PlayerService:
             await loop.run_in_executor(None, pm.reload)
 
             vc = guild.voice_client
-            if vc and (vc.is_playing() or vc.is_paused()):
+            if vc and vc.is_playing():
                 return
+            # si paused, on stop puis on enchaîne
+            if vc and vc.is_paused():
+                vc.stop()
 
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
