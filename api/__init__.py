@@ -1,5 +1,4 @@
 # api/__init__.py
-
 from __future__ import annotations
 
 import logging
@@ -9,7 +8,8 @@ from typing import Optional
 from flask import Flask, render_template
 
 from .core.config import Settings
-from .core.extensions import init_extensions
+from .core.errors import register_error_handlers
+from .core.extensions import init_extensions, socketio
 from .core.logging import configure_logging
 
 log = logging.getLogger(__name__)
@@ -41,19 +41,16 @@ def create_app(pm: Optional[object] = None) -> Flask:
     )
     app.config.from_object(Settings())
 
-    # ✅ init extensions (CORS + SocketIO) UNE SEULE FOIS
     init_extensions(app)
 
-    # deps
     app.extensions["pm"] = pm
     app.extensions.setdefault("stores", {})
     _init_stores(app)
 
-    # blueprints
-    _register_blueprints(app)
+    register_error_handlers(app)
 
-    # ✅ IMPORTANT: importer les events WS pour enregistrer les handlers
-    _import_socketio_events()
+    _register_blueprints(app)
+    _register_socketio_handlers()  # ✅ important: charge les events
 
     @app.get("/")
     def index():
@@ -91,19 +88,19 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.search import bp as search_bp
 
     app.register_blueprint(auth_bp)  # /auth/* + /api/v1/me
-
     for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
         app.register_blueprint(bp, url_prefix=API_PREFIX)
 
 
-def _import_socketio_events() -> None:
+def _register_socketio_handlers() -> None:
     """
-    Import side-effect: enregistre @socketio.on(...)
+    IMPORTANT:
+    Flask-SocketIO enregistre les handlers au moment de l'import (decorators).
+    Si tu n'importes jamais api.ws.events, tu n'auras aucun event WS.
     """
-    try:
-        from .ws import events  # noqa: F401
-    except Exception as e:
-        log.warning("SocketIO events import failed: %s", e)
+    # noqa: F401
+    from .ws import events  # déclenche l'enregistrement des @socketio.on(...)
+    from .ws import presence  # si tu l'utilises ailleurs
 
 
 def _init_stores(app: Flask) -> None:

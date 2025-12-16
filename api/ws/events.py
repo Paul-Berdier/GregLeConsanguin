@@ -1,5 +1,4 @@
 # api/ws/events.py
-
 from __future__ import annotations
 
 import logging
@@ -10,20 +9,20 @@ from flask import current_app, request as flask_request
 from flask_socketio import emit, join_room, leave_room
 
 from api.core.extensions import socketio
-from api.ws.presence import PresenceRegistry
 
 log = logging.getLogger(__name__)
 
-presence = PresenceRegistry(ttl_seconds=45)
+__all__ = [
+    "broadcast_playlist_update",
+    "presence_stats",
+]
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 
 def PM():
-    """
-    Adaptateur Player/Playlist (bridge) injecté dans create_app(pm=...).
-    """
+    """Même adaptateur que pour les routes HTTP."""
     return current_app.extensions["pm"]
 
 def _room_for(gid: Union[str, int]) -> str:
@@ -57,12 +56,13 @@ def broadcast_playlist_update(payload: Dict[str, Any], guild_id: Union[str, int,
         log.warning("broadcast_playlist_update failed: %s", e)
 
 # --------------------------------------------------------------------------- #
-# Diagnostics présence SocketIO (rooms)                                        #
+# Diagnostics présence                                                         #
 # --------------------------------------------------------------------------- #
 
 def socketio_presence_stats() -> Dict[str, Any]:
     """
-    Stats bas niveau (rooms / clients) via le manager Socket.IO.
+    Stats basées sur l'état interne Flask-SocketIO/engineio.
+    Ne dépend pas d'un registre custom => robuste en prod.
     """
     out: Dict[str, Any] = {
         "ok": True,
@@ -92,6 +92,7 @@ def socketio_presence_stats() -> Dict[str, Any]:
                     members_set = set(getattr(members, "keys", lambda: [])())
                 except Exception:
                     members_set = set()
+
             out["rooms"][str(room)] = len(members_set)
             all_sids |= members_set
 
@@ -100,6 +101,7 @@ def socketio_presence_stats() -> Dict[str, Any]:
         out["guild_rooms"] = guild_rooms
         out["guild_count"] = len(guild_rooms)
         return out
+
     except Exception as e:
         out["ok"] = False
         out["error"] = str(e)
@@ -118,7 +120,6 @@ def on_connect():
 @socketio.on("disconnect")
 def on_disconnect():
     sid = flask_request.sid
-    presence.remove(sid)
     log.debug("[ws] disconnect sid=%s", sid)
 
 # --------------------------------------------------------------------------- #
@@ -130,17 +131,6 @@ def on_overlay_register(data: Optional[Dict[str, Any]] = None):
     data = data or {}
     sid = flask_request.sid
     gid = _safe_gid(data.get("guild_id"))
-
-    # présence debug (optionnel)
-    try:
-        presence.register(
-            sid=sid,
-            user_id=str(data.get("user_id") or "-"),
-            guild_id=str(gid) if gid is not None else None,
-            meta={"ua": flask_request.headers.get("User-Agent", ""), "kind": "overlay"},
-        )
-    except Exception:
-        pass
 
     if gid is not None:
         room = _room_for(gid)
@@ -157,10 +147,9 @@ def on_overlay_subscribe_guild(data: Optional[Dict[str, Any]] = None):
     gid = _safe_gid(data.get("guild_id"))
     if gid is None:
         return emit("overlay_joined", {"ok": False, "error": "missing guild_id"})
-
-    join_room(_room_for(gid))
-    presence.ping(flask_request.sid)
-    log.debug("[ws] subscribe sid=%s → %s", flask_request.sid, _room_for(gid))
+    room = _room_for(gid)
+    join_room(room)
+    log.debug("[ws] subscribe sid=%s → %s", flask_request.sid, room)
     emit("overlay_joined", {"ok": True, "guild_id": gid})
 
 @socketio.on("overlay_unsubscribe_guild")
@@ -169,15 +158,13 @@ def on_overlay_unsubscribe_guild(data: Optional[Dict[str, Any]] = None):
     gid = _safe_gid(data.get("guild_id"))
     if gid is None:
         return emit("overlay_left", {"ok": False, "error": "missing guild_id"})
-
-    leave_room(_room_for(gid))
-    presence.ping(flask_request.sid)
-    log.debug("[ws] unsubscribe sid=%s ← %s", flask_request.sid, _room_for(gid))
+    room = _room_for(gid)
+    leave_room(room)
+    log.debug("[ws] unsubscribe sid=%s ← %s", flask_request.sid, room)
     emit("overlay_left", {"ok": True, "guild_id": gid})
 
 @socketio.on("overlay_ping")
 def on_overlay_ping(data: Optional[Dict[str, Any]] = None):
-    presence.ping(flask_request.sid)
     emit("overlay_pong", {"t": time.time()})
 
 # --------------------------------------------------------------------------- #
@@ -188,16 +175,6 @@ def on_overlay_ping(data: Optional[Dict[str, Any]] = None):
 def ws_ctrl(data: Optional[Dict[str, Any]] = None):
     """
     data: { "guild_id": str|int, "action": str, "payload": dict }
-
-    Actions:
-      - queue_add  (payload: {url|query|title, user_id?, ...})
-      - skip
-      - stop
-      - move       (payload: {src:int, dst:int})
-      - remove     (payload: {index:int})
-      - next       (alias pop_next)
-
-    Retour (ACK): { ok: bool, ... }
     """
     try:
         data = data or {}
@@ -240,14 +217,9 @@ def ws_ctrl(data: Optional[Dict[str, Any]] = None):
         elif action == "next":
             res = pm.pop_next(guild_id=gid)
 
-        elif action == "presence_stats":
-            # debug
-            return {"ok": True, "presence": presence.stats(), "socketio": socketio_presence_stats()}
-
         else:
             return {"ok": False, "error": "unknown_action"}
 
-        # ✅ Broadcast du nouvel état à la room de la guilde
         state = pm.get_state(guild_id=gid)
         broadcast_playlist_update({"state": state}, guild_id=gid)
 

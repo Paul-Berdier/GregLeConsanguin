@@ -33,19 +33,11 @@ logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
 class PlayerAPIBridge:
     """
-    Façade API au-dessus de PlayerService (source de vérité unique).
-    Toutes les méthodes acceptent guild_id optionnel.
+    Façade API au-dessus de PlayerService.
+    Rend la résolution de guild_id robuste pour éviter les 400 côté UI.
     """
-
     def __init__(self, default_gid: Optional[str] = None):
         self.default_gid = (default_gid or os.getenv("DEFAULT_GUILD_ID") or "").strip() or None
-
-    def _gid(self, gid: Optional[str | int]) -> int:
-        if gid is not None and str(gid).strip():
-            return int(gid)
-        if self.default_gid:
-            return int(self.default_gid)
-        raise RuntimeError("DEFAULT_GUILD_ID non défini. Passe guild_id dans l’appel API.")
 
     def _svc(self):
         b = globals().get("bot")
@@ -53,6 +45,29 @@ class PlayerAPIBridge:
         if not svc:
             raise RuntimeError("PlayerService indisponible (bot.player_service est None).")
         return svc, b
+
+    def _gid(self, gid: Optional[str | int]) -> int:
+        # 1) guild_id explicit
+        if gid is not None and str(gid).strip():
+            return int(gid)
+
+        # 2) DEFAULT_GUILD_ID env
+        if self.default_gid:
+            return int(self.default_gid)
+
+        # 3) fallback: si le bot est dans 1 seule guilde, on prend celle-là
+        _, b = self._svc()
+        guilds = list(getattr(b, "guilds", []) or [])
+        if len(guilds) == 1:
+            return int(guilds[0].id)
+
+        # 4) sinon on force l’UI à choisir
+        ids = [str(g.id) for g in guilds[:10]]
+        raise RuntimeError(
+            "guild_id manquant. "
+            "Choisis un serveur dans l’UI ou définis DEFAULT_GUILD_ID. "
+            f"Bot dans {len(guilds)} guild(s): {', '.join(ids)}"
+        )
 
     def _call(self, coro):
         _, b = self._svc()
