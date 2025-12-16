@@ -1,10 +1,9 @@
-/* assets/js/player.js
-   Greg le Consanguin — Web Player (pro)
-   - Autocomplete riche via /api/v1/autocomplete
-   - Navigation clavier suggestions (↑ ↓ Enter / Esc)
-   - Anti-race (AbortController) + debounce
-   - Poll + Socket.IO realtime (playlist_update)
-   - Gestion guild_id robuste (auto-pick + localStorage)
+/* assets/static/player.js
+   Greg le Consanguin — Web Player (robuste)
+   - Compatible API: { ok:true, state:{ current, queue, progress{elapsed,duration}, is_paused, repeat_all, guild_id, thumbnail } }
+     + fallback anciens formats: { current, queue, elapsed, duration, is_paused, repeat }
+   - Anti 400: auto-select guild si possible
+   - Rendering current + queue (queue sans le current si doublon)
 */
 
 "use strict";
@@ -22,20 +21,16 @@ class GregWebPlayer {
       queue: [],
       is_paused: false,
       repeat: false,
-      // champs optionnels backend:
-      elapsed: 0,
-      duration: 0,
     };
 
     this.progress = {
-      startedAt: 0,
+      startedAt: 0, // epoch seconds (local)
       elapsed: 0,
       duration: 0,
     };
 
     this.pollTimer = null;
     this.progressTimer = null;
-    this.socket = null;
 
     // Autocomplete internal
     this.sug = {
@@ -93,16 +88,16 @@ class GregWebPlayer {
       this.$suggestions.setAttribute("aria-label", "Suggestions");
     }
 
-    // Restore persisted guild
+    // Restore persisted guild (important: éviter les 400)
     try {
       const saved = localStorage.getItem("greg.guildId") || "";
       if (saved && saved.trim()) this.guildId = saved.trim();
     } catch {}
   }
 
-  // -------------------------
+  // ---------------------------------------------------------------------------
   // Utils
-  // -------------------------
+  // ---------------------------------------------------------------------------
   log(...args) {
     console.log("[GregWebPlayer]", ...args);
   }
@@ -127,6 +122,12 @@ class GregWebPlayer {
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  pickIconUrl() {
+    // Évite ton 404 icon.png : on tente plusieurs chemins possibles
+    // (adapte si besoin, mais au moins ça ne casse pas l’UI)
+    return "/static/icon.png";
+  }
+
   isProbablyURL(v) {
     v = String(v || "").trim();
     return (
@@ -149,6 +150,7 @@ class GregWebPlayer {
 
     if (!page || this.isSoundCloudCdn(page)) return "";
 
+    // Canonicalise YouTube
     try {
       const m = String(page).match(/(?:v=|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{6,})/);
       return m ? `https://www.youtube.com/watch?v=${m[1]}` : page;
@@ -164,14 +166,9 @@ class GregWebPlayer {
     return `${m}:${String(s).padStart(2, "0")}`;
   }
 
-  pickIconUrl() {
-    // Mets ton icône au bon endroit : /static/assets/images/icon.png (recommandé)
-    return "/static/assets/images/icon.png";
-  }
-
-  // -------------------------
-  // API helpers
-  // -------------------------
+  // ---------------------------------------------------------------------------
+  // HTTP helpers
+  // ---------------------------------------------------------------------------
   headers(extra = {}) {
     const h = { "Content-Type": "application/json" };
     if (this.guildId) h["X-Guild-ID"] = String(this.guildId);
@@ -190,86 +187,174 @@ class GregWebPlayer {
     }
   }
 
-  async readErrorBody(r) {
-    try {
-      const ct = (r.headers.get("Content-Type") || "").toLowerCase();
-      if (ct.includes("application/json")) {
-        const j = await r.json().catch(() => null);
-        if (j && (j.error || j.message)) return String(j.error || j.message);
-        return j ? JSON.stringify(j).slice(0, 250) : "";
-      }
-      const t = await r.text().catch(() => "");
-      return (t || "").slice(0, 250);
-    } catch {
-      return "";
-    }
-  }
-
   async apiGet(path, opts = {}) {
     const url = this.API_BASE + path;
-    const r = await this.fetchWithTimeout(url, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-      ...opts,
-      headers: Object.assign({}, opts.headers || {}, this.headers()),
-    });
-
-    if (!r.ok) {
-      const extra = await this.readErrorBody(r);
-      throw new Error(`GET ${path}: HTTP ${r.status}${extra ? ` — ${extra}` : ""}`);
-    }
+    const r = await this.fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        ...opts,
+        headers: Object.assign({}, opts.headers || {}, this.headers()),
+      },
+      12000
+    );
+    if (!r.ok) throw new Error(`GET ${path}: HTTP ${r.status}`);
     return await r.json();
   }
 
   async apiPost(path, body = {}, opts = {}) {
     const url = this.API_BASE + path;
-    const r = await this.fetchWithTimeout(url, {
-      method: "POST",
-      credentials: "include",
-      ...opts,
-      headers: Object.assign({}, opts.headers || {}, this.headers()),
-      body: JSON.stringify(body || {}),
-    });
-
-    if (!r.ok) {
-      const extra = await this.readErrorBody(r);
-      throw new Error(`POST ${path}: HTTP ${r.status}${extra ? ` — ${extra}` : ""}`);
-    }
+    const r = await this.fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        credentials: "include",
+        ...opts,
+        headers: Object.assign({}, opts.headers || {}, this.headers()),
+        body: JSON.stringify(body || {}),
+      },
+      12000
+    );
+    if (!r.ok) throw new Error(`POST ${path}: HTTP ${r.status}`);
     return await r.json();
   }
 
-  // -------------------------
+  // ---------------------------------------------------------------------------
+  // Normalisation API -> état UI
+  // ---------------------------------------------------------------------------
+  unwrapPlaylistResponse(data) {
+    // Support:
+    // 1) { ok:true, state:{...} }
+    // 2) { state:{...} }
+    // 3) { current, queue, ... }
+    // 4) { ok:true, current, queue, ... }
+    if (!data || typeof data !== "object") return null;
+
+    if (data.state && typeof data.state === "object") return data.state;
+
+    // certains backends peuvent renvoyer { ok:true, state:{...} } déjà traité,
+    // ou { ok:true, ... } direct
+    if ("current" in data || "queue" in data || "progress" in data) return data;
+
+    return null;
+  }
+
+  sameTrack(a, b) {
+    if (!a || !b) return false;
+    const au = String(a.url || a.webpage_url || "").trim();
+    const bu = String(b.url || b.webpage_url || "").trim();
+    if (au && bu && au === bu) return true;
+
+    const at = String(a.title || "").trim();
+    const bt = String(b.title || "").trim();
+    return at && bt && at === bt;
+  }
+
+  applyStateFromBackend(raw) {
+    const st = this.unwrapPlaylistResponse(raw);
+    if (!st) return false;
+
+    // Auto-capture guild_id si pas encore fixé (ça évite les 400 derrière)
+    if (!this.guildId && st.guild_id) {
+      this.guildId = String(st.guild_id);
+      try {
+        localStorage.setItem("greg.guildId", this.guildId);
+      } catch {}
+      if (this.$guildSelect) this.$guildSelect.value = this.guildId;
+    }
+
+    // current / queue
+    const current = st.current || null;
+    let queue = Array.isArray(st.queue) ? st.queue.slice() : [];
+
+    // Si la queue contient le current en premier, on l’enlève pour afficher "à venir"
+    if (current && queue.length && this.sameTrack(queue[0], current)) {
+      queue = queue.slice(1);
+    }
+
+    const isPaused = !!(st.is_paused ?? st.paused ?? false);
+    const repeat = !!(st.repeat_all ?? st.repeat ?? false);
+
+    // progress (support ancien)
+    const elapsed = Number(
+      st?.progress?.elapsed ??
+      st.elapsed ??
+      0
+    );
+
+    const duration = Number(
+      st?.progress?.duration ??
+      st.duration ??
+      (current && current.duration) ??
+      0
+    );
+
+    // thumbnails (support)
+    const thumb =
+      st.thumbnail ||
+      (current && (current.thumb || current.thumbnail)) ||
+      "";
+
+    // set state
+    this.state.current = current ? Object.assign({}, current, { thumbnail: thumb }) : null;
+    this.state.queue = queue;
+    this.state.is_paused = isPaused;
+    this.state.repeat = repeat;
+
+    // progress baseline
+    this.progress.elapsed = Number.isFinite(elapsed) ? elapsed : 0;
+    this.progress.duration = Number.isFinite(duration) ? duration : 0;
+    this.progress.startedAt = Date.now() / 1000 - this.progress.elapsed;
+
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
   // INIT
-  // -------------------------
+  // ---------------------------------------------------------------------------
   async init() {
     this.bindEvents();
 
-    // 1) user
     await this.refreshMe();
-
-    // 2) guilds list
     await this.refreshGuilds();
 
-    // 3) auto-pick guild if possible
-    await this.autoPickGuildIfNeeded();
+    // Si toujours pas de guild_id, tente une auto-sélection
+    this.autoSelectGuildIfPossible();
 
-    // 4) socket realtime (optionnel)
-    this.initSocket();
-
-    // 5) first state
+    // Premier rendu
     await this.refreshState(false);
     await this.refreshSpotify();
 
-    // Poll fallback (si ws absent / raté)
+    // Poll state
     this.pollTimer = setInterval(() => this.refreshState(true), 3000);
-
-    // Progress tick local
+    // Local progress tick (UI fluide)
     this.progressTimer = setInterval(() => this.renderProgress(), 500);
 
     this.setStatus("Prêt ✅", true);
   }
 
+  autoSelectGuildIfPossible() {
+    if (this.guildId) return;
+    if (!this.$guildSelect) return;
+
+    // Option (par défaut) est value=""
+    // Si la liste a des guilds, on prend la première
+    const opts = Array.from(this.$guildSelect.querySelectorAll("option"));
+    const firstGuild = opts.find((o) => o.value && o.value.trim());
+    if (firstGuild) {
+      this.guildId = firstGuild.value.trim();
+      this.$guildSelect.value = this.guildId;
+      try {
+        localStorage.setItem("greg.guildId", this.guildId);
+      } catch {}
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI bindings
+  // ---------------------------------------------------------------------------
   bindEvents() {
     // Submit (play)
     if (this.$searchForm) {
@@ -279,7 +364,7 @@ class GregWebPlayer {
       });
     }
 
-    // Input
+    // Input -> autocomplete
     const debouncedAuto = this.debounce((q) => this.fetchAutocomplete(q), 220);
 
     if (this.$searchInput) {
@@ -292,7 +377,6 @@ class GregWebPlayer {
         debouncedAuto(q);
       });
 
-      // Keyboard navigation for suggestions
       this.$searchInput.addEventListener("keydown", (e) => {
         if (!this.sug.open) {
           if (e.key === "ArrowDown" && this.sug.items.length) {
@@ -335,7 +419,6 @@ class GregWebPlayer {
         }
       });
 
-      // Click outside closes suggestions
       document.addEventListener("click", (e) => {
         const t = e.target;
         if (!t) return;
@@ -346,7 +429,7 @@ class GregWebPlayer {
       });
     }
 
-    // Buttons
+    // Controls
     this.$btnPlayPause?.addEventListener("click", () => this.togglePause());
     this.$btnSkip?.addEventListener("click", () => this.skip());
     this.$btnStop?.addEventListener("click", () => this.restart());
@@ -359,12 +442,10 @@ class GregWebPlayer {
     // Guild select
     this.$guildSelect?.addEventListener("change", () => {
       this.guildId = this.$guildSelect.value || "";
-      try { localStorage.setItem("greg.guildId", this.guildId || ""); } catch {}
-      this.setStatus(this.guildId ? `Serveur sélectionné: ${this.guildId}` : "Serveur: (par défaut)", true);
-
-      // Re-subscribe socket room + refresh state
-      this.subscribeSocketGuild();
-      this.refreshState(true).catch(() => {});
+      try {
+        localStorage.setItem("greg.guildId", this.guildId);
+      } catch {}
+      this.refreshState(false).catch(() => {});
     });
 
     // Spotify
@@ -386,70 +467,9 @@ class GregWebPlayer {
     }
   }
 
-  // -------------------------
-  // Socket.IO realtime
-  // -------------------------
-  initSocket() {
-    // Nécessite socket.io client dans la page (ex: <script src="/socket.io/socket.io.js"></script>)
-    const io = window.io;
-    if (!io) {
-      this.log("Socket.IO client absent -> polling only");
-      return;
-    }
-
-    try {
-      const s = io({
-        transports: ["websocket", "polling"],
-        withCredentials: true,
-      });
-      this.socket = s;
-
-      s.on("connect", () => {
-        this.log("socket connected", s.id);
-        this.subscribeSocketGuild();
-      });
-
-      s.on("disconnect", (reason) => {
-        this.log("socket disconnected:", reason);
-      });
-
-      // backend: emits {state: ...}
-      s.on("playlist_update", (payload) => {
-        try {
-          const st = payload?.state || payload;
-          if (st) {
-            this.applyStateFromBackend(st);
-            this.renderState();
-          } else {
-            this.refreshState(true).catch(() => {});
-          }
-        } catch {
-          this.refreshState(true).catch(() => {});
-        }
-      });
-
-      // optional
-      s.on("welcome", (p) => this.log("welcome:", p));
-    } catch (e) {
-      this.log("Socket init failed:", e);
-      this.socket = null;
-    }
-  }
-
-  subscribeSocketGuild() {
-    if (!this.socket) return;
-    try {
-      const gid = this.guildId || null;
-      // 1) register
-      this.socket.emit("overlay_register", { guild_id: gid });
-      // 2) subscribe explicit
-      if (gid) this.socket.emit("overlay_subscribe_guild", { guild_id: gid });
-    } catch {}
-  }
-
-  // -------------------------
-  // Search / Autocomplete
-  // -------------------------
+  // ---------------------------------------------------------------------------
+  // Autocomplete
+  // ---------------------------------------------------------------------------
   async onSubmitSearch() {
     const q = (this.$searchInput?.value || "").trim();
     if (!q) return;
@@ -463,7 +483,6 @@ class GregWebPlayer {
       return;
     }
 
-    // Cancel previous
     if (this.sug.abort) {
       try { this.sug.abort.abort(); } catch {}
       this.sug.abort = null;
@@ -492,7 +511,8 @@ class GregWebPlayer {
         ? data
         : [];
 
-      // Normalize
+      if (this.sug.lastQuery !== query) return;
+
       const items = arr
         .map((x) => {
           const urlPage = x?.webpage_url || x?.permalink_url || x?.url || "";
@@ -518,9 +538,6 @@ class GregWebPlayer {
           };
         })
         .filter((it) => !!(it.webpage_url || it.url));
-
-      // Ignore stale
-      if (this.sug.lastQuery !== query) return;
 
       this.sug.items = items;
       this.renderSuggestions(items);
@@ -582,7 +599,6 @@ class GregWebPlayer {
       row.setAttribute("tabindex", "-1");
       row.setAttribute("data-sug-idx", String(idx));
 
-      // Thumb
       const thumb = document.createElement("div");
       thumb.className = "sug-thumb";
       if (it.thumb) {
@@ -592,7 +608,6 @@ class GregWebPlayer {
         thumb.style.backgroundImage = `url("${this.pickIconUrl()}")`;
       }
 
-      // Main
       const main = document.createElement("div");
       main.className = "sug-main";
 
@@ -608,14 +623,11 @@ class GregWebPlayer {
       main.appendChild(title);
       main.appendChild(artist);
 
-      // Time
       const time = document.createElement("div");
       time.className = "sug-time";
       time.textContent = it.duration != null ? this.formatTime(it.duration) : "";
 
-      const onPick = async () => {
-        await this.pickSuggestion(it);
-      };
+      const onPick = async () => { await this.pickSuggestion(it); };
 
       row.addEventListener("mouseenter", () => this.setActiveSuggestion(idx));
       row.addEventListener("click", () => onPick().catch(() => {}));
@@ -666,7 +678,6 @@ class GregWebPlayer {
       return;
     }
 
-    // Try autocomplete top pick
     try {
       const items = await this.getSuggestionsOnce(q, 8);
       if (items && items.length) {
@@ -723,9 +734,9 @@ class GregWebPlayer {
     }));
   }
 
-  // -------------------------
+  // ---------------------------------------------------------------------------
   // Discord Auth
-  // -------------------------
+  // ---------------------------------------------------------------------------
   async refreshMe() {
     try {
       const me = await this.apiGet("/me");
@@ -767,7 +778,6 @@ class GregWebPlayer {
       const w = window.open("/auth/login", "greg_login", "width=520,height=780");
       if (!w) alert("Popup bloquée : autorise l’ouverture de fenêtre pour te connecter.");
     } catch {}
-
     this.setStatus("Connexion Discord…", true);
 
     const t0 = Date.now();
@@ -776,8 +786,7 @@ class GregWebPlayer {
       if (this.me) {
         this.setStatus("Connecté à Discord ✅", true);
         await this.refreshGuilds();
-        await this.autoPickGuildIfNeeded();
-        this.subscribeSocketGuild();
+        this.autoSelectGuildIfPossible();
         await this.refreshState(true);
       } else if (Date.now() - t0 < 120000) {
         setTimeout(loop, 1500);
@@ -802,20 +811,20 @@ class GregWebPlayer {
     this.setStatus("Déconnecté.", true);
   }
 
-  // -------------------------
+  // ---------------------------------------------------------------------------
   // Guilds
-  // -------------------------
+  // ---------------------------------------------------------------------------
   async refreshGuilds() {
     if (!this.$guildSelect) return;
 
     this.$guildSelect.innerHTML = `<option value="">(par défaut)</option>`;
 
+    // pas connecté -> pas de guild list
     if (!this.me?.id) return;
 
     try {
       const data = await this.apiGet("/guilds");
       const guilds = Array.isArray(data?.guilds) ? data.guilds : [];
-
       guilds.forEach((g) => {
         const opt = document.createElement("option");
         opt.value = String(g.id || "");
@@ -823,89 +832,37 @@ class GregWebPlayer {
         this.$guildSelect.appendChild(opt);
       });
 
-      // restore saved guild selection in UI if present
-      if (this.guildId) {
-        const exists = Array.from(this.$guildSelect.options).some((o) => o.value === this.guildId);
-        if (exists) this.$guildSelect.value = this.guildId;
-      }
+      // ré-applique la sélection sauvegardée si possible
+      if (this.guildId) this.$guildSelect.value = this.guildId;
     } catch (e) {
       this.log("refreshGuilds failed:", e);
     }
   }
 
-  async autoPickGuildIfNeeded() {
-    // Si on a déjà une guildId valide dans le select => ok
-    if (this.guildId && this.$guildSelect) {
-      const exists = Array.from(this.$guildSelect.options).some((o) => o.value === this.guildId);
-      if (exists) return;
-    }
-
-    // Si pas connecté => on laisse par défaut
-    if (!this.me?.id) return;
-
-    // Si on a un select avec au moins 1 guild => pick la 1ère non vide
-    if (this.$guildSelect) {
-      const opt = Array.from(this.$guildSelect.options || []).find((o) => o.value && o.value.trim());
-      if (opt) {
-        this.guildId = opt.value;
-        this.$guildSelect.value = opt.value;
-        try { localStorage.setItem("greg.guildId", this.guildId || ""); } catch {}
-      }
-    }
-  }
-
-  // -------------------------
+  // ---------------------------------------------------------------------------
   // Playlist / Queue
-  // -------------------------
-  applyStateFromBackend(data) {
-    // backend peut renvoyer: {current, queue, is_paused, repeat, elapsed, duration}
-    this.state.current = data?.current || data?.now_playing || null;
-    this.state.queue = Array.isArray(data?.queue) ? data.queue : [];
-    this.state.is_paused = !!(data?.is_paused || data?.paused);
-    this.state.repeat = !!(data?.repeat);
-
-    const elapsed = Number(data?.elapsed || 0);
-    const duration = Number(data?.duration || (this.state.current && this.state.current.duration) || 0);
-
-    this.state.elapsed = elapsed;
-    this.state.duration = duration;
-
-    this.progress.startedAt = Date.now() / 1000 - elapsed;
-    this.progress.elapsed = elapsed;
-    this.progress.duration = duration;
-  }
-
+  // ---------------------------------------------------------------------------
   async refreshState(silent = false) {
     try {
-      // Si pas de guild choisie et pas de fallback backend => erreur possible.
-      // Ici on tente quand même; si 400, on affiche un message clair.
       const data = await this.apiGet("/playlist");
-      this.applyStateFromBackend(data);
+
+      const ok = this.applyStateFromBackend(data);
+      if (!ok) throw new Error("Bad playlist payload");
 
       if (!silent) this.setStatus("État mis à jour.", true);
       this.renderState();
     } catch (e) {
+      // Très souvent: 400 car guild non choisie
+      const msg = String(e?.message || e || "");
       this.log("refreshState error:", e);
 
-      // UI: ne laisse pas vide sans explication
-      const msg = String(e?.message || e || "");
-      const is400 = /HTTP\s+400\b/i.test(msg);
-
-      if (is400) {
-        this.setStatus("Playlist indisponible : sélectionne un serveur (guild) / DEFAULT_GUILD_ID.", false);
-      } else {
-        if (!silent) this.setStatus("Impossible de récupérer la playlist.", false);
+      if (!silent) {
+        if (/HTTP 400/.test(msg) && !this.guildId) {
+          this.setStatus("Sélectionne un serveur (guild) pour charger la playlist.", false);
+        } else {
+          this.setStatus("Impossible de récupérer la playlist.", false);
+        }
       }
-
-      // Render minimal safe (vide)
-      this.state.current = null;
-      this.state.queue = [];
-      this.state.is_paused = false;
-      this.state.repeat = false;
-      this.progress.startedAt = 0;
-      this.progress.elapsed = 0;
-      this.progress.duration = 0;
-      this.renderState();
     }
   }
 
@@ -913,17 +870,25 @@ class GregWebPlayer {
     const cur = this.state.current;
     const queue = this.state.queue || [];
 
+    // Title / artist
     if (this.$title) this.$title.textContent = cur ? (cur.title || "Sans titre") : "Rien en cours";
 
     if (this.$artist) {
-      const artist = cur?.artist || cur?.uploader || cur?.author || cur?.channel || "";
+      const artist =
+        cur?.artist ||
+        cur?.uploader ||
+        cur?.author ||
+        cur?.channel ||
+        "";
       this.$artist.textContent = cur ? (artist || "Artiste inconnu") : "Greg dort encore";
     }
 
+    // Queue count
     if (this.$queueCount) {
       this.$queueCount.textContent = `${queue.length} titre${queue.length > 1 ? "s" : ""}`;
     }
 
+    // Queue list
     if (this.$queueList) {
       this.$queueList.innerHTML = "";
       queue.forEach((item, idx) => {
@@ -940,7 +905,12 @@ class GregWebPlayer {
 
         const meta = document.createElement("div");
         meta.className = "queue-item-meta";
-        meta.textContent = item.artist || item.uploader || item.source || "";
+        meta.textContent =
+          item.artist ||
+          item.uploader ||
+          item.author ||
+          item.source ||
+          "";
 
         left.appendChild(title);
         left.appendChild(meta);
@@ -972,7 +942,12 @@ class GregWebPlayer {
     }
 
     // Artwork
-    const thumb = cur?.thumbnail || cur?.thumb || "";
+    const thumb =
+      cur?.thumbnail ||
+      cur?.thumb ||
+      cur?.image ||
+      "";
+
     if (this.$artwork) {
       if (thumb) {
         const safe = String(thumb).replace(/["\n\r]/g, "");
@@ -980,7 +955,7 @@ class GregWebPlayer {
         this.$artwork.textContent = "";
       } else {
         this.$artwork.style.backgroundImage = `url("${this.pickIconUrl()}")`;
-        this.$artwork.textContent = "";
+        this.$artwork.textContent = "🎵";
       }
     }
 
@@ -994,26 +969,28 @@ class GregWebPlayer {
       this.$btnRepeat.classList.toggle("ctrl-btn--active", !!this.state.repeat);
     }
 
-    // Progress immediate render
+    // Progress now
     this.renderProgress();
   }
 
   renderProgress() {
     const cur = this.state.current;
-    if (!cur || !this.progress.duration) {
+
+    const duration = Number(this.progress.duration || 0);
+    if (!cur || !duration || !Number.isFinite(duration) || duration <= 0) {
       if (this.$pf) this.$pf.style.width = "0%";
-      if (this.$pCur) this.$pCur.textContent = "0:00";
+      if (this.$pCur) this.$pCur.textContent = this.formatTime(this.progress.elapsed || 0);
       if (this.$pTot) this.$pTot.textContent = "0:00";
       return;
     }
 
     const now = Date.now() / 1000;
     let elapsed = this.state.is_paused
-      ? this.progress.elapsed
-      : Math.max(0, now - this.progress.startedAt);
+      ? Number(this.progress.elapsed || 0)
+      : Math.max(0, now - Number(this.progress.startedAt || now));
 
-    const duration = this.progress.duration;
     if (!Number.isFinite(elapsed) || elapsed < 0) elapsed = 0;
+    if (elapsed > duration) elapsed = duration;
 
     const ratio = duration > 0 ? Math.min(1, elapsed / duration) : 0;
     if (this.$pf) this.$pf.style.width = `${ratio * 100}%`;
@@ -1022,11 +999,17 @@ class GregWebPlayer {
     if (this.$pTot) this.$pTot.textContent = this.formatTime(duration);
   }
 
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
   async enqueueItem(payload) {
     try {
       if (!this.guildId) {
-        // évite le "rien ne s'affiche" + 400 silencieux
-        await this.autoPickGuildIfNeeded();
+        this.autoSelectGuildIfPossible();
+      }
+      if (!this.guildId) {
+        this.setStatus("Choisis un serveur (guild) avant d’ajouter un titre.", false);
+        return;
       }
 
       const body = Object.assign({}, payload || {});
@@ -1039,17 +1022,16 @@ class GregWebPlayer {
       this.setStatus(`Ajouté : ${label}`, true);
 
       if (this.$searchInput) this.$searchInput.value = "";
-      // state sera aussi push par WS, mais on refresh quand même en fallback
       await this.refreshState(true);
     } catch (e) {
       this.log("enqueueItem error:", e);
-      this.setStatus("Impossible d’ajouter (connecté ? serveur choisi ? Greg en vocal ?).", false);
+      this.setStatus("Impossible d’ajouter (connecté ? en vocal ? serveur sélectionné ?).", false);
     }
   }
 
   async playAt(idx) {
     try {
-      await this.apiPost("/playlist/play_at", { index: idx, guild_id: this.guildId || undefined });
+      await this.apiPost("/playlist/play_at", { index: idx });
       await this.refreshState(true);
     } catch (e) {
       this.log("playAt error:", e);
@@ -1058,7 +1040,7 @@ class GregWebPlayer {
 
   async removeAt(idx) {
     try {
-      await this.apiPost("/queue/remove", { index: idx, guild_id: this.guildId || undefined });
+      await this.apiPost("/queue/remove", { index: idx });
       await this.refreshState(true);
     } catch (e) {
       this.log("removeAt error:", e);
@@ -1067,16 +1049,23 @@ class GregWebPlayer {
 
   async togglePause() {
     try {
-      await this.apiPost("/playlist/toggle_pause", { guild_id: this.guildId || undefined });
+      await this.apiPost("/playlist/toggle_pause", {});
       await this.refreshState(true);
     } catch (e) {
-      this.log("togglePause error:", e);
+      // fallback (si ton backend a pause/resume séparés)
+      try {
+        if (this.state.is_paused) await this.apiPost("/playlist/resume", {});
+        else await this.apiPost("/playlist/pause", {});
+        await this.refreshState(true);
+      } catch (e2) {
+        this.log("togglePause error:", e, e2);
+      }
     }
   }
 
   async skip() {
     try {
-      await this.apiPost("/queue/skip", { guild_id: this.guildId || undefined });
+      await this.apiPost("/queue/skip", {});
       await this.refreshState(true);
     } catch (e) {
       this.log("skip error:", e);
@@ -1085,26 +1074,34 @@ class GregWebPlayer {
 
   async restart() {
     try {
-      await this.apiPost("/playlist/restart", { guild_id: this.guildId || undefined });
+      await this.apiPost("/playlist/restart", {});
       await this.refreshState(true);
     } catch (e) {
-      this.log("restart error:", e);
+      // fallback stop si existe
+      try {
+        await this.apiPost("/queue/stop", {});
+        await this.refreshState(true);
+      } catch (e2) {
+        this.log("restart/stop error:", e, e2);
+      }
     }
   }
 
   async toggleRepeat() {
     try {
-      const res = await this.apiPost("/playlist/repeat", { guild_id: this.guildId || undefined });
-      this.state.repeat = !!(res && res.repeat);
+      const res = await this.apiPost("/playlist/repeat", {});
+      // certains back renvoient {repeat:true} ou {state:{repeat_all:true}}
+      const st = this.unwrapPlaylistResponse(res) || res;
+      this.state.repeat = !!(st.repeat_all ?? st.repeat ?? res?.repeat);
       await this.refreshState(true);
     } catch (e) {
       this.log("repeat error:", e);
     }
   }
 
-  // -------------------------
+  // ---------------------------------------------------------------------------
   // Spotify
-  // -------------------------
+  // ---------------------------------------------------------------------------
   async refreshSpotify() {
     try {
       const st = await this.apiGet("/spotify/status");
