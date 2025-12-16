@@ -4,7 +4,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from ..auth.session import require_login
-from ..ws.events import broadcast_playlist_update, presence_stats
+from ..ws.events import broadcast_playlist_update, socketio_presence_stats
 
 bp = Blueprint("admin", __name__)
 
@@ -12,7 +12,7 @@ bp = Blueprint("admin", __name__)
 @bp.get("/overlays_online")
 @require_login
 def overlays_online():
-    return jsonify({"ok": True, "stats": presence_stats()})
+    return jsonify({"ok": True, "stats": socketio_presence_stats()})
 
 
 @bp.post("/jumpscare")
