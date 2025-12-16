@@ -231,6 +231,7 @@ def fetch_po_token(video_id: str, timeout_ms: int = 15000) -> Optional[str]:
     _dbg(f"auto-fetch for video {video_id}")
     box = {"token": None, "why": "init"}
     t = threading.Thread(target=_worker_fetch, args=(video_id, timeout_ms, box), daemon=True)
+    t.daemon = True
     t.start()
     t.join(timeout=(timeout_ms / 1000.0) + 6.0)  # petite marge
     if not box.get("token"):

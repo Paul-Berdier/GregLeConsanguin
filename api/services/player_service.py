@@ -419,10 +419,21 @@ class PlayerService:
 
     async def _call_extractor(self, extractor_module, method_name: str, *args, **kwargs):
         fn = getattr(extractor_module, method_name)
+
+        # 👇 garde-fou : youtube peut bloquer, on l’exécute hors loop
+        mod_name = getattr(extractor_module, "__name__", "")
+        if "extractors.youtube" in mod_name:
+            def _run():
+                if asyncio.iscoroutinefunction(fn):
+                    return asyncio.run(fn(*args, **kwargs))
+                return fn(*args, **kwargs)
+
+            return await asyncio.to_thread(_run)
+
+        # comportement standard
         if asyncio.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def _play_source(self, guild: discord.Guild, gid: int, srcp, fallback: bool):
         vc = guild.voice_client

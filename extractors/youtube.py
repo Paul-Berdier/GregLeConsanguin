@@ -21,6 +21,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import asyncio
 import threading
 import urllib.parse as _url
 import urllib.request as _ureq
@@ -533,9 +534,8 @@ async def stream(
     ratelimit_bps: Optional[int] = None,
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
-    import asyncio
 
-    _ensure_po_tokens_for(url_or_query, ffmpeg_path)
+    await asyncio.to_thread(_ensure_po_tokens_for, url_or_query, ffmpeg_path)
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM request: {url_or_query!r}")
@@ -710,9 +710,8 @@ async def stream_pipe(
     ratelimit_bps: Optional[int] = None,
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
-    import asyncio
 
-    _ensure_po_tokens_for(url_or_query, ffmpeg_path)
+    await asyncio.to_thread(_ensure_po_tokens_for, url_or_query, ffmpeg_path)
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM_PIPE request: {url_or_query!r}")
