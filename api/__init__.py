@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from flask import Flask, render_template
@@ -18,38 +19,54 @@ API_PREFIX = "/api/v1"   # une seule racine d’API
 
 def create_app(pm: Optional[object] = None) -> Flask:
     """
-    App factory.
-    - Monte l’API sous /api/v1 (sauf le blueprint d’auth pour /auth/login etc.)
-    - Expose une homepage web (index.html) pour https://.../
-    - Injecte éventuellement un PlaylistManager / PlayerAPIBridge via `pm`.
+    App factory Flask.
+    - Monte l'API sous /api/v1
+    - Sert l’UI web (index + static) :
+        • GET /              -> assets/pages/index.html
+        • GET /static/*      -> assets/static/*
+    - Injecte éventuellement un bridge Player (pm).
     """
     if not logging.getLogger().handlers:
         configure_logging()
 
-    # ⚠️ Important : on pointe vers le dossier `assets` au niveau racine du projet
-    #  api/          (ce fichier)
-    #  assets/pages/  -> templates (index.html)
-    #  assets/…       -> static (js/, static/player.css, etc.)
+    # === Résolution des chemins projet =======================================
+    # api/__init__.py -> api/ -> parent = racine projet (GregLeConsanguin)
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    templates_dir = BASE_DIR / "assets" / "pages"
+    static_dir = BASE_DIR / "assets" / "static"
+
+    # === Création app Flask avec templates + static ==========================
     app = Flask(
         __name__,
-        static_folder="../assets",        # accessible via /static/...
-        template_folder="../assets/pages" # index.html, etc.
+        template_folder=str(templates_dir),
+        static_folder=str(static_dir),
+        static_url_path="/static",  # donc /static/player.css, /static/player.js, etc.
     )
     app.config.from_object(Settings())
 
-    # Extensions (db, socketio, etc.)
+    # Extensions (db, Socket.IO, etc.)
     init_extensions(app)
 
-    # Attach external deps (PlaylistManager / PlayerAPIBridge)
+    # Attach external deps / stores
     app.extensions["pm"] = pm
     app.extensions.setdefault("stores", {})
     _init_stores(app)
 
-    # Blueprints API + Socket.IO
+    # Blueprints & Socket.IO
     _register_blueprints(app)
     _register_socketio(app)
 
-    # Health-check basique
+    # === Routes "web" (UI) ===================================================
+
+    @app.get("/")
+    def index():
+        """
+        Page principale : player web.
+        assets/pages/index.html
+        """
+        return render_template("index.html")
+
+    # Health check simple
     @app.get("/healthz")
     def _healthz():
         return {"ok": True}, 200
@@ -57,29 +74,28 @@ def create_app(pm: Optional[object] = None) -> Flask:
     # Compat : certains modules importent encore 'require_login'
     try:
         from .auth.session import login_required as _lr
+        # alias exporté dans le module (si besoin)
         import api.auth.session as _sessmod
         setattr(_sessmod, "require_login", _lr)
     except Exception:
         pass
 
-    # Homepage Web (Greg Web Player) -> sert assets/pages/index.html
-    @app.get("/")
-    def index():
-        """
-        Page d’accueil publique : web player Greg le Consanguin.
-        - Le template `assets/pages/index.html` doit utiliser `url_for('static', ...)`
-          pour référencer JS/CSS, par ex :
-              {{ url_for('static', filename='static/player.css') }}
-              {{ url_for('static', filename='js/player.js') }}
-        """
-        return render_template("index.html")
-
-    log.info("API created (env=%s, debug=%s)", app.config.get("ENV"), app.config.get("DEBUG"))
+    log.info(
+        "API created (env=%s, debug=%s, templates=%s, static=%s)",
+        app.config.get("ENV"),
+        app.config.get("DEBUG"),
+        templates_dir,
+        static_dir,
+    )
     return app
 
 
 def _register_blueprints(app: Flask) -> None:
-    # NOTE: respecte TA structure de modules
+    """
+    Montage des blueprints :
+      - /auth/* + /api/v1/me depuis auth_bp (pas de prefix)
+      - /api/v1/* pour le reste
+    """
     from .auth.blueprint import bp as auth_bp
     from .blueprints.users import bp as users_bp
     from .blueprints.guilds import bp as guilds_bp
@@ -88,8 +104,8 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
     from .blueprints.search import bp as search_bp
 
-    # 1) Auth monté SANS prefix → /auth/login, /auth/callback, et /api/v1/me
-    app.register_blueprint(auth_bp)
+    # 1) Auth monté SANS prefix → /auth/login, /auth/callback, /auth/device/*, /api/v1/me
+    app.register_blueprint(auth_bp)  # pas de url_prefix ici
 
     # 2) Tous les autres sous /api/v1
     for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
@@ -97,7 +113,9 @@ def _register_blueprints(app: Flask) -> None:
 
 
 def _register_socketio(app: Flask) -> None:
-    # L’instance est déjà créée dans core/extensions.py
+    """
+    Initialise l’instance Socket.IO globale avec cette app.
+    """
     if not getattr(socketio, "server", None):
         socketio.init_app(
             app,
@@ -107,7 +125,9 @@ def _register_socketio(app: Flask) -> None:
 
 
 def _init_stores(app: Flask) -> None:
-    """Initialise le store (JSON par défaut, Redis si REDIS_URL)."""
+    """
+    Initialise le store (JSON par défaut, Redis si REDIS_URL).
+    """
     from .storage.json_store import JsonTokenStore
     from .storage.redis_store import RedisTokenStore
 
