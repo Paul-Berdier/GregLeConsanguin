@@ -1,11 +1,16 @@
 # api/core/extensions.py
+
 from __future__ import annotations
 
+import logging
 import os
+
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
-# Instance globale (handlers @socketio.on(...) se branchent dessus)
+log = logging.getLogger(__name__)
+
+# Instance globale unique
 socketio = SocketIO(
     cors_allowed_origins="*",
     logger=False,
@@ -13,13 +18,44 @@ socketio = SocketIO(
     manage_session=False,
 )
 
-def init_extensions(app) -> None:
+def _pick_async_mode(preferred: str) -> str:
     """
-    Initialise les extensions globales:
-    - CORS
-    - Socket.IO (une seule init_app, idempotent)
+    Choisit un async_mode utilisable.
+    - si preferred == eventlet/gevent mais non installé => fallback threading
     """
-    # -------------------- CORS (HTTP) --------------------
+    pref = (preferred or "").strip().lower() or "eventlet"
+
+    if pref == "eventlet":
+        try:
+            import eventlet  # noqa: F401
+            return "eventlet"
+        except Exception:
+            log.warning("SOCKETIO_MODE=eventlet mais eventlet absent → fallback threading")
+            return "threading"
+
+    if pref == "gevent":
+        try:
+            import gevent  # noqa: F401
+            return "gevent"
+        except Exception:
+            log.warning("SOCKETIO_MODE=gevent mais gevent absent → fallback threading")
+            return "threading"
+
+    if pref in {"threading", "asyncio"}:
+        return pref
+
+    # valeur inconnue
+    log.warning("SOCKETIO_MODE=%s inconnu → fallback threading", pref)
+    return "threading"
+
+
+def init_extensions(app):
+    """
+    - CORS pour API, Auth et Socket.IO
+    - Socket.IO : init UNIQUE (idempotent)
+      • mode via app.config["SOCKETIO_MODE"] ou env SOCKETIO_MODE
+      • MQ Redis optionnelle via SOCKETIO_MESSAGE_QUEUE
+    """
     CORS(
         app,
         resources={
@@ -30,22 +66,18 @@ def init_extensions(app) -> None:
         supports_credentials=True,
     )
 
-    # -------------------- Socket.IO ----------------------
-    # ⚠️ Une seule fois par app (évite double init)
-    if app.extensions.get("__socketio_inited__"):
-        return
+    preferred = app.config.get("SOCKETIO_MODE") or os.getenv("SOCKETIO_MODE", "eventlet")
+    mode = _pick_async_mode(preferred)
+    message_queue = os.getenv("SOCKETIO_MESSAGE_QUEUE")  # ex: redis://localhost:6379/0
 
-    mode = app.config.get("SOCKETIO_MODE") or os.getenv("SOCKETIO_MODE", "eventlet")
-    message_queue = app.config.get("SOCKETIO_MESSAGE_QUEUE") or os.getenv("SOCKETIO_MESSAGE_QUEUE")
-    # ex: "redis://localhost:6379/0" (optionnel)
-
-    socketio.init_app(
-        app,
-        async_mode=mode,
-        cors_allowed_origins="*",
-        message_queue=message_queue,
-        logger=bool(app.config.get("SOCKETIO_LOGGER", False)),
-        engineio_logger=bool(app.config.get("ENGINEIO_LOGGER", False)),
-    )
-
-    app.extensions["__socketio_inited__"] = True
+    # ✅ idempotent : n'init qu'une fois
+    if not getattr(socketio, "server", None):
+        socketio.init_app(
+            app,
+            async_mode=mode,
+            cors_allowed_origins="*",
+            message_queue=message_queue,
+        )
+        log.info("Socket.IO init_app: async_mode=%s mq=%s", mode, "yes" if message_queue else "no")
+    else:
+        log.debug("Socket.IO déjà initialisé, skip init_app()")

@@ -1,77 +1,85 @@
-import os
-import json
-import time
-import tempfile
-import logging
-from threading import RLock
-from typing import List, Dict, Optional, Any
-from pathlib import Path
+# utils/playlist_manager.py
 
-log = logging.getLogger(__name__)
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+from threading import RLock
+from typing import Any, Dict, List, Optional
 
 
 class PlaylistManager:
     """
     Gestion d'une playlist *par serveur Discord (guild)*.
-    - Stockage JSON: { now_playing: {...} | null, queue: [ {title, url, ...}, ... ] }
+
+    Format JSON:
+      {
+        "now_playing": { ... } | null,
+        "queue": [ {title, url, artist, thumb, duration, ...}, ... ]
+      }
+
+    Garanties:
     - Thread-safe via RLock
-    - Écriture ATOMIQUE (tempfile + rename)
-    - Ne JAMAIS recharger depuis disque pendant save() (source de vérité = mémoire)
+    - Écriture ATOMIQUE (tempfile + replace)
+    - Source de vérité = mémoire (pas de reload pendant save)
     """
 
-    def __init__(self, guild_id: str | int, base_dir: Optional[str] = None):
-        """
-        base_dir:
-          - si None -> env PLAYLIST_DIR -> ./playlists (à la racine d'exécution)
-        """
-        self.guild_id = str(guild_id)
+    def __init__(self, guild_id: str | int, playlist_dir: str | os.PathLike | None = None):
+        self.guild_id = str(guild_id).strip()
 
-        # Dossier playlists: env > param > default local
-        root = Path(base_dir or os.getenv("PLAYLIST_DIR") or "playlists").expanduser()
-        root.mkdir(parents=True, exist_ok=True)
+        # ✅ chemin robuste : par défaut ./playlists (racine process)
+        base_dir = Path(playlist_dir) if playlist_dir else Path(os.getenv("PLAYLIST_DIR", "playlists"))
+        base_dir.mkdir(parents=True, exist_ok=True)
 
-        self.file = str(root / f"playlist_{self.guild_id}.json")
+        self.file = str(base_dir / f"playlist_{self.guild_id}.json")
         self.queue: List[Dict[str, Any]] = []
         self.now_playing: Optional[Dict[str, Any]] = None
         self.lock = RLock()
 
-        log.info("[PlaylistManager %s] Init — file=%s", self.guild_id, self.file)
+        # Log minimal mais utile
+        print(f"[PlaylistManager {self.guild_id}] ⚙️ Init — file={self.file}")
         self.reload()
 
     # ------------------------- I/O SÉCURISÉ -------------------------
 
-    def _safe_write(self, data: Any) -> None:
+    def _safe_write(self) -> None:
         """
-        Écrit *seulement* l'état courant mémoire dans un tmp file, puis rename.
-        `data` attendu: list (la queue). `now_playing` vient de self.now_playing.
+        Écrit *seulement* l'état courant en mémoire dans un tmp file, puis replace atomique.
         """
-        directory = os.path.dirname(self.file)
-        os.makedirs(directory, exist_ok=True)
+        directory = Path(self.file).parent
+        directory.mkdir(parents=True, exist_ok=True)
 
         payload = {
             "now_playing": self.now_playing if isinstance(self.now_playing, (dict, type(None))) else None,
-            "queue": data if isinstance(data, list) else [],
+            "queue": self.queue if isinstance(self.queue, list) else [],
         }
 
-        with tempfile.NamedTemporaryFile("w", delete=False, dir=directory, suffix=".tmp", encoding="utf-8") as tf:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=str(directory),
+            suffix=".tmp",
+            encoding="utf-8",
+        ) as tf:
             json.dump(payload, tf, ensure_ascii=False)
-            tf.flush()
-            os.fsync(tf.fileno())
             tmp_name = tf.name
 
         os.replace(tmp_name, self.file)
-
-        qlen = len(payload.get("queue", []))
-        log.debug("[PlaylistManager %s] Sauvegarde atomique (%d items).", self.guild_id, qlen)
+        print(f"[PlaylistManager {self.guild_id}] 💾 Sauvegarde atomique ({len(payload['queue'])} items).")
 
     def reload(self) -> None:
-        """Recharge la playlist depuis le disque (migration OK)."""
+        """
+        Recharge la playlist depuis le disque (migration OK).
+        """
         with self.lock:
             if not os.path.exists(self.file):
                 self.queue = []
                 self.now_playing = None
-                self._safe_write(self.queue)
-                log.info("[PlaylistManager %s] Nouveau fichier créé (vide).", self.guild_id)
+                self._safe_write()
+                print(f"[PlaylistManager {self.guild_id}] 📂 Nouveau fichier créé (vide).")
                 return
 
             try:
@@ -83,7 +91,7 @@ class PlaylistManager:
                     q = data.get("queue", [])
                     np_raw = data.get("now_playing", None)
                 elif isinstance(data, list):
-                    # Très vieux format: le fichier = la liste directement
+                    # vieux format: le fichier = liste directement
                     q = data
                     np_raw = None
                 else:
@@ -93,21 +101,20 @@ class PlaylistManager:
                 self.queue = [self._coerce_item(x) for x in (q or [])]
                 self.now_playing = self._coerce_item(np_raw) if isinstance(np_raw, dict) else None
 
-                log.debug(
-                    "[PlaylistManager %s] Reload (%d items, now_playing=%s).",
-                    self.guild_id, len(self.queue), "oui" if self.now_playing else "non"
+                print(
+                    f"[PlaylistManager {self.guild_id}] 🔄 Reload "
+                    f"({len(self.queue)} items, now_playing={'oui' if self.now_playing else 'non'})."
                 )
-
             except Exception as e:
-                log.warning("[PlaylistManager %s] ERREUR lecture JSON -> reset. %s", self.guild_id, e)
+                print(f"[PlaylistManager {self.guild_id}] ⚠️ JSON invalide → reset vide. {e}")
                 self.queue = []
                 self.now_playing = None
-                self._safe_write(self.queue)
+                self._safe_write()
 
     def save(self) -> None:
         """Sauvegarde l'état courant sur disque (atomique)."""
         with self.lock:
-            self._safe_write(self.queue)
+            self._safe_write()
 
     # ------------------------- UTILITAIRES -------------------------
 
@@ -129,7 +136,10 @@ class PlaylistManager:
             return None
 
     def _coerce_item(self, x: Any) -> Dict[str, Any]:
-        now_ts = int(time.time())
+        """
+        Normalise un track en dict standard.
+        """
+        ts = int(time.time())
 
         if isinstance(x, dict):
             item = {**x}
@@ -137,9 +147,8 @@ class PlaylistManager:
             url = item.get("url") or item.get("webpage_url") or item.get("link")
             url = self._clean_url_value(url)
 
-            title = (item.get("title") or "").strip() or url or "Titre inconnu"
-
-            dur = self._to_int_or_none(item.get("duration", None))
+            title = item.get("title") or url or "Titre inconnu"
+            dur = self._to_int_or_none(item.get("duration"))
 
             item["title"] = title
             item["url"] = url
@@ -150,11 +159,7 @@ class PlaylistManager:
             item.setdefault("added_by", None)
             item.setdefault("priority", item.get("priority"))
             item.setdefault("provider", item.get("provider"))
-            item.setdefault("ts", item.get("ts") or now_ts)
-
-            # alias overlay
-            item.setdefault("requested_by", item.get("added_by"))
-
+            item.setdefault("ts", ts)
             return item
 
         if isinstance(x, str):
@@ -166,14 +171,13 @@ class PlaylistManager:
                 "thumb": None,
                 "duration": None,
                 "added_by": None,
-                "requested_by": None,
                 "priority": None,
                 "provider": None,
-                "ts": now_ts,
+                "ts": ts,
             }
 
         if x is not None:
-            log.debug("[PlaylistManager %s] Élément illisible ignoré: %r", self.guild_id, x)
+            print(f"[PlaylistManager {self.guild_id}] 🙄 Élément illisible ignoré: {x!r}")
 
         return {
             "title": "Inconnu",
@@ -182,88 +186,108 @@ class PlaylistManager:
             "thumb": None,
             "duration": None,
             "added_by": None,
-            "requested_by": None,
             "priority": None,
             "provider": None,
-            "ts": now_ts,
+            "ts": ts,
         }
 
     # ------------------------- API PUBLIQUE -------------------------
 
-    def add(self, item: Dict[str, Any] | str, added_by: Optional[str | int] = None) -> None:
+    def add(self, item: Dict[str, Any] | str, added_by: Optional[str | int] = None) -> Dict[str, Any]:
+        """Ajoute un *seul* item (url ou dict). Retourne l'item normalisé."""
         with self.lock:
             obj = self._coerce_item(item)
-            if added_by is not None:
+            if added_by is not None and str(added_by).strip():
                 obj["added_by"] = str(added_by)
-                obj["requested_by"] = str(added_by)
             self.queue.append(obj)
             self.save()
+            print(f"[PlaylistManager {self.guild_id}] ➕ Ajouté: {obj.get('title')} — {obj.get('url')}")
+            return obj
 
     def add_many(self, items: List[Dict[str, Any] | str], added_by: Optional[str | int] = None) -> int:
+        """Ajoute plusieurs items. Retourne le nombre ajoutés."""
         with self.lock:
             count = 0
             for it in items:
                 obj = self._coerce_item(it)
-                if added_by is not None:
+                if added_by is not None and str(added_by).strip():
                     obj["added_by"] = str(added_by)
-                    obj["requested_by"] = str(added_by)
                 self.queue.append(obj)
                 count += 1
             self.save()
+            print(f"[PlaylistManager {self.guild_id}] ➕➕ Ajouté {count} éléments.")
             return count
 
     def pop_next(self) -> Optional[Dict[str, Any]]:
+        """
+        Retire et renvoie le prochain item (tête de file) et définit now_playing.
+        """
         with self.lock:
             if not self.queue:
+                print(f"[PlaylistManager {self.guild_id}] 💤 pop_next sur queue vide.")
                 return None
             item = self.queue.pop(0)
             self.now_playing = item
             self.save()
-            return dict(item)
+            print(f"[PlaylistManager {self.guild_id}] ⏭️ Prochain: {item.get('title')}")
+            return item
 
-    def skip(self) -> None:
+    def skip(self) -> Optional[Dict[str, Any]]:
+        """
+        Supprime le 1er élément de queue (pas le now_playing).
+        Retourne l'élément supprimé ou None.
+        """
         with self.lock:
-            if self.queue:
-                _ = self.queue.pop(0)
+            if not self.queue:
+                print(f"[PlaylistManager {self.guild_id}] ⏩ Skip demandé mais queue vide.")
+                return None
+            skipped = self.queue.pop(0)
             self.save()
+            print(f"[PlaylistManager {self.guild_id}] ⏩ Skip: {skipped.get('title')} — {skipped.get('url')}")
+            return skipped
 
     def stop(self) -> None:
+        """Vide entièrement la playlist et oublie now_playing."""
         with self.lock:
             self.queue = []
             self.now_playing = None
             self.save()
+            print(f"[PlaylistManager {self.guild_id}] ⛔ Playlist vidée (stop).")
 
     def remove_at(self, index: int) -> bool:
+        """Supprime l’élément à l’index donné. True si OK."""
         with self.lock:
             if 0 <= index < len(self.queue):
-                _ = self.queue.pop(index)
+                removed = self.queue.pop(index)
                 self.save()
+                print(f"[PlaylistManager {self.guild_id}] 🗑️ Supprimé #{index+1}: {removed.get('title')}")
                 return True
+            print(f"[PlaylistManager {self.guild_id}] ❌ remove_at hors bornes: {index}")
             return False
 
     def move(self, src: int, dst: int) -> bool:
+        """Déplace l’élément de `src` vers `dst`."""
         with self.lock:
             if src == dst:
                 return False
             n = len(self.queue)
             if not (0 <= src < n and 0 <= dst < n):
+                print(f"[PlaylistManager {self.guild_id}] ❌ move invalide: src={src}, dst={dst}, n={n}")
                 return False
             item = self.queue.pop(src)
             self.queue.insert(dst, item)
             self.save()
+            print(f"[PlaylistManager {self.guild_id}] 🔀 Déplacé '{item.get('title')}' de {src} vers {dst}.")
             return True
 
     # ------------------------- LECTURE & ÉTAT -------------------------
 
-    def peek_all(self) -> List[Dict[str, Any]]:
-        with self.lock:
-            return [dict(x) for x in self.queue]
-
     def get_queue(self) -> List[Dict[str, Any]]:
         with self.lock:
-            return [dict(x) for x in self.queue]
+            return list(self.queue)
 
     def get_current(self) -> Optional[Dict[str, Any]]:
+        """Renvoie d'abord now_playing si présent, sinon la tête de queue."""
         with self.lock:
             if self.now_playing:
                 return dict(self.now_playing)
@@ -274,6 +298,7 @@ class PlaylistManager:
             return len(self.queue)
 
     def to_dict(self) -> Dict[str, Any]:
+        """Snapshot sérialisable pour l'API."""
         def _expose(track: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not isinstance(track, dict):
                 return None
@@ -291,7 +316,6 @@ class PlaylistManager:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
     pm = PlaylistManager(123456789)
     pm.add("https://youtu.be/abc", added_by="42")
     pm.add({"title": "Test YT", "url": "https://youtu.be/def", "added_by": "me", "duration": "215;"})
