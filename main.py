@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import threading
-import time
 import socket
 import subprocess
+import threading
+import time
 from typing import Any, Optional, Dict
 
 import requests
@@ -18,7 +18,7 @@ import config
 from api.services.player_service import PlayerService
 
 # -----------------------------------------------------------------------------
-# Logging de base
+# Logging
 # -----------------------------------------------------------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -32,13 +32,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
-
 # -----------------------------------------------------------------------------
-# Bridge API → PlayerService : source de vérité unique
+# Bridge API → PlayerService (source de vérité unique)
 # -----------------------------------------------------------------------------
 class PlayerAPIBridge:
     """
-    Façade API au-dessus de api.services.player_service.PlayerService.
+    Façade API au-dessus de PlayerService.
     Toutes les méthodes acceptent un guild_id optionnel et appellent
     le PlayerService attaché au bot (unique source de vérité).
     """
@@ -55,7 +54,6 @@ class PlayerAPIBridge:
         raise RuntimeError("DEFAULT_GUILD_ID non défini. Passez guild_id dans l’appel API.")
 
     def _svc(self):
-        # Récupère le PlayerService déjà attaché au bot par commands/Music (ou par main)
         b = globals().get("bot")
         svc = getattr(b, "player_service", None) if b else None
         if not svc:
@@ -63,7 +61,6 @@ class PlayerAPIBridge:
         return svc, b
 
     def _call(self, coro):
-        # Exécute une coroutine du PlayerService dans la loop Discord (thread-safe)
         _, b = self._svc()
         fut = asyncio.run_coroutine_threadsafe(coro, b.loop)
         return fut.result(timeout=20)
@@ -93,7 +90,7 @@ class PlayerAPIBridge:
         gid = self._gid(guild_id)
         return self._call(svc.stop(gid))
 
-    # ---- remove/move/pop_next (optionnel selon tes routes) ----
+    # ---- remove/move/pop_next (compat routes/WS ctrl) ----
     def remove_at(self, index: int, guild_id: Optional[str | int] = None):
         svc, _ = self._svc()
         gid = self._gid(guild_id)
@@ -111,7 +108,6 @@ class PlayerAPIBridge:
         return {"ok": bool(ok), "length": pm.length()}
 
     def pop_next(self, guild_id: Optional[str | int] = None):
-        # Exposition rarement utile publiquement, conservée pour compat
         svc, _ = self._svc()
         gid = self._gid(guild_id)
         pm = svc._get_pm(gid)
@@ -139,13 +135,10 @@ class GregBot(commands.Bot):
             application_id=int(config.DISCORD_APP_ID),
         )
         self.web_app = None
-        # ✅ Crée le PlayerService dès maintenant pour qu’il soit partagé
         self.player_service: PlayerService = PlayerService(self)
 
     async def _load_ext_dir(self, dirname: str):
-        """Charge toutes les extensions (cogs) d'un dossier si présent."""
         import pkgutil
-        import importlib  # noqa: F401
 
         if not os.path.isdir(dirname):
             return
@@ -160,7 +153,6 @@ class GregBot(commands.Bot):
                 logging.getLogger(__name__).error("❌ Erreur chargement %s : %s", extension, e)
 
     async def setup_hook(self):
-        # Charge d'abord /commands puis /cogs (pour cookie_guardian, etc.)
         for dir_name in ("commands", "cogs"):
             await self._load_ext_dir(dir_name)
         await self.tree.sync()
@@ -175,63 +167,31 @@ class GregBot(commands.Bot):
             logger.debug("Selftest skipped: %s", e)
 
     async def post_restart_selftest(self):
-        """Check rapide de l'environnement, utile après redémarrage."""
         results: list[tuple[str, bool, str]] = []
 
-        # 1) Cogs présents
         expected_cogs = [
-            "Music",
-            "Voice",
-            "General",
-            "EasterEggs",
-            "Spook",
-            "SpotifyAccount",
-            "CookieGuardian",
+            "Music", "Voice", "General", "EasterEggs", "Spook", "CookieGuardian"
         ]
         for name in expected_cogs:
             ok = self.get_cog(name) is not None
             results.append(("Cog:" + name, ok, "" if ok else "non chargé"))
 
-        # 2) Slash commands
         try:
             cmds = await self.tree.fetch_commands()
             names = {c.name for c in cmds}
         except Exception as e:
             names = set()
             results.append(("Slash:fetch_commands", False, str(e)))
+
         expected_cmds = [
-            # music/voice/general
-            "play",
-            "pause",
-            "resume",
-            "skip",
-            "stop",
-            "playlist",
-            "current",
-            "ping",
-            "greg",
-            "web",
-            "help",
-            "restart",
-            # easter eggs
-            "roll",
-            "coin",
-            "tarot",
-            "curse",
-            "praise",
-            "shame",
-            "gregquote",
-            # guardian yt cookies
-            "yt_cookies_update",
-            "yt_cookies_check",
+            "play", "pause", "resume", "skip", "stop", "playlist", "current",
+            "ping", "greg", "web", "help", "restart",
+            "roll", "coin", "tarot", "curse", "praise", "shame", "gregquote",
+            "yt_cookies_update", "yt_cookies_check",
         ]
         missing = [c for c in expected_cmds if c not in names]
-        if missing:
-            results.append(("Slash:manquants", False, ", ".join(missing)))
-        else:
-            results.append(("Slash:manquants", True, ""))
+        results.append(("Slash:manquants", not bool(missing), "" if not missing else ", ".join(missing)))
 
-        # 3) FFmpeg
         try:
             music_cog = self.get_cog("Music")
             ff = music_cog.detect_ffmpeg() if music_cog and hasattr(music_cog, "detect_ffmpeg") else "ffmpeg"
@@ -241,13 +201,13 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("FFmpeg", False, str(e)))
 
-        # 4) Overlay HTTP
         try:
             if not os.getenv("DISABLE_WEB", "0") == "1":
+                r = None
                 try:
                     r = requests.get("http://127.0.0.1:3000/healthz", timeout=2)
                 except Exception:
-                    r = None
+                    pass
                 if r is None or r.status_code == 404:
                     r = requests.get("http://127.0.0.1:3000/", timeout=2)
 
@@ -258,9 +218,9 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
 
-        # 5) SocketIO emit
         try:
-            si = getattr(self.web_app, "socketio", None) or globals().get("socketio")
+            app = getattr(self, "web_app", None)
+            si = getattr(app, "socketio", None) if app else None
             if si:
                 try:
                     si.emit("selftest_ping", {"ok": True, "t": time.time()})
@@ -272,34 +232,17 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("SocketIO:emit", False, str(e)))
 
-        # Dump résultat
         for name, ok, info in results:
             logger.info("Selftest %-22s : %s %s", name, "OK" if ok else "KO", ("" if ok else f"({info})"))
-
-    async def on_connect(self):
-        logger.info("Bot connecté aux Gateway.")
-
-    async def on_resumed(self):
-        logger.info("Session Discord résumée.")
 
     async def setup_emit_fn(self):
         """
         Branche un emit(event, data, guild_id=...) utilisable par les Cogs.
-        L’émetteur cible la room Socket.IO 'guild:{gid}' pour éviter les collisions.
+        Room Socket.IO: 'guild:{gid}'
         """
-
-        def _resolve_socketio():
-            try:
-                si = globals().get("socketio")
-                if si:
-                    return si
-            except Exception:
-                pass
-            app = getattr(self, "web_app", None)
-            return getattr(app, "socketio", None)
-
         def _emit(event, data, **kwargs):
-            si = _resolve_socketio()
+            app = getattr(self, "web_app", None)
+            si = getattr(app, "socketio", None) if app else None
             if not si:
                 return
             try:
@@ -317,18 +260,10 @@ class GregBot(commands.Bot):
                 cog.emit_fn = _emit
                 logger.info("emit_fn branché sur %s", cog_name)
 
-        # Self-test post restart (optionnel)
         try:
-            asyncio.create_task(run_post_restart_selftest(self))
+            asyncio.create_task(self.post_restart_selftest())
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
-
-
-async def run_post_restart_selftest(bot: GregBot):
-    try:
-        await bot.post_restart_selftest()
-    except Exception as e:
-        logger.debug("Self-test (async) non lancé: %s", e)
 
 
 # -----------------------------------------------------------------------------
@@ -336,23 +271,27 @@ async def run_post_restart_selftest(bot: GregBot):
 # -----------------------------------------------------------------------------
 DISABLE_WEB = os.getenv("DISABLE_WEB", "0") == "1"
 
-# Ces deux variables sont simplement définies au niveau module
+# globals runtime (remplis dans __main__)
 app = None
-socketio = None
+web_socketio = None
 
 
 def build_web_app():
     """
     Construit l'app Flask API + retourne l'instance Socket.IO partagée.
+    Important: en mode "bot + web même process", threading est le plus stable.
     """
+    # Par défaut: threading (stable avec discord.py)
+    # Si tu veux eventlet, export SOCKETIO_MODE=eventlet AVANT lancement.
+    os.environ.setdefault("SOCKETIO_MODE", "threading")
+
     from api import create_app as create_api_app
     from api.core.extensions import socketio as api_socketio
 
-    # 🔗 Bridge API→PlayerService (plus de APIPMAdapter)
     pm_adapter = PlayerAPIBridge(default_gid=os.getenv("DEFAULT_GUILD_ID"))
     api_app = create_api_app(pm=pm_adapter)
 
-    # Attache pour accès via bot.web_app.socketio
+    # exposition pratique
     api_app.socketio = api_socketio
     return api_app, api_socketio
 
@@ -360,27 +299,39 @@ def build_web_app():
 def run_web():
     """
     Thread serveur web (Flask + SocketIO).
-    Utilise l'instance globale app/socketio initialisée dans __main__.
+    Utilise globals app/web_socketio initialisées dans __main__.
     """
-    if socketio and app:
-        mode = getattr(socketio, "async_mode", "threading")
-        logger.debug("Lancement web… (mode=%s)", mode)
-        if mode == "eventlet":
-            socketio.run(app, host="0.0.0.0", port=3000, use_reloader=False)
-        else:
-            socketio.run(
-                app,
-                host="0.0.0.0",
-                port=3000,
-                allow_unsafe_werkzeug=True,
-                use_reloader=False,
-            )
+    if not app or not web_socketio:
+        return
+
+    mode = getattr(web_socketio, "async_mode", "threading")
+    host = os.getenv("WEB_HOST", "0.0.0.0")
+    port = int(os.getenv("WEB_PORT", "3000"))
+
+    logger.info("Lancement web… host=%s port=%s (socketio_mode=%s)", host, port, mode)
+
+    if mode == "threading":
+        web_socketio.run(
+            app,
+            host=host,
+            port=port,
+            allow_unsafe_werkzeug=True,
+            use_reloader=False,
+        )
+    else:
+        # eventlet / gevent
+        web_socketio.run(
+            app,
+            host=host,
+            port=port,
+            use_reloader=False,
+        )
 
 
 def wait_for_web():
     for i in range(30):
         try:
-            s = socket.create_connection(("127.0.0.1", 3000), 1)
+            s = socket.create_connection(("127.0.0.1", int(os.getenv("WEB_PORT", "3000"))), 1)
             s.close()
             logger.debug("Serveur web prêt après %s tentatives.", i + 1)
             return
@@ -394,7 +345,6 @@ def wait_for_web():
 # Main
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Garde-fous ENV utiles
     if not getattr(config, "DISCORD_TOKEN", None):
         raise SystemExit("DISCORD_TOKEN manquant dans config.py / env")
     if not getattr(config, "DISCORD_APP_ID", None):
@@ -404,18 +354,17 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         try:
-            # Initialise les globals app/socketio une seule fois ici
-            app, socketio = build_web_app()
+            app, web_socketio = build_web_app()
             app.bot = bot
             bot.web_app = app
 
-            # Expose PlayerService sur l’app pour d’éventuelles routes directes
+            # Expose PlayerService sur l’app
             app.player_service = bot.player_service
             app.extensions["player"] = bot.player_service
 
-            # ✅ Brancher un émetteur Socket.IO pour que PlayerService pousse "playlist_update"
+            # Emit Socket.IO côté PlayerService (push playlist_update, etc.)
             def _player_emit(event, payload, guild_id=None):
-                si = getattr(app, "socketio", None) or globals().get("socketio")
+                si = getattr(app, "socketio", None) or web_socketio
                 if not si:
                     return
                 if guild_id is not None:
@@ -425,7 +374,7 @@ if __name__ == "__main__":
 
             bot.player_service.set_emit_fn(_player_emit)
 
-            logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
+            logger.info("Socket.IO async_mode (effectif): %s", getattr(web_socketio, "async_mode", "unknown"))
 
             threading.Thread(target=run_web, daemon=True).start()
             wait_for_web()

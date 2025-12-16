@@ -1,5 +1,3 @@
-# api/services/player_service.py
-
 from __future__ import annotations
 
 import os
@@ -11,17 +9,15 @@ from typing import Any, Optional, Dict, List
 import discord
 
 from utils.playlist_manager import PlaylistManager
-from api.schemas.user import UserOut
-from api.schemas.track import TrackOut, TrackPriorityOut
 from utils.priority_rules import (
     get_member_weight, can_user_bump_over, can_bypass_quota,
-    is_priority_item, first_non_priority_index, can_user_edit_item, build_user_out
+    first_non_priority_index, can_user_edit_item, build_user_out
 )
 
 from utils.ffmpeg import detect_ffmpeg
 from api.services.oembed import oembed
 
-from extractors import get_extractor, get_search_module, is_bundle_url, expand_bundle
+from extractors import get_extractor, is_bundle_url, expand_bundle
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +26,14 @@ AUDIO_EQ_PRESETS = {
     "music": "highpass=f=32,volume=-6dB,bass=g=4:f=95:w=1.0,alimiter=limit=0.98:attack=5:release=50",
 }
 
+
 class PlayerService:
     def __init__(self, bot: discord.Client, emit_fn=None):
         self.bot = bot
         self.emit_fn = emit_fn
 
-        self.pm_map: Dict[str, PlaylistManager] = {}
+        # ✅ Keys = int guild_id partout (pas de mix str/int)
+        self.pm_map: Dict[int, PlaylistManager] = {}
         self.ffmpeg_path = detect_ffmpeg()
 
         self.is_playing: Dict[int, bool] = {}
@@ -54,6 +52,7 @@ class PlayerService:
 
         self.youtube_cookies_file = (
             os.getenv("YTDLP_COOKIES_FILE")
+            or (os.getenv("YOUTUBE_COOKIES_PATH") if os.getenv("YOUTUBE_COOKIES_PATH") else None)
             or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
         )
         try:
@@ -64,10 +63,6 @@ class PlayerService:
     def set_emit_fn(self, emit_fn):
         self.emit_fn = emit_fn
 
-    @staticmethod
-    def _gid(v) -> int:
-        return int(v)
-
     def _guild_lock(self, gid: int) -> asyncio.Lock:
         lock = self._locks.get(gid)
         if not lock:
@@ -76,7 +71,7 @@ class PlayerService:
         return lock
 
     def _get_pm(self, guild_id: int) -> PlaylistManager:
-        gid = str(int(guild_id))
+        gid = int(guild_id)
         pm = self.pm_map.get(gid)
         if pm is None:
             pm = PlaylistManager(gid)
@@ -88,16 +83,160 @@ class PlayerService:
         mode = self.audio_mode.get(gid, "music")
         return AUDIO_EQ_PRESETS.get(mode)
 
+    # ---------- overlay payload ----------
+    def _overlay_payload(self, gid: int) -> dict:
+        g = self.bot.get_guild(int(gid))
+        vc = g.voice_client if g else None
+        is_paused_vc = bool(vc and vc.is_paused())
+
+        start = self.play_start.get(gid)
+        paused_since = self.paused_since.get(gid)
+        paused_total = self.paused_total.get(gid, 0.0)
+
+        elapsed = 0
+        if start:
+            base = paused_since or time.monotonic()
+            elapsed = max(0, int(base - start - paused_total))
+
+        meta = self.current_meta.get(gid, {}) or {}
+        duration = meta.get("duration")
+        thumb = meta.get("thumbnail")
+
+        cur = (self.now_playing.get(gid) or self.current_song.get(gid))
+        if isinstance(cur, dict):
+            if duration is None and isinstance(cur.get("duration"), (int, float)):
+                duration = int(cur["duration"])
+            thumb = thumb or cur.get("thumb") or cur.get("thumbnail")
+
+        requested_by_user = None
+        if isinstance(cur, dict) and cur.get("added_by"):
+            try:
+                requested_by_user = build_user_out(self.bot, gid, int(cur["added_by"]))
+            except Exception:
+                requested_by_user = None
+
+        # queue + users
+        pm = self._get_pm(gid)
+        try:
+            pm.reload()
+        except Exception:
+            pass
+
+        queue = pm.to_dict().get("queue", []) or []
+        uniq_ids: List[str] = []
+        for it in queue:
+            uid = (it or {}).get("requested_by") or (it or {}).get("added_by")
+            if uid and str(uid) not in uniq_ids:
+                uniq_ids.append(str(uid))
+            if len(uniq_ids) >= 25:
+                break
+
+        queue_users: Dict[str, Dict[str, Any]] = {}
+        for s in uniq_ids:
+            try:
+                queue_users[str(s)] = build_user_out(self.bot, gid, int(s))
+            except Exception:
+                pass
+
+        return {
+            "queue": queue,
+            "current": cur,
+            "is_paused": is_paused_vc,
+            "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
+            "thumbnail": thumb,
+            "repeat_all": bool(self.repeat_all.get(gid, False)),
+            "requested_by_user": requested_by_user,
+            "queue_users": queue_users,
+        }
+
+    # ✅ API unique pour REST + WS
+    def get_state(self, guild_id: int) -> dict:
+        gid = int(guild_id)
+        payload = self._overlay_payload(gid)
+        payload["guild_id"] = gid
+        return payload
+
     def _emit_playlist_update(self, gid: int, payload=None):
         if not self.emit_fn:
             return
         if payload is None:
-            payload = self._overlay_payload(gid)
-        payload["guild_id"] = gid
+            payload = self.get_state(gid)
+        else:
+            payload = dict(payload)
+            payload["guild_id"] = gid
         try:
-            self.emit_fn("playlist_update", payload, guild_id=gid)
+            self.emit_fn("playlist_update", payload, guild_id=str(gid))
         except TypeError:
             self.emit_fn("playlist_update", payload)
+
+    def _ticker_running(self, gid: int) -> bool:
+        t = self._progress_task.get(gid)
+        return bool(t and not t.done())
+
+    def _cancel_ticker(self, gid: int):
+        t = self._progress_task.pop(gid, None)
+        if t and not t.done():
+            t.cancel()
+
+    def _ensure_ticker(self, gid: int):
+        if self._ticker_running(gid):
+            return
+
+        async def _runner():
+            try:
+                while True:
+                    g = self.bot.get_guild(int(gid))
+                    vc = g.voice_client if g else None
+                    if not vc or (not vc.is_playing() and not vc.is_paused()):
+                        break
+
+                    start = self.play_start.get(gid)
+                    paused_since = self.paused_since.get(gid)
+                    paused_total = self.paused_total.get(gid, 0.0)
+
+                    elapsed = 0
+                    if start:
+                        base = paused_since or time.monotonic()
+                        elapsed = max(0, int(base - start - paused_total))
+
+                    meta = self.current_meta.get(gid, {}) or {}
+                    duration = meta.get("duration")
+                    if duration is None and self.current_song.get(gid, {}).get("duration"):
+                        duration = int(self.current_song[gid]["duration"])
+
+                    payload = {
+                        "only_elapsed": True,
+                        "is_paused": bool(vc and vc.is_paused()),
+                        "progress": {"elapsed": elapsed, "duration": duration},
+                    }
+                    self._emit_playlist_update(gid, payload)
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._progress_task.pop(gid, None)
+
+        self._progress_task[gid] = asyncio.create_task(_runner())
+
+    def _current_owner_weight(self, guild_id: int) -> int:
+        gid = int(guild_id)
+        cur = self.now_playing.get(gid) or {}
+        w = int(cur.get("priority") or 0)
+        if w > 0:
+            return w
+        owner = cur.get("added_by") or cur.get("owner_id")
+        try:
+            return get_member_weight(self.bot, gid, int(owner))
+        except Exception:
+            return 0
+
+    async def _ensure_can_control(self, guild_id: int, requester_id: int) -> None:
+        gid = int(guild_id)
+        if can_bypass_quota(self.bot, gid, int(requester_id)):
+            return
+        owner_w = self._current_owner_weight(gid)
+        if not can_user_bump_over(self.bot, gid, int(requester_id), owner_w):
+            raise PermissionError("PRIORITY_FORBIDDEN")
 
     # ---------- normalisation ----------
     def _normalize_item(self, it: dict) -> dict:
@@ -140,151 +279,19 @@ class PlayerService:
                 out[k] = it[k]
         return out
 
-    # ---------- overlay payload ----------
-    def _overlay_payload(self, gid: int) -> dict:
-        g = self.bot.get_guild(int(gid))
-        vc = g.voice_client if g else None
-        is_paused_vc = bool(vc and vc.is_paused())
-
-        start = self.play_start.get(gid)
-        paused_since = self.paused_since.get(gid)
-        paused_total = self.paused_total.get(gid, 0.0)
-        elapsed = 0
-        if start:
-            base = paused_since or time.monotonic()
-            elapsed = max(0, int(base - start - paused_total))
-
-        meta = self.current_meta.get(gid, {}) or {}
-        duration = meta.get("duration")
-        thumb = meta.get("thumbnail")
-
-        cur = (self.now_playing.get(gid) or self.current_song.get(gid))
-        if isinstance(cur, dict):
-            if duration is None and isinstance(cur.get("duration"), (int, float)):
-                duration = int(cur["duration"])
-            thumb = thumb or cur.get("thumb") or cur.get("thumbnail")
-
-        # ---- enrichissements user ----
-        requested_by_user = None
-        if isinstance(cur, dict) and cur.get("added_by"):
-            try:
-                requested_by_user = build_user_out(self.bot, gid, int(cur["added_by"]))
-            except Exception:
-                requested_by_user = None
-
-        # Collecte des metas user pour ceux présents dans la queue
-        queue = self._get_pm(gid).to_dict().get("queue", [])
-        uniq_ids = []
-        for it in queue:
-            uid = (it or {}).get("requested_by") or (it or {}).get("added_by")
-            if uid and uid not in uniq_ids:
-                uniq_ids.append(uid)
-            if len(uniq_ids) >= 25:
-                break
-
-        queue_users: Dict[str, Dict[str, Any]] = {}
-        for s in uniq_ids:
-            try:
-                queue_users[str(s)] = build_user_out(self.bot, gid, int(s))
-            except Exception:
-                pass
-
-        return {
-            "queue": queue,
-            "current": cur,
-            "is_paused": is_paused_vc,
-            "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
-            "thumbnail": thumb,
-            "repeat_all": bool(self.repeat_all.get(gid, False)),
-            # nouveaux champs :
-            "requested_by_user": requested_by_user,
-            "queue_users": queue_users,
-        }
-
-    def _ticker_running(self, gid: int) -> bool:
-        t = self._progress_task.get(gid)
-        return bool(t and not t.done())
-
-    def _cancel_ticker(self, gid: int):
-        t = self._progress_task.pop(gid, None)
-        if t and not t.done():
-            t.cancel()
-
-    def _ensure_ticker(self, gid: int):
-        if self._ticker_running(gid):
-            return
-
-        async def _runner():
-            try:
-                while True:
-                    g = self.bot.get_guild(int(gid))
-                    vc = g.voice_client if g else None
-                    if not vc or (not vc.is_playing() and not vc.is_paused()):
-                        break
-
-                    start = self.play_start.get(gid)
-                    paused_since = self.paused_since.get(gid)
-                    paused_total = self.paused_total.get(gid, 0.0)
-                    elapsed = 0
-                    if start:
-                        base = paused_since or time.monotonic()
-                        elapsed = max(0, int(base - start - paused_total))
-
-                    meta = self.current_meta.get(gid, {}) or {}
-                    duration = meta.get("duration")
-                    if duration is None and self.current_song.get(gid, {}).get("duration"):
-                        duration = int(self.current_song[gid]["duration"])
-
-                    payload = {
-                        "guild_id": gid,
-                        "only_elapsed": True,
-                        "is_paused": bool(vc and vc.is_paused()),
-                        "progress": {"elapsed": elapsed, "duration": duration},
-                    }
-                    self._emit_playlist_update(gid, payload)
-                    await asyncio.sleep(1.0)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self._progress_task.pop(gid, None)
-
-        self._progress_task[gid] = asyncio.create_task(_runner())
-
-    def _current_owner_weight(self, guild_id: int) -> int:
-        cur = self.now_playing.get(int(guild_id)) or {}
-        w = int(cur.get("priority") or 0)
-        if w > 0:
-            return w
-        owner = cur.get("added_by") or cur.get("owner_id")
-        try:
-            return get_member_weight(self.bot, int(guild_id), int(owner))
-        except Exception:
-            return 0
-
-    async def _ensure_can_control(self, guild_id: int, requester_id: int) -> None:
-        # admin/mod bypass
-        if can_bypass_quota(self.bot, int(guild_id), int(requester_id)):
-            return
-        owner_w = self._current_owner_weight(guild_id)
-        if not can_user_bump_over(self.bot, int(guild_id), int(requester_id), owner_w):
-            raise PermissionError("PRIORITY_FORBIDDEN")
-
     # ---------- opérations publiques ----------
     async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.abc.GuildChannel]) -> bool:
         if not channel or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             return False
 
         vc = guild.voice_client
-
         try:
-            # déjà connecté : move si besoin
             if vc and vc.is_connected():
                 if getattr(vc, "channel", None) and int(vc.channel.id) == int(channel.id):
                     return True
                 await vc.move_to(channel)
                 return True
 
-            # pas connecté : connect
             await channel.connect()
             return True
 
@@ -303,12 +310,11 @@ class PlayerService:
         await loop.run_in_executor(None, pm.reload)
         queue = await loop.run_in_executor(None, pm.get_queue)
 
-        # NB: PER_USER_CAP défini ailleurs ; on garde le comportement existant
         if not can_bypass_quota(self.bot, gid, int(user_id)):
             try:
-                from settings import PER_USER_CAP  # si dispo
+                from settings import PER_USER_CAP
             except Exception:
-                PER_USER_CAP = 999999  # fallback neutre si non défini
+                PER_USER_CAP = 999999
             user_count = sum(1 for it in queue if str(it.get("added_by")) == str(user_id))
             if user_count >= PER_USER_CAP:
                 return {"ok": False, "error": f"Quota atteint ({PER_USER_CAP})."}
@@ -330,6 +336,7 @@ class PlayerService:
                 target_idx = i
                 break
             target_idx = i + 1
+
         if 0 <= target_idx < len(new_queue) and target_idx != new_idx:
             await loop.run_in_executor(None, pm.move, new_idx, target_idx)
 
@@ -347,7 +354,6 @@ class PlayerService:
             vc = guild.voice_client
             if vc and vc.is_playing():
                 return
-            # si paused, on stop puis on enchaîne
             if vc and vc.is_paused():
                 vc.stop()
 
@@ -365,6 +371,7 @@ class PlayerService:
 
             item = self._normalize_item(item)
             url = item.get("url")
+
             self.current_song[gid] = {
                 "title": item.get("title") or url,
                 "url": url,
@@ -373,6 +380,7 @@ class PlayerService:
                 "duration": item.get("duration"),
                 "added_by": item.get("added_by"),
                 "priority": item.get("priority"),
+                "provider": item.get("provider"),
             }
             dur_int = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
@@ -401,12 +409,13 @@ class PlayerService:
                 except Exception:
                     return {}
 
+            # try direct then pipe
             try:
                 srcp, real_title = await self._call_extractor(extractor, "stream", url, self.ffmpeg_path, **_kw("stream"))
                 if real_title and isinstance(real_title, str):
                     self.current_song[gid]["title"] = real_title
                     self.now_playing[gid]["title"] = real_title
-                await self._play_source(guild, gid, srcp, fallback=False)
+                await self._play_source(guild, gid, srcp)
                 return
             except Exception as ex_direct:
                 log.debug("[stream direct KO] %s", ex_direct)
@@ -415,27 +424,22 @@ class PlayerService:
             if real_title and isinstance(real_title, str):
                 self.current_song[gid]["title"] = real_title
                 self.now_playing[gid]["title"] = real_title
-            await self._play_source(guild, gid, srcp, fallback=True)
+            await self._play_source(guild, gid, srcp)
 
     async def _call_extractor(self, extractor_module, method_name: str, *args, **kwargs):
-        fn = getattr(extractor_module, method_name)
+        """
+        ✅ IMPORTANT: pas de asyncio.run().
+        Ton extractor YouTube est déjà async + fait ses heavy calls via to_thread/executor.
+        """
+        fn = getattr(extractor_module, method_name, None)
+        if not fn:
+            raise AttributeError(f"{extractor_module} has no method {method_name}")
 
-        # 👇 garde-fou : youtube peut bloquer, on l’exécute hors loop
-        mod_name = getattr(extractor_module, "__name__", "")
-        if "extractors.youtube" in mod_name:
-            def _run():
-                if asyncio.iscoroutinefunction(fn):
-                    return asyncio.run(fn(*args, **kwargs))
-                return fn(*args, **kwargs)
-
-            return await asyncio.to_thread(_run)
-
-        # comportement standard
         if asyncio.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def _play_source(self, guild: discord.Guild, gid: int, srcp, fallback: bool):
+    async def _play_source(self, guild: discord.Guild, gid: int, srcp):
         vc = guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
@@ -445,12 +449,16 @@ class PlayerService:
             try:
                 src = self.current_source.pop(gid, None)
                 if src and hasattr(src, "cleanup"):
-                    try: src.cleanup()
-                    except Exception: pass
+                    try:
+                        src.cleanup()
+                    except Exception:
+                        pass
                 proc = getattr(src, "_ytdlp_proc", None)
                 if proc:
-                    try: proc.kill()
-                    except Exception: pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
             finally:
                 asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
 
@@ -496,7 +504,8 @@ class PlayerService:
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
         else:
-            await self.play_next(g)
+            if g:
+                await self.play_next(g)
         self._emit_playlist_update(gid)
         return True
 
@@ -556,11 +565,9 @@ class PlayerService:
         barrier = first_non_priority_index(q)
         src_prio, dst_prio = src < barrier, dst < barrier
 
-        # Interdiction de franchir la barrière prio sans bypass
         if src_prio != dst_prio and not can_bypass_quota(self.bot, gid, int(requester_id)):
             raise PermissionError("PRIORITY_FORBIDDEN")
 
-        # Édition de l'item : s'il n'est pas à l'appelant, contrôle du poids relatif
         it = q[src]
         if not can_user_edit_item(self.bot, gid, int(requester_id), it):
             raise PermissionError("PRIORITY_FORBIDDEN")
@@ -615,7 +622,6 @@ class PlayerService:
             except Exception:
                 bundle_entries = []
 
-            # si on a des entrées, on remplit l'item principal avec la 1re
             if bundle_entries:
                 head = bundle_entries[0]
                 item = {**item, **{
@@ -627,12 +633,10 @@ class PlayerService:
                     "provider": head.get("provider") or "youtube",
                 }}
 
-        # enqueue de l'item principal
         res = await self.enqueue(gid, int(user_id), item)
         if not res.get("ok"):
             return res
 
-        # enqueue des entrées suivantes d’une playlist/mix (jusqu’à 9 de plus)
         if bundle_entries and len(bundle_entries) > 1:
             tail = bundle_entries[1:10]
             for e in tail:
