@@ -1,9 +1,10 @@
 # api/__init__.py
 from __future__ import annotations
+
 import logging
 from typing import Optional
 
-from flask import Flask
+from flask import Flask, render_template
 
 from .core.config import Settings
 from .core.errors import register_error_handlers
@@ -14,30 +15,41 @@ log = logging.getLogger(__name__)
 
 API_PREFIX = "/api/v1"   # une seule racine d’API
 
+
 def create_app(pm: Optional[object] = None) -> Flask:
-    """App factory. Injecte éventuellement un PlaylistManager (pm)."""
+    """
+    App factory.
+    - Monte l’API sous /api/v1 (sauf le blueprint d’auth pour /auth/login etc.)
+    - Expose une homepage web (index.html) pour https://.../
+    - Injecte éventuellement un PlaylistManager / PlayerAPIBridge via `pm`.
+    """
     if not logging.getLogger().handlers:
         configure_logging()
 
-    app = Flask(__name__)
+    # ⚠️ Important : on pointe vers le dossier `assets` au niveau racine du projet
+    #  api/          (ce fichier)
+    #  assets/pages/  -> templates (index.html)
+    #  assets/…       -> static (js/, static/player.css, etc.)
+    app = Flask(
+        __name__,
+        static_folder="../assets",        # accessible via /static/...
+        template_folder="../assets/pages" # index.html, etc.
+    )
     app.config.from_object(Settings())
 
-    # Extensions
+    # Extensions (db, socketio, etc.)
     init_extensions(app)
 
-    # Attach external deps
+    # Attach external deps (PlaylistManager / PlayerAPIBridge)
     app.extensions["pm"] = pm
     app.extensions.setdefault("stores", {})
     _init_stores(app)
 
-    # Blueprints & WS
+    # Blueprints API + Socket.IO
     _register_blueprints(app)
     _register_socketio(app)
 
-    # Erreurs
-    register_error_handlers(app)
-
-    # Health
+    # Health-check basique
     @app.get("/healthz")
     def _healthz():
         return {"ok": True}, 200
@@ -45,11 +57,22 @@ def create_app(pm: Optional[object] = None) -> Flask:
     # Compat : certains modules importent encore 'require_login'
     try:
         from .auth.session import login_required as _lr
-        # alias exporté dans le module (si besoin)
         import api.auth.session as _sessmod
         setattr(_sessmod, "require_login", _lr)
     except Exception:
         pass
+
+    # Homepage Web (Greg Web Player) -> sert assets/pages/index.html
+    @app.get("/")
+    def index():
+        """
+        Page d’accueil publique : web player Greg le Consanguin.
+        - Le template `assets/pages/index.html` doit utiliser `url_for('static', ...)`
+          pour référencer JS/CSS, par ex :
+              {{ url_for('static', filename='static/player.css') }}
+              {{ url_for('static', filename='js/player.js') }}
+        """
+        return render_template("index.html")
 
     log.info("API created (env=%s, debug=%s)", app.config.get("ENV"), app.config.get("DEBUG"))
     return app
@@ -65,8 +88,8 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
     from .blueprints.search import bp as search_bp
 
-    # 1) Auth monté SANS prefix → /auth/login, /auth/callback, et /api/v1/me (car défini ainsi dans le BP)
-    app.register_blueprint(auth_bp)  # <— pas de url_prefix ici
+    # 1) Auth monté SANS prefix → /auth/login, /auth/callback, et /api/v1/me
+    app.register_blueprint(auth_bp)
 
     # 2) Tous les autres sous /api/v1
     for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):

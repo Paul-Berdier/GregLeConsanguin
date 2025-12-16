@@ -30,6 +30,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("=== DÉMARRAGE GREG LE CONSANGUIN ===")
 
+# Port HTTP effectif (Railway : PORT, local : 3000)
+WEB_PORT = int(os.getenv("PORT", "3000"))
+
 # -----------------------------------------------------------------------------
 # Bridge API → PlayerService : source de vérité unique
 class PlayerAPIBridge:
@@ -216,14 +219,6 @@ class GregBot(commands.Bot):
             "praise",
             "shame",
             "gregquote",
-            # spook
-            "spook_enable",
-            "spook_settings",
-            "spook_status",
-            "spook_test",
-            "spook_files",
-            "spook_reload",
-            "spook_scare",
             # guardian yt cookies
             "yt_cookies_update",
             "yt_cookies_check",
@@ -244,22 +239,23 @@ class GregBot(commands.Bot):
         except Exception as e:
             results.append(("FFmpeg", False, str(e)))
 
-        # 4) Overlay HTTP
+        # 4) Overlay HTTP (web player / API)
         try:
             if not os.getenv("DISABLE_WEB", "0") == "1":
+                url_base = f"http://127.0.0.1:{WEB_PORT}"
                 try:
-                    r = requests.get("http://127.0.0.1:3000/healthz", timeout=2)
+                    r = requests.get(f"{url_base}/healthz", timeout=2)
                 except Exception:
                     r = None
                 if r is None or r.status_code == 404:
-                    r = requests.get("http://127.0.0.1:3000/", timeout=2)
+                    r = requests.get(url_base + "/", timeout=2)
 
                 ok = r.status_code < 500
-                results.append(("Overlay:HTTP 127.0.0.1:3000", ok, f"HTTP {r.status_code}"))
+                results.append((f"Overlay:HTTP 127.0.0.1:{WEB_PORT}", ok, f"HTTP {r.status_code}"))
             else:
                 results.append(("Overlay:désactivé", True, "DISABLE_WEB=1"))
         except Exception as e:
-            results.append(("Overlay:HTTP 127.0.0.1:3000", False, str(e)))
+            results.append((f"Overlay:HTTP 127.0.0.1:{WEB_PORT}", False, str(e)))
 
         # 5) SocketIO emit
         try:
@@ -322,7 +318,6 @@ class GregBot(commands.Bot):
 
         # Self-test post restart (optionnel)
         try:
-            import asyncio
             asyncio.create_task(run_post_restart_selftest(self))
         except Exception as e:
             logger.debug("Self-test non lancé: %s", e)
@@ -357,19 +352,34 @@ def build_web_app():
 
 
 def run_web():
+    """
+    Lance le serveur HTTP (Flask + Socket.IO) sur WEB_PORT.
+    - En local : 0.0.0.0:3000
+    - Sur Railway : 0.0.0.0:$PORT
+    """
     if socketio and app:
         mode = getattr(socketio, "async_mode", "threading")
-        logger.debug("Lancement web… (mode=%s)", mode)
+        logger.debug("Lancement web… (mode=%s, port=%s)", mode, WEB_PORT)
         if mode == "eventlet":
-            socketio.run(app, host="0.0.0.0", port=3000, use_reloader=False)
+            socketio.run(app, host="0.0.0.0", port=WEB_PORT, use_reloader=False)
         else:
-            socketio.run(app, host="0.0.0.0", port=3000, allow_unsafe_werkzeug=True, use_reloader=False)
+            socketio.run(
+                app,
+                host="0.0.0.0",
+                port=WEB_PORT,
+                allow_unsafe_werkzeug=True,
+                use_reloader=False,
+            )
 
 
 def wait_for_web():
+    """
+    Attendre que le serveur web réponde localement.
+    Utile pour les selftests du bot (127.0.0.1:WEB_PORT).
+    """
     for i in range(30):
         try:
-            s = socket.create_connection(("127.0.0.1", 3000), 1)
+            s = socket.create_connection(("127.0.0.1", WEB_PORT), 1)
             s.close()
             logger.debug("Serveur web prêt après %s tentatives.", i + 1)
             return
@@ -392,6 +402,7 @@ if __name__ == "__main__":
 
     if not DISABLE_WEB:
         try:
+            global app, socketio
             app, socketio = build_web_app()
             app.bot = bot
             bot.web_app = app
@@ -413,12 +424,16 @@ if __name__ == "__main__":
 
             bot.player_service.set_emit_fn(_player_emit)
 
-            logger.info("Socket.IO async_mode (effectif): %s", getattr(socketio, "async_mode", "unknown"))
+            logger.info(
+                "Socket.IO async_mode (effectif): %s",
+                getattr(socketio, "async_mode", "unknown"),
+            )
 
+            # Thread HTTP (local ou Railway) + attente de readiness
             threading.Thread(target=run_web, daemon=True).start()
             wait_for_web()
         except Exception as e:
-            logger.warning("Overlay désactivé (fallback) : %s", e)
+            logger.warning("Overlay / web player désactivé (fallback) : %s", e)
 
     # Wrapper pour brancher emit_fn puis appeler le on_ready d'origine
     @bot.event

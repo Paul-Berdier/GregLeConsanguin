@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <title>Greg le Consanguin — Web Player</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <!-- CSS du player -->
+    <link rel="stylesheet" href="/static/player.css">
+</head>
+<body>
+<div class="container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo-circle">G</div>
+            <div class="logo-text">
+                <div class="logo-title">Greg le Consanguin</div>
+                <div class="logo-subtitle">Web Player</div>
+            </div>
+        </div>
+
+        <nav class="nav">
+            <button class="nav-item nav-item--active" type="button">
+                <span class="nav-icon">🎧</span>
+                <span>Lecteur</span>
+            </button>
+            <button class="nav-item" id="nav-settings" type="button">
+                <span class="nav-icon">⚙️</span>
+                <span>Paramètres</span>
+            </button>
+            <button class="nav-item" id="nav-about" type="button">
+                <span class="nav-icon">🤡</span>
+                <span>À propos</span>
+            </button>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="user-info" id="userInfo">
+                <div class="avatar" id="userAvatar">?</div>
+                <div class="user-texts">
+                    <div class="user-name" id="userName">Non connecté</div>
+                    <div class="user-status" id="userStatus">Discord</div>
+                </div>
+            </div>
+            <div class="user-actions">
+                <button class="btn btn--primary" id="btn-login-discord" type="button">
+                    Se connecter avec Discord
+                </button>
+                <button class="btn btn--ghost hidden" id="btn-logout-discord" type="button">
+                    Se déconnecter
+                </button>
+            </div>
+            <div class="server-info">
+                <label for="guildSelect">Serveur Discord</label>
+                <select id="guildSelect" class="select">
+                    <option value="">(par défaut)</option>
+                </select>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="app-main">
+        <!-- Bandeau status -->
+        <div class="top-status" id="topStatus">
+            <span id="statusText">En attente de Greg…</span>
+        </div>
+
+        <!-- Hero + player -->
+        <section class="hero">
+            <div class="hero-text">
+                <h1>Contrôle Greg depuis ton navigateur</h1>
+                <p>
+                    Lance de la musique, sautes des titres, surveille la playlist
+                    de ton serveur Discord directement depuis cette page.
+                </p>
+
+                <form id="searchForm" class="search-form">
+                    <input
+                        id="searchInput"
+                        class="search-input"
+                        type="text"
+                        placeholder="Colle un lien YouTube / Spotify ou tape une recherche…"
+                        autocomplete="off"
+                    />
+                    <button class="btn btn--primary" type="submit">
+                        ▶️ Lire
+                    </button>
+                </form>
+
+                <div class="search-suggestions" id="searchSuggestions"></div>
+            </div>
+
+            <div class="player-card">
+                <div class="player-header">
+                    <div class="artwork" id="artwork">🎵</div>
+                    <div class="track-texts">
+                        <div class="track-title" id="trackTitle">Rien en cours</div>
+                        <div class="track-artist" id="trackArtist">Greg dort encore</div>
+                    </div>
+                </div>
+
+                <div class="progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-times">
+                        <span id="progressCurrent">0:00</span>
+                        <span>/</span>
+                        <span id="progressTotal">0:00</span>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <button class="ctrl-btn" id="btn-prev" type="button" disabled>⏮</button>
+                    <button class="ctrl-btn ctrl-btn--main" id="btn-play-pause" type="button">▶️</button>
+                    <button class="ctrl-btn" id="btn-skip" type="button">⏭</button>
+                    <button class="ctrl-btn" id="btn-stop" type="button">⏹</button>
+                    <button class="ctrl-btn" id="btn-repeat" type="button">🔁</button>
+                </div>
+
+                <div class="spotify-section">
+                    <div class="spotify-status" id="spotifyStatus">Spotify non lié</div>
+                    <div class="spotify-actions">
+                        <button class="btn btn--ghost" id="btn-spotify-login" type="button">
+                            Lier Spotify
+                        </button>
+                        <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">
+                            Dé-lier Spotify
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Queue -->
+        <section class="queue-card">
+            <div class="queue-header">
+                <h2>File d’attente</h2>
+                <span class="queue-count" id="queueCount">0 titres</span>
+            </div>
+            <div class="queue-list" id="queueList"></div>
+        </section>
+
+        <!-- Onglets secondaires (settings/about) minimal pour l’instant -->
+        <section class="secondary-panel hidden" id="panel-settings">
+            <h2>Paramètres</h2>
+            <p>Pour l’instant, les paramètres avancés restent dans l’overlay Overwolf.</p>
+        </section>
+
+        <section class="secondary-panel hidden" id="panel-about">
+            <h2>À propos</h2>
+            <p>
+                Greg le Consanguin est un bot Discord musical sarcastique.
+                Ce site permet de contrôler sa playlist à distance.
+            </p>
+        </section>
+    </main>
+</div>
+
+<script>
+    window.GREG_API_BASE = "/api/v1";  // même base que l’overlay
+</script>
+<script src="/static/player.js"></script>
+</body>
+</html>
