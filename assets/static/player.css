@@ -125,18 +125,11 @@ body{
 /* Right auth */
 .top-auth{
   display:flex;
-  justify-content:flex-end;
-  min-width: 320px;
-}
-.auth-card{
-  display:flex;
   align-items:center;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(30,41,59,.55);
-  border: 1px solid var(--border);
-  backdrop-filter: blur(8px);
+  justify-content:flex-end;
+  min-width: 320px;
 }
 .auth-state{
   display:flex;
