@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "broadcast_playlist_update",
-    "presence_stats",
+    "socketio_presence_stats",
 ]
 
 # --------------------------------------------------------------------------- #
