@@ -96,9 +96,18 @@
 
     <!-- Main -->
     <main class="main">
+
+      <section class="queue">
+        <div class="queue-header">
+          <div class="queue-title">File d’attente</div>
+          <div class="queue-count" id="queueCount">0 titre</div>
+        </div>
+        <div class="queue-list" id="queueList"></div>
+      </section>
+
       <section class="now-playing">
-        <div class="np-left">
           <div class="artwork" id="artwork"></div>
+
           <div class="np-meta">
             <div class="np-title" id="trackTitle">Rien en cours</div>
             <div class="np-artist" id="trackArtist">—</div>
@@ -113,9 +122,13 @@
               </div>
             </div>
           </div>
-        </div>
 
         <div class="np-controls">
+
+            <button id="btn-stop" class="control-btn" type="button" title="Stop">
+            <svg class="icon" viewBox="0 0 24 24"><use href="#icon-stop"></use></svg>
+          </button>
+
           <button id="btn-prev" class="control-btn" type="button" title="Restart">
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-prev"></use></svg>
           </button>
@@ -128,22 +141,10 @@
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-skip"></use></svg>
           </button>
 
-          <button id="btn-stop" class="control-btn" type="button" title="Stop">
-            <svg class="icon" viewBox="0 0 24 24"><use href="#icon-stop"></use></svg>
-          </button>
-
           <button id="btn-repeat" class="control-btn" type="button" title="Repeat (alt)">
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-repeat"></use></svg>
           </button>
         </div>
-      </section>
-
-      <section class="queue">
-        <div class="queue-header">
-          <div class="queue-title">File d’attente</div>
-          <div class="queue-count" id="queueCount">0 titre</div>
-        </div>
-        <div class="queue-list" id="queueList"></div>
       </section>
 
       <section class="spotify">

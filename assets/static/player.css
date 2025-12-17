@@ -1,7 +1,8 @@
 /* Greg le Consanguin — Web Player UI (clean, responsive)
    - Header top, status bottom
-   - Queue scroll safe
-   - Suggestions list + rich rows
+   - 3 main cards aligned, gap clean
+   - Desktop: no page scroll (internal scroll only: queue)
+   - Mobile: page scroll ON (natural), cards height auto, no overflow sideways
 */
 
 :root{
@@ -11,6 +12,7 @@
   --stroke: rgba(148,163,184,.18);
   --stroke2: rgba(148,163,184,.28);
   --text:#e5e7eb;
+  --text-primary: var(--text);
   --muted:#94a3b8;
 
   --primary:#6366f1;
@@ -21,10 +23,17 @@
 
   --shadow: 0 12px 40px rgba(0,0,0,.35);
   --radius: 16px;
+
+  /* safe-area iOS */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 *{ box-sizing:border-box; }
 html,body{ height:100%; }
+
 body{
   margin:0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
@@ -32,19 +41,17 @@ body{
               radial-gradient(900px 500px at 90% 10%, rgba(16,185,129,.10), transparent 55%),
               var(--bg);
   color:var(--text);
+
+  /* Desktop: no page scroll */
+  overflow: hidden;
+  overflow-x: hidden;
 }
 
 .hidden{ display:none !important; }
 
-/* ===== Icon sizing (SVG <use>) ===== */
-.icon{
-  width: 20px;
-  height: 20px;
-  display: block;
-}
-.control-btn.primary .icon{ width: 26px; height: 26px; }
+/* ===== Icon sizing ===== */
+.icon{ width: 18px; height: 18px; display:block; }
 .queue-btn .icon{ width: 16px; height: 16px; }
-.btn .icon{ width: 18px; height: 18px; }
 
 /* ===== Button active state (repeat) ===== */
 .control-btn--active{
@@ -64,15 +71,20 @@ body{
 .status-text--ok{ color: var(--text-primary); }
 .status-text--err{ color: rgba(254,226,226,.95); }
 
+/* App frame */
 .app{
-  min-height:100vh;
+  /* mobile-safe viewport (handles iOS address bar better) */
+  height: 100dvh;
+  height: 100vh;
+
   display:flex;
   flex-direction:column;
-  padding:16px;
-  gap:14px;
-}
 
-.main{ flex: 1; min-height: 0; }
+  padding: calc(16px + var(--safe-top)) calc(16px + var(--safe-right)) calc(16px + var(--safe-bottom)) calc(16px + var(--safe-left));
+  gap:14px;
+
+  min-height:0; /* allow children to shrink */
+}
 
 /* ================= Topbar ================= */
 .topbar{
@@ -80,6 +92,7 @@ body{
   align-items:flex-start;
   justify-content:space-between;
   gap:14px;
+  min-height: 0;
 }
 
 .brand{
@@ -137,6 +150,7 @@ body{
   color:var(--text);
   font-size:14px;
   padding:4px 0;
+  min-width: 0;
 }
 
 /* ================= Buttons ================= */
@@ -151,6 +165,7 @@ body{
   display:inline-flex;
   align-items:center;
   gap:8px;
+  white-space:nowrap;
 }
 .btn:hover{ background: rgba(148,163,184,.16); }
 .btn:active{ transform: translateY(1px); }
@@ -159,22 +174,18 @@ body{
   border-color: rgba(99,102,241,.45);
   background: rgba(99,102,241,.22);
 }
-.btn--primary:hover{
-  background: rgba(99,102,241,.28);
-}
+.btn--primary:hover{ background: rgba(99,102,241,.28); }
 
 .btn--ghost{
   background: transparent;
   border-color: var(--stroke);
 }
-.btn--ghost:hover{
-  background: rgba(148,163,184,.08);
-}
+.btn--ghost:hover{ background: rgba(148,163,184,.08); }
 
 /* ================= Auth ================= */
 .top-auth{
   display:flex;
-  flex-direction:column;
+  flex-direction:row;
   gap:10px;
   min-width:280px;
 }
@@ -188,6 +199,7 @@ body{
   background:var(--card2);
   border-radius:var(--radius);
   box-shadow:var(--shadow);
+  min-width: 0;
 }
 
 .avatar{
@@ -199,6 +211,7 @@ body{
   align-items:center;
   justify-content:center;
   font-weight:800;
+  flex:none;
 }
 
 .auth-meta{ flex:1; min-width:0; }
@@ -209,7 +222,7 @@ body{
   text-overflow:ellipsis;
 }
 .auth-status{ font-size:12px; color:var(--muted); margin-top:2px; }
-.auth-actions{ display:flex; gap:8px; }
+.auth-actions{ display:flex; gap:8px; flex:none; }
 
 .guild-select{
   display:flex;
@@ -220,6 +233,7 @@ body{
   border:1px solid var(--stroke);
   background:var(--card2);
   border-radius:var(--radius);
+  min-width: 0;
 }
 
 .guild-select label{ font-size:12px; color:var(--muted); }
@@ -231,9 +245,21 @@ body{
   background: rgba(17,24,39,.65);
   color:var(--text);
   outline:none;
+  min-width: 0;
 }
 
-/* ================= Main sections ================= */
+/* ================= Main layout ================= */
+.main{
+  flex: 1;
+  min-height: 0;
+
+  display: grid;
+  grid-template-columns: minmax(300px, 30%) minmax(300px, 30%) minmax(360px, 40%);
+  gap: 14px;
+  align-items: stretch;
+}
+
+/* cards */
 .now-playing,
 .queue,
 .spotify{
@@ -241,55 +267,61 @@ body{
   background:var(--card);
   border-radius:var(--radius);
   box-shadow:var(--shadow);
+
+  height: 100%;
+  min-height: 0;
+  overflow: hidden; /* avoid weird inner overflow shadows */
 }
 
+/* ================= Now playing ================= */
 .now-playing{
-  padding:14px;
+  padding: 18px;
   display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-}
-
-.np-left{
-  display:flex;
-  align-items:center;
-  gap:14px;
-  min-width:0;
+  flex-direction:column;
+  gap: 14px;
 }
 
 .artwork{
-  width:86px; height:86px;
+  width: clamp(160px, 16vw, 240px);
+  height: clamp(160px, 16vw, 240px);
   border-radius:18px;
   background: rgba(15,23,42,.7);
   border:1px solid var(--stroke);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
   background-size:cover;
   background-position:center;
+  align-self: center;
   flex:none;
 }
 
-.np-meta{ min-width:0; }
+.np-meta{
+  min-width:0;
+  width: 100%;
+}
+
 .np-title{
   font-weight:900;
-  font-size:16px;
+  font-size:20px;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
+  text-align: center;
 }
 .np-artist{
   margin-top:4px;
   color:var(--muted);
-  font-size:13px;
+  font-size:14px;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
+  text-align: center;
 }
 
 /* progress */
-.progress{ margin-top:10px; }
+.progress{ margin-top:10px; width: 100%; }
 .progress-bar{
-  height:8px;
+  width: 100%;
+  height:10px;
   border-radius:999px;
   background: rgba(148,163,184,.12);
   border:1px solid rgba(148,163,184,.16);
@@ -309,17 +341,20 @@ body{
   color:var(--muted);
 }
 
-/* controls */
+/* controls (robuste) */
 .np-controls{
+  margin-top: 10%; /* ✅ au lieu de 20% */
   display:flex;
   gap:10px;
   align-items:center;
+  justify-content:center;
+  padding-top: 10px;
 }
 
 .control-btn{
-  width:44px;
-  height:44px;
-  border-radius:16px;
+  width:52px;
+  height:52px;
+  border-radius:18px;
   border:1px solid var(--stroke);
   background: rgba(148,163,184,.10);
   color:var(--text);
@@ -327,24 +362,29 @@ body{
   display:flex;
   align-items:center;
   justify-content:center;
+  flex:none;
 }
+.control-btn .icon{ width:22px; height:22px; }
 .control-btn:hover{ background: rgba(148,163,184,.16); }
 .control-btn:active{ transform: translateY(1px); }
+
 .control-btn.primary{
-  width:54px;
-  height:54px;
-  border-radius:20px;
+  width:66px;
+  height:66px;
+  border-radius:22px;
   border-color: rgba(99,102,241,.35);
   background: rgba(99,102,241,.20);
 }
+.control-btn.primary .icon{ width:28px; height:28px; }
 
-/* Queue */
+/* ================= Queue ================= */
 .queue{
   padding:14px;
   display:flex;
   flex-direction:column;
-  min-height: 240px;
+  min-height: 0;
 }
+
 .queue-header{
   display:flex;
   align-items:center;
@@ -354,14 +394,18 @@ body{
 .queue-title{ font-weight:900; }
 .queue-count{ color:var(--muted); font-size:12px; }
 
+/* internal scroll only here (desktop) */
 .queue-list{
+  flex: 1;
+  min-height: 0;
+  overflow:auto;
+
   display:flex;
   flex-direction:column;
   gap:10px;
-  overflow:auto;
+
   padding-right:4px;
-  min-height: 0;
-  max-height: 42vh;
+  max-height: none;
 }
 
 .queue-empty{
@@ -408,7 +452,7 @@ body{
   text-overflow:ellipsis;
 }
 
-.queue-actions{ display:flex; gap:8px; }
+.queue-actions{ display:flex; gap:8px; flex:none; }
 .queue-btn{
   width:38px; height:38px;
   border-radius:14px;
@@ -427,8 +471,13 @@ body{
 }
 .queue-btn.danger:hover{ background: rgba(239,68,68,.14); }
 
-/* Spotify */
-.spotify{ padding:12px 14px; }
+/* ================= Spotify ================= */
+.spotify{
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
 .spotify-row{
   display:flex;
   align-items:center;
@@ -436,9 +485,9 @@ body{
   gap:10px;
 }
 .spotify-status{ color:var(--muted); }
-.spotify-actions{ display:flex; gap:8px; }
+.spotify-actions{ display:flex; gap:8px; flex-wrap:wrap; }
 
-/* Suggestions */
+/* ================= Suggestions ================= */
 .search-suggestions{
   position:absolute;
   left:0; right:0;
@@ -497,7 +546,7 @@ body{
   flex:none;
 }
 
-/* Status bar */
+/* ================= Status bar ================= */
 .status-bar{
   margin-top: auto;
   padding: 0;
@@ -514,16 +563,83 @@ body{
   color: rgba(226,232,240,.95);
 }
 
-/* Responsive */
+/* ================= Responsive ================= */
+
+/* Tablet / small laptop */
 @media (max-width: 1100px){
-  .topbar{ flex-direction:column; align-items:stretch; }
-  .brand{ min-width:unset; }
-  .top-auth{ min-width:unset; flex-direction:row; flex-wrap:wrap; }
-  .search{ min-width:unset; }
+  /* Mobile/tablet: page scroll ON */
+  body{ overflow:auto; overflow-x:hidden; }
+
+  .app{
+    height:auto;
+    min-height:100vh;
+  }
+
+  /* Topbar stack nicely, remove rigid mins */
+  .topbar{
+    flex-direction:column;
+    align-items:stretch;
+  }
+
+  .brand{ min-width:0; width:100%; }
+  .search{ min-width:0; width:100%; }
+  .top-auth{ min-width:0; width:100%; flex-wrap:wrap; }
+  .auth-card{ flex:1; }
+  .guild-select{ flex:1; min-width:220px; }
+
+  /* Main becomes vertical */
+  .main{
+    display:flex;
+    flex-direction:column;
+    min-height:auto;
+  }
+
+  /* IMPORTANT: cards should NOT force full height on mobile */
+  .now-playing, .queue, .spotify{
+    height:auto;
+    overflow: visible;
+  }
+
+  /* reorder: now playing first on mobile */
+  .now-playing{ order: 1; }
+  .queue{ order: 2; }
+  .spotify{ order: 3; }
+
+  /* queue scroll can be limited (optional but nice) */
+  .queue-list{
+    max-height: 50vh;
+  }
+
+  .search-suggestions{
+    max-height: 45vh;
+  }
 }
 
+/* Phone */
 @media (max-width: 700px){
-  .now-playing{ flex-direction:column; align-items:stretch; }
-  .np-controls{ justify-content:center; }
-  .queue-list{ max-height: 46vh; }
+  .app{ padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left)); }
+  .search-box{ padding:10px; }
+  .btn{ padding:8px 10px; border-radius:12px; }
+
+  .artwork{
+    width: min(72vw, 260px);
+    height: min(72vw, 260px);
+  }
+
+  .np-title{ font-size:18px; }
+  .np-artist{ font-size:13px; }
+
+  .control-btn{ width:46px; height:46px; border-radius:16px; }
+  .control-btn .icon{ width:20px; height:20px; }
+  .control-btn.primary{ width:58px; height:58px; border-radius:20px; }
+  .control-btn.primary .icon{ width:26px; height:26px; }
+
+  .queue-btn{ width:36px; height:36px; border-radius:14px; }
+}
+
+/* Very small phones */
+@media (max-width: 420px){
+  .auth-actions{ flex-wrap:wrap; }
+  .spotify-actions{ width:100%; justify-content:flex-start; }
+  .search-input{ font-size:13px; }
 }
