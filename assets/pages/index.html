@@ -9,23 +9,23 @@
   <link rel="icon" type="image/png" href="/static/icon.png" />
   <link rel="stylesheet" href="/static/player.css" />
 </head>
-<body>
 
-  <!-- TOP NAV -->
-  <header class="topnav" role="banner">
-    <!-- Left: Brand -->
-    <div class="topnav-left">
-      <div class="brand">
-        <img class="brand-logo" src="/static/icon.png" alt="Greg" />
-        <div class="brand-text">
-          <div class="brand-title">Greg le Consanguin</div>
-          <div class="brand-subtitle">Web Player</div>
-        </div>
+<body>
+<div class="app">
+
+  <!-- ===== HEADER (top only) ===== -->
+  <header class="topbar" aria-label="Header">
+    <!-- Brand -->
+    <div class="brand" aria-label="Brand">
+      <img class="brand-logo" src="/static/icon.png" alt="Greg" />
+      <div class="brand-text">
+        <div class="brand-title">Greg le Consanguin</div>
+        <div class="brand-subtitle">Web Player</div>
       </div>
     </div>
 
-    <!-- Middle: Search -->
-    <div class="topnav-center">
+    <!-- Search (center) -->
+    <div class="top-search" aria-label="Search">
       <form id="searchForm" class="search-form" autocomplete="off">
         <div class="search-field">
           <span class="search-icon" aria-hidden="true">🔎</span>
@@ -35,40 +35,39 @@
             type="text"
             placeholder="Colle un lien YouTube / Spotify ou tape une recherche…"
             autocomplete="off"
-            spellcheck="false"
           />
         </div>
-        <button class="btn btn--primary btn--cta" type="submit" title="Lire">
+        <button class="btn btn--primary" type="submit" title="Lire">
           ▶️
         </button>
       </form>
 
-      <!-- Autocomplete dropdown (positionné sous la search) -->
-      <div class="search-suggestions" id="searchSuggestions" aria-live="polite"></div>
+      <!-- Autocomplete dropdown -->
+      <div id="searchSuggestions" class="suggestions-container" aria-live="polite"></div>
     </div>
 
-    <!-- Right: Discord + Guild -->
-    <div class="topnav-right">
-      <div class="discord-card">
-        <div class="user-info" id="userInfo">
+    <!-- Discord (right) -->
+    <div class="top-auth" aria-label="Discord">
+      <div class="auth-card">
+        <div class="auth-state">
           <div class="avatar" id="userAvatar" aria-hidden="true">?</div>
-          <div class="user-texts">
-            <div class="user-name" id="userName">Non connecté</div>
-            <div class="user-status" id="userStatus">Discord</div>
+          <div class="auth-text">
+            <div class="auth-name" id="userName">Non connecté</div>
+            <div class="auth-sub" id="userStatus">Discord</div>
           </div>
         </div>
 
-        <div class="user-actions">
-          <button class="btn btn--primary" id="btn-login-discord" type="button">
-            Se connecter
+        <div class="auth-actions">
+          <button class="btn btn--primary btn--sm" id="btn-login-discord" type="button">
+            Login
           </button>
-          <button class="btn btn--ghost hidden" id="btn-logout-discord" type="button">
-            Se déconnecter
+          <button class="btn btn--danger btn--sm hidden" id="btn-logout-discord" type="button">
+            Logout
           </button>
         </div>
 
-        <div class="server-info">
-          <label for="guildSelect">Serveur</label>
+        <div class="auth-guild">
+          <label for="guildSelect" class="label">Serveur</label>
           <select id="guildSelect" class="select">
             <option value="">(par défaut)</option>
           </select>
@@ -77,133 +76,97 @@
     </div>
   </header>
 
-  <!-- STATUS BAR -->
-  <div class="statusbar" role="status" aria-live="polite">
-    <span class="pill" id="statusPill">INFO</span>
-    <span class="status-text" id="statusText">En attente de Greg…</span>
+  <!-- ===== MAIN CONTENT (3 columns) ===== -->
+  <main class="content" aria-label="Main">
+    <!-- Left: Queue -->
+    <section class="panel panel--queue" aria-label="Queue">
+      <div class="panel-head">
+        <div class="panel-title">Queue</div>
+        <div class="panel-meta" id="queueCount">0 titres</div>
+      </div>
+      <div class="panel-body">
+        <div id="queueList" class="queue-list"></div>
+      </div>
+    </section>
 
-    <div class="statusbar-right">
-      <span class="mini-stat">
-        <span class="mini-stat-k" id="statConn">—</span>
-        <span class="mini-stat-l">Connexion</span>
-      </span>
-      <span class="mini-stat">
-        <span class="mini-stat-k" id="statGuild">—</span>
-        <span class="mini-stat-l">Serveur</span>
-      </span>
-      <span class="mini-stat">
-        <span class="mini-stat-k" id="statQueue">—</span>
-        <span class="mini-stat-l">Queue</span>
-      </span>
-
-      <a class="link" href="/healthz" target="_blank" rel="noopener">Health</a>
-      <a class="link" href="/api/v1/guilds" target="_blank" rel="noopener">API</a>
-    </div>
-  </div>
-
-  <!-- MAIN 3 COLUMNS -->
-  <main class="page" role="main">
-    <section class="col col-left" aria-label="File d’attente">
-      <div class="card card--pane">
-        <div class="pane-header">
-          <h2>À venir</h2>
-          <span class="queue-count" id="queueCount">0 titre</span>
+    <!-- Center: Player -->
+    <section class="panel panel--player" aria-label="Player">
+      <div class="panel-head">
+        <div class="panel-title">Now Playing</div>
+        <div class="panel-meta">
+          <button class="chip" id="btn-repeat" type="button" title="Répéter">🔁</button>
         </div>
-        <div class="pane-body">
-          <div class="queue-list" id="queueList"></div>
+      </div>
+
+      <div class="panel-body">
+        <div class="track-info">
+          <div id="artwork" class="track-artwork" aria-label="Pochette">🎵</div>
+          <div id="trackTitle" class="track-title">Rien en cours</div>
+          <div id="trackArtist" class="track-artist">Waiting…</div>
+        </div>
+
+        <div class="progress-container">
+          <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <div class="progress-time">
+            <span id="progressCurrent">0:00</span>
+            <span id="progressTotal">0:00</span>
+          </div>
+        </div>
+
+        <div class="controls-main">
+          <button id="btn-stop" class="control-btn" type="button" title="Stop">⏹</button>
+          <button id="btn-prev" class="control-btn" type="button" title="Restart" disabled>⏮</button>
+          <button id="btn-play-pause" class="control-btn primary" type="button" title="Play / Pause">▶️</button>
+          <button id="btn-skip" class="control-btn" type="button" title="Next">⏭</button>
+          <button id="btn-repeat-ghost" class="control-btn" type="button" title="Repeat (alt)" disabled>🔁</button>
         </div>
       </div>
     </section>
 
-    <section class="col col-center" aria-label="Lecteur">
-      <div class="card card--pane">
-        <div class="pane-header">
-          <h2>Lecteur</h2>
-          <div class="muted small">
-            Contrôle Greg : play/pause, skip, stop, repeat
-          </div>
-        </div>
-
-        <div class="pane-body">
-          <div class="player-card">
-            <div class="player-header">
-              <div class="artwork" id="artwork" aria-label="Pochette">🎵</div>
-              <div class="track-texts">
-                <div class="track-title" id="trackTitle">Rien en cours</div>
-                <div class="track-artist" id="trackArtist">Greg dort encore</div>
-              </div>
-            </div>
-
-            <div class="progress">
-              <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                <div class="progress-fill" id="progressFill"></div>
-              </div>
-              <div class="progress-times">
-                <span id="progressCurrent">0:00</span>
-                <span class="sep">/</span>
-                <span id="progressTotal">0:00</span>
-              </div>
-            </div>
-
-            <div class="controls">
-              <button class="ctrl-btn" id="btn-prev" type="button" disabled title="Précédent">⏮</button>
-              <button class="ctrl-btn ctrl-btn--main" id="btn-play-pause" type="button" title="Play / Pause">▶️</button>
-              <button class="ctrl-btn" id="btn-skip" type="button" title="Suivant">⏭</button>
-              <button class="ctrl-btn" id="btn-stop" type="button" title="Stop">⏹</button>
-              <button class="ctrl-btn" id="btn-repeat" type="button" title="Répéter">🔁</button>
-            </div>
-
-            <div class="mini-tips">
-              <div class="tip">💡 Mets-toi en vocal sur le serveur choisi, sinon Greg ne peut pas jouer.</div>
-              <div class="tip">🧪 Si /playlist renvoie 400 : sélectionne un serveur Discord.</div>
-            </div>
-          </div>
+    <!-- Right: Spotify -->
+    <section class="panel panel--spotify" aria-label="Spotify">
+      <div class="panel-head">
+        <div class="panel-title">Spotify</div>
+        <div class="panel-meta">
+          <span id="spotifyStatus" class="chip chip--warn">not linked</span>
         </div>
       </div>
-    </section>
 
-    <section class="col col-right" aria-label="Spotify">
-      <div class="card card--pane">
-        <div class="pane-header">
-          <h2>Spotify</h2>
-          <div class="muted small" id="spotifyStatus">Spotify non lié</div>
+      <div class="panel-body">
+        <div class="sp-actions">
+          <button class="btn btn--primary btn--block" id="btn-spotify-login" type="button">Link Spotify</button>
+          <button class="btn btn--danger btn--block hidden" id="btn-spotify-logout" type="button">Unlink</button>
         </div>
 
-        <div class="pane-body">
-          <div class="spotify-actions">
-            <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
-            <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Dé-lier</button>
+        <div class="sp-section">
+          <div class="sp-section-title">Playlists</div>
+          <div class="sp-hint">
+            (UI prête — on branchera l’API playlists après)
           </div>
 
-          <div class="divider"></div>
-
-          <div class="spotify-block">
-            <div class="row">
-              <h3 class="h3">Playlists</h3>
-              <button class="btn btn--ghost btn--sm" id="btn-refresh-spotify" type="button" title="Rafraîchir">
-                ↻
-              </button>
-            </div>
-
-            <div class="muted small" id="spotifyHelp">
-              Sélectionne une playlist pour voir ses titres.
-            </div>
-
-            <select id="spotifyPlaylistSelect" class="select" disabled>
-              <option value="">(Aucune)</option>
-            </select>
-
-            <div class="spotify-tracks" id="spotifyTracks"></div>
+          <!-- Placeholder grid (ready for future JS) -->
+          <div id="spGrid" class="sp-grid">
+            <div class="sp-empty">Aucune playlist chargée.</div>
           </div>
         </div>
       </div>
     </section>
   </main>
 
-  <script>
-    window.GREG_API_BASE = "/api/v1";
-  </script>
-  <script src="/static/player.js" defer></script>
+  <!-- ===== STATUS BAR (bottom only) ===== -->
+  <footer class="status-bar" aria-label="Status">
+    <div id="statusMessage" class="status-message">
+      <span id="statusText">En attente de Greg…</span>
+    </div>
+  </footer>
 
+</div>
+
+<script>
+  window.GREG_API_BASE = "/api/v1";
+</script>
+<script src="/static/player.js" defer></script>
 </body>
 </html>
