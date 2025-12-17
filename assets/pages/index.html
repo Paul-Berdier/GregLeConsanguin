@@ -6,17 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0f172a" />
 
-  <!-- Favicon / App icon -->
   <link rel="icon" type="image/png" href="/static/icon.png" />
-
-  <!-- CSS du player -->
   <link rel="stylesheet" href="/static/player.css" />
 </head>
 <body>
-<div class="app">
-  <!-- Sidebar -->
-  <aside class="sidebar" aria-label="Navigation">
-    <div class="sidebar-header">
+
+  <!-- TOP NAV -->
+  <header class="topnav" role="banner">
+    <!-- Left: Brand -->
+    <div class="topnav-left">
       <div class="brand">
         <img class="brand-logo" src="/static/icon.png" alt="Greg" />
         <div class="brand-text">
@@ -26,23 +24,32 @@
       </div>
     </div>
 
-    <nav class="nav">
-      <button class="nav-item nav-item--active" id="nav-player" type="button" aria-current="page">
-        <span class="nav-icon">🎧</span>
-        <span class="nav-label">Lecteur</span>
-      </button>
-      <button class="nav-item" id="nav-settings" type="button">
-        <span class="nav-icon">⚙️</span>
-        <span class="nav-label">Paramètres</span>
-      </button>
-      <button class="nav-item" id="nav-about" type="button">
-        <span class="nav-icon">🤡</span>
-        <span class="nav-label">À propos</span>
-      </button>
-    </nav>
+    <!-- Middle: Search -->
+    <div class="topnav-center">
+      <form id="searchForm" class="search-form" autocomplete="off">
+        <div class="search-field">
+          <span class="search-icon" aria-hidden="true">🔎</span>
+          <input
+            id="searchInput"
+            class="search-input"
+            type="text"
+            placeholder="Colle un lien YouTube / Spotify ou tape une recherche…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <button class="btn btn--primary btn--cta" type="submit" title="Lire">
+          ▶️
+        </button>
+      </form>
 
-    <div class="sidebar-footer">
-      <div class="card card--compact">
+      <!-- Autocomplete dropdown (positionné sous la search) -->
+      <div class="search-suggestions" id="searchSuggestions" aria-live="polite"></div>
+    </div>
+
+    <!-- Right: Discord + Guild -->
+    <div class="topnav-right">
+      <div class="discord-card">
         <div class="user-info" id="userInfo">
           <div class="avatar" id="userAvatar" aria-hidden="true">?</div>
           <div class="user-texts">
@@ -53,7 +60,7 @@
 
         <div class="user-actions">
           <button class="btn btn--primary" id="btn-login-discord" type="button">
-            Se connecter avec Discord
+            Se connecter
           </button>
           <button class="btn btn--ghost hidden" id="btn-logout-discord" type="button">
             Se déconnecter
@@ -61,71 +68,63 @@
         </div>
 
         <div class="server-info">
-          <label for="guildSelect">Serveur Discord</label>
+          <label for="guildSelect">Serveur</label>
           <select id="guildSelect" class="select">
             <option value="">(par défaut)</option>
           </select>
-          <div class="hint">Choisis le serveur que Greg doit contrôler.</div>
         </div>
       </div>
-
-      <div class="footer-hint">
-        <span class="dot dot--ok" aria-hidden="true"></span>
-        <span id="footerStatusText">Connecte-toi pour contrôler Greg</span>
-      </div>
     </div>
-  </aside>
+  </header>
 
-  <!-- Main -->
-  <main class="main" aria-label="Player">
-    <!-- Top status -->
-    <div class="topbar">
-      <div class="top-status" id="topStatus">
-        <span class="pill" id="statusPill">INFO</span>
-        <span class="status-text" id="statusText">En attente de Greg…</span>
-      </div>
+  <!-- STATUS BAR -->
+  <div class="statusbar" role="status" aria-live="polite">
+    <span class="pill" id="statusPill">INFO</span>
+    <span class="status-text" id="statusText">En attente de Greg…</span>
 
-      <div class="top-actions">
-        <a class="link" href="/healthz" target="_blank" rel="noopener">Health</a>
-        <a class="link" href="/api/v1/guilds" target="_blank" rel="noopener">API</a>
-      </div>
+    <div class="statusbar-right">
+      <span class="mini-stat">
+        <span class="mini-stat-k" id="statConn">—</span>
+        <span class="mini-stat-l">Connexion</span>
+      </span>
+      <span class="mini-stat">
+        <span class="mini-stat-k" id="statGuild">—</span>
+        <span class="mini-stat-l">Serveur</span>
+      </span>
+      <span class="mini-stat">
+        <span class="mini-stat-k" id="statQueue">—</span>
+        <span class="mini-stat-l">Queue</span>
+      </span>
+
+      <a class="link" href="/healthz" target="_blank" rel="noopener">Health</a>
+      <a class="link" href="/api/v1/guilds" target="_blank" rel="noopener">API</a>
     </div>
+  </div>
 
-    <!-- Player view -->
-    <section class="view" id="view-player">
-      <section class="hero">
-        <div class="hero-left">
-          <h1>Contrôle Greg depuis ton navigateur</h1>
-          <p class="lead">
-            Lance de la musique, saute des titres, surveille la file d’attente
-            de ton serveur Discord — sans ouvrir Discord.
-          </p>
+  <!-- MAIN 3 COLUMNS -->
+  <main class="page" role="main">
+    <section class="col col-left" aria-label="File d’attente">
+      <div class="card card--pane">
+        <div class="pane-header">
+          <h2>À venir</h2>
+          <span class="queue-count" id="queueCount">0 titre</span>
+        </div>
+        <div class="pane-body">
+          <div class="queue-list" id="queueList"></div>
+        </div>
+      </div>
+    </section>
 
-          <form id="searchForm" class="search-form" autocomplete="off">
-            <div class="search-field">
-              <span class="search-icon" aria-hidden="true">🔎</span>
-              <input
-                id="searchInput"
-                class="search-input"
-                type="text"
-                placeholder="Colle un lien YouTube / Spotify ou tape une recherche…"
-                autocomplete="off"
-              />
-            </div>
-            <button class="btn btn--primary btn--cta" type="submit">
-              ▶️ Lire
-            </button>
-          </form>
-
-          <div class="search-suggestions" id="searchSuggestions" aria-live="polite"></div>
-
-          <div class="mini-tips">
-            <div class="tip">💡 Astuce : tape <strong>“artist - title”</strong> pour chercher vite.</div>
-            <div class="tip">🧪 Si ça répond pas : vérifie le serveur sélectionné + login Discord.</div>
+    <section class="col col-center" aria-label="Lecteur">
+      <div class="card card--pane">
+        <div class="pane-header">
+          <h2>Lecteur</h2>
+          <div class="muted small">
+            Contrôle Greg : play/pause, skip, stop, repeat
           </div>
         </div>
 
-        <div class="hero-right">
+        <div class="pane-body">
           <div class="player-card">
             <div class="player-header">
               <div class="artwork" id="artwork" aria-label="Pochette">🎵</div>
@@ -154,130 +153,57 @@
               <button class="ctrl-btn" id="btn-repeat" type="button" title="Répéter">🔁</button>
             </div>
 
-            <div class="spotify">
-              <div class="spotify-row">
-                <div class="spotify-badge">
-                  <span class="spotify-dot" aria-hidden="true"></span>
-                  <span class="spotify-status" id="spotifyStatus">Spotify non lié</span>
-                </div>
-                <div class="spotify-actions">
-                  <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
-                  <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Dé-lier</button>
-                </div>
-              </div>
-              <div class="hint">
-                Si rien ne s’ouvre, copie le lien proposé par Greg (mode manuel).
-              </div>
+            <div class="mini-tips">
+              <div class="tip">💡 Mets-toi en vocal sur le serveur choisi, sinon Greg ne peut pas jouer.</div>
+              <div class="tip">🧪 Si /playlist renvoie 400 : sélectionne un serveur Discord.</div>
             </div>
-          </div>
-
-          <div class="stats-card">
-            <div class="stat">
-              <div class="stat-k" id="statQueue">—</div>
-              <div class="stat-l">Titres en file</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k" id="statGuild">—</div>
-              <div class="stat-l">Serveur</div>
-            </div>
-            <div class="stat">
-              <div class="stat-k" id="statConn">—</div>
-              <div class="stat-l">Connexion</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="queue-card">
-        <div class="queue-header">
-          <h2>File d’attente</h2>
-          <span class="queue-count" id="queueCount">0 titres</span>
-        </div>
-        <div class="queue-list" id="queueList"></div>
-      </section>
-    </section>
-
-    <!-- Settings view -->
-    <section class="view hidden" id="view-settings">
-      <div class="panel">
-        <h2>Paramètres</h2>
-        <p class="muted">
-          Pour l’instant, les réglages avancés sont dans l’overlay Overwolf.
-          Cette page sert de télécommande.
-        </p>
-
-        <div class="panel-grid">
-          <div class="card">
-            <h3>Serveur API</h3>
-            <p class="muted">Base API utilisée par le player (déjà en relatif).</p>
-            <code class="code">window.GREG_API_BASE = "/api/v1"</code>
-          </div>
-          <div class="card">
-            <h3>Debug</h3>
-            <p class="muted">Ouvre la console (F12) et regarde les erreurs réseau.</p>
-            <p class="muted">Les fichiers doivent charger depuis <code>/static/*</code>.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- About view -->
-    <section class="view hidden" id="view-about">
-      <div class="panel">
-        <h2>À propos</h2>
-        <p class="muted">
-          Greg le Consanguin est un bot Discord musical sarcastique.
-          Ce site permet de contrôler sa playlist à distance.
-        </p>
+    <section class="col col-right" aria-label="Spotify">
+      <div class="card card--pane">
+        <div class="pane-header">
+          <h2>Spotify</h2>
+          <div class="muted small" id="spotifyStatus">Spotify non lié</div>
+        </div>
 
-        <div class="card">
-          <h3>Raccourcis</h3>
-          <ul class="list">
-            <li><strong>Entrée</strong> : lancer la recherche</li>
-            <li><strong>⏭</strong> : skip</li>
-            <li><strong>⏹</strong> : stop</li>
-          </ul>
+        <div class="pane-body">
+          <div class="spotify-actions">
+            <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
+            <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Dé-lier</button>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="spotify-block">
+            <div class="row">
+              <h3 class="h3">Playlists</h3>
+              <button class="btn btn--ghost btn--sm" id="btn-refresh-spotify" type="button" title="Rafraîchir">
+                ↻
+              </button>
+            </div>
+
+            <div class="muted small" id="spotifyHelp">
+              Sélectionne une playlist pour voir ses titres.
+            </div>
+
+            <select id="spotifyPlaylistSelect" class="select" disabled>
+              <option value="">(Aucune)</option>
+            </select>
+
+            <div class="spotify-tracks" id="spotifyTracks"></div>
+          </div>
         </div>
       </div>
     </section>
-
-    <footer class="footer">
-      <span>© Greg le Consanguin — Web Player</span>
-      <span class="muted">•</span>
-      <span class="muted">Propulsé par Railway + Flask + Socket.IO</span>
-    </footer>
   </main>
-</div>
 
-<script>
-  window.GREG_API_BASE = "/api/v1";
-</script>
-<script src="/static/player.js" defer></script>
+  <script>
+    window.GREG_API_BASE = "/api/v1";
+  </script>
+  <script src="/static/player.js" defer></script>
 
-<!-- micro-switch tabs (sans dépendre de player.js) -->
-<script>
-  (function () {
-    const $ = (id) => document.getElementById(id);
-    const views = {
-      player: $("view-player"),
-      settings: $("view-settings"),
-      about: $("view-about"),
-    };
-    const nav = {
-      player: $("nav-player"),
-      settings: $("nav-settings"),
-      about: $("nav-about"),
-    };
-
-    function setActive(which) {
-      Object.entries(views).forEach(([k, el]) => el?.classList.toggle("hidden", k !== which));
-      Object.entries(nav).forEach(([k, el]) => el?.classList.toggle("nav-item--active", k === which));
-    }
-
-    nav.player?.addEventListener("click", () => setActive("player"));
-    nav.settings?.addEventListener("click", () => setActive("settings"));
-    nav.about?.addEventListener("click", () => setActive("about"));
-  })();
-</script>
 </body>
 </html>
