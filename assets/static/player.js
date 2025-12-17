@@ -1,18 +1,22 @@
 /* assets/static/player.js
-   Greg le Consanguin — Web Player (robuste, front v2 overlay-style)
-   - Status bar bottom (#statusMessage + #statusText)
-   - Header top only
-   - 3 columns layout
-   - Queue items with thumb + actions
+   Greg le Consanguin — Web Player (pro, robuste)
+   - Support API:
+     • { ok:true, state:{ current, queue, progress:{elapsed,duration}, is_paused, repeat_all, guild_id, thumbnail } }
+     • fallback anciens formats: { current, queue, elapsed, duration, is_paused, repeat }
+   - Rendu: current + queue + progress (même si duration = null)
+   - Anti-400: guild auto + persist localStorage
+   - UI: autocomplete + queue actions + discord/spotify status
 */
 
 "use strict";
 
 class GregWebPlayer {
   constructor() {
-    this.API_BASE = (window.GREG_API_BASE || "/api/v1").replace(/\/+$/, "");
+    this.API_BASE = String(window.GREG_API_BASE || "/api/v1").replace(/\/+$/, "");
+    this.STATIC_BASE = String(window.GREG_STATIC_BASE || "/static").replace(/\/+$/, "");
 
-    this.guildId = "";
+    // persisted selections
+    this.guildId = this._lsGet("greg.guildId", "");
     this.userId = null;
     this.me = null;
 
@@ -24,7 +28,7 @@ class GregWebPlayer {
     };
 
     this.progress = {
-      startedAt: 0,
+      startedAt: 0, // epoch seconds
       elapsed: 0,
       duration: 0,
     };
@@ -32,6 +36,7 @@ class GregWebPlayer {
     this.pollTimer = null;
     this.progressTimer = null;
 
+    // Autocomplete
     this.sug = {
       items: [],
       open: false,
@@ -40,65 +45,103 @@ class GregWebPlayer {
       lastQuery: "",
     };
 
-    // DOM
-    this.$statusText = document.getElementById("statusText");
-    this.$statusMessage = document.getElementById("statusMessage");
+    // DOM refs (robustes: on tente plusieurs IDs)
+    this.$statusMessage = this._q("#statusMessage");
+    this.$statusText = this._q("#statusText", "#statusBar");
 
-    this.$searchForm = document.getElementById("searchForm");
-    this.$searchInput = document.getElementById("searchInput");
-    this.$suggestions = document.getElementById("searchSuggestions");
+    this.$searchForm = this._q("#searchForm", "#addForm");
+    this.$searchInput = this._q("#searchInput", "#addInput");
+    this.$suggestions = this._q("#searchSuggestions");
 
-    this.$queueList = document.getElementById("queueList");
-    this.$queueCount = document.getElementById("queueCount");
+    this.$queueList = this._q("#queueList");
+    this.$queueCount = this._q("#queueCount");
 
-    this.$artwork = document.getElementById("artwork");
-    this.$title = document.getElementById("trackTitle");
-    this.$artist = document.getElementById("trackArtist");
-    this.$pf = document.getElementById("progressFill");
-    this.$pCur = document.getElementById("progressCurrent");
-    this.$pTot = document.getElementById("progressTotal");
+    this.$artwork = this._q("#artwork");
+    this.$title = this._q("#trackTitle");
+    this.$artist = this._q("#trackArtist");
 
-    this.$btnPrev = document.getElementById("btn-prev");
-    this.$btnPlayPause = document.getElementById("btn-play-pause");
-    this.$btnSkip = document.getElementById("btn-skip");
-    this.$btnStop = document.getElementById("btn-stop");
-    this.$btnRepeat = document.getElementById("btn-repeat");
+    this.$pf = this._q("#progressFill");
+    this.$pCur = this._q("#progressCurrent");
+    this.$pTot = this._q("#progressTotal");
 
-    // Discord
-    this.$userName = document.getElementById("userName");
-    this.$userAvatar = document.getElementById("userAvatar");
-    this.$userStatus = document.getElementById("userStatus");
-    this.$btnLogin = document.getElementById("btn-login-discord");
-    this.$btnLogout = document.getElementById("btn-logout-discord");
-    this.$guildSelect = document.getElementById("guildSelect");
+    // Controls
+    this.$btnPrev = this._q("#btn-prev", "#prevBtn");
+    this.$btnPlayPause = this._q("#btn-play-pause", "#playPauseBtn");
+    this.$btnSkip = this._q("#btn-skip", "#skipBtn");
+    this.$btnStop = this._q("#btn-stop", "#restartBtn");
+    this.$btnRepeat = this._q("#btn-repeat", "#repeatBtn");
 
-    // Spotify
-    this.$spStatus = document.getElementById("spotifyStatus");
-    this.$spLogin = document.getElementById("btn-spotify-login");
-    this.$spLogout = document.getElementById("btn-spotify-logout");
+    // user / guild
+    this.$userName = this._q("#userName");
+    this.$userAvatar = this._q("#userAvatar");
+    this.$userStatus = this._q("#userStatus");
+    this.$btnLogin = this._q("#btn-login-discord");
+    this.$btnLogout = this._q("#btn-logout-discord");
+    this.$guildSelect = this._q("#guildSelect");
 
-    // A11y
+    // spotify
+    this.$spStatus = this._q("#spotifyStatus");
+    this.$spLogin = this._q("#btn-spotify-login");
+    this.$spLogout = this._q("#btn-spotify-logout");
+
+    // A11y suggestions
     if (this.$suggestions) {
       this.$suggestions.setAttribute("role", "listbox");
       this.$suggestions.setAttribute("aria-label", "Suggestions");
     }
 
-    // Restore guild
-    try {
-      const saved = localStorage.getItem("greg.guildId") || "";
-      if (saved && saved.trim()) this.guildId = saved.trim();
-    } catch {}
+    // sanity check
+    this._debugDomSanity();
   }
 
-  // ---------------- Utils ----------------
-  log(...args) { console.log("[GregWebPlayer]", ...args); }
+  // ---------------------------------------------------------------------------
+  // DOM helpers
+  // ---------------------------------------------------------------------------
+  _q(...selectors) {
+    for (const s of selectors) {
+      const el = document.querySelector(s);
+      if (el) return el;
+    }
+    return null;
+  }
 
+  _debugDomSanity() {
+    const required = [
+      ["statusText", this.$statusText],
+      ["trackTitle", this.$title],
+      ["queueList", this.$queueList],
+    ];
+    const missing = required.filter(([, el]) => !el).map(([name]) => name);
+    if (missing.length) console.warn("[GregWebPlayer] DOM missing:", missing.join(", "));
+  }
+
+  // ---------------------------------------------------------------------------
+  // LocalStorage
+  // ---------------------------------------------------------------------------
+  _lsGet(key, def = "") {
+    try {
+      const v = localStorage.getItem(key);
+      return v == null ? def : String(v);
+    } catch {
+      return def;
+    }
+  }
+  _lsSet(key, val) {
+    try { localStorage.setItem(key, String(val ?? "")); } catch {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Utils
+  // ---------------------------------------------------------------------------
   setStatus(text, ok = true) {
-    if (this.$statusText) this.$statusText.textContent = text;
-
+    if (this.$statusText) this.$statusText.textContent = String(text || "");
+    if (this.$statusText) {
+      this.$statusText.classList.toggle("status-text--ok", !!ok);
+      this.$statusText.classList.toggle("status-text--err", !ok);
+    }
     if (this.$statusMessage) {
-      this.$statusMessage.classList.remove("status-success", "status-error");
-      this.$statusMessage.classList.add(ok ? "status-success" : "status-error");
+      this.$statusMessage.classList.toggle("status-message--ok", !!ok);
+      this.$statusMessage.classList.toggle("status-message--err", !ok);
     }
   }
 
@@ -111,15 +154,20 @@ class GregWebPlayer {
   }
 
   pickIconUrl() {
-    return "/static/icon.png";
+    return `${this.STATIC_BASE}/icon.png`;
+  }
+
+  formatTime(sec) {
+    sec = Math.max(0, Math.floor(Number(sec || 0)));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   isProbablyURL(v) {
     v = String(v || "").trim();
-    return (
-      /^https?:\/\//i.test(v) ||
-      /^(?:www\.)?(youtube\.com|youtu\.be|soundcloud\.com|open\.spotify\.com)\//i.test(v)
-    );
+    return /^https?:\/\//i.test(v) ||
+      /^(?:www\.)?(youtube\.com|youtu\.be|soundcloud\.com|open\.spotify\.com)\//i.test(v);
   }
 
   isSoundCloudCdn(u) {
@@ -133,9 +181,9 @@ class GregWebPlayer {
       item?.page_url ||
       item?.url ||
       "";
-
     if (!page || this.isSoundCloudCdn(page)) return "";
 
+    // Canonicalise YouTube
     try {
       const m = String(page).match(/(?:v=|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{6,})/);
       return m ? `https://www.youtube.com/watch?v=${m[1]}` : page;
@@ -144,14 +192,9 @@ class GregWebPlayer {
     }
   }
 
-  formatTime(sec) {
-    sec = Math.max(0, Math.floor(Number(sec || 0)));
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-
-  // ---------------- HTTP ----------------
+  // ---------------------------------------------------------------------------
+  // HTTP helpers
+  // ---------------------------------------------------------------------------
   headers(extra = {}) {
     const h = { "Content-Type": "application/json" };
     if (this.guildId) h["X-Guild-ID"] = String(this.guildId);
@@ -163,8 +206,7 @@ class GregWebPlayer {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const r = await fetch(url, { ...opts, signal: ctrl.signal });
-      return r;
+      return await fetch(url, { ...opts, signal: ctrl.signal });
     } finally {
       clearTimeout(t);
     }
@@ -183,8 +225,17 @@ class GregWebPlayer {
       },
       12000
     );
-    if (!r.ok) throw new Error(`GET ${path}: HTTP ${r.status}`);
-    return await r.json();
+
+    let payload = null;
+    try { payload = await r.json(); } catch { payload = null; }
+
+    if (!r.ok) {
+      const e = new Error(`GET ${path}: HTTP ${r.status}`);
+      e.status = r.status;
+      e.payload = payload;
+      throw e;
+    }
+    return payload;
   }
 
   async apiPost(path, body = {}, opts = {}) {
@@ -200,11 +251,22 @@ class GregWebPlayer {
       },
       12000
     );
-    if (!r.ok) throw new Error(`POST ${path}: HTTP ${r.status}`);
-    return await r.json();
+
+    let payload = null;
+    try { payload = await r.json(); } catch { payload = null; }
+
+    if (!r.ok) {
+      const e = new Error(`POST ${path}: HTTP ${r.status}`);
+      e.status = r.status;
+      e.payload = payload;
+      throw e;
+    }
+    return payload;
   }
 
-  // ---------------- Normalisation API ----------------
+  // ---------------------------------------------------------------------------
+  // Normalisation API -> état UI
+  // ---------------------------------------------------------------------------
   unwrapPlaylistResponse(data) {
     if (!data || typeof data !== "object") return null;
     if (data.state && typeof data.state === "object") return data.state;
@@ -217,7 +279,6 @@ class GregWebPlayer {
     const au = String(a.url || a.webpage_url || "").trim();
     const bu = String(b.url || b.webpage_url || "").trim();
     if (au && bu && au === bu) return true;
-
     const at = String(a.title || "").trim();
     const bt = String(b.title || "").trim();
     return at && bt && at === bt;
@@ -227,15 +288,17 @@ class GregWebPlayer {
     const st = this.unwrapPlaylistResponse(raw);
     if (!st) return false;
 
+    // Auto-capture guild_id si pas déjà fixé
     if (!this.guildId && st.guild_id) {
       this.guildId = String(st.guild_id);
-      try { localStorage.setItem("greg.guildId", this.guildId); } catch {}
+      this._lsSet("greg.guildId", this.guildId);
       if (this.$guildSelect) this.$guildSelect.value = this.guildId;
     }
 
     const current = st.current || null;
     let queue = Array.isArray(st.queue) ? st.queue.slice() : [];
 
+    // queue affichée = "à venir" (on retire le current si doublon)
     if (current && queue.length && this.sameTrack(queue[0], current)) {
       queue = queue.slice(1);
     }
@@ -243,12 +306,15 @@ class GregWebPlayer {
     const isPaused = !!(st.is_paused ?? st.paused ?? false);
     const repeat = !!(st.repeat_all ?? st.repeat ?? false);
 
+    // progress
     const elapsed = Number(st?.progress?.elapsed ?? st.elapsed ?? 0);
-    const duration = Number(st?.progress?.duration ?? st.duration ?? (current && current.duration) ?? 0);
+    const duration = Number(st?.progress?.duration ?? st.duration ?? (current?.duration ?? 0));
 
+    // thumb
     const thumb =
       st.thumbnail ||
-      (current && (current.thumb || current.thumbnail)) ||
+      current?.thumb ||
+      current?.thumbnail ||
       "";
 
     this.state.current = current ? Object.assign({}, current, { thumbnail: thumb }) : null;
@@ -256,6 +322,7 @@ class GregWebPlayer {
     this.state.is_paused = isPaused;
     this.state.repeat = repeat;
 
+    // Baseline progress
     this.progress.elapsed = Number.isFinite(elapsed) ? elapsed : 0;
     this.progress.duration = Number.isFinite(duration) ? duration : 0;
     this.progress.startedAt = Date.now() / 1000 - this.progress.elapsed;
@@ -263,18 +330,21 @@ class GregWebPlayer {
     return true;
   }
 
-  // ---------------- INIT ----------------
+  // ---------------------------------------------------------------------------
+  // INIT
+  // ---------------------------------------------------------------------------
   async init() {
     this.bindEvents();
 
     await this.refreshMe();
     await this.refreshGuilds();
+
     this.autoSelectGuildIfPossible();
 
     await this.refreshState(false);
     await this.refreshSpotify();
 
-    this.pollTimer = setInterval(() => this.refreshState(true), 2500);
+    this.pollTimer = setInterval(() => this.refreshState(true), 2000);
     this.progressTimer = setInterval(() => this.renderProgress(), 500);
 
     this.setStatus("Prêt ✅", true);
@@ -283,18 +353,20 @@ class GregWebPlayer {
   autoSelectGuildIfPossible() {
     if (this.guildId) return;
     if (!this.$guildSelect) return;
-
     const opts = Array.from(this.$guildSelect.querySelectorAll("option"));
     const firstGuild = opts.find((o) => o.value && o.value.trim());
     if (firstGuild) {
       this.guildId = firstGuild.value.trim();
       this.$guildSelect.value = this.guildId;
-      try { localStorage.setItem("greg.guildId", this.guildId); } catch {}
+      this._lsSet("greg.guildId", this.guildId);
     }
   }
 
-  // ---------------- Events ----------------
+  // ---------------------------------------------------------------------------
+  // UI bindings
+  // ---------------------------------------------------------------------------
   bindEvents() {
+    // Submit (add/play)
     if (this.$searchForm) {
       this.$searchForm.addEventListener("submit", (ev) => {
         ev.preventDefault();
@@ -302,17 +374,31 @@ class GregWebPlayer {
       });
     }
 
+    // Autocomplete
     const debouncedAuto = this.debounce((q) => this.fetchAutocomplete(q), 220);
 
     if (this.$searchInput) {
       this.$searchInput.addEventListener("input", () => {
         const q = (this.$searchInput.value || "").trim();
-        if (q.length < 2) return this.hideSuggestions();
+        if (!this.$suggestions) return;
+        if (q.length < 2) {
+          this.hideSuggestions();
+          return;
+        }
         debouncedAuto(q);
       });
 
       this.$searchInput.addEventListener("keydown", (e) => {
-        if (!this.sug.open) return;
+        if (!this.$suggestions) return;
+
+        if (!this.sug.open) {
+          if (e.key === "ArrowDown" && this.sug.items.length) {
+            e.preventDefault();
+            this.openSuggestions();
+            this.setActiveSuggestion(0);
+          }
+          return;
+        }
 
         if (e.key === "Escape") {
           e.preventDefault();
@@ -322,14 +408,20 @@ class GregWebPlayer {
 
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          const next = Math.min(this.sug.items.length - 1, (this.sug.activeIndex < 0 ? 0 : this.sug.activeIndex + 1));
+          const next = Math.min(
+            this.sug.items.length - 1,
+            (this.sug.activeIndex < 0 ? 0 : this.sug.activeIndex + 1)
+          );
           this.setActiveSuggestion(next);
           return;
         }
 
         if (e.key === "ArrowUp") {
           e.preventDefault();
-          const prev = Math.max(0, (this.sug.activeIndex <= 0 ? 0 : this.sug.activeIndex - 1));
+          const prev = Math.max(
+            0,
+            (this.sug.activeIndex <= 0 ? 0 : this.sug.activeIndex - 1)
+          );
           this.setActiveSuggestion(prev);
           return;
         }
@@ -344,6 +436,7 @@ class GregWebPlayer {
       });
 
       document.addEventListener("click", (e) => {
+        if (!this.$suggestions) return;
         const t = e.target;
         if (!t) return;
         const inside =
@@ -353,64 +446,48 @@ class GregWebPlayer {
       });
     }
 
+    // Controls
     this.$btnPlayPause?.addEventListener("click", () => this.togglePause());
     this.$btnSkip?.addEventListener("click", () => this.skip());
     this.$btnStop?.addEventListener("click", () => this.restart());
     this.$btnRepeat?.addEventListener("click", () => this.toggleRepeat());
+    this.$btnPrev?.addEventListener("click", () => this.restart()); // fallback
 
+    // Discord auth
     this.$btnLogin?.addEventListener("click", () => this.loginDiscord());
     this.$btnLogout?.addEventListener("click", () => this.logoutDiscord());
 
+    // Guild select
     this.$guildSelect?.addEventListener("change", () => {
       this.guildId = this.$guildSelect.value || "";
-      try { localStorage.setItem("greg.guildId", this.guildId); } catch {}
+      this._lsSet("greg.guildId", this.guildId);
       this.refreshState(false).catch(() => {});
     });
 
+    // Spotify
     this.$spLogin?.addEventListener("click", () => this.loginSpotify());
     this.$spLogout?.addEventListener("click", () => this.logoutSpotify());
   }
 
-  // ---------------- Autocomplete ----------------
+  // ---------------------------------------------------------------------------
+  // Search / Autocomplete
+  // ---------------------------------------------------------------------------
   async onSubmitSearch() {
     const q = (this.$searchInput?.value || "").trim();
     if (!q) return;
     await this.addTopOrRaw(q);
   }
 
-  openSuggestions() {
-    if (!this.$suggestions) return;
-    this.sug.open = true;
-    this.$suggestions.classList.add("search-suggestions--open");
-  }
-
-  hideSuggestions() {
-    if (!this.$suggestions) return;
-    this.sug.open = false;
-    this.sug.activeIndex = -1;
-    this.$suggestions.innerHTML = "";
-    this.$suggestions.classList.remove("search-suggestions--open");
-  }
-
-  setActiveSuggestion(i) {
-    const idx = Number(i);
-    if (!Number.isFinite(idx)) return;
-    this.sug.activeIndex = idx;
-
-    if (!this.$suggestions) return;
-    const rows = Array.from(this.$suggestions.querySelectorAll("[data-sug-idx]"));
-    rows.forEach((el) => el.classList.remove("is-active"));
-    const active = rows.find((el) => Number(el.getAttribute("data-sug-idx")) === idx);
-    if (active) {
-      active.classList.add("is-active");
-      try { active.scrollIntoView({ block: "nearest" }); } catch {}
-    }
-  }
-
   async fetchAutocomplete(q) {
-    const query = String(q || "").trim();
-    if (!query) return this.hideSuggestions();
+    if (!this.$suggestions) return;
 
+    const query = String(q || "").trim();
+    if (!query) {
+      this.hideSuggestions();
+      return;
+    }
+
+    // cancel previous
     if (this.sug.abort) {
       try { this.sug.abort.abort(); } catch {}
       this.sug.abort = null;
@@ -420,7 +497,7 @@ class GregWebPlayer {
     this.sug.lastQuery = query;
 
     try {
-      const url = `${this.API_BASE}/autocomplete?q=${encodeURIComponent(query)}&limit=12`;
+      const url = `${this.API_BASE}/autocomplete?q=${encodeURIComponent(query)}&limit=10`;
       const r = await fetch(url, {
         method: "GET",
         credentials: "include",
@@ -449,11 +526,7 @@ class GregWebPlayer {
             x?.thumbnail ||
             (Array.isArray(x?.thumbnails) && (x.thumbnails.at(-1)?.url || x.thumbnails.at(-1))) ||
             "";
-          const duration = Number.isFinite(+x?.duration)
-            ? +x.duration
-            : Number.isFinite(+x?.duration_seconds)
-            ? +x.duration_seconds
-            : null;
+          const duration = Number.isFinite(+x?.duration) ? +x.duration : null;
 
           return {
             title: (x?.title || x?.track || x?.name || urlPage || "Untitled").trim(),
@@ -471,7 +544,6 @@ class GregWebPlayer {
       this.renderSuggestions(items);
     } catch (e) {
       if (e?.name === "AbortError") return;
-      this.log("autocomplete error:", e);
       this.sug.items = [];
       this.hideSuggestions();
     } finally {
@@ -479,16 +551,47 @@ class GregWebPlayer {
     }
   }
 
+  openSuggestions() {
+    if (!this.$suggestions) return;
+    this.sug.open = true;
+    this.$suggestions.classList.add("search-suggestions--open");
+  }
+
+  hideSuggestions() {
+    if (!this.$suggestions) return;
+    this.sug.open = false;
+    this.sug.activeIndex = -1;
+    this.$suggestions.innerHTML = "";
+    this.$suggestions.classList.remove("search-suggestions--open");
+  }
+
+  setActiveSuggestion(i) {
+    if (!this.$suggestions) return;
+    const idx = Number(i);
+    if (!Number.isFinite(idx)) return;
+
+    this.sug.activeIndex = idx;
+    const rows = Array.from(this.$suggestions.querySelectorAll("[data-sug-idx]"));
+    rows.forEach((el) => el.classList.remove("is-active"));
+    const active = rows.find((el) => Number(el.getAttribute("data-sug-idx")) === idx);
+    if (active) {
+      active.classList.add("is-active");
+      try { active.scrollIntoView({ block: "nearest" }); } catch {}
+    }
+  }
+
   renderSuggestions(items) {
     if (!this.$suggestions) return;
 
     this.$suggestions.innerHTML = "";
-    if (!Array.isArray(items) || items.length === 0) return this.hideSuggestions();
+    if (!Array.isArray(items) || items.length === 0) {
+      this.hideSuggestions();
+      return;
+    }
 
     this.openSuggestions();
 
-    const view = items.slice(0, 10);
-    view.forEach((it, idx) => {
+    items.slice(0, 10).forEach((it, idx) => {
       const row = document.createElement("div");
       row.className = "suggestion-item rich";
       row.setAttribute("role", "option");
@@ -497,9 +600,8 @@ class GregWebPlayer {
 
       const thumb = document.createElement("div");
       thumb.className = "sug-thumb";
-      thumb.style.backgroundImage = it.thumb
-        ? `url("${String(it.thumb).replace(/["\n\r]/g, "")}")`
-        : `url("${this.pickIconUrl()}")`;
+      const src = it.thumb ? String(it.thumb).replace(/["\n\r]/g, "") : this.pickIconUrl();
+      thumb.style.backgroundImage = `url("${src}")`;
 
       const main = document.createElement("div");
       main.className = "sug-main";
@@ -507,6 +609,7 @@ class GregWebPlayer {
       const title = document.createElement("div");
       title.className = "sug-title";
       title.textContent = it.title || "Untitled";
+      title.title = it.title || "";
 
       const artist = document.createElement("div");
       artist.className = "sug-artist";
@@ -519,10 +622,8 @@ class GregWebPlayer {
       time.className = "sug-time";
       time.textContent = it.duration != null ? this.formatTime(it.duration) : "";
 
-      const onPick = async () => { await this.pickSuggestion(it); };
-
       row.addEventListener("mouseenter", () => this.setActiveSuggestion(idx));
-      row.addEventListener("click", () => onPick().catch(() => {}));
+      row.addEventListener("click", () => this.pickSuggestion(it).catch(() => {}));
 
       row.appendChild(thumb);
       row.appendChild(main);
@@ -536,7 +637,10 @@ class GregWebPlayer {
 
   async pickSuggestion(it) {
     const playUrl = this.normalizePlayUrl(it);
-    if (!playUrl) return this.setStatus("Suggestion non jouable (CDN / invalide).", false);
+    if (!playUrl) {
+      this.setStatus("Suggestion non jouable (lien invalide).", false);
+      return;
+    }
 
     if (this.$searchInput) this.$searchInput.value = it.title || playUrl;
 
@@ -558,13 +662,79 @@ class GregWebPlayer {
 
     if (this.isProbablyURL(q)) {
       await this.enqueueItem({ url: q, title: q });
+      if (this.$searchInput) this.$searchInput.value = "";
+      this.hideSuggestions();
       return;
     }
 
+    // sans suggestions UI, on envoie directement
+    if (!this.$suggestions) {
+      await this.enqueueItem({ query: q });
+      if (this.$searchInput) this.$searchInput.value = "";
+      return;
+    }
+
+    // tente top suggestion
+    try {
+      const items = await this.getSuggestionsOnce(q, 6);
+      if (items && items.length) {
+        const pick = items.find((x) => !!this.normalizePlayUrl(x)) || items[0];
+        const playUrl = this.normalizePlayUrl(pick);
+        if (playUrl) {
+          await this.enqueueItem({
+            url: playUrl,
+            title: pick.title || q,
+            duration: pick.duration ?? undefined,
+            thumb: pick.thumb || undefined,
+            artist: pick.artist || undefined,
+            source: pick.source || undefined,
+          });
+          if (this.$searchInput) this.$searchInput.value = "";
+          this.hideSuggestions();
+          return;
+        }
+      }
+    } catch {}
+
+    // fallback raw
     await this.enqueueItem({ query: q });
+    if (this.$searchInput) this.$searchInput.value = "";
+    this.hideSuggestions();
   }
 
-  // ---------------- Discord Auth ----------------
+  async getSuggestionsOnce(q, limit = 6) {
+    const query = String(q || "").trim();
+    if (!query) return [];
+    const url = `${this.API_BASE}/autocomplete?q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`;
+    const r = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      headers: this.headers(),
+    });
+    if (!r.ok) return [];
+    const data = await r.json().catch(() => ({}));
+    const arr = Array.isArray(data?.results)
+      ? data.results
+      : Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data)
+      ? data
+      : [];
+    return arr.map((x) => ({
+      title: x?.title || "",
+      artist: x?.artist || x?.uploader || "",
+      duration: Number.isFinite(+x?.duration) ? +x.duration : null,
+      thumb: x?.thumb || x?.thumbnail || "",
+      url: x?.url || "",
+      webpage_url: x?.webpage_url || x?.url || "",
+      source: x?.source || x?.provider || "",
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Discord Auth
+  // ---------------------------------------------------------------------------
   async refreshMe() {
     try {
       const me = await this.apiGet("/me");
@@ -572,7 +742,7 @@ class GregWebPlayer {
       this.me = u && u.id ? u : null;
       this.userId = this.me ? this.me.id : null;
       this.renderMe();
-    } catch (e) {
+    } catch {
       this.me = null;
       this.userId = null;
       this.renderMe();
@@ -587,12 +757,14 @@ class GregWebPlayer {
       this.$userName.textContent = u.global_name || u.username || String(u.id);
       this.$userStatus.textContent = "Connecté";
       this.$userAvatar.textContent = String(u.username || "?").slice(0, 1).toUpperCase();
+
       this.$btnLogin?.classList.add("hidden");
       this.$btnLogout?.classList.remove("hidden");
     } else {
       this.$userName.textContent = "Non connecté";
       this.$userStatus.textContent = "Discord";
       this.$userAvatar.textContent = "?";
+
       this.$btnLogin?.classList.remove("hidden");
       this.$btnLogout?.classList.add("hidden");
     }
@@ -624,7 +796,11 @@ class GregWebPlayer {
 
   async logoutDiscord() {
     try {
-      await fetch("/auth/logout", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } });
+      await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
     } catch {}
     this.me = null;
     this.userId = null;
@@ -632,11 +808,14 @@ class GregWebPlayer {
     this.setStatus("Déconnecté.", true);
   }
 
-  // ---------------- Guilds ----------------
+  // ---------------------------------------------------------------------------
+  // Guilds
+  // ---------------------------------------------------------------------------
   async refreshGuilds() {
     if (!this.$guildSelect) return;
 
     this.$guildSelect.innerHTML = `<option value="">(par défaut)</option>`;
+
     if (!this.me?.id) return;
 
     try {
@@ -650,128 +829,144 @@ class GregWebPlayer {
       });
 
       if (this.guildId) this.$guildSelect.value = this.guildId;
-    } catch {}
+    } catch {
+      // silence
+    }
   }
 
-  // ---------------- Playlist / Queue ----------------
+  // ---------------------------------------------------------------------------
+  // Playlist / Queue
+  // ---------------------------------------------------------------------------
   async refreshState(silent = false) {
     try {
       const data = await this.apiGet("/playlist");
       const ok = this.applyStateFromBackend(data);
       if (!ok) throw new Error("Bad playlist payload");
 
-      if (!silent) this.setStatus("État mis à jour.", true);
       this.renderState();
+      if (!silent) this.setStatus("État mis à jour ✅", true);
     } catch (e) {
-      const msg = String(e?.message || e || "");
-      this.log("refreshState error:", e);
+      const status = e?.status;
+      const detail = e?.payload?.error || e?.payload?.message || "";
 
       if (!silent) {
-        if (/HTTP 400/.test(msg) && !this.guildId) this.setStatus("Sélectionne un serveur (guild) pour charger la playlist.", false);
-        else this.setStatus("Impossible de récupérer la playlist.", false);
+        if (status === 400 && !this.guildId) {
+          this.setStatus("Choisis un serveur (guild) pour charger la playlist.", false);
+        } else {
+          this.setStatus(`Playlist KO${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`, false);
+        }
       }
     }
+  }
+
+  _setUseIcon(btn, iconId) {
+    if (!btn) return;
+    const use = btn.querySelector("use");
+    if (use) use.setAttribute("href", iconId);
   }
 
   renderState() {
     const cur = this.state.current;
     const queue = this.state.queue || [];
 
+    // Current title/artist
     if (this.$title) this.$title.textContent = cur ? (cur.title || "Sans titre") : "Rien en cours";
-
     if (this.$artist) {
-      const artist = cur?.artist || cur?.uploader || cur?.author || cur?.channel || "";
-      this.$artist.textContent = cur ? (artist || "Artiste inconnu") : "Waiting…";
+      const a = cur?.artist || cur?.uploader || cur?.author || cur?.channel || "";
+      this.$artist.textContent = cur ? (a || "Artiste inconnu") : "—";
     }
 
+    // Queue count
     if (this.$queueCount) {
       this.$queueCount.textContent = `${queue.length} titre${queue.length > 1 ? "s" : ""}`;
     }
 
-    // Queue list (with thumb + actions)
+    // Queue list
     if (this.$queueList) {
       this.$queueList.innerHTML = "";
 
-      queue.forEach((item, idx) => {
-        const row = document.createElement("div");
-        row.className = "queue-item";
+      if (!queue.length) {
+        const empty = document.createElement("div");
+        empty.className = "queue-empty";
+        empty.textContent = "Aucun titre en attente.";
+        this.$queueList.appendChild(empty);
+      } else {
+        queue.forEach((item, idx) => {
+          const div = document.createElement("div");
+          div.className = "queue-item";
+          div.dataset.index = String(idx);
 
-        const thumb = document.createElement("div");
-        thumb.className = "queue-thumb";
-        const t = item.thumb || item.thumbnail || "";
-        thumb.style.backgroundImage = t ? `url("${String(t).replace(/["\n\r]/g, "")}")` : "";
-        thumb.textContent = t ? "" : "🎵";
+          const thumb = document.createElement("div");
+          thumb.className = "queue-thumb";
+          const img = String(item.thumb || item.thumbnail || item.image || "").replace(/["\n\r]/g, "");
+          thumb.style.backgroundImage = `url("${img || this.pickIconUrl()}")`;
 
-        const main = document.createElement("div");
-        main.className = "queue-main";
+          const main = document.createElement("div");
+          main.className = "queue-main";
 
-        const title = document.createElement("div");
-        title.className = "queue-title";
-        title.textContent = item.title || item.query || "Sans titre";
+          const t = document.createElement("div");
+          t.className = "queue-title";
+          t.textContent = item.title || item.query || "Sans titre";
 
-        const sub = document.createElement("div");
-        sub.className = "queue-sub";
-        sub.textContent = item.artist || item.uploader || item.author || item.source || "";
+          const sub = document.createElement("div");
+          sub.className = "queue-sub";
+          sub.textContent = item.artist || item.uploader || item.author || item.source || "";
 
-        main.appendChild(title);
-        main.appendChild(sub);
+          main.appendChild(t);
+          main.appendChild(sub);
 
-        const actions = document.createElement("div");
-        actions.className = "queue-actions";
+          const actions = document.createElement("div");
+          actions.className = "queue-actions";
 
-        const btnPlay = document.createElement("button");
-        btnPlay.type = "button";
-        btnPlay.className = "queue-btn";
-        btnPlay.textContent = "▶";
-        btnPlay.title = "Lire maintenant";
-        btnPlay.addEventListener("click", () => this.playAt(idx));
+          const btnPlay = document.createElement("button");
+          btnPlay.type = "button";
+          btnPlay.className = "queue-btn";
+          btnPlay.title = "Lire maintenant";
+          btnPlay.setAttribute("aria-label", "Lire maintenant");
+          btnPlay.innerHTML = `<svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>`;
+          btnPlay.addEventListener("click", () => this.playAt(idx));
 
-        const btnDel = document.createElement("button");
-        btnDel.type = "button";
-        btnDel.className = "queue-btn danger";
-        btnDel.textContent = "✕";
-        btnDel.title = "Retirer";
-        btnDel.addEventListener("click", () => this.removeAt(idx));
+          const btnDel = document.createElement("button");
+          btnDel.type = "button";
+          btnDel.className = "queue-btn danger";
+          btnDel.title = "Retirer";
+          btnDel.setAttribute("aria-label", "Retirer");
+          btnDel.innerHTML = `<svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>`;
+          btnDel.addEventListener("click", () => this.removeAt(idx));
 
-        actions.appendChild(btnPlay);
-        actions.appendChild(btnDel);
+          actions.appendChild(btnPlay);
+          actions.appendChild(btnDel);
 
-        row.appendChild(thumb);
-        row.appendChild(main);
-        row.appendChild(actions);
+          div.appendChild(thumb);
+          div.appendChild(main);
+          div.appendChild(actions);
 
-        this.$queueList.appendChild(row);
-      });
+          this.$queueList.appendChild(div);
+        });
+      }
     }
 
     // Artwork
-    const thumb =
-      cur?.thumbnail ||
-      cur?.thumb ||
-      cur?.image ||
-      "";
-
+    const thumb = cur?.thumbnail || cur?.thumb || cur?.image || "";
     if (this.$artwork) {
-      if (thumb) {
-        this.$artwork.style.backgroundImage = `url("${String(thumb).replace(/["\n\r]/g, "")}")`;
-        this.$artwork.textContent = "";
-      } else {
-        this.$artwork.style.backgroundImage = "";
-        this.$artwork.textContent = "🎵";
-      }
+      const src = thumb ? String(thumb).replace(/["\n\r]/g, "") : this.pickIconUrl();
+      this.$artwork.style.backgroundImage = `url("${src}")`;
+      this.$artwork.textContent = "";
     }
 
     // Play/Pause icon
     if (this.$btnPlayPause) {
-      this.$btnPlayPause.textContent = this.state.is_paused ? "▶️" : "⏸";
+      this._setUseIcon(this.$btnPlayPause, this.state.is_paused ? "#icon-play" : "#icon-pause");
+      this.$btnPlayPause.setAttribute("aria-pressed", String(!this.state.is_paused));
     }
 
     // Repeat visual
     if (this.$btnRepeat) {
-      this.$btnRepeat.classList.toggle("chip--ok", !!this.state.repeat);
-      this.$btnRepeat.classList.toggle("chip--warn", !this.state.repeat);
+      this.$btnRepeat.classList.toggle("control-btn--active", !!this.state.repeat);
+      this.$btnRepeat.setAttribute("aria-pressed", String(!!this.state.repeat));
     }
 
+    // Progress now
     this.renderProgress();
   }
 
@@ -779,36 +974,41 @@ class GregWebPlayer {
     const cur = this.state.current;
     const duration = Number(this.progress.duration || 0);
 
-    if (!cur || !duration || !Number.isFinite(duration) || duration <= 0) {
-      if (this.$pf) this.$pf.style.width = "0%";
-      if (this.$pCur) this.$pCur.textContent = this.formatTime(this.progress.elapsed || 0);
-      if (this.$pTot) this.$pTot.textContent = "0:00";
-      return;
-    }
-
     const now = Date.now() / 1000;
     let elapsed = this.state.is_paused
       ? Number(this.progress.elapsed || 0)
       : Math.max(0, now - Number(this.progress.startedAt || now));
 
     if (!Number.isFinite(elapsed) || elapsed < 0) elapsed = 0;
+
+    if (this.$pCur) this.$pCur.textContent = this.formatTime(elapsed);
+
+    if (!cur || !duration || !Number.isFinite(duration) || duration <= 0) {
+      if (this.$pf) this.$pf.style.width = "0%";
+      if (this.$pTot) this.$pTot.textContent = "--:--";
+      return;
+    }
+
     if (elapsed > duration) elapsed = duration;
 
     const ratio = Math.min(1, elapsed / duration);
     if (this.$pf) this.$pf.style.width = `${ratio * 100}%`;
-
-    if (this.$pCur) this.$pCur.textContent = this.formatTime(elapsed);
     if (this.$pTot) this.$pTot.textContent = this.formatTime(duration);
   }
 
-  // ---------------- Actions ----------------
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
   async enqueueItem(payload) {
     try {
       if (!this.guildId) this.autoSelectGuildIfPossible();
-      if (!this.guildId) return this.setStatus("Choisis un serveur (guild) avant d’ajouter un titre.", false);
+      if (!this.guildId) {
+        this.setStatus("Choisis un serveur (guild) avant d’ajouter un titre.", false);
+        return;
+      }
 
       const body = Object.assign({}, payload || {});
-      if (this.guildId) body.guild_id = this.guildId;
+      body.guild_id = this.guildId;
       if (this.userId) body.user_id = this.userId;
 
       await this.apiPost("/queue/add", body);
@@ -816,88 +1016,70 @@ class GregWebPlayer {
       const label = body.title || body.query || body.url || "OK";
       this.setStatus(`Ajouté : ${label}`, true);
 
-      if (this.$searchInput) this.$searchInput.value = "";
       await this.refreshState(true);
-    } catch (e) {
-      this.log("enqueueItem error:", e);
-      this.setStatus("Impossible d’ajouter (login ? vocal ? serveur ?).", false);
+    } catch {
+      this.setStatus("Impossible d’ajouter (connecté ? en vocal ? serveur sélectionné ?).", false);
     }
   }
 
   async playAt(idx) {
     try {
-      await this.apiPost("/playlist/play_at", { index: idx });
+      await this.apiPost("/playlist/play_at", { index: idx, guild_id: this.guildId || undefined });
       await this.refreshState(true);
-    } catch (e) {
-      this.log("playAt error:", e);
-      this.setStatus("play_at a échoué.", false);
-    }
+    } catch {}
   }
 
   async removeAt(idx) {
     try {
-      await this.apiPost("/queue/remove", { index: idx });
+      await this.apiPost("/queue/remove", { index: idx, guild_id: this.guildId || undefined });
       await this.refreshState(true);
-    } catch (e) {
-      this.log("removeAt error:", e);
-      this.setStatus("remove a échoué.", false);
-    }
+    } catch {}
   }
 
   async togglePause() {
     try {
-      await this.apiPost("/playlist/toggle_pause", {});
+      await this.apiPost("/playlist/toggle_pause", { guild_id: this.guildId || undefined });
       await this.refreshState(true);
-    } catch (e) {
+    } catch {
       try {
-        if (this.state.is_paused) await this.apiPost("/playlist/resume", {});
-        else await this.apiPost("/playlist/pause", {});
+        if (this.state.is_paused) await this.apiPost("/playlist/resume", { guild_id: this.guildId || undefined });
+        else await this.apiPost("/playlist/pause", { guild_id: this.guildId || undefined });
         await this.refreshState(true);
-      } catch (e2) {
-        this.log("togglePause error:", e, e2);
-        this.setStatus("Pause/Resume a échoué.", false);
-      }
+      } catch {}
     }
   }
 
   async skip() {
     try {
-      await this.apiPost("/queue/skip", {});
+      await this.apiPost("/queue/skip", { guild_id: this.guildId || undefined });
       await this.refreshState(true);
-    } catch (e) {
-      this.log("skip error:", e);
-      this.setStatus("Skip a échoué.", false);
-    }
+    } catch {}
   }
 
   async restart() {
     try {
-      await this.apiPost("/playlist/restart", {});
+      await this.apiPost("/playlist/restart", { guild_id: this.guildId || undefined });
       await this.refreshState(true);
-    } catch (e) {
+    } catch {
       try {
-        await this.apiPost("/queue/stop", {});
+        await this.apiPost("/queue/stop", { guild_id: this.guildId || undefined });
         await this.refreshState(true);
-      } catch (e2) {
-        this.log("restart/stop error:", e, e2);
-        this.setStatus("Stop/Restart a échoué.", false);
-      }
+      } catch {}
     }
   }
 
   async toggleRepeat() {
     try {
-      const res = await this.apiPost("/playlist/repeat", {});
+      const res = await this.apiPost("/playlist/repeat", { guild_id: this.guildId || undefined });
       const st = this.unwrapPlaylistResponse(res) || res;
-      this.state.repeat = !!(st.repeat_all ?? st.repeat ?? res?.repeat);
+      this.state.repeat = !!(st?.repeat_all ?? st?.repeat ?? res?.repeat);
       await this.refreshState(true);
-    } catch (e) {
-      this.log("repeat error:", e);
-      this.setStatus("Repeat a échoué.", false);
-    }
+    } catch {}
   }
 
-  // ---------------- Spotify ----------------
+  // ---------------------------------------------------------------------------
+  // Spotify
+  // ---------------------------------------------------------------------------
   async refreshSpotify() {
     try {
       const st = await this.apiGet("/spotify/status");
@@ -905,19 +1087,14 @@ class GregWebPlayer {
 
       if (this.$spStatus) {
         this.$spStatus.textContent = linked
-          ? `linked (${st?.profile?.display_name || st?.profile?.id || "?"})`
-          : "not linked";
-        this.$spStatus.classList.toggle("chip--ok", linked);
-        this.$spStatus.classList.toggle("chip--warn", !linked);
+          ? `Spotify lié (${st?.profile?.display_name || st?.profile?.id || "?"})`
+          : "Spotify non lié";
       }
-
       if (this.$spLogin && this.$spLogout) {
         this.$spLogin.classList.toggle("hidden", linked);
         this.$spLogout.classList.toggle("hidden", !linked);
       }
-    } catch (e) {
-      this.log("spotify status error:", e);
-    }
+    } catch {}
   }
 
   async loginSpotify() {
@@ -930,7 +1107,7 @@ class GregWebPlayer {
     const t0 = Date.now();
     const loop = async () => {
       await this.refreshSpotify();
-      const ok = this.$spStatus && /linked/i.test(this.$spStatus.textContent || "");
+      const ok = this.$spStatus && /lié/i.test(this.$spStatus.textContent || "");
       if (ok) this.setStatus("Spotify lié ✅", true);
       else if (Date.now() - t0 < 60000) setTimeout(loop, 1500);
       else this.setStatus("Connexion Spotify expirée.", false);
@@ -943,15 +1120,16 @@ class GregWebPlayer {
       await this.apiPost("/spotify/logout", {});
       await this.refreshSpotify();
       this.setStatus("Spotify dé-lié.", true);
-    } catch (e) {
-      this.log("spotify logout error:", e);
-      this.setStatus("Logout Spotify a échoué.", false);
-    }
+    } catch {}
   }
 }
 
-// Boot
-document.addEventListener("DOMContentLoaded", () => {
-  const app = new GregWebPlayer();
-  app.init().catch((e) => console.error("Init GregWebPlayer failed:", e));
-});
+// Boot (works even if this script is injected after DOMContentLoaded)
+(() => {
+  const boot = () => {
+    const app = new GregWebPlayer();
+    app.init().catch((e) => console.error("Init GregWebPlayer failed:", e));
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
