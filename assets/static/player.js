@@ -2,7 +2,10 @@
    - API routes: auth/users/guilds/search/playlist/admin + Spotify full
    - Socket.IO: welcome / overlay_registered / overlay_pong / overlay_joined / overlay_left / playlist_update + spotify:linked
    - Fallback: polling if sockets not available
+   - Robust: /users/me supports {ok:true,user:{...}} OR direct user object
+   - Robust: search supports /search/autocomplete (preferred) with fallback /autocomplete
 */
+
 (() => {
   "use strict";
 
@@ -68,48 +71,6 @@
   // =============================
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  function discordAvatarUrl(user, size = 96) {
-    if (!user || !user.id || !user.avatar) return null;
-    const isAnimated = String(user.avatar).startsWith("a_");
-    const ext = isAnimated ? "gif" : "png";
-    return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${ext}?size=${size}`;
-  }
-
-  function discordDefaultAvatarUrl(user, size = 96) {
-    // fallback "embed avatar" (quand pas d’avatar custom)
-    // (formule standard basée sur l'id)
-    try {
-      const n = BigInt(user?.id || "0");
-      const idx = Number((n >> 22n) % 6n); // 0..5
-      return `https://cdn.discordapp.com/embed/avatars/${idx}.png?size=${size}`;
-    } catch {
-      return `https://cdn.discordapp.com/embed/avatars/0.png?size=${size}`;
-    }
-  }
-
-  function setAvatarDiv(divEl, url, fallbackLetter = "?") {
-    if (!divEl) return;
-
-    // reset
-    divEl.style.backgroundImage = "";
-    divEl.classList.remove("avatar--img");
-    divEl.textContent = fallbackLetter;
-
-    if (!url) return;
-
-    // "pro": précharge pour éviter le flicker + fallback si 404
-    const img = new Image();
-    img.onload = () => {
-      divEl.textContent = "";
-      divEl.style.backgroundImage = `url("${url}")`;
-      divEl.classList.add("avatar--img");
-    };
-    img.onerror = () => {
-      // garde la lettre
-    };
-    img.src = url;
-  }
-
   function escapeHtml(s) {
     return String(s ?? "")
       .replaceAll("&", "&amp;")
@@ -130,7 +91,6 @@
   function toSeconds(v) {
     if (v == null) return null;
     if (typeof v === "number" && isFinite(v)) {
-      // if looks like ms, convert
       if (v > 10000) return Math.floor(v / 1000);
       return Math.floor(v);
     }
@@ -142,7 +102,6 @@
       if (n > 10000) return Math.floor(n / 1000);
       return Math.floor(n);
     }
-    // "mm:ss" or "hh:mm:ss"
     const parts = s.split(":").map((x) => Number(x));
     if (parts.some((x) => !isFinite(x))) return null;
     if (parts.length === 2) return parts[0] * 60 + parts[1];
@@ -151,26 +110,55 @@
   }
 
   function setStatus(text, kind = "info") {
+    if (!el.statusText) return;
     el.statusText.textContent = text;
 
-    el.statusMessage.classList.remove("status-message--ok", "status-message--err");
+    if (el.statusMessage) el.statusMessage.classList.remove("status-message--ok", "status-message--err");
     el.statusText.classList.remove("status-text--ok", "status-text--err");
 
     if (kind === "ok") {
-      el.statusMessage.classList.add("status-message--ok");
+      if (el.statusMessage) el.statusMessage.classList.add("status-message--ok");
       el.statusText.classList.add("status-text--ok");
     } else if (kind === "err") {
-      el.statusMessage.classList.add("status-message--err");
+      if (el.statusMessage) el.statusMessage.classList.add("status-message--err");
       el.statusText.classList.add("status-text--err");
     }
   }
 
   function setRepeatActive(active) {
+    if (!el.btnRepeat) return;
     el.btnRepeat.classList.toggle("control-btn--active", !!active);
   }
 
+  function updatePlayPauseIcon(paused) {
+    const href = paused ? "#icon-play" : "#icon-pause";
+    if (el.playPauseUse) el.playPauseUse.setAttribute("href", href);
+  }
+
+  // Discord avatar helpers
+  function discordDefaultAvatarIndex(userId) {
+    try {
+      // Discord uses (user_id >> 22) % 6 for default? Historically % 5.
+      // Embed endpoint supports 0..5. We’ll do % 6 to be safe, fallback to % 5.
+      const id = BigInt(String(userId || "0"));
+      const idx = Number((id >> 22n) % 6n);
+      return Number.isFinite(idx) ? idx : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function discordAvatarUrl(me, size = 96) {
+    if (!me || !me.id) return null;
+    if (me.avatar) {
+      return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
+    }
+    const idx = discordDefaultAvatarIndex(me.id);
+    return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
+  }
+
   // =============================
-  // API Client (all routes wired)
+  // API Client
   // =============================
   class GregAPI {
     constructor(base) {
@@ -186,7 +174,7 @@
         // guilds
         guilds: { method: "GET", path: "/guilds" },
 
-        // search
+        // search (preferred)
         search_autocomplete: { method: "GET", path: "/search/autocomplete" },
 
         // playlist + queue
@@ -264,6 +252,7 @@
       if (!res.ok) {
         const msg =
           (payload && typeof payload === "object" && payload.error) ||
+          (payload && typeof payload === "object" && payload.message) ||
           (typeof payload === "string" && payload.slice(0, 200)) ||
           `HTTP ${res.status}`;
         const err = new Error(msg);
@@ -274,7 +263,6 @@
       return payload;
     }
 
-    // Convenience
     async get(path, query) {
       return this.request("GET", path, { query });
     }
@@ -284,7 +272,6 @@
   }
 
   const api = new GregAPI(API_BASE);
-  // expose for console debugging (pro)
   window.GregAPI = api;
 
   // =============================
@@ -295,12 +282,10 @@
     guilds: [],
     guildId: null,
 
-    // socket
     socket: null,
     socketReady: false,
     socketId: null,
 
-    // playlist
     playlist: {
       current: null,
       queue: [],
@@ -310,7 +295,6 @@
       duration: 0,
     },
 
-    // progress local ticker
     tick: {
       running: false,
       basePos: 0,
@@ -319,19 +303,17 @@
       paused: true,
     },
 
-    // search suggestions
     suggestions: [],
     sugOpen: false,
     sugIndex: -1,
     sugAbort: null,
 
-    // spotify
     spotifyLinked: false,
     spotifyProfile: null,
   };
 
   // =============================
-  // Socket.IO (all events wired)
+  // Socket.IO
   // =============================
   function initSocket() {
     if (typeof window.io !== "function") {
@@ -355,7 +337,6 @@
       state.socketId = socket.id;
       setStatus(`Socket connecté (${socket.id})`, "ok");
 
-      // register overlay/web player
       try {
         socket.emit("overlay_register", {
           kind: "web_player",
@@ -365,7 +346,6 @@
         });
       } catch (_) {}
 
-      // subscribe current guild
       if (state.guildId) {
         socket.emit("overlay_subscribe_guild", { guild_id: Number(state.guildId) });
       }
@@ -376,42 +356,18 @@
       setStatus(`Socket déconnecté (${reason}) — polling actif`, "err");
     });
 
-    // server -> client events
-    socket.on("welcome", (data) => {
-      // purely informative
-      // console.debug("[socket] welcome", data);
-    });
-
-    socket.on("overlay_registered", (data) => {
-      // console.debug("[socket] overlay_registered", data);
-    });
-
-    socket.on("overlay_pong", (data) => {
-      // console.debug("[socket] overlay_pong", data);
-    });
-
-    socket.on("overlay_joined", (data) => {
-      // console.debug("[socket] overlay_joined", data);
-    });
-
-    socket.on("overlay_left", (data) => {
-      // console.debug("[socket] overlay_left", data);
-    });
-
     socket.on("playlist_update", (payload) => {
       applyPlaylistPayload(payload);
       renderAll();
     });
 
     socket.on("spotify:linked", (payload) => {
-      // event emitted by spotify blueprint
       state.spotifyLinked = true;
       state.spotifyProfile = payload?.profile || null;
       renderSpotify();
       setStatus("Spotify lié ✅", "ok");
     });
 
-    // periodic ping (keeps room state fresh)
     setInterval(() => {
       if (!state.socketReady) return;
       try {
@@ -431,7 +387,7 @@
   }
 
   // =============================
-  // Payload normalization (robust)
+  // Payload normalization
   // =============================
   function normalizeItem(it) {
     if (!it || typeof it !== "object") return null;
@@ -446,10 +402,6 @@
   }
 
   function applyPlaylistPayload(payload) {
-    // Possible shapes:
-    // - { current, queue, paused, repeat, position, duration }
-    // - { ok:true, state:{...} }
-    // - { pm:{...} } or direct pm.to_dict()
     const p = payload?.state || payload?.pm || payload || {};
     const current = normalizeItem(p.current || p.now_playing || null);
     const queueRaw = Array.isArray(p.queue) ? p.queue : Array.isArray(p.items) ? p.items : [];
@@ -470,7 +422,6 @@
     state.playlist.position = position;
     state.playlist.duration = duration;
 
-    // update tick base
     state.tick.basePos = position || 0;
     state.tick.baseAt = Date.now();
     state.tick.duration = duration || 0;
@@ -483,41 +434,49 @@
   // =============================
   // Rendering
   // =============================
-  function updatePlayPauseIcon(paused) {
-    const href = paused ? "#icon-play" : "#icon-pause";
-    if (el.playPauseUse) el.playPauseUse.setAttribute("href", href);
-  }
-
   function renderAuth() {
-  // supporte les 2 formats : raw user OU { ok:true, user:{...} }
-  const me = state.me?.user ? state.me.user : state.me;
+    const me = state.me;
 
-  if (!me) {
-    setAvatarDiv(el.userAvatar, null, "?");
-    el.userName.textContent = "Non connecté";
-    el.userStatus.textContent = "Discord";
-    el.btnLoginDiscord.classList.remove("hidden");
-    el.btnLogoutDiscord.classList.add("hidden");
-    return;
+    if (!me) {
+      if (el.userAvatar) {
+        el.userAvatar.classList.remove("avatar--img");
+        el.userAvatar.style.backgroundImage = "";
+        el.userAvatar.textContent = "?";
+      }
+      if (el.userName) el.userName.textContent = "Non connecté";
+      if (el.userStatus) el.userStatus.textContent = "Discord";
+      if (el.btnLoginDiscord) el.btnLoginDiscord.classList.remove("hidden");
+      if (el.btnLogoutDiscord) el.btnLogoutDiscord.classList.add("hidden");
+      return;
+    }
+
+    const name =
+      me.global_name ||
+      me.display_name ||
+      me.username ||
+      me.name ||
+      `User ${me.id}`;
+
+    if (el.userName) el.userName.textContent = name;
+    if (el.userStatus) el.userStatus.textContent = "Connecté";
+    if (el.btnLoginDiscord) el.btnLoginDiscord.classList.add("hidden");
+    if (el.btnLogoutDiscord) el.btnLogoutDiscord.classList.remove("hidden");
+
+    // Avatar
+    const url = discordAvatarUrl(me, 128);
+    if (el.userAvatar) {
+      if (url) {
+        el.userAvatar.style.backgroundImage = `url("${url}")`;
+        el.userAvatar.classList.add("avatar--img");
+        el.userAvatar.textContent = ""; // on cache la lettre
+      } else {
+        const letter = (name || "?").trim().slice(0, 1).toUpperCase();
+        el.userAvatar.classList.remove("avatar--img");
+        el.userAvatar.style.backgroundImage = "";
+        el.userAvatar.textContent = letter || "?";
+      }
+    }
   }
-
-  const name =
-    me.global_name ||
-    me.display_name ||
-    me.username ||
-    me.name ||
-    `User ${me.id}`;
-
-  el.userName.textContent = name;
-  el.userStatus.textContent = "Connecté";
-  el.btnLoginDiscord.classList.add("hidden");
-  el.btnLogoutDiscord.classList.remove("hidden");
-
-  const letter = (name || "?").trim().slice(0, 1).toUpperCase() || "?";
-  const url = discordAvatarUrl(me, 96) || discordDefaultAvatarUrl(me, 96);
-
-  setAvatarDiv(el.userAvatar, url, letter);
-}
 
   function renderGuilds() {
     const sel = el.guildSelect;
@@ -526,8 +485,9 @@
     const current = state.guildId ? String(state.guildId) : "";
     const guilds = Array.isArray(state.guilds) ? state.guilds : [];
 
-    // preserve first "(par défaut)" option
-    const keep0 = sel.querySelector("option[value='']") ? sel.querySelector("option[value='']").outerHTML : "<option value=''></option>";
+    const keep0 = sel.querySelector("option[value='']")
+      ? sel.querySelector("option[value='']").outerHTML
+      : "<option value=''></option>";
     sel.innerHTML = keep0;
 
     for (const g of guilds) {
@@ -544,29 +504,33 @@
     const c = state.playlist.current;
 
     if (!c) {
-      el.trackTitle.textContent = "Rien en cours";
-      el.trackArtist.textContent = "—";
-      el.artwork.style.backgroundImage = "";
-      el.progressFill.style.width = "0%";
-      el.progressCurrent.textContent = "0:00";
-      el.progressTotal.textContent = "--:--";
+      if (el.trackTitle) el.trackTitle.textContent = "Rien en cours";
+      if (el.trackArtist) el.trackArtist.textContent = "—";
+      if (el.artwork) el.artwork.style.backgroundImage = "";
+      if (el.progressFill) el.progressFill.style.width = "0%";
+      if (el.progressCurrent) el.progressCurrent.textContent = "0:00";
+      if (el.progressTotal) el.progressTotal.textContent = "--:--";
       updatePlayPauseIcon(true);
       return;
     }
 
-    el.trackTitle.textContent = c.title || "Titre inconnu";
-    el.trackArtist.textContent = c.artist || "—";
+    if (el.trackTitle) el.trackTitle.textContent = c.title || "Titre inconnu";
+    if (el.trackArtist) el.trackArtist.textContent = c.artist || "—";
 
-    if (c.thumb) el.artwork.style.backgroundImage = `url("${c.thumb}")`;
-    else el.artwork.style.backgroundImage = "";
+    if (el.artwork) {
+      if (c.thumb) el.artwork.style.backgroundImage = `url("${c.thumb}")`;
+      else el.artwork.style.backgroundImage = "";
+    }
 
     const dur = state.playlist.duration || c.duration || 0;
-    el.progressTotal.textContent = formatTime(dur);
+    if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
   }
 
   function renderQueue() {
     const q = state.playlist.queue || [];
-    el.queueCount.textContent = `${q.length} titre${q.length > 1 ? "s" : ""}`;
+    if (el.queueCount) el.queueCount.textContent = `${q.length} titre${q.length > 1 ? "s" : ""}`;
+
+    if (!el.queueList) return;
 
     if (!q.length) {
       el.queueList.innerHTML = `<div class="queue-empty">File d’attente vide</div>`;
@@ -576,7 +540,9 @@
     const html = q
       .map((it, idx) => {
         const title = escapeHtml(it.title || "Titre inconnu");
-        const sub = escapeHtml([it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • "));
+        const sub = escapeHtml(
+          [it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • ")
+        );
         const thumbStyle = it.thumb ? `style="background-image:url('${escapeHtml(it.thumb)}')"` : "";
         return `
           <div class="queue-item" data-idx="${idx}">
@@ -597,14 +563,12 @@
 
     el.queueList.innerHTML = html;
 
-    // bind actions
     for (const row of el.queueList.querySelectorAll(".queue-item")) {
       const idx = Number(row.getAttribute("data-idx"));
 
       row.addEventListener("click", async (ev) => {
         const btn = ev.target.closest("button");
-        if (btn) return; // actions handle separately
-        // click row => play at index
+        if (btn) return;
         await safeAction(() => api_playlist_play_at(idx), `Lecture: item #${idx}`, true);
       });
 
@@ -620,6 +584,8 @@
   }
 
   function renderSpotify() {
+    if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
+
     if (!state.me) {
       el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
       el.btnSpotifyLogin.disabled = true;
@@ -673,11 +639,11 @@
       const pos = paused ? basePos : basePos + elapsed;
       const clamped = dur > 0 ? Math.min(Math.max(pos, 0), dur) : Math.max(pos, 0);
 
-      el.progressCurrent.textContent = formatTime(clamped);
-      el.progressTotal.textContent = formatTime(dur);
+      if (el.progressCurrent) el.progressCurrent.textContent = formatTime(clamped);
+      if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
 
       const pct = dur > 0 ? (clamped / dur) * 100 : 0;
-      el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+      if (el.progressFill) el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
     }, 250);
   }
 
@@ -687,16 +653,20 @@
   function closeSuggestions() {
     state.sugOpen = false;
     state.sugIndex = -1;
-    el.searchSuggestions.classList.remove("search-suggestions--open");
-    el.searchSuggestions.innerHTML = "";
+    if (el.searchSuggestions) {
+      el.searchSuggestions.classList.remove("search-suggestions--open");
+      el.searchSuggestions.innerHTML = "";
+    }
   }
 
   function openSuggestions() {
     state.sugOpen = true;
-    el.searchSuggestions.classList.add("search-suggestions--open");
+    if (el.searchSuggestions) el.searchSuggestions.classList.add("search-suggestions--open");
   }
 
   function renderSuggestions(list) {
+    if (!el.searchSuggestions) return;
+
     if (!Array.isArray(list) || !list.length) {
       closeSuggestions();
       return;
@@ -731,10 +701,7 @@
     openSuggestions();
 
     for (const row of el.searchSuggestions.querySelectorAll(".suggestion-item")) {
-      row.addEventListener("mousedown", (ev) => {
-        // prevent blur before click
-        ev.preventDefault();
-      });
+      row.addEventListener("mousedown", (ev) => ev.preventDefault());
       row.addEventListener("click", async () => {
         const idx = Number(row.getAttribute("data-idx"));
         const pick = state.suggestions[idx];
@@ -750,19 +717,33 @@
     }
     state.sugAbort = new AbortController();
 
-    const url = new URL(`${API_BASE}/search/autocomplete`, location.href);
-    url.searchParams.set("q", q);
-    url.searchParams.set("limit", "8");
+    // Prefer /search/autocomplete, fallback /autocomplete
+    const endpoints = [
+      `${API_BASE}${api.routes.search_autocomplete.path}`,
+      `${API_BASE}/autocomplete`,
+    ];
 
-    const res = await fetch(url.toString(), {
-      method: "GET",
-      credentials: "include",
-      signal: state.sugAbort.signal,
-    });
+    for (const ep of endpoints) {
+      const url = new URL(ep, location.href);
+      url.searchParams.set("q", q);
+      url.searchParams.set("limit", "8");
 
-    if (!res.ok) return [];
-    const data = await res.json().catch(() => null);
-    return Array.isArray(data?.results) ? data.results : [];
+      const res = await fetch(url.toString(), {
+        method: "GET",
+        credentials: "include",
+        signal: state.sugAbort.signal,
+      });
+
+      if (!res.ok) {
+        if (res.status === 404) continue;
+        return [];
+      }
+
+      const data = await res.json().catch(() => null);
+      return Array.isArray(data?.results) ? data.results : [];
+    }
+
+    return [];
   }
 
   function debounce(fn, ms) {
@@ -774,7 +755,7 @@
   }
 
   const onSearchInput = debounce(async () => {
-    const q = (el.searchInput.value || "").trim();
+    const q = (el.searchInput?.value || "").trim();
     if (q.length < 2) {
       closeSuggestions();
       return;
@@ -782,9 +763,7 @@
     try {
       const rows = await fetchSuggestions(q);
       renderSuggestions(rows);
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }, 160);
 
   async function addFromSuggestion(sug) {
@@ -817,7 +796,7 @@
       true
     );
 
-    el.searchInput.value = "";
+    if (el.searchInput) el.searchInput.value = "";
   }
 
   // =============================
@@ -835,7 +814,6 @@
   }
 
   async function api_queue_add(itemOrQuery) {
-    // backend supports: { query } OR { url/title/... }
     const payload =
       typeof itemOrQuery === "string"
         ? basePayload({ query: itemOrQuery })
@@ -872,7 +850,7 @@
   }
 
   // =============================
-  // Spotify actions (full routes exist)
+  // Spotify actions
   // =============================
   async function api_spotify_status() {
     return api.get(api.routes.spotify_status.path);
@@ -885,11 +863,12 @@
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = window.top.outerHeight / 2 + window.top.screenY - h / 2;
     const x = window.top.outerWidth / 2 + window.top.screenX - w / 2;
-    return window.open(
+    const win = window.open(
       url,
       name,
       `toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=${w},height=${h},top=${y},left=${x}`
     );
+    return win;
   }
 
   function spotifyLogin() {
@@ -897,27 +876,54 @@
       setStatus("Connecte-toi à Discord avant Spotify.", "err");
       return;
     }
+
     const sid = state.socketId || "";
     const url = `${API_BASE}${api.routes.spotify_login.path}?sid=${encodeURIComponent(sid)}`;
-    openPopup(url, "spotify_link");
+    const popup = openPopup(url, "spotify_link");
+
+    if (!popup) {
+      setStatus("Popup bloquée — autorise les popups puis réessaie.", "err");
+      return;
+    }
+
     setStatus("Ouverture Spotify…", "ok");
+
+    // ✅ Polling 60s (ton snippet, intégré proprement)
+    (async () => {
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
+        await sleep(1500);
+        await refreshSpotify();
+        renderSpotify();
+        if (state.spotifyLinked) break;
+      }
+    })().catch(() => {});
   }
 
   // =============================
   // Auth / Guilds / Refresh
   // =============================
+  function normalizeMePayload(payload) {
+    if (!payload) return null;
+    // case 1: { ok:true, user:{...} }
+    if (typeof payload === "object" && payload.ok === true && payload.user && typeof payload.user === "object") {
+      return payload.user;
+    }
+    // case 2: direct user object {id, username, ...}
+    if (typeof payload === "object" && payload.id) return payload;
+    return null;
+  }
+
   async function refreshMe() {
     try {
       const raw = await api.get(api.routes.users_me.path);
-      const me = raw?.user ?? raw;
-      state.me = me && me.ok === false ? null : me;
+      state.me = normalizeMePayload(raw);
       return state.me;
     } catch (_) {
       state.me = null;
       return null;
     }
   }
-
 
   async function refreshGuilds() {
     if (!state.me) {
@@ -960,8 +966,6 @@
       const data = await api_playlist_state();
       applyPlaylistPayload(data);
     } catch (e) {
-      // common: not in voice / guild not found
-      // keep UI, just show status
       setStatus(String(e.message || e), "err");
     }
   }
@@ -970,7 +974,6 @@
     await refreshMe();
     await refreshGuilds();
 
-    // choose guild
     const saved = localStorage.getItem(LS_KEY_GUILD);
     if (!state.guildId) {
       if (saved) state.guildId = saved;
@@ -990,13 +993,11 @@
     try {
       const res = await fn();
       if (okText) setStatus(okText, "ok");
-
-      // If socket isn’t delivering playlist_update, refresh explicitly.
       if (refreshAfter) await refreshPlaylist();
       renderAll();
       return res;
     } catch (e) {
-      const msg = e?.payload?.error || e?.message || String(e);
+      const msg = e?.payload?.error || e?.payload?.message || e?.message || String(e);
       setStatus(msg, "err");
       throw e;
     }
@@ -1006,114 +1007,114 @@
   // Events binding
   // =============================
   function bindUI() {
-    // search
-    el.searchInput.addEventListener("input", onSearchInput);
+    if (el.searchInput) el.searchInput.addEventListener("input", onSearchInput);
 
-    el.searchInput.addEventListener("keydown", async (ev) => {
-      if (!state.sugOpen) return;
+    if (el.searchInput) {
+      el.searchInput.addEventListener("keydown", async (ev) => {
+        if (!state.sugOpen) return;
 
-      if (ev.key === "ArrowDown") {
-        ev.preventDefault();
-        state.sugIndex = Math.min(state.suggestions.length - 1, state.sugIndex + 1);
-        renderSuggestions(state.suggestions);
-      } else if (ev.key === "ArrowUp") {
-        ev.preventDefault();
-        state.sugIndex = Math.max(-1, state.sugIndex - 1);
-        renderSuggestions(state.suggestions);
-      } else if (ev.key === "Enter") {
-        if (state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
+        if (ev.key === "ArrowDown") {
           ev.preventDefault();
+          state.sugIndex = Math.min(state.suggestions.length - 1, state.sugIndex + 1);
+          renderSuggestions(state.suggestions);
+        } else if (ev.key === "ArrowUp") {
+          ev.preventDefault();
+          state.sugIndex = Math.max(-1, state.sugIndex - 1);
+          renderSuggestions(state.suggestions);
+        } else if (ev.key === "Enter") {
+          if (state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
+            ev.preventDefault();
+            const pick = state.suggestions[state.sugIndex];
+            closeSuggestions();
+            await addFromSuggestion(pick);
+          }
+        } else if (ev.key === "Escape") {
+          closeSuggestions();
+        }
+      });
+
+      el.searchInput.addEventListener("blur", () => {
+        setTimeout(() => closeSuggestions(), 120);
+      });
+    }
+
+    if (el.searchForm) {
+      el.searchForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const q = (el.searchInput?.value || "").trim();
+        if (!q) return;
+
+        if (state.sugOpen && state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
           const pick = state.suggestions[state.sugIndex];
           closeSuggestions();
           await addFromSuggestion(pick);
+          return;
         }
-      } else if (ev.key === "Escape") {
+
         closeSuggestions();
-      }
-    });
+        await safeAction(() => api_queue_add(q), "Ajouté à la file ✅", true);
+        if (el.searchInput) el.searchInput.value = "";
+      });
+    }
 
-    el.searchInput.addEventListener("blur", () => {
-      // small delay so click can register
-      setTimeout(() => closeSuggestions(), 120);
-    });
+    if (el.btnLoginDiscord) {
+      el.btnLoginDiscord.addEventListener("click", () => {
+        const url = `${API_BASE}${api.routes.auth_login.path}`;
+        window.location.href = url;
+      });
+    }
 
-    el.searchForm.addEventListener("submit", async (ev) => {
-      ev.preventDefault();
-      const q = (el.searchInput.value || "").trim();
-      if (!q) return;
+    if (el.btnLogoutDiscord) {
+      el.btnLogoutDiscord.addEventListener("click", async () => {
+        await safeAction(() => api.post(api.routes.auth_logout.path, {}), "Déconnecté ✅", false);
+        state.me = null;
+        state.guilds = [];
+        state.guildId = "";
+        state.spotifyLinked = false;
+        state.spotifyProfile = null;
+        await refreshAll();
+      });
+    }
 
-      // if suggestion selected, add that
-      if (state.sugOpen && state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
-        const pick = state.suggestions[state.sugIndex];
-        closeSuggestions();
-        await addFromSuggestion(pick);
-        return;
-      }
+    if (el.guildSelect) {
+      el.guildSelect.addEventListener("change", async () => {
+        const oldGid = state.guildId;
+        const newGid = el.guildSelect.value || "";
+        state.guildId = newGid;
 
-      // else: raw query => /queue/add {query}
-      closeSuggestions();
-      await safeAction(() => api_queue_add(q), "Ajouté à la file ✅", true);
-      el.searchInput.value = "";
-    });
+        if (newGid) localStorage.setItem(LS_KEY_GUILD, newGid);
+        else localStorage.removeItem(LS_KEY_GUILD);
 
-    // auth
-    el.btnLoginDiscord.addEventListener("click", () => {
-      // same tab login is simplest (cookies)
-      const url = `${API_BASE}${api.routes.auth_login.path}`;
-      window.location.href = url;
-    });
+        socketResubscribeGuild(oldGid, newGid);
+        await refreshPlaylist();
+        renderAll();
+      });
+    }
 
-    el.btnLogoutDiscord.addEventListener("click", async () => {
-      await safeAction(() => api.post(api.routes.auth_logout.path, {}), "Déconnecté ✅", false);
-      state.me = null;
-      state.guilds = [];
-      state.guildId = "";
-      await refreshAll();
-    });
+    if (el.btnStop) el.btnStop.addEventListener("click", async () => safeAction(() => api_queue_stop(), "Stop ✅", true));
+    if (el.btnSkip) el.btnSkip.addEventListener("click", async () => safeAction(() => api_queue_skip(), "Skip ✅", true));
+    if (el.btnPlayPause) el.btnPlayPause.addEventListener("click", async () => safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true));
+    if (el.btnPrev) el.btnPrev.addEventListener("click", async () => safeAction(() => api_playlist_restart(), "Restart ✅", true));
+    if (el.btnRepeat) el.btnRepeat.addEventListener("click", async () => safeAction(() => api_playlist_repeat(), "Repeat toggle ✅", true));
 
-    // guild select
-    el.guildSelect.addEventListener("change", async () => {
-      const oldGid = state.guildId;
-      const newGid = el.guildSelect.value || "";
-      state.guildId = newGid;
+    if (el.btnSpotifyLogin) el.btnSpotifyLogin.addEventListener("click", () => spotifyLogin());
 
-      if (newGid) localStorage.setItem(LS_KEY_GUILD, newGid);
-      else localStorage.removeItem(LS_KEY_GUILD);
+    if (el.btnSpotifyLogout) {
+      el.btnSpotifyLogout.addEventListener("click", async () => {
+        await safeAction(() => api_spotify_logout(), "Spotify délié ✅", false);
+        state.spotifyLinked = false;
+        state.spotifyProfile = null;
+        renderSpotify();
+      });
+    }
 
-      socketResubscribeGuild(oldGid, newGid);
-      await refreshPlaylist();
-      renderAll();
-    });
-
-    // controls
-    el.btnStop.addEventListener("click", async () => {
-      await safeAction(() => api_queue_stop(), "Stop ✅", true);
-    });
-
-    el.btnSkip.addEventListener("click", async () => {
-      await safeAction(() => api_queue_skip(), "Skip ✅", true);
-    });
-
-    el.btnPlayPause.addEventListener("click", async () => {
-      await safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true);
-    });
-
-    el.btnPrev.addEventListener("click", async () => {
-      await safeAction(() => api_playlist_restart(), "Restart ✅", true);
-    });
-
-    el.btnRepeat.addEventListener("click", async () => {
-      await safeAction(() => api_playlist_repeat(), "Repeat toggle ✅", true);
-    });
-
-    // spotify
-    el.btnSpotifyLogin.addEventListener("click", () => spotifyLogin());
-
-    el.btnSpotifyLogout.addEventListener("click", async () => {
-      await safeAction(() => api_spotify_logout(), "Spotify délié ✅", false);
-      state.spotifyLinked = false;
-      state.spotifyProfile = null;
-      renderSpotify();
+    // ✅ Très fiable: dès que l’utilisateur revient sur l’onglet après OAuth
+    window.addEventListener("focus", async () => {
+      try {
+        await refreshMe();
+        await refreshSpotify();
+        renderAll();
+      } catch (_) {}
     });
   }
 
@@ -1122,7 +1123,7 @@
   // =============================
   function startPolling() {
     setInterval(async () => {
-      if (state.socketReady) return; // sockets are source of truth when alive
+      if (state.socketReady) return;
       await refreshMe();
       await refreshSpotify();
       await refreshPlaylist();
@@ -1136,16 +1137,13 @@
   async function boot() {
     setStatus("Initialisation…", "ok");
 
-    // socket first (so we can pass sid for spotify login)
     state.socket = initSocket();
-
     bindUI();
     await refreshAll();
 
     startProgressLoop();
     startPolling();
 
-    // initial status
     setStatus("Prêt ✅", "ok");
   }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 from api.services import search as svc
 
-bp = Blueprint("search", __name__)
+bp = Blueprint("search", __name__, url_prefix="/search")
 
 @bp.get("/autocomplete")
 def autocomplete():
