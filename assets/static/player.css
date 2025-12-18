@@ -1,8 +1,7 @@
 /* Greg le Consanguin — Web Player UI (clean, responsive)
    - Header top, status bottom
-   - 3 main cards aligned, gap clean
-   - Desktop: no page scroll (internal scroll only: queue)
-   - Mobile: page scroll ON (natural), cards height auto, no overflow sideways
+   - Desktop: no page scroll (queue scroll only)
+   - Mobile: natural page scroll
 */
 
 :root{
@@ -24,7 +23,6 @@
   --shadow: 0 12px 40px rgba(0,0,0,.35);
   --radius: 16px;
 
-  /* safe-area iOS */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -42,24 +40,23 @@ body{
               var(--bg);
   color:var(--text);
 
-  /* Desktop: no page scroll */
   overflow: hidden;
   overflow-x: hidden;
 }
 
 .hidden{ display:none !important; }
 
-/* ===== Icon sizing ===== */
+/* Icon sizing */
 .icon{ width: 18px; height: 18px; display:block; }
 .queue-btn .icon{ width: 16px; height: 16px; }
 
-/* ===== Button active state (repeat) ===== */
+/* Button active state */
 .control-btn--active{
   border-color: rgba(99,102,241,.55) !important;
   box-shadow: 0 0 0 3px rgba(99,102,241,.18);
 }
 
-/* ===== Status semantics ===== */
+/* Status semantics */
 .status-message--ok{
   background: rgba(16,185,129,.16) !important;
   border: 1px solid rgba(16,185,129,.28) !important;
@@ -73,7 +70,6 @@ body{
 
 /* App frame */
 .app{
-  /* mobile-safe viewport (handles iOS address bar better) */
   height: 100dvh;
   height: 100vh;
 
@@ -83,10 +79,10 @@ body{
   padding: calc(16px + var(--safe-top)) calc(16px + var(--safe-right)) calc(16px + var(--safe-bottom)) calc(16px + var(--safe-left));
   gap:14px;
 
-  min-height:0; /* allow children to shrink */
+  min-height:0;
 }
 
-/* ================= Topbar ================= */
+/* Topbar */
 .topbar{
   display:flex;
   align-items:flex-start;
@@ -95,15 +91,7 @@ body{
   min-height: 0;
 }
 
-.avatar{
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-}
-.avatar.avatar--img{
-  color: transparent; /* cache la lettre quand image */
-}
-
+/* Brand */
 .brand{
   display:flex;
   align-items:center;
@@ -127,7 +115,7 @@ body{
 .brand-title{ font-weight:800; letter-spacing:.2px; }
 .brand-subtitle{ color:var(--muted); font-size:12px; margin-top:2px; }
 
-/* ================= Search ================= */
+/* Search */
 .search{
   flex:1;
   position:relative;
@@ -162,7 +150,7 @@ body{
   min-width: 0;
 }
 
-/* ================= Buttons ================= */
+/* Buttons */
 .btn{
   border:1px solid var(--stroke2);
   background: rgba(148,163,184,.10);
@@ -191,7 +179,7 @@ body{
 }
 .btn--ghost:hover{ background: rgba(148,163,184,.08); }
 
-/* ================= Auth ================= */
+/* Auth */
 .top-auth{
   display:flex;
   flex-direction:row;
@@ -211,6 +199,7 @@ body{
   min-width: 0;
 }
 
+/* Avatar (base) */
 .avatar{
   width:34px; height:34px;
   border-radius:12px;
@@ -221,6 +210,17 @@ body{
   justify-content:center;
   font-weight:800;
   flex:none;
+
+  background-position:center;
+  background-repeat:no-repeat;
+  background-size:cover; /* default */
+}
+
+/* FIX: Discord avatar — show full image (no crop) */
+#userAvatar.avatar--img{
+  background-size: contain;   /* important */
+  background-color: rgba(15,23,42,.65);
+  color: transparent;
 }
 
 .auth-meta{ flex:1; min-width:0; }
@@ -257,7 +257,7 @@ body{
   min-width: 0;
 }
 
-/* ================= Main layout ================= */
+/* Main layout */
 .main{
   flex: 1;
   min-height: 0;
@@ -268,7 +268,7 @@ body{
   align-items: stretch;
 }
 
-/* cards */
+/* Cards */
 .now-playing,
 .queue,
 .spotify{
@@ -279,10 +279,10 @@ body{
 
   height: 100%;
   min-height: 0;
-  overflow: hidden; /* avoid weird inner overflow shadows */
+  overflow: hidden;
 }
 
-/* ================= Now playing ================= */
+/* Now playing */
 .now-playing{
   padding: 18px;
   display:flex;
@@ -326,7 +326,7 @@ body{
   text-align: center;
 }
 
-/* progress */
+/* Progress */
 .progress{ margin-top:10px; width: 100%; }
 .progress-bar{
   width: 100%;
@@ -350,7 +350,7 @@ body{
   color:var(--muted);
 }
 
-/* controls (robuste) */
+/* Controls */
 .np-controls{
   margin-top: 10%;
   display:flex;
@@ -386,7 +386,7 @@ body{
 }
 .control-btn.primary .icon{ width:28px; height:28px; }
 
-/* ================= Queue ================= */
+/* Queue */
 .queue{
   padding:14px;
   display:flex;
@@ -403,7 +403,6 @@ body{
 .queue-title{ font-weight:900; }
 .queue-count{ color:var(--muted); font-size:12px; }
 
-/* internal scroll only here (desktop) */
 .queue-list{
   flex: 1;
   min-height: 0;
@@ -480,7 +479,7 @@ body{
 }
 .queue-btn.danger:hover{ background: rgba(239,68,68,.14); }
 
-/* ================= Spotify ================= */
+/* Spotify */
 .spotify{
   padding:14px;
   display:flex;
@@ -496,7 +495,7 @@ body{
 .spotify-status{ color:var(--muted); }
 .spotify-actions{ display:flex; gap:8px; flex-wrap:wrap; }
 
-/* ================= Suggestions ================= */
+/* Suggestions */
 .search-suggestions{
   position:absolute;
   left:0; right:0;
@@ -555,11 +554,8 @@ body{
   flex:none;
 }
 
-/* ================= Status bar ================= */
-.status-bar{
-  margin-top: auto;
-  padding: 0;
-}
+/* Status bar */
+.status-bar{ margin-top: auto; padding: 0; }
 .status-message{
   border:1px solid rgba(148,163,184,.20);
   background: rgba(2,6,23,.40);
@@ -572,19 +568,12 @@ body{
   color: rgba(226,232,240,.95);
 }
 
-/* ================= Responsive ================= */
-
-/* Tablet / small laptop */
+/* Responsive */
 @media (max-width: 1100px){
-  /* Mobile/tablet: page scroll ON */
   body{ overflow:auto; overflow-x:hidden; }
 
-  .app{
-    height:auto;
-    min-height:100vh;
-  }
+  .app{ height:auto; min-height:100vh; }
 
-  /* Topbar stack nicely, remove rigid mins */
   .topbar{
     flex-direction:column;
     align-items:stretch;
@@ -596,35 +585,25 @@ body{
   .auth-card{ flex:1; }
   .guild-select{ flex:1; min-width:220px; }
 
-  /* Main becomes vertical */
   .main{
     display:flex;
     flex-direction:column;
     min-height:auto;
   }
 
-  /* IMPORTANT: cards should NOT force full height on mobile */
   .now-playing, .queue, .spotify{
     height:auto;
     overflow: visible;
   }
 
-  /* reorder: now playing first on mobile */
   .now-playing{ order: 1; }
   .queue{ order: 2; }
   .spotify{ order: 3; }
 
-  /* queue scroll can be limited (optional but nice) */
-  .queue-list{
-    max-height: 50vh;
-  }
-
-  .search-suggestions{
-    max-height: 45vh;
-  }
+  .queue-list{ max-height: 50vh; }
+  .search-suggestions{ max-height: 45vh; }
 }
 
-/* Phone */
 @media (max-width: 700px){
   .app{ padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left)); }
   .search-box{ padding:10px; }
@@ -646,16 +625,8 @@ body{
   .queue-btn{ width:36px; height:36px; border-radius:14px; }
 }
 
-/* Very small phones */
 @media (max-width: 420px){
   .auth-actions{ flex-wrap:wrap; }
   .spotify-actions{ width:100%; justify-content:flex-start; }
   .search-input{ font-size:13px; }
-}
-/* FIX: Discord avatar — show full image (no crop) */
-#userAvatar.avatar--img{
-  background-size: contain;      /* au lieu de cover */
-  background-position: center;
-  background-repeat: no-repeat;
-  background-color: rgba(15,23,42,.65); /* fond derrière si bandes */
 }
