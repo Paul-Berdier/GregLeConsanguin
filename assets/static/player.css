@@ -652,3 +652,10 @@ body{
   .spotify-actions{ width:100%; justify-content:flex-start; }
   .search-input{ font-size:13px; }
 }
+/* FIX: Discord avatar — show full image (no crop) */
+#userAvatar.avatar--img{
+  background-size: contain;      /* au lieu de cover */
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: rgba(15,23,42,.65); /* fond derrière si bandes */
+}
