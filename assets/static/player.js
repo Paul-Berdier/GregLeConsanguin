@@ -68,6 +68,48 @@
   // =============================
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  function discordAvatarUrl(user, size = 96) {
+    if (!user || !user.id || !user.avatar) return null;
+    const isAnimated = String(user.avatar).startsWith("a_");
+    const ext = isAnimated ? "gif" : "png";
+    return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${ext}?size=${size}`;
+  }
+
+  function discordDefaultAvatarUrl(user, size = 96) {
+    // fallback "embed avatar" (quand pas d’avatar custom)
+    // (formule standard basée sur l'id)
+    try {
+      const n = BigInt(user?.id || "0");
+      const idx = Number((n >> 22n) % 6n); // 0..5
+      return `https://cdn.discordapp.com/embed/avatars/${idx}.png?size=${size}`;
+    } catch {
+      return `https://cdn.discordapp.com/embed/avatars/0.png?size=${size}`;
+    }
+  }
+
+  function setAvatarDiv(divEl, url, fallbackLetter = "?") {
+    if (!divEl) return;
+
+    // reset
+    divEl.style.backgroundImage = "";
+    divEl.classList.remove("avatar--img");
+    divEl.textContent = fallbackLetter;
+
+    if (!url) return;
+
+    // "pro": précharge pour éviter le flicker + fallback si 404
+    const img = new Image();
+    img.onload = () => {
+      divEl.textContent = "";
+      divEl.style.backgroundImage = `url("${url}")`;
+      divEl.classList.add("avatar--img");
+    };
+    img.onerror = () => {
+      // garde la lettre
+    };
+    img.src = url;
+  }
+
   function escapeHtml(s) {
     return String(s ?? "")
       .replaceAll("&", "&amp;")
@@ -447,25 +489,35 @@
   }
 
   function renderAuth() {
-    const me = state.me;
-    if (!me) {
-      el.userAvatar.textContent = "?";
-      el.userName.textContent = "Non connecté";
-      el.userStatus.textContent = "Discord";
-      el.btnLoginDiscord.classList.remove("hidden");
-      el.btnLogoutDiscord.classList.add("hidden");
-      return;
-    }
+  // supporte les 2 formats : raw user OU { ok:true, user:{...} }
+  const me = state.me?.user ? state.me.user : state.me;
 
-    const name = me.username || me.name || me.display_name || `User ${me.id}`;
-    el.userName.textContent = name;
-    el.userStatus.textContent = "Connecté";
-    el.btnLoginDiscord.classList.add("hidden");
-    el.btnLogoutDiscord.classList.remove("hidden");
-
-    const letter = (name || "?").trim().slice(0, 1).toUpperCase();
-    el.userAvatar.textContent = letter || "?";
+  if (!me) {
+    setAvatarDiv(el.userAvatar, null, "?");
+    el.userName.textContent = "Non connecté";
+    el.userStatus.textContent = "Discord";
+    el.btnLoginDiscord.classList.remove("hidden");
+    el.btnLogoutDiscord.classList.add("hidden");
+    return;
   }
+
+  const name =
+    me.global_name ||
+    me.display_name ||
+    me.username ||
+    me.name ||
+    `User ${me.id}`;
+
+  el.userName.textContent = name;
+  el.userStatus.textContent = "Connecté";
+  el.btnLoginDiscord.classList.add("hidden");
+  el.btnLogoutDiscord.classList.remove("hidden");
+
+  const letter = (name || "?").trim().slice(0, 1).toUpperCase() || "?";
+  const url = discordAvatarUrl(me, 96) || discordDefaultAvatarUrl(me, 96);
+
+  setAvatarDiv(el.userAvatar, url, letter);
+}
 
   function renderGuilds() {
     const sel = el.guildSelect;
@@ -856,7 +908,8 @@
   // =============================
   async function refreshMe() {
     try {
-      const me = await api.get(api.routes.users_me.path);
+      const raw = await api.get(api.routes.users_me.path);
+      const me = raw?.user ?? raw;
       state.me = me && me.ok === false ? null : me;
       return state.me;
     } catch (_) {
@@ -864,6 +917,7 @@
       return null;
     }
   }
+
 
   async function refreshGuilds() {
     if (!state.me) {

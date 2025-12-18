@@ -95,6 +95,15 @@ body{
   min-height: 0;
 }
 
+.avatar{
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.avatar.avatar--img{
+  color: transparent; /* cache la lettre quand image */
+}
+
 .brand{
   display:flex;
   align-items:center;
