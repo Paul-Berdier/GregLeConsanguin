@@ -28,6 +28,9 @@
       document.head.appendChild(css);
     })();
   </script>
+
+  <!-- ✅ Socket.IO client -->
+  <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
 
 <body>
@@ -48,7 +51,8 @@
     <!-- Header -->
     <header class="topbar">
       <div class="brand">
-        <img class="brand-logo" src="/static/icon.png" alt="Greg"/>
+        <!-- ✅ src volontairement vide => défini par boot script -->
+        <img class="brand-logo" src="" alt="Greg"/>
         <div class="brand-text">
           <div class="brand-title">Greg le Consanguin</div>
           <div class="brand-subtitle">Web Player</div>
@@ -96,7 +100,6 @@
 
     <!-- Main -->
     <main class="main">
-
       <section class="queue">
         <div class="queue-header">
           <div class="queue-title">File d’attente</div>
@@ -106,26 +109,25 @@
       </section>
 
       <section class="now-playing">
-          <div class="artwork" id="artwork"></div>
+        <div class="artwork" id="artwork"></div>
 
-          <div class="np-meta">
-            <div class="np-title" id="trackTitle">Rien en cours</div>
-            <div class="np-artist" id="trackArtist">—</div>
+        <div class="np-meta">
+          <div class="np-title" id="trackTitle">Rien en cours</div>
+          <div class="np-artist" id="trackArtist">—</div>
 
-            <div class="progress">
-              <div class="progress-bar">
-                <div class="progress-fill" id="progressFill"></div>
-              </div>
-              <div class="progress-meta">
-                <span id="progressCurrent">0:00</span>
-                <span id="progressTotal">--:--</span>
-              </div>
+          <div class="progress">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="progressCurrent">0:00</span>
+              <span id="progressTotal">--:--</span>
             </div>
           </div>
+        </div>
 
         <div class="np-controls">
-
-            <button id="btn-stop" class="control-btn" type="button" title="Stop">
+          <button id="btn-stop" class="control-btn" type="button" title="Stop">
             <svg class="icon" viewBox="0 0 24 24"><use href="#icon-stop"></use></svg>
           </button>
 
@@ -134,7 +136,7 @@
           </button>
 
           <button id="btn-play-pause" class="control-btn primary" type="button" title="Play / Pause">
-            <svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
+            <svg class="icon" viewBox="0 0 24 24"><use id="playPauseUse" href="#icon-play"></use></svg>
           </button>
 
           <button id="btn-skip" class="control-btn" type="button" title="Skip">
@@ -172,11 +174,7 @@
       const base = window.GREG_STATIC_BASE || "/static";
 
       const logo = document.querySelector(".brand-logo");
-      if (logo && !logo.getAttribute("src")) {
-        logo.setAttribute("src", `${base}/icon.png`);
-      } else if (logo) {
-        if (location.protocol === "file:") logo.setAttribute("src", `${base}/icon.png`);
-      }
+      if (logo) logo.setAttribute("src", `${base}/icon.png`);
 
       const s = document.createElement("script");
       s.src = `${base}/player.js`;

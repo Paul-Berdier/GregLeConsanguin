@@ -1,1135 +1,1101 @@
-/* assets/static/player.js
-   Greg le Consanguin — Web Player (pro, robuste)
-   - Support API:
-     • { ok:true, state:{ current, queue, progress:{elapsed,duration}, is_paused, repeat_all, guild_id, thumbnail } }
-     • fallback anciens formats: { current, queue, elapsed, duration, is_paused, repeat }
-   - Rendu: current + queue + progress (même si duration = null)
-   - Anti-400: guild auto + persist localStorage
-   - UI: autocomplete + queue actions + discord/spotify status
+/* Greg le Consanguin — Web Player (pro)
+   - API routes: auth/users/guilds/search/playlist/admin + Spotify full
+   - Socket.IO: welcome / overlay_registered / overlay_pong / overlay_joined / overlay_left / playlist_update + spotify:linked
+   - Fallback: polling if sockets not available
 */
+(() => {
+  "use strict";
 
-"use strict";
+  // =============================
+  // Config
+  // =============================
+  const STATIC_BASE = window.GREG_STATIC_BASE || "/static";
+  const API_BASE = (window.GREG_API_BASE || "/api/v1").replace(/\/$/, "");
+  const API_ORIGIN = API_BASE.replace(/\/api\/v1$/, ""); // http://host:port (or "" if same-origin)
+  const LS_KEY_GUILD = "greg.webplayer.guild_id";
 
-class GregWebPlayer {
-  constructor() {
-    this.API_BASE = String(window.GREG_API_BASE || "/api/v1").replace(/\/+$/, "");
-    this.STATIC_BASE = String(window.GREG_STATIC_BASE || "/static").replace(/\/+$/, "");
+  // =============================
+  // DOM
+  // =============================
+  const $ = (sel) => document.querySelector(sel);
 
-    // persisted selections
-    this.guildId = this._lsGet("greg.guildId", "");
-    this.userId = null;
-    this.me = null;
+  const el = {
+    // auth
+    userAvatar: $("#userAvatar"),
+    userName: $("#userName"),
+    userStatus: $("#userStatus"),
+    btnLoginDiscord: $("#btn-login-discord"),
+    btnLogoutDiscord: $("#btn-logout-discord"),
+    guildSelect: $("#guildSelect"),
 
-    this.state = {
-      current: null,
-      queue: [],
-      is_paused: false,
-      repeat: false,
-    };
+    // search
+    searchForm: $("#searchForm"),
+    searchInput: $("#searchInput"),
+    searchSuggestions: $("#searchSuggestions"),
 
-    this.progress = {
-      startedAt: 0, // epoch seconds
-      elapsed: 0,
-      duration: 0,
-    };
+    // now playing
+    artwork: $("#artwork"),
+    trackTitle: $("#trackTitle"),
+    trackArtist: $("#trackArtist"),
+    progressFill: $("#progressFill"),
+    progressCurrent: $("#progressCurrent"),
+    progressTotal: $("#progressTotal"),
+    playPauseUse: $("#playPauseUse"),
 
-    this.pollTimer = null;
-    this.progressTimer = null;
+    // controls
+    btnStop: $("#btn-stop"),
+    btnPrev: $("#btn-prev"),
+    btnPlayPause: $("#btn-play-pause"),
+    btnSkip: $("#btn-skip"),
+    btnRepeat: $("#btn-repeat"),
 
-    // Autocomplete
-    this.sug = {
-      items: [],
-      open: false,
-      activeIndex: -1,
-      abort: null,
-      lastQuery: "",
-    };
-
-    // DOM refs (robustes: on tente plusieurs IDs)
-    this.$statusMessage = this._q("#statusMessage");
-    this.$statusText = this._q("#statusText", "#statusBar");
-
-    this.$searchForm = this._q("#searchForm", "#addForm");
-    this.$searchInput = this._q("#searchInput", "#addInput");
-    this.$suggestions = this._q("#searchSuggestions");
-
-    this.$queueList = this._q("#queueList");
-    this.$queueCount = this._q("#queueCount");
-
-    this.$artwork = this._q("#artwork");
-    this.$title = this._q("#trackTitle");
-    this.$artist = this._q("#trackArtist");
-
-    this.$pf = this._q("#progressFill");
-    this.$pCur = this._q("#progressCurrent");
-    this.$pTot = this._q("#progressTotal");
-
-    // Controls
-    this.$btnPrev = this._q("#btn-prev", "#prevBtn");
-    this.$btnPlayPause = this._q("#btn-play-pause", "#playPauseBtn");
-    this.$btnSkip = this._q("#btn-skip", "#skipBtn");
-    this.$btnStop = this._q("#btn-stop", "#restartBtn");
-    this.$btnRepeat = this._q("#btn-repeat", "#repeatBtn");
-
-    // user / guild
-    this.$userName = this._q("#userName");
-    this.$userAvatar = this._q("#userAvatar");
-    this.$userStatus = this._q("#userStatus");
-    this.$btnLogin = this._q("#btn-login-discord");
-    this.$btnLogout = this._q("#btn-logout-discord");
-    this.$guildSelect = this._q("#guildSelect");
+    // queue
+    queueCount: $("#queueCount"),
+    queueList: $("#queueList"),
 
     // spotify
-    this.$spStatus = this._q("#spotifyStatus");
-    this.$spLogin = this._q("#btn-spotify-login");
-    this.$spLogout = this._q("#btn-spotify-logout");
+    spotifyStatus: $("#spotifyStatus"),
+    btnSpotifyLogin: $("#btn-spotify-login"),
+    btnSpotifyLogout: $("#btn-spotify-logout"),
 
-    // A11y suggestions
-    if (this.$suggestions) {
-      this.$suggestions.setAttribute("role", "listbox");
-      this.$suggestions.setAttribute("aria-label", "Suggestions");
-    }
+    // status bar
+    statusMessage: $("#statusMessage"),
+    statusText: $("#statusText"),
+  };
 
-    // sanity check
-    this._debugDomSanity();
-  }
-
-  // ---------------------------------------------------------------------------
-  // DOM helpers
-  // ---------------------------------------------------------------------------
-  _q(...selectors) {
-    for (const s of selectors) {
-      const el = document.querySelector(s);
-      if (el) return el;
-    }
-    return null;
-  }
-
-  _debugDomSanity() {
-    const required = [
-      ["statusText", this.$statusText],
-      ["trackTitle", this.$title],
-      ["queueList", this.$queueList],
-    ];
-    const missing = required.filter(([, el]) => !el).map(([name]) => name);
-    if (missing.length) console.warn("[GregWebPlayer] DOM missing:", missing.join(", "));
-  }
-
-  // ---------------------------------------------------------------------------
-  // LocalStorage
-  // ---------------------------------------------------------------------------
-  _lsGet(key, def = "") {
-    try {
-      const v = localStorage.getItem(key);
-      return v == null ? def : String(v);
-    } catch {
-      return def;
-    }
-  }
-  _lsSet(key, val) {
-    try { localStorage.setItem(key, String(val ?? "")); } catch {}
-  }
-
-  // ---------------------------------------------------------------------------
+  // =============================
   // Utils
-  // ---------------------------------------------------------------------------
-  setStatus(text, ok = true) {
-    if (this.$statusText) this.$statusText.textContent = String(text || "");
-    if (this.$statusText) {
-      this.$statusText.classList.toggle("status-text--ok", !!ok);
-      this.$statusText.classList.toggle("status-text--err", !ok);
+  // =============================
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function formatTime(seconds) {
+    if (seconds == null || !isFinite(seconds)) return "--:--";
+    const s = Math.max(0, Math.floor(Number(seconds)));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, "0")}`;
+  }
+
+  function toSeconds(v) {
+    if (v == null) return null;
+    if (typeof v === "number" && isFinite(v)) {
+      // if looks like ms, convert
+      if (v > 10000) return Math.floor(v / 1000);
+      return Math.floor(v);
     }
-    if (this.$statusMessage) {
-      this.$statusMessage.classList.toggle("status-message--ok", !!ok);
-      this.$statusMessage.classList.toggle("status-message--err", !ok);
+    const s = String(v).trim();
+    if (!s) return null;
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      const n = Number(s);
+      if (!isFinite(n)) return null;
+      if (n > 10000) return Math.floor(n / 1000);
+      return Math.floor(n);
     }
-  }
-
-  debounce(fn, delay = 220) {
-    let t = null;
-    return (...args) => {
-      if (t) clearTimeout(t);
-      t = setTimeout(() => fn(...args), delay);
-    };
-  }
-
-  pickIconUrl() {
-    return `${this.STATIC_BASE}/icon.png`;
-  }
-
-  formatTime(sec) {
-    sec = Math.max(0, Math.floor(Number(sec || 0)));
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-
-  isProbablyURL(v) {
-    v = String(v || "").trim();
-    return /^https?:\/\//i.test(v) ||
-      /^(?:www\.)?(youtube\.com|youtu\.be|soundcloud\.com|open\.spotify\.com)\//i.test(v);
-  }
-
-  isSoundCloudCdn(u) {
-    return /^https?:\/\/(?:cf|cf-hls|cf-hls-opus)-(?:opus-)?media\.sndcdn\.com/i.test(u || "");
-  }
-
-  normalizePlayUrl(item) {
-    const page =
-      item?.webpage_url ||
-      item?.permalink_url ||
-      item?.page_url ||
-      item?.url ||
-      "";
-    if (!page || this.isSoundCloudCdn(page)) return "";
-
-    // Canonicalise YouTube
-    try {
-      const m = String(page).match(/(?:v=|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{6,})/);
-      return m ? `https://www.youtube.com/watch?v=${m[1]}` : page;
-    } catch {
-      return page;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // HTTP helpers
-  // ---------------------------------------------------------------------------
-  headers(extra = {}) {
-    const h = { "Content-Type": "application/json" };
-    if (this.guildId) h["X-Guild-ID"] = String(this.guildId);
-    if (this.userId) h["X-User-ID"] = String(this.userId);
-    return Object.assign(h, extra);
-  }
-
-  async fetchWithTimeout(url, opts = {}, timeoutMs = 12000) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      return await fetch(url, { ...opts, signal: ctrl.signal });
-    } finally {
-      clearTimeout(t);
-    }
-  }
-
-  async apiGet(path, opts = {}) {
-    const url = this.API_BASE + path;
-    const r = await this.fetchWithTimeout(
-      url,
-      {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        ...opts,
-        headers: Object.assign({}, opts.headers || {}, this.headers()),
-      },
-      12000
-    );
-
-    let payload = null;
-    try { payload = await r.json(); } catch { payload = null; }
-
-    if (!r.ok) {
-      const e = new Error(`GET ${path}: HTTP ${r.status}`);
-      e.status = r.status;
-      e.payload = payload;
-      throw e;
-    }
-    return payload;
-  }
-
-  async apiPost(path, body = {}, opts = {}) {
-    const url = this.API_BASE + path;
-    const r = await this.fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        credentials: "include",
-        ...opts,
-        headers: Object.assign({}, opts.headers || {}, this.headers()),
-        body: JSON.stringify(body || {}),
-      },
-      12000
-    );
-
-    let payload = null;
-    try { payload = await r.json(); } catch { payload = null; }
-
-    if (!r.ok) {
-      const e = new Error(`POST ${path}: HTTP ${r.status}`);
-      e.status = r.status;
-      e.payload = payload;
-      throw e;
-    }
-    return payload;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Normalisation API -> état UI
-  // ---------------------------------------------------------------------------
-  unwrapPlaylistResponse(data) {
-    if (!data || typeof data !== "object") return null;
-    if (data.state && typeof data.state === "object") return data.state;
-    if ("current" in data || "queue" in data || "progress" in data) return data;
+    // "mm:ss" or "hh:mm:ss"
+    const parts = s.split(":").map((x) => Number(x));
+    if (parts.some((x) => !isFinite(x))) return null;
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     return null;
   }
 
-  sameTrack(a, b) {
-    if (!a || !b) return false;
-    const au = String(a.url || a.webpage_url || "").trim();
-    const bu = String(b.url || b.webpage_url || "").trim();
-    if (au && bu && au === bu) return true;
-    const at = String(a.title || "").trim();
-    const bt = String(b.title || "").trim();
-    return at && bt && at === bt;
-  }
+  function setStatus(text, kind = "info") {
+    el.statusText.textContent = text;
 
-  applyStateFromBackend(raw) {
-    const st = this.unwrapPlaylistResponse(raw);
-    if (!st) return false;
+    el.statusMessage.classList.remove("status-message--ok", "status-message--err");
+    el.statusText.classList.remove("status-text--ok", "status-text--err");
 
-    // Auto-capture guild_id si pas déjà fixé
-    if (!this.guildId && st.guild_id) {
-      this.guildId = String(st.guild_id);
-      this._lsSet("greg.guildId", this.guildId);
-      if (this.$guildSelect) this.$guildSelect.value = this.guildId;
-    }
-
-    const current = st.current || null;
-    let queue = Array.isArray(st.queue) ? st.queue.slice() : [];
-
-    // queue affichée = "à venir" (on retire le current si doublon)
-    if (current && queue.length && this.sameTrack(queue[0], current)) {
-      queue = queue.slice(1);
-    }
-
-    const isPaused = !!(st.is_paused ?? st.paused ?? false);
-    const repeat = !!(st.repeat_all ?? st.repeat ?? false);
-
-    // progress
-    const elapsed = Number(st?.progress?.elapsed ?? st.elapsed ?? 0);
-    const duration = Number(st?.progress?.duration ?? st.duration ?? (current?.duration ?? 0));
-
-    // thumb
-    const thumb =
-      st.thumbnail ||
-      current?.thumb ||
-      current?.thumbnail ||
-      "";
-
-    this.state.current = current ? Object.assign({}, current, { thumbnail: thumb }) : null;
-    this.state.queue = queue;
-    this.state.is_paused = isPaused;
-    this.state.repeat = repeat;
-
-    // Baseline progress
-    this.progress.elapsed = Number.isFinite(elapsed) ? elapsed : 0;
-    this.progress.duration = Number.isFinite(duration) ? duration : 0;
-    this.progress.startedAt = Date.now() / 1000 - this.progress.elapsed;
-
-    return true;
-  }
-
-  // ---------------------------------------------------------------------------
-  // INIT
-  // ---------------------------------------------------------------------------
-  async init() {
-    this.bindEvents();
-
-    await this.refreshMe();
-    await this.refreshGuilds();
-
-    this.autoSelectGuildIfPossible();
-
-    await this.refreshState(false);
-    await this.refreshSpotify();
-
-    this.pollTimer = setInterval(() => this.refreshState(true), 2000);
-    this.progressTimer = setInterval(() => this.renderProgress(), 500);
-
-    this.setStatus("Prêt ✅", true);
-  }
-
-  autoSelectGuildIfPossible() {
-    if (this.guildId) return;
-    if (!this.$guildSelect) return;
-    const opts = Array.from(this.$guildSelect.querySelectorAll("option"));
-    const firstGuild = opts.find((o) => o.value && o.value.trim());
-    if (firstGuild) {
-      this.guildId = firstGuild.value.trim();
-      this.$guildSelect.value = this.guildId;
-      this._lsSet("greg.guildId", this.guildId);
+    if (kind === "ok") {
+      el.statusMessage.classList.add("status-message--ok");
+      el.statusText.classList.add("status-text--ok");
+    } else if (kind === "err") {
+      el.statusMessage.classList.add("status-message--err");
+      el.statusText.classList.add("status-text--err");
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // UI bindings
-  // ---------------------------------------------------------------------------
-  bindEvents() {
-    // Submit (add/play)
-    if (this.$searchForm) {
-      this.$searchForm.addEventListener("submit", (ev) => {
-        ev.preventDefault();
-        this.onSubmitSearch().catch(() => {});
-      });
-    }
-
-    // Autocomplete
-    const debouncedAuto = this.debounce((q) => this.fetchAutocomplete(q), 220);
-
-    if (this.$searchInput) {
-      this.$searchInput.addEventListener("input", () => {
-        const q = (this.$searchInput.value || "").trim();
-        if (!this.$suggestions) return;
-        if (q.length < 2) {
-          this.hideSuggestions();
-          return;
-        }
-        debouncedAuto(q);
-      });
-
-      this.$searchInput.addEventListener("keydown", (e) => {
-        if (!this.$suggestions) return;
-
-        if (!this.sug.open) {
-          if (e.key === "ArrowDown" && this.sug.items.length) {
-            e.preventDefault();
-            this.openSuggestions();
-            this.setActiveSuggestion(0);
-          }
-          return;
-        }
-
-        if (e.key === "Escape") {
-          e.preventDefault();
-          this.hideSuggestions();
-          return;
-        }
-
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          const next = Math.min(
-            this.sug.items.length - 1,
-            (this.sug.activeIndex < 0 ? 0 : this.sug.activeIndex + 1)
-          );
-          this.setActiveSuggestion(next);
-          return;
-        }
-
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          const prev = Math.max(
-            0,
-            (this.sug.activeIndex <= 0 ? 0 : this.sug.activeIndex - 1)
-          );
-          this.setActiveSuggestion(prev);
-          return;
-        }
-
-        if (e.key === "Enter") {
-          if (this.sug.activeIndex >= 0 && this.sug.activeIndex < this.sug.items.length) {
-            e.preventDefault();
-            const it = this.sug.items[this.sug.activeIndex];
-            this.pickSuggestion(it).catch(() => {});
-          }
-        }
-      });
-
-      document.addEventListener("click", (e) => {
-        if (!this.$suggestions) return;
-        const t = e.target;
-        if (!t) return;
-        const inside =
-          (this.$suggestions && this.$suggestions.contains(t)) ||
-          (this.$searchInput && this.$searchInput.contains(t));
-        if (!inside) this.hideSuggestions();
-      });
-    }
-
-    // Controls
-    this.$btnPlayPause?.addEventListener("click", () => this.togglePause());
-    this.$btnSkip?.addEventListener("click", () => this.skip());
-    this.$btnStop?.addEventListener("click", () => this.restart());
-    this.$btnRepeat?.addEventListener("click", () => this.toggleRepeat());
-    this.$btnPrev?.addEventListener("click", () => this.restart()); // fallback
-
-    // Discord auth
-    this.$btnLogin?.addEventListener("click", () => this.loginDiscord());
-    this.$btnLogout?.addEventListener("click", () => this.logoutDiscord());
-
-    // Guild select
-    this.$guildSelect?.addEventListener("change", () => {
-      this.guildId = this.$guildSelect.value || "";
-      this._lsSet("greg.guildId", this.guildId);
-      this.refreshState(false).catch(() => {});
-    });
-
-    // Spotify
-    this.$spLogin?.addEventListener("click", () => this.loginSpotify());
-    this.$spLogout?.addEventListener("click", () => this.logoutSpotify());
+  function setRepeatActive(active) {
+    el.btnRepeat.classList.toggle("control-btn--active", !!active);
   }
 
-  // ---------------------------------------------------------------------------
-  // Search / Autocomplete
-  // ---------------------------------------------------------------------------
-  async onSubmitSearch() {
-    const q = (this.$searchInput?.value || "").trim();
-    if (!q) return;
-    await this.addTopOrRaw(q);
-  }
+  // =============================
+  // API Client (all routes wired)
+  // =============================
+  class GregAPI {
+    constructor(base) {
+      this.base = base;
+      this.routes = {
+        // users / auth
+        users_me: { method: "GET", path: "/users/me" },
+        auth_login: { method: "GET", path: "/auth/login" },
+        auth_logout: { method: "POST", path: "/auth/logout" },
+        auth_device_start: { method: "POST", path: "/auth/device/start" },
+        auth_device_poll: { method: "GET", path: "/auth/device/poll" },
 
-  async fetchAutocomplete(q) {
-    if (!this.$suggestions) return;
+        // guilds
+        guilds: { method: "GET", path: "/guilds" },
 
-    const query = String(q || "").trim();
-    if (!query) {
-      this.hideSuggestions();
-      return;
+        // search
+        search_autocomplete: { method: "GET", path: "/search/autocomplete" },
+
+        // playlist + queue
+        playlist_state: { method: "GET", path: "/playlist" },
+        queue_add: { method: "POST", path: "/queue/add" },
+        queue_remove: { method: "POST", path: "/queue/remove" },
+        queue_move: { method: "POST", path: "/queue/move" },
+        queue_skip: { method: "POST", path: "/queue/skip" },
+        queue_stop: { method: "POST", path: "/queue/stop" },
+        queue_next: { method: "POST", path: "/queue/next" },
+
+        playlist_play: { method: "POST", path: "/playlist/play" },
+        playlist_play_at: { method: "POST", path: "/playlist/play_at" },
+        playlist_toggle_pause: { method: "POST", path: "/playlist/toggle_pause" },
+        playlist_repeat: { method: "POST", path: "/playlist/repeat" },
+        playlist_restart: { method: "POST", path: "/playlist/restart" },
+
+        // admin
+        admin_overlays_online: { method: "GET", path: "/overlays_online" },
+        admin_jumpscare: { method: "POST", path: "/jumpscare" },
+
+        // spotify (FULL)
+        spotify_login: { method: "GET", path: "/spotify/login" },
+        spotify_callback: { method: "GET", path: "/spotify/callback" }, // not called from JS
+        spotify_status: { method: "GET", path: "/spotify/status" },
+        spotify_me: { method: "GET", path: "/spotify/me" },
+        spotify_playlists: { method: "GET", path: "/spotify/playlists" },
+        spotify_playlist_tracks: { method: "GET", path: "/spotify/playlist_tracks" },
+        spotify_search_tracks: { method: "GET", path: "/spotify/search_tracks" },
+
+        spotify_playlist_create: { method: "POST", path: "/spotify/playlist_create" },
+        spotify_playlist_add_track: { method: "POST", path: "/spotify/playlist_add_track" },
+        spotify_playlist_add_by_query: { method: "POST", path: "/spotify/playlist_add_by_query" },
+        spotify_add_current_to_playlist: { method: "POST", path: "/spotify/add_current_to_playlist" },
+        spotify_add_queue_to_playlist: { method: "POST", path: "/spotify/add_queue_to_playlist" },
+        spotify_quickplay: { method: "POST", path: "/spotify/quickplay" },
+        spotify_logout: { method: "POST", path: "/spotify/logout" },
+        spotify_playlist_delete: { method: "POST", path: "/spotify/playlist_delete" },
+        spotify_playlist_remove_tracks: { method: "POST", path: "/spotify/playlist_remove_tracks" },
+        spotify_playlist_clear: { method: "POST", path: "/spotify/playlist_clear" },
+      };
     }
 
-    // cancel previous
-    if (this.sug.abort) {
-      try { this.sug.abort.abort(); } catch {}
-      this.sug.abort = null;
+    url(path) {
+      return `${this.base}${path}`;
     }
-    const ctrl = new AbortController();
-    this.sug.abort = ctrl;
-    this.sug.lastQuery = query;
 
-    try {
-      const url = `${this.API_BASE}/autocomplete?q=${encodeURIComponent(query)}&limit=10`;
-      const r = await fetch(url, {
-        method: "GET",
+    async request(method, path, { query, json } = {}) {
+      const url = new URL(this.url(path), location.href);
+      if (query) {
+        for (const [k, v] of Object.entries(query)) {
+          if (v === undefined || v === null || v === "") continue;
+          url.searchParams.set(k, String(v));
+        }
+      }
+
+      const opts = {
+        method,
         credentials: "include",
-        cache: "no-store",
-        headers: this.headers(),
-        signal: ctrl.signal,
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        headers: {},
+      };
 
-      const data = await r.json().catch(() => ({}));
-      const arr = Array.isArray(data?.results)
-        ? data.results
-        : Array.isArray(data?.items)
-        ? data.items
-        : Array.isArray(data)
-        ? data
-        : [];
-
-      if (this.sug.lastQuery !== query) return;
-
-      const items = arr
-        .map((x) => {
-          const urlPage = x?.webpage_url || x?.permalink_url || x?.url || "";
-          const thumb =
-            x?.thumb ||
-            x?.thumbnail ||
-            (Array.isArray(x?.thumbnails) && (x.thumbnails.at(-1)?.url || x.thumbnails.at(-1))) ||
-            "";
-          const duration = Number.isFinite(+x?.duration) ? +x.duration : null;
-
-          return {
-            title: (x?.title || x?.track || x?.name || urlPage || "Untitled").trim(),
-            artist: (x?.artist || x?.uploader || x?.author || x?.channel || "").trim(),
-            duration,
-            thumb: String(thumb || ""),
-            url: String(x?.url || urlPage || ""),
-            webpage_url: String(urlPage || x?.url || ""),
-            source: x?.source || x?.provider || "",
-          };
-        })
-        .filter((it) => !!(it.webpage_url || it.url));
-
-      this.sug.items = items;
-      this.renderSuggestions(items);
-    } catch (e) {
-      if (e?.name === "AbortError") return;
-      this.sug.items = [];
-      this.hideSuggestions();
-    } finally {
-      if (this.sug.abort === ctrl) this.sug.abort = null;
-    }
-  }
-
-  openSuggestions() {
-    if (!this.$suggestions) return;
-    this.sug.open = true;
-    this.$suggestions.classList.add("search-suggestions--open");
-  }
-
-  hideSuggestions() {
-    if (!this.$suggestions) return;
-    this.sug.open = false;
-    this.sug.activeIndex = -1;
-    this.$suggestions.innerHTML = "";
-    this.$suggestions.classList.remove("search-suggestions--open");
-  }
-
-  setActiveSuggestion(i) {
-    if (!this.$suggestions) return;
-    const idx = Number(i);
-    if (!Number.isFinite(idx)) return;
-
-    this.sug.activeIndex = idx;
-    const rows = Array.from(this.$suggestions.querySelectorAll("[data-sug-idx]"));
-    rows.forEach((el) => el.classList.remove("is-active"));
-    const active = rows.find((el) => Number(el.getAttribute("data-sug-idx")) === idx);
-    if (active) {
-      active.classList.add("is-active");
-      try { active.scrollIntoView({ block: "nearest" }); } catch {}
-    }
-  }
-
-  renderSuggestions(items) {
-    if (!this.$suggestions) return;
-
-    this.$suggestions.innerHTML = "";
-    if (!Array.isArray(items) || items.length === 0) {
-      this.hideSuggestions();
-      return;
-    }
-
-    this.openSuggestions();
-
-    items.slice(0, 10).forEach((it, idx) => {
-      const row = document.createElement("div");
-      row.className = "suggestion-item rich";
-      row.setAttribute("role", "option");
-      row.setAttribute("tabindex", "-1");
-      row.setAttribute("data-sug-idx", String(idx));
-
-      const thumb = document.createElement("div");
-      thumb.className = "sug-thumb";
-      const src = it.thumb ? String(it.thumb).replace(/["\n\r]/g, "") : this.pickIconUrl();
-      thumb.style.backgroundImage = `url("${src}")`;
-
-      const main = document.createElement("div");
-      main.className = "sug-main";
-
-      const title = document.createElement("div");
-      title.className = "sug-title";
-      title.textContent = it.title || "Untitled";
-      title.title = it.title || "";
-
-      const artist = document.createElement("div");
-      artist.className = "sug-artist";
-      artist.textContent = it.artist || "";
-
-      main.appendChild(title);
-      main.appendChild(artist);
-
-      const time = document.createElement("div");
-      time.className = "sug-time";
-      time.textContent = it.duration != null ? this.formatTime(it.duration) : "";
-
-      row.addEventListener("mouseenter", () => this.setActiveSuggestion(idx));
-      row.addEventListener("click", () => this.pickSuggestion(it).catch(() => {}));
-
-      row.appendChild(thumb);
-      row.appendChild(main);
-      row.appendChild(time);
-
-      this.$suggestions.appendChild(row);
-    });
-
-    this.setActiveSuggestion(0);
-  }
-
-  async pickSuggestion(it) {
-    const playUrl = this.normalizePlayUrl(it);
-    if (!playUrl) {
-      this.setStatus("Suggestion non jouable (lien invalide).", false);
-      return;
-    }
-
-    if (this.$searchInput) this.$searchInput.value = it.title || playUrl;
-
-    await this.enqueueItem({
-      url: playUrl,
-      title: it.title || playUrl,
-      duration: it.duration ?? undefined,
-      thumb: it.thumb || undefined,
-      artist: it.artist || undefined,
-      source: it.source || undefined,
-    });
-
-    this.hideSuggestions();
-  }
-
-  async addTopOrRaw(query) {
-    const q = String(query || "").trim();
-    if (!q) return;
-
-    if (this.isProbablyURL(q)) {
-      await this.enqueueItem({ url: q, title: q });
-      if (this.$searchInput) this.$searchInput.value = "";
-      this.hideSuggestions();
-      return;
-    }
-
-    // sans suggestions UI, on envoie directement
-    if (!this.$suggestions) {
-      await this.enqueueItem({ query: q });
-      if (this.$searchInput) this.$searchInput.value = "";
-      return;
-    }
-
-    // tente top suggestion
-    try {
-      const items = await this.getSuggestionsOnce(q, 6);
-      if (items && items.length) {
-        const pick = items.find((x) => !!this.normalizePlayUrl(x)) || items[0];
-        const playUrl = this.normalizePlayUrl(pick);
-        if (playUrl) {
-          await this.enqueueItem({
-            url: playUrl,
-            title: pick.title || q,
-            duration: pick.duration ?? undefined,
-            thumb: pick.thumb || undefined,
-            artist: pick.artist || undefined,
-            source: pick.source || undefined,
-          });
-          if (this.$searchInput) this.$searchInput.value = "";
-          this.hideSuggestions();
-          return;
-        }
+      if (json !== undefined) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(json);
       }
-    } catch {}
 
-    // fallback raw
-    await this.enqueueItem({ query: q });
-    if (this.$searchInput) this.$searchInput.value = "";
-    this.hideSuggestions();
-  }
+      const res = await fetch(url.toString(), opts);
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
 
-  async getSuggestionsOnce(q, limit = 6) {
-    const query = String(q || "").trim();
-    if (!query) return [];
-    const url = `${this.API_BASE}/autocomplete?q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`;
-    const r = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-      headers: this.headers(),
-    });
-    if (!r.ok) return [];
-    const data = await r.json().catch(() => ({}));
-    const arr = Array.isArray(data?.results)
-      ? data.results
-      : Array.isArray(data?.items)
-      ? data.items
-      : Array.isArray(data)
-      ? data
-      : [];
-    return arr.map((x) => ({
-      title: x?.title || "",
-      artist: x?.artist || x?.uploader || "",
-      duration: Number.isFinite(+x?.duration) ? +x.duration : null,
-      thumb: x?.thumb || x?.thumbnail || "",
-      url: x?.url || "",
-      webpage_url: x?.webpage_url || x?.url || "",
-      source: x?.source || x?.provider || "",
-    }));
-  }
+      let payload = null;
+      if (ct.includes("application/json")) payload = await res.json().catch(() => null);
+      else payload = await res.text().catch(() => null);
 
-  // ---------------------------------------------------------------------------
-  // Discord Auth
-  // ---------------------------------------------------------------------------
-  async refreshMe() {
-    try {
-      const me = await this.apiGet("/me");
-      const u = me?.user && me.user.id ? me.user : me;
-      this.me = u && u.id ? u : null;
-      this.userId = this.me ? this.me.id : null;
-      this.renderMe();
-    } catch {
-      this.me = null;
-      this.userId = null;
-      this.renderMe();
-    }
-  }
-
-  renderMe() {
-    if (!this.$userName || !this.$userAvatar || !this.$userStatus) return;
-    const u = this.me;
-
-    if (u && u.id) {
-      this.$userName.textContent = u.global_name || u.username || String(u.id);
-      this.$userStatus.textContent = "Connecté";
-      this.$userAvatar.textContent = String(u.username || "?").slice(0, 1).toUpperCase();
-
-      this.$btnLogin?.classList.add("hidden");
-      this.$btnLogout?.classList.remove("hidden");
-    } else {
-      this.$userName.textContent = "Non connecté";
-      this.$userStatus.textContent = "Discord";
-      this.$userAvatar.textContent = "?";
-
-      this.$btnLogin?.classList.remove("hidden");
-      this.$btnLogout?.classList.add("hidden");
-    }
-  }
-
-  async loginDiscord() {
-    try {
-      const w = window.open("/auth/login", "greg_login", "width=520,height=780");
-      if (!w) alert("Popup bloquée : autorise l’ouverture de fenêtre pour te connecter.");
-    } catch {}
-    this.setStatus("Connexion Discord…", true);
-
-    const t0 = Date.now();
-    const loop = async () => {
-      await this.refreshMe();
-      if (this.me) {
-        this.setStatus("Connecté à Discord ✅", true);
-        await this.refreshGuilds();
-        this.autoSelectGuildIfPossible();
-        await this.refreshState(true);
-      } else if (Date.now() - t0 < 120000) {
-        setTimeout(loop, 1500);
-      } else {
-        this.setStatus("Connexion Discord expirée.", false);
+      if (!res.ok) {
+        const msg =
+          (payload && typeof payload === "object" && payload.error) ||
+          (typeof payload === "string" && payload.slice(0, 200)) ||
+          `HTTP ${res.status}`;
+        const err = new Error(msg);
+        err.status = res.status;
+        err.payload = payload;
+        throw err;
       }
+      return payload;
+    }
+
+    // Convenience
+    async get(path, query) {
+      return this.request("GET", path, { query });
+    }
+    async post(path, json, query) {
+      return this.request("POST", path, { json, query });
+    }
+  }
+
+  const api = new GregAPI(API_BASE);
+  // expose for console debugging (pro)
+  window.GregAPI = api;
+
+  // =============================
+  // App state
+  // =============================
+  const state = {
+    me: null,
+    guilds: [],
+    guildId: null,
+
+    // socket
+    socket: null,
+    socketReady: false,
+    socketId: null,
+
+    // playlist
+    playlist: {
+      current: null,
+      queue: [],
+      paused: false,
+      repeat: false,
+      position: 0,
+      duration: 0,
+    },
+
+    // progress local ticker
+    tick: {
+      running: false,
+      basePos: 0,
+      baseAt: 0,
+      duration: 0,
+      paused: true,
+    },
+
+    // search suggestions
+    suggestions: [],
+    sugOpen: false,
+    sugIndex: -1,
+    sugAbort: null,
+
+    // spotify
+    spotifyLinked: false,
+    spotifyProfile: null,
+  };
+
+  // =============================
+  // Socket.IO (all events wired)
+  // =============================
+  function initSocket() {
+    if (typeof window.io !== "function") {
+      setStatus("Socket.IO client absent — fallback polling", "err");
+      return null;
+    }
+
+    const socket = window.io(API_ORIGIN || undefined, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"],
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: 999,
+      reconnectionDelay: 400,
+      reconnectionDelayMax: 2500,
+      timeout: 8000,
+    });
+
+    socket.on("connect", () => {
+      state.socketReady = true;
+      state.socketId = socket.id;
+      setStatus(`Socket connecté (${socket.id})`, "ok");
+
+      // register overlay/web player
+      try {
+        socket.emit("overlay_register", {
+          kind: "web_player",
+          page: "player",
+          guild_id: state.guildId ? Number(state.guildId) : undefined,
+          user_id: state.me?.id ? Number(state.me.id) : undefined,
+        });
+      } catch (_) {}
+
+      // subscribe current guild
+      if (state.guildId) {
+        socket.emit("overlay_subscribe_guild", { guild_id: Number(state.guildId) });
+      }
+    });
+
+    socket.on("disconnect", (reason) => {
+      state.socketReady = false;
+      setStatus(`Socket déconnecté (${reason}) — polling actif`, "err");
+    });
+
+    // server -> client events
+    socket.on("welcome", (data) => {
+      // purely informative
+      // console.debug("[socket] welcome", data);
+    });
+
+    socket.on("overlay_registered", (data) => {
+      // console.debug("[socket] overlay_registered", data);
+    });
+
+    socket.on("overlay_pong", (data) => {
+      // console.debug("[socket] overlay_pong", data);
+    });
+
+    socket.on("overlay_joined", (data) => {
+      // console.debug("[socket] overlay_joined", data);
+    });
+
+    socket.on("overlay_left", (data) => {
+      // console.debug("[socket] overlay_left", data);
+    });
+
+    socket.on("playlist_update", (payload) => {
+      applyPlaylistPayload(payload);
+      renderAll();
+    });
+
+    socket.on("spotify:linked", (payload) => {
+      // event emitted by spotify blueprint
+      state.spotifyLinked = true;
+      state.spotifyProfile = payload?.profile || null;
+      renderSpotify();
+      setStatus("Spotify lié ✅", "ok");
+    });
+
+    // periodic ping (keeps room state fresh)
+    setInterval(() => {
+      if (!state.socketReady) return;
+      try {
+        socket.emit("overlay_ping", { t: Date.now() });
+      } catch (_) {}
+    }, 25000);
+
+    return socket;
+  }
+
+  function socketResubscribeGuild(oldGid, newGid) {
+    if (!state.socket || !state.socketReady) return;
+    try {
+      if (oldGid) state.socket.emit("overlay_unsubscribe_guild", { guild_id: Number(oldGid) });
+      if (newGid) state.socket.emit("overlay_subscribe_guild", { guild_id: Number(newGid) });
+    } catch (_) {}
+  }
+
+  // =============================
+  // Payload normalization (robust)
+  // =============================
+  function normalizeItem(it) {
+    if (!it || typeof it !== "object") return null;
+    return {
+      title: it.title || it.name || it.track_title || "",
+      url: it.url || it.webpage_url || it.href || "",
+      artist: it.artist || it.uploader || it.author || it.channel || "",
+      duration: toSeconds(it.duration ?? it.duration_s ?? it.duration_sec ?? it.duration_ms) ?? null,
+      thumb: it.thumb || it.thumbnail || it.image || null,
+      provider: it.provider || it.source || it.platform || null,
     };
-    loop();
   }
 
-  async logoutDiscord() {
-    try {
-      await fetch("/auth/logout", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
+  function applyPlaylistPayload(payload) {
+    // Possible shapes:
+    // - { current, queue, paused, repeat, position, duration }
+    // - { ok:true, state:{...} }
+    // - { pm:{...} } or direct pm.to_dict()
+    const p = payload?.state || payload?.pm || payload || {};
+    const current = normalizeItem(p.current || p.now_playing || null);
+    const queueRaw = Array.isArray(p.queue) ? p.queue : Array.isArray(p.items) ? p.items : [];
+    const queue = queueRaw.map(normalizeItem).filter(Boolean);
+
+    const paused = !!(p.paused ?? p.is_paused ?? p.pause ?? false);
+    const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? false);
+
+    const position = toSeconds(p.position ?? p.pos ?? p.progress ?? 0) ?? 0;
+    const duration =
+      toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ??
+      (current?.duration ?? 0);
+
+    state.playlist.current = current;
+    state.playlist.queue = queue;
+    state.playlist.paused = paused;
+    state.playlist.repeat = repeat;
+    state.playlist.position = position;
+    state.playlist.duration = duration;
+
+    // update tick base
+    state.tick.basePos = position || 0;
+    state.tick.baseAt = Date.now();
+    state.tick.duration = duration || 0;
+    state.tick.paused = paused || !current;
+
+    setRepeatActive(repeat);
+    updatePlayPauseIcon(paused);
+  }
+
+  // =============================
+  // Rendering
+  // =============================
+  function updatePlayPauseIcon(paused) {
+    const href = paused ? "#icon-play" : "#icon-pause";
+    if (el.playPauseUse) el.playPauseUse.setAttribute("href", href);
+  }
+
+  function renderAuth() {
+    const me = state.me;
+    if (!me) {
+      el.userAvatar.textContent = "?";
+      el.userName.textContent = "Non connecté";
+      el.userStatus.textContent = "Discord";
+      el.btnLoginDiscord.classList.remove("hidden");
+      el.btnLogoutDiscord.classList.add("hidden");
+      return;
+    }
+
+    const name = me.username || me.name || me.display_name || `User ${me.id}`;
+    el.userName.textContent = name;
+    el.userStatus.textContent = "Connecté";
+    el.btnLoginDiscord.classList.add("hidden");
+    el.btnLogoutDiscord.classList.remove("hidden");
+
+    const letter = (name || "?").trim().slice(0, 1).toUpperCase();
+    el.userAvatar.textContent = letter || "?";
+  }
+
+  function renderGuilds() {
+    const sel = el.guildSelect;
+    if (!sel) return;
+
+    const current = state.guildId ? String(state.guildId) : "";
+    const guilds = Array.isArray(state.guilds) ? state.guilds : [];
+
+    // preserve first "(par défaut)" option
+    const keep0 = sel.querySelector("option[value='']") ? sel.querySelector("option[value='']").outerHTML : "<option value=''></option>";
+    sel.innerHTML = keep0;
+
+    for (const g of guilds) {
+      const opt = document.createElement("option");
+      opt.value = String(g.id);
+      opt.textContent = g.name || String(g.id);
+      sel.appendChild(opt);
+    }
+
+    sel.value = current;
+  }
+
+  function renderNowPlaying() {
+    const c = state.playlist.current;
+
+    if (!c) {
+      el.trackTitle.textContent = "Rien en cours";
+      el.trackArtist.textContent = "—";
+      el.artwork.style.backgroundImage = "";
+      el.progressFill.style.width = "0%";
+      el.progressCurrent.textContent = "0:00";
+      el.progressTotal.textContent = "--:--";
+      updatePlayPauseIcon(true);
+      return;
+    }
+
+    el.trackTitle.textContent = c.title || "Titre inconnu";
+    el.trackArtist.textContent = c.artist || "—";
+
+    if (c.thumb) el.artwork.style.backgroundImage = `url("${c.thumb}")`;
+    else el.artwork.style.backgroundImage = "";
+
+    const dur = state.playlist.duration || c.duration || 0;
+    el.progressTotal.textContent = formatTime(dur);
+  }
+
+  function renderQueue() {
+    const q = state.playlist.queue || [];
+    el.queueCount.textContent = `${q.length} titre${q.length > 1 ? "s" : ""}`;
+
+    if (!q.length) {
+      el.queueList.innerHTML = `<div class="queue-empty">File d’attente vide</div>`;
+      return;
+    }
+
+    const html = q
+      .map((it, idx) => {
+        const title = escapeHtml(it.title || "Titre inconnu");
+        const sub = escapeHtml([it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • "));
+        const thumbStyle = it.thumb ? `style="background-image:url('${escapeHtml(it.thumb)}')"` : "";
+        return `
+          <div class="queue-item" data-idx="${idx}">
+            <div class="queue-thumb" ${thumbStyle}></div>
+            <div class="queue-main">
+              <div class="queue-title">${title}</div>
+              <div class="queue-sub">${sub || "&nbsp;"}</div>
+            </div>
+            <div class="queue-actions">
+              <button class="queue-btn danger" data-action="remove" title="Retirer">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    el.queueList.innerHTML = html;
+
+    // bind actions
+    for (const row of el.queueList.querySelectorAll(".queue-item")) {
+      const idx = Number(row.getAttribute("data-idx"));
+
+      row.addEventListener("click", async (ev) => {
+        const btn = ev.target.closest("button");
+        if (btn) return; // actions handle separately
+        // click row => play at index
+        await safeAction(() => api_playlist_play_at(idx), `Lecture: item #${idx}`, true);
       });
-    } catch {}
-    this.me = null;
-    this.userId = null;
-    this.renderMe();
-    this.setStatus("Déconnecté.", true);
-  }
 
-  // ---------------------------------------------------------------------------
-  // Guilds
-  // ---------------------------------------------------------------------------
-  async refreshGuilds() {
-    if (!this.$guildSelect) return;
-
-    this.$guildSelect.innerHTML = `<option value="">(par défaut)</option>`;
-
-    if (!this.me?.id) return;
-
-    try {
-      const data = await this.apiGet("/guilds");
-      const guilds = Array.isArray(data?.guilds) ? data.guilds : [];
-      guilds.forEach((g) => {
-        const opt = document.createElement("option");
-        opt.value = String(g.id || "");
-        opt.textContent = g.name || String(g.id || "Serveur");
-        this.$guildSelect.appendChild(opt);
-      });
-
-      if (this.guildId) this.$guildSelect.value = this.guildId;
-    } catch {
-      // silence
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Playlist / Queue
-  // ---------------------------------------------------------------------------
-  async refreshState(silent = false) {
-    try {
-      const data = await this.apiGet("/playlist");
-      const ok = this.applyStateFromBackend(data);
-      if (!ok) throw new Error("Bad playlist payload");
-
-      this.renderState();
-      if (!silent) this.setStatus("État mis à jour ✅", true);
-    } catch (e) {
-      const status = e?.status;
-      const detail = e?.payload?.error || e?.payload?.message || "";
-
-      if (!silent) {
-        if (status === 400 && !this.guildId) {
-          this.setStatus("Choisis un serveur (guild) pour charger la playlist.", false);
-        } else {
-          this.setStatus(`Playlist KO${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`, false);
-        }
-      }
-    }
-  }
-
-  _setUseIcon(btn, iconId) {
-    if (!btn) return;
-    const use = btn.querySelector("use");
-    if (use) use.setAttribute("href", iconId);
-  }
-
-  renderState() {
-    const cur = this.state.current;
-    const queue = this.state.queue || [];
-
-    // Current title/artist
-    if (this.$title) this.$title.textContent = cur ? (cur.title || "Sans titre") : "Rien en cours";
-    if (this.$artist) {
-      const a = cur?.artist || cur?.uploader || cur?.author || cur?.channel || "";
-      this.$artist.textContent = cur ? (a || "Artiste inconnu") : "—";
-    }
-
-    // Queue count
-    if (this.$queueCount) {
-      this.$queueCount.textContent = `${queue.length} titre${queue.length > 1 ? "s" : ""}`;
-    }
-
-    // Queue list
-    if (this.$queueList) {
-      this.$queueList.innerHTML = "";
-
-      if (!queue.length) {
-        const empty = document.createElement("div");
-        empty.className = "queue-empty";
-        empty.textContent = "Aucun titre en attente.";
-        this.$queueList.appendChild(empty);
-      } else {
-        queue.forEach((item, idx) => {
-          const div = document.createElement("div");
-          div.className = "queue-item";
-          div.dataset.index = String(idx);
-
-          const thumb = document.createElement("div");
-          thumb.className = "queue-thumb";
-          const img = String(item.thumb || item.thumbnail || item.image || "").replace(/["\n\r]/g, "");
-          thumb.style.backgroundImage = `url("${img || this.pickIconUrl()}")`;
-
-          const main = document.createElement("div");
-          main.className = "queue-main";
-
-          const t = document.createElement("div");
-          t.className = "queue-title";
-          t.textContent = item.title || item.query || "Sans titre";
-
-          const sub = document.createElement("div");
-          sub.className = "queue-sub";
-          sub.textContent = item.artist || item.uploader || item.author || item.source || "";
-
-          main.appendChild(t);
-          main.appendChild(sub);
-
-          const actions = document.createElement("div");
-          actions.className = "queue-actions";
-
-          const btnPlay = document.createElement("button");
-          btnPlay.type = "button";
-          btnPlay.className = "queue-btn";
-          btnPlay.title = "Lire maintenant";
-          btnPlay.setAttribute("aria-label", "Lire maintenant");
-          btnPlay.innerHTML = `<svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>`;
-          btnPlay.addEventListener("click", () => this.playAt(idx));
-
-          const btnDel = document.createElement("button");
-          btnDel.type = "button";
-          btnDel.className = "queue-btn danger";
-          btnDel.title = "Retirer";
-          btnDel.setAttribute("aria-label", "Retirer");
-          btnDel.innerHTML = `<svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>`;
-          btnDel.addEventListener("click", () => this.removeAt(idx));
-
-          actions.appendChild(btnPlay);
-          actions.appendChild(btnDel);
-
-          div.appendChild(thumb);
-          div.appendChild(main);
-          div.appendChild(actions);
-
-          this.$queueList.appendChild(div);
+      const rm = row.querySelector("button[data-action='remove']");
+      if (rm) {
+        rm.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          await safeAction(() => api_queue_remove(idx), `Retiré: item #${idx}`, true);
         });
       }
     }
-
-    // Artwork
-    const thumb = cur?.thumbnail || cur?.thumb || cur?.image || "";
-    if (this.$artwork) {
-      const src = thumb ? String(thumb).replace(/["\n\r]/g, "") : this.pickIconUrl();
-      this.$artwork.style.backgroundImage = `url("${src}")`;
-      this.$artwork.textContent = "";
-    }
-
-    // Play/Pause icon
-    if (this.$btnPlayPause) {
-      this._setUseIcon(this.$btnPlayPause, this.state.is_paused ? "#icon-play" : "#icon-pause");
-      this.$btnPlayPause.setAttribute("aria-pressed", String(!this.state.is_paused));
-    }
-
-    // Repeat visual
-    if (this.$btnRepeat) {
-      this.$btnRepeat.classList.toggle("control-btn--active", !!this.state.repeat);
-      this.$btnRepeat.setAttribute("aria-pressed", String(!!this.state.repeat));
-    }
-
-    // Progress now
-    this.renderProgress();
   }
 
-  renderProgress() {
-    const cur = this.state.current;
-    const duration = Number(this.progress.duration || 0);
-
-    const now = Date.now() / 1000;
-    let elapsed = this.state.is_paused
-      ? Number(this.progress.elapsed || 0)
-      : Math.max(0, now - Number(this.progress.startedAt || now));
-
-    if (!Number.isFinite(elapsed) || elapsed < 0) elapsed = 0;
-
-    if (this.$pCur) this.$pCur.textContent = this.formatTime(elapsed);
-
-    if (!cur || !duration || !Number.isFinite(duration) || duration <= 0) {
-      if (this.$pf) this.$pf.style.width = "0%";
-      if (this.$pTot) this.$pTot.textContent = "--:--";
+  function renderSpotify() {
+    if (!state.me) {
+      el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
+      el.btnSpotifyLogin.disabled = true;
+      el.btnSpotifyLogout.disabled = true;
+      el.btnSpotifyLogout.classList.add("hidden");
+      el.btnSpotifyLogin.classList.remove("hidden");
       return;
     }
 
-    if (elapsed > duration) elapsed = duration;
+    el.btnSpotifyLogin.disabled = false;
+    el.btnSpotifyLogout.disabled = false;
 
-    const ratio = Math.min(1, elapsed / duration);
-    if (this.$pf) this.$pf.style.width = `${ratio * 100}%`;
-    if (this.$pTot) this.$pTot.textContent = this.formatTime(duration);
+    if (!state.spotifyLinked) {
+      el.spotifyStatus.textContent = "Spotify non lié";
+      el.btnSpotifyLogout.classList.add("hidden");
+      el.btnSpotifyLogin.classList.remove("hidden");
+      return;
+    }
+
+    const prof = state.spotifyProfile;
+    const name = prof?.display_name || prof?.id || "Spotify lié";
+    el.spotifyStatus.textContent = `Spotify lié : ${name}`;
+    el.btnSpotifyLogin.classList.add("hidden");
+    el.btnSpotifyLogout.classList.remove("hidden");
   }
 
-  // ---------------------------------------------------------------------------
-  // Actions
-  // ---------------------------------------------------------------------------
-  async enqueueItem(payload) {
+  function renderAll() {
+    renderAuth();
+    renderGuilds();
+    renderNowPlaying();
+    renderQueue();
+    renderSpotify();
+  }
+
+  // =============================
+  // Progress ticker
+  // =============================
+  function startProgressLoop() {
+    if (state.tick.running) return;
+    state.tick.running = true;
+
+    setInterval(() => {
+      const c = state.playlist.current;
+      if (!c) return;
+
+      const dur = state.playlist.duration || c.duration || 0;
+      const basePos = state.tick.basePos || 0;
+      const elapsed = (Date.now() - (state.tick.baseAt || Date.now())) / 1000;
+      const paused = state.playlist.paused;
+
+      const pos = paused ? basePos : basePos + elapsed;
+      const clamped = dur > 0 ? Math.min(Math.max(pos, 0), dur) : Math.max(pos, 0);
+
+      el.progressCurrent.textContent = formatTime(clamped);
+      el.progressTotal.textContent = formatTime(dur);
+
+      const pct = dur > 0 ? (clamped / dur) * 100 : 0;
+      el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    }, 250);
+  }
+
+  // =============================
+  // Search suggestions
+  // =============================
+  function closeSuggestions() {
+    state.sugOpen = false;
+    state.sugIndex = -1;
+    el.searchSuggestions.classList.remove("search-suggestions--open");
+    el.searchSuggestions.innerHTML = "";
+  }
+
+  function openSuggestions() {
+    state.sugOpen = true;
+    el.searchSuggestions.classList.add("search-suggestions--open");
+  }
+
+  function renderSuggestions(list) {
+    if (!Array.isArray(list) || !list.length) {
+      closeSuggestions();
+      return;
+    }
+
+    state.suggestions = list;
+    if (state.sugIndex >= list.length) state.sugIndex = -1;
+
+    const html = list
+      .map((it, i) => {
+        const title = escapeHtml(it.title || it.name || "Titre");
+        const artist = escapeHtml(it.artist || it.channel || it.uploader || "");
+        const dur = toSeconds(it.duration) ?? null;
+        const time = dur != null ? formatTime(dur) : "";
+        const thumb = it.thumb || it.thumbnail || null;
+        const active = i === state.sugIndex ? " is-active" : "";
+        const thumbStyle = thumb ? `style="background-image:url('${escapeHtml(thumb)}')"` : "";
+        return `
+          <div class="suggestion-item rich${active}" data-idx="${i}">
+            <div class="sug-thumb" ${thumbStyle}></div>
+            <div class="sug-main">
+              <div class="sug-title">${title}</div>
+              <div class="sug-artist">${artist || "&nbsp;"}</div>
+            </div>
+            <div class="sug-time">${escapeHtml(time)}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    el.searchSuggestions.innerHTML = html;
+    openSuggestions();
+
+    for (const row of el.searchSuggestions.querySelectorAll(".suggestion-item")) {
+      row.addEventListener("mousedown", (ev) => {
+        // prevent blur before click
+        ev.preventDefault();
+      });
+      row.addEventListener("click", async () => {
+        const idx = Number(row.getAttribute("data-idx"));
+        const pick = state.suggestions[idx];
+        closeSuggestions();
+        await addFromSuggestion(pick);
+      });
+    }
+  }
+
+  async function fetchSuggestions(q) {
+    if (state.sugAbort) {
+      try { state.sugAbort.abort(); } catch (_) {}
+    }
+    state.sugAbort = new AbortController();
+
+    const url = new URL(`${API_BASE}/search/autocomplete`, location.href);
+    url.searchParams.set("q", q);
+    url.searchParams.set("limit", "8");
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      credentials: "include",
+      signal: state.sugAbort.signal,
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json().catch(() => null);
+    return Array.isArray(data?.results) ? data.results : [];
+  }
+
+  function debounce(fn, ms) {
+    let t = null;
+    return (...args) => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
+  }
+
+  const onSearchInput = debounce(async () => {
+    const q = (el.searchInput.value || "").trim();
+    if (q.length < 2) {
+      closeSuggestions();
+      return;
+    }
     try {
-      if (!this.guildId) this.autoSelectGuildIfPossible();
-      if (!this.guildId) {
-        this.setStatus("Choisis un serveur (guild) avant d’ajouter un titre.", false);
+      const rows = await fetchSuggestions(q);
+      renderSuggestions(rows);
+    } catch (_) {
+      // ignore
+    }
+  }, 160);
+
+  async function addFromSuggestion(sug) {
+    const url = sug?.webpage_url || sug?.url || "";
+    const title = sug?.title || sug?.name || "";
+    const artist = sug?.artist || sug?.uploader || sug?.channel || "";
+    const duration = sug?.duration ?? null;
+    const thumb = sug?.thumb || sug?.thumbnail || null;
+
+    if (!state.me) {
+      setStatus("Connecte-toi à Discord d'abord.", "err");
+      return;
+    }
+    if (!state.guildId) {
+      setStatus("Choisis un serveur.", "err");
+      return;
+    }
+
+    await safeAction(
+      () =>
+        api_queue_add({
+          url,
+          title,
+          artist,
+          duration,
+          thumb,
+          provider: sug?.provider || sug?.source || undefined,
+        }),
+      "Ajouté à la file ✅",
+      true
+    );
+
+    el.searchInput.value = "";
+  }
+
+  // =============================
+  // API actions (playlist / queue)
+  // =============================
+  function basePayload(extra = {}) {
+    const out = { ...extra };
+    if (state.guildId) out.guild_id = Number(state.guildId);
+    if (state.me?.id) out.user_id = Number(state.me.id);
+    return out;
+  }
+
+  async function api_playlist_state() {
+    return api.get(api.routes.playlist_state.path, state.guildId ? { guild_id: state.guildId } : undefined);
+  }
+
+  async function api_queue_add(itemOrQuery) {
+    // backend supports: { query } OR { url/title/... }
+    const payload =
+      typeof itemOrQuery === "string"
+        ? basePayload({ query: itemOrQuery })
+        : basePayload(itemOrQuery || {});
+    return api.post(api.routes.queue_add.path, payload);
+  }
+
+  async function api_queue_remove(index) {
+    return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) }));
+  }
+
+  async function api_queue_skip() {
+    return api.post(api.routes.queue_skip.path, basePayload({}));
+  }
+
+  async function api_queue_stop() {
+    return api.post(api.routes.queue_stop.path, basePayload({}));
+  }
+
+  async function api_playlist_toggle_pause() {
+    return api.post(api.routes.playlist_toggle_pause.path, basePayload({}));
+  }
+
+  async function api_playlist_restart() {
+    return api.post(api.routes.playlist_restart.path, basePayload({}));
+  }
+
+  async function api_playlist_repeat() {
+    return api.post(api.routes.playlist_repeat.path, basePayload({}));
+  }
+
+  async function api_playlist_play_at(index) {
+    return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) }));
+  }
+
+  // =============================
+  // Spotify actions (full routes exist)
+  // =============================
+  async function api_spotify_status() {
+    return api.get(api.routes.spotify_status.path);
+  }
+
+  async function api_spotify_logout() {
+    return api.post(api.routes.spotify_logout.path, {});
+  }
+
+  function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
+    const y = window.top.outerHeight / 2 + window.top.screenY - h / 2;
+    const x = window.top.outerWidth / 2 + window.top.screenX - w / 2;
+    return window.open(
+      url,
+      name,
+      `toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=${w},height=${h},top=${y},left=${x}`
+    );
+  }
+
+  function spotifyLogin() {
+    if (!state.me) {
+      setStatus("Connecte-toi à Discord avant Spotify.", "err");
+      return;
+    }
+    const sid = state.socketId || "";
+    const url = `${API_BASE}${api.routes.spotify_login.path}?sid=${encodeURIComponent(sid)}`;
+    openPopup(url, "spotify_link");
+    setStatus("Ouverture Spotify…", "ok");
+  }
+
+  // =============================
+  // Auth / Guilds / Refresh
+  // =============================
+  async function refreshMe() {
+    try {
+      const me = await api.get(api.routes.users_me.path);
+      state.me = me && me.ok === false ? null : me;
+      return state.me;
+    } catch (_) {
+      state.me = null;
+      return null;
+    }
+  }
+
+  async function refreshGuilds() {
+    if (!state.me) {
+      state.guilds = [];
+      return [];
+    }
+    try {
+      const data = await api.get(api.routes.guilds.path);
+      const rows = Array.isArray(data?.guilds) ? data.guilds : Array.isArray(data) ? data : [];
+      state.guilds = rows;
+      return rows;
+    } catch (_) {
+      state.guilds = [];
+      return [];
+    }
+  }
+
+  async function refreshSpotify() {
+    if (!state.me) {
+      state.spotifyLinked = false;
+      state.spotifyProfile = null;
+      return;
+    }
+    try {
+      const st = await api_spotify_status();
+      state.spotifyLinked = !!st?.linked;
+      state.spotifyProfile = st?.profile || null;
+    } catch (_) {
+      state.spotifyLinked = false;
+      state.spotifyProfile = null;
+    }
+  }
+
+  async function refreshPlaylist() {
+    if (!state.me || !state.guildId) {
+      applyPlaylistPayload({ current: null, queue: [], paused: true, repeat: false, position: 0, duration: 0 });
+      return;
+    }
+    try {
+      const data = await api_playlist_state();
+      applyPlaylistPayload(data);
+    } catch (e) {
+      // common: not in voice / guild not found
+      // keep UI, just show status
+      setStatus(String(e.message || e), "err");
+    }
+  }
+
+  async function refreshAll() {
+    await refreshMe();
+    await refreshGuilds();
+
+    // choose guild
+    const saved = localStorage.getItem(LS_KEY_GUILD);
+    if (!state.guildId) {
+      if (saved) state.guildId = saved;
+      else if (state.guilds?.length) state.guildId = String(state.guilds[0].id);
+      else state.guildId = "";
+    }
+
+    await refreshSpotify();
+    await refreshPlaylist();
+    renderAll();
+  }
+
+  // =============================
+  // Safe action helper
+  // =============================
+  async function safeAction(fn, okText, refreshAfter = false) {
+    try {
+      const res = await fn();
+      if (okText) setStatus(okText, "ok");
+
+      // If socket isn’t delivering playlist_update, refresh explicitly.
+      if (refreshAfter) await refreshPlaylist();
+      renderAll();
+      return res;
+    } catch (e) {
+      const msg = e?.payload?.error || e?.message || String(e);
+      setStatus(msg, "err");
+      throw e;
+    }
+  }
+
+  // =============================
+  // Events binding
+  // =============================
+  function bindUI() {
+    // search
+    el.searchInput.addEventListener("input", onSearchInput);
+
+    el.searchInput.addEventListener("keydown", async (ev) => {
+      if (!state.sugOpen) return;
+
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        state.sugIndex = Math.min(state.suggestions.length - 1, state.sugIndex + 1);
+        renderSuggestions(state.suggestions);
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        state.sugIndex = Math.max(-1, state.sugIndex - 1);
+        renderSuggestions(state.suggestions);
+      } else if (ev.key === "Enter") {
+        if (state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
+          ev.preventDefault();
+          const pick = state.suggestions[state.sugIndex];
+          closeSuggestions();
+          await addFromSuggestion(pick);
+        }
+      } else if (ev.key === "Escape") {
+        closeSuggestions();
+      }
+    });
+
+    el.searchInput.addEventListener("blur", () => {
+      // small delay so click can register
+      setTimeout(() => closeSuggestions(), 120);
+    });
+
+    el.searchForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const q = (el.searchInput.value || "").trim();
+      if (!q) return;
+
+      // if suggestion selected, add that
+      if (state.sugOpen && state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
+        const pick = state.suggestions[state.sugIndex];
+        closeSuggestions();
+        await addFromSuggestion(pick);
         return;
       }
 
-      const body = Object.assign({}, payload || {});
-      body.guild_id = this.guildId;
-      if (this.userId) body.user_id = this.userId;
+      // else: raw query => /queue/add {query}
+      closeSuggestions();
+      await safeAction(() => api_queue_add(q), "Ajouté à la file ✅", true);
+      el.searchInput.value = "";
+    });
 
-      await this.apiPost("/queue/add", body);
+    // auth
+    el.btnLoginDiscord.addEventListener("click", () => {
+      // same tab login is simplest (cookies)
+      const url = `${API_BASE}${api.routes.auth_login.path}`;
+      window.location.href = url;
+    });
 
-      const label = body.title || body.query || body.url || "OK";
-      this.setStatus(`Ajouté : ${label}`, true);
+    el.btnLogoutDiscord.addEventListener("click", async () => {
+      await safeAction(() => api.post(api.routes.auth_logout.path, {}), "Déconnecté ✅", false);
+      state.me = null;
+      state.guilds = [];
+      state.guildId = "";
+      await refreshAll();
+    });
 
-      await this.refreshState(true);
-    } catch {
-      this.setStatus("Impossible d’ajouter (connecté ? en vocal ? serveur sélectionné ?).", false);
-    }
+    // guild select
+    el.guildSelect.addEventListener("change", async () => {
+      const oldGid = state.guildId;
+      const newGid = el.guildSelect.value || "";
+      state.guildId = newGid;
+
+      if (newGid) localStorage.setItem(LS_KEY_GUILD, newGid);
+      else localStorage.removeItem(LS_KEY_GUILD);
+
+      socketResubscribeGuild(oldGid, newGid);
+      await refreshPlaylist();
+      renderAll();
+    });
+
+    // controls
+    el.btnStop.addEventListener("click", async () => {
+      await safeAction(() => api_queue_stop(), "Stop ✅", true);
+    });
+
+    el.btnSkip.addEventListener("click", async () => {
+      await safeAction(() => api_queue_skip(), "Skip ✅", true);
+    });
+
+    el.btnPlayPause.addEventListener("click", async () => {
+      await safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true);
+    });
+
+    el.btnPrev.addEventListener("click", async () => {
+      await safeAction(() => api_playlist_restart(), "Restart ✅", true);
+    });
+
+    el.btnRepeat.addEventListener("click", async () => {
+      await safeAction(() => api_playlist_repeat(), "Repeat toggle ✅", true);
+    });
+
+    // spotify
+    el.btnSpotifyLogin.addEventListener("click", () => spotifyLogin());
+
+    el.btnSpotifyLogout.addEventListener("click", async () => {
+      await safeAction(() => api_spotify_logout(), "Spotify délié ✅", false);
+      state.spotifyLinked = false;
+      state.spotifyProfile = null;
+      renderSpotify();
+    });
   }
 
-  async playAt(idx) {
-    try {
-      await this.apiPost("/playlist/play_at", { index: idx, guild_id: this.guildId || undefined });
-      await this.refreshState(true);
-    } catch {}
+  // =============================
+  // Polling fallback
+  // =============================
+  function startPolling() {
+    setInterval(async () => {
+      if (state.socketReady) return; // sockets are source of truth when alive
+      await refreshMe();
+      await refreshSpotify();
+      await refreshPlaylist();
+      renderAll();
+    }, 2000);
   }
 
-  async removeAt(idx) {
-    try {
-      await this.apiPost("/queue/remove", { index: idx, guild_id: this.guildId || undefined });
-      await this.refreshState(true);
-    } catch {}
+  // =============================
+  // Boot
+  // =============================
+  async function boot() {
+    setStatus("Initialisation…", "ok");
+
+    // socket first (so we can pass sid for spotify login)
+    state.socket = initSocket();
+
+    bindUI();
+    await refreshAll();
+
+    startProgressLoop();
+    startPolling();
+
+    // initial status
+    setStatus("Prêt ✅", "ok");
   }
 
-  async togglePause() {
-    try {
-      await this.apiPost("/playlist/toggle_pause", { guild_id: this.guildId || undefined });
-      await this.refreshState(true);
-    } catch {
-      try {
-        if (this.state.is_paused) await this.apiPost("/playlist/resume", { guild_id: this.guildId || undefined });
-        else await this.apiPost("/playlist/pause", { guild_id: this.guildId || undefined });
-        await this.refreshState(true);
-      } catch {}
-    }
-  }
-
-  async skip() {
-    try {
-      await this.apiPost("/queue/skip", { guild_id: this.guildId || undefined });
-      await this.refreshState(true);
-    } catch {}
-  }
-
-  async restart() {
-    try {
-      await this.apiPost("/playlist/restart", { guild_id: this.guildId || undefined });
-      await this.refreshState(true);
-    } catch {
-      try {
-        await this.apiPost("/queue/stop", { guild_id: this.guildId || undefined });
-        await this.refreshState(true);
-      } catch {}
-    }
-  }
-
-  async toggleRepeat() {
-    try {
-      const res = await this.apiPost("/playlist/repeat", { guild_id: this.guildId || undefined });
-      const st = this.unwrapPlaylistResponse(res) || res;
-      this.state.repeat = !!(st?.repeat_all ?? st?.repeat ?? res?.repeat);
-      await this.refreshState(true);
-    } catch {}
-  }
-
-  // ---------------------------------------------------------------------------
-  // Spotify
-  // ---------------------------------------------------------------------------
-  async refreshSpotify() {
-    try {
-      const st = await this.apiGet("/spotify/status");
-      const linked = !!st?.linked;
-
-      if (this.$spStatus) {
-        this.$spStatus.textContent = linked
-          ? `Spotify lié (${st?.profile?.display_name || st?.profile?.id || "?"})`
-          : "Spotify non lié";
-      }
-      if (this.$spLogin && this.$spLogout) {
-        this.$spLogin.classList.toggle("hidden", linked);
-        this.$spLogout.classList.toggle("hidden", !linked);
-      }
-    } catch {}
-  }
-
-  async loginSpotify() {
-    try {
-      const w = window.open(`${this.API_BASE}/spotify/login`, "spotify_login", "width=520,height=780");
-      if (!w) alert("Popup bloquée : autorise l’ouverture de fenêtre pour Spotify.");
-    } catch {}
-    this.setStatus("Connexion Spotify…", true);
-
-    const t0 = Date.now();
-    const loop = async () => {
-      await this.refreshSpotify();
-      const ok = this.$spStatus && /lié/i.test(this.$spStatus.textContent || "");
-      if (ok) this.setStatus("Spotify lié ✅", true);
-      else if (Date.now() - t0 < 60000) setTimeout(loop, 1500);
-      else this.setStatus("Connexion Spotify expirée.", false);
-    };
-    loop();
-  }
-
-  async logoutSpotify() {
-    try {
-      await this.apiPost("/spotify/logout", {});
-      await this.refreshSpotify();
-      this.setStatus("Spotify dé-lié.", true);
-    } catch {}
-  }
-}
-
-// Boot (works even if this script is injected after DOMContentLoaded)
-(() => {
-  const boot = () => {
-    const app = new GregWebPlayer();
-    app.init().catch((e) => console.error("Init GregWebPlayer failed:", e));
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
-  else boot();
+  boot().catch((e) => {
+    setStatus(`Boot error: ${e?.message || e}`, "err");
+  });
 })();

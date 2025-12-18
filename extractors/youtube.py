@@ -10,7 +10,11 @@
 # - Proxy: YTDLP_HTTP_PROXY/HTTPS_PROXY/ALL_PROXY propagés à yt-dlp & FFmpeg
 # - IPv4: source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
-
+#
+# IMPORTANT (fix):
+# - Évite de bloquer l'event-loop Discord (heartbeat blocked) :
+#   * les "preflight" subprocess sont exécutés dans asyncio.to_thread()
+#   * la lecture stderr de yt-dlp en preflight ne fait plus un .read() bloquant
 from __future__ import annotations
 
 import argparse
@@ -175,58 +179,6 @@ def _parse_cookies_from_browser_spec(spec: Optional[str]):
     browser = parts[0].strip().lower()
     profile = parts[1].strip() if len(parts) > 1 else None
     return (browser,) if profile is None else (browser, profile)
-
-# ==== process helpers (IMPORTANT: avoid event-loop freezes) ====
-def _terminate_proc(proc: subprocess.Popen, *, grace: float = 0.8, kill_after: float = 0.8) -> None:
-    """
-    Stop a process reliably:
-      - terminate (if supported) then wait(grace)
-      - kill then wait(kill_after)
-    Never blocks forever.
-    """
-    if proc is None:
-        return
-    try:
-        if proc.poll() is not None:
-            return
-    except Exception:
-        pass
-
-    # terminate
-    try:
-        proc.terminate()
-    except Exception:
-        pass
-
-    try:
-        proc.wait(timeout=grace)
-        return
-    except Exception:
-        pass
-
-    # kill
-    try:
-        proc.kill()
-    except Exception:
-        pass
-
-    try:
-        proc.wait(timeout=kill_after)
-    except Exception:
-        pass
-
-def _safe_communicate(proc: subprocess.Popen, *, timeout: float = 0.8) -> Tuple[bytes, bytes]:
-    """
-    communicate() with a timeout, never blocks forever.
-    Returns (stdout, stderr) bytes (possibly partial/empty).
-    """
-    if proc is None:
-        return b"", b""
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        return out or b"", err or b""
-    except Exception:
-        return b"", b""
 
 # ==== yt-dlp opts builder ====
 def _mk_opts(
@@ -405,7 +357,6 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
 
 # ==== playlist / mix ====
 from urllib.parse import urlparse, parse_qs
-
 def is_playlist_or_mix_url(url: str) -> bool:
     try:
         u = urlparse(url)
@@ -578,6 +529,14 @@ def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
         _dbg(f"HTTP_PROBE: GET Range failed: {e}")
         return None
 
+# ==== helpers: process kill ====
+def _kill_proc(p: Optional[subprocess.Popen]) -> None:
+    try:
+        if p and getattr(p, "poll", lambda: None)() is None:
+            p.kill()
+    except Exception:
+        pass
+
 # ==== STREAM direct (URL) ====
 async def stream(
     url_or_query: str,
@@ -627,7 +586,7 @@ async def stream(
             ratelimit_bps=ratelimit_bps, afilter=afilter,
         )
 
-    def _preflight_direct_ok() -> bool:
+    def _preflight_direct_ok_sync() -> bool:
         try:
             cmd = [
                 ff_exec,
@@ -650,9 +609,9 @@ async def stream(
             _dbg(f"preflight direct failed: {e}")
             return False
 
-    # IMPORTANT: don't block asyncio loop
-    direct_ok = await asyncio.to_thread(_preflight_direct_ok)
-    if not direct_ok:
+    # IMPORTANT: éviter de bloquer l'event-loop discord → preflight en thread
+    ok_direct = await asyncio.to_thread(_preflight_direct_ok_sync)
+    if not ok_direct:
         _dbg("STREAM: direct preflight failed → fallback to PIPE")
         return await stream_pipe(
             url_or_query, ffmpeg_path,
@@ -822,96 +781,69 @@ async def stream_pipe(
     def _preflight_and_choose_format_sync() -> str:
         """
         IMPORTANT:
-        - Runs sync (called in to_thread)
-        - Never blocks forever (timeouts everywhere)
-        - Never does yt.stderr.read() blocking
+        - Ne jamais faire yt.stderr.read() tant que le process n'est pas terminé (peut bloquer)
+        - On kill + wait puis on lit ce qui reste.
         """
         primary_fmt = _FORMAT_CHAIN
         for attempt, fmt in enumerate([primary_fmt, "18"]):
-            yt = None
-            ff = None
+            cmd = _build_cmd(fmt)
+            _dbg(f"yt-dlp PRE-FLIGHT (attempt={attempt}, fmt={fmt}): {' '.join(shlex.quote(c) for c in cmd)}")
+
+            yt = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=False, bufsize=0, close_fds=True,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+            ff = subprocess.Popen(
+                [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0",
+                 "-fflags", "nobuffer", "-flags", "low_delay",
+                 "-i", "pipe:0", "-t", "2", "-f", "null", "-"],
+                stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
+
             try:
-                cmd = _build_cmd(fmt)
-                _dbg(f"yt-dlp PRE-FLIGHT (attempt={attempt}, fmt={fmt}): {' '.join(shlex.quote(c) for c in cmd)}")
+                _ = ff.communicate(timeout=6)[0] or ""
+            except subprocess.TimeoutExpired:
+                _kill_proc(ff)
+                _kill_proc(yt)
+                return fmt if attempt == 0 else "18"
 
-                yt = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=False,
-                    bufsize=0,
-                    close_fds=True,
-                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-                )
+            rc = ff.returncode
 
-                ff = subprocess.Popen(
-                    [
-                        ff_exec,
-                        "-nostdin",
-                        "-probesize", "32k",
-                        "-analyzeduration", "0",
-                        "-fflags", "nobuffer",
-                        "-flags", "low_delay",
-                        "-i", "pipe:0",
-                        "-t", "2",
-                        "-f", "null", "-"
-                    ],
-                    stdin=yt.stdout,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+            # kill yt avant de lire stderr (sinon .read() peut bloquer)
+            _kill_proc(yt)
+            try:
+                yt.wait(timeout=1)
+            except Exception:
+                pass
 
-                # Parent should close its view of yt.stdout (ff holds it)
-                try:
-                    if yt.stdout:
-                        yt.stdout.close()
-                except Exception:
-                    pass
-
-                try:
-                    _ = ff.communicate(timeout=6)[0] or ""
-                except subprocess.TimeoutExpired:
-                    _dbg("preflight: ffmpeg timeout → kill procs")
-                    _terminate_proc(ff)
-                    _terminate_proc(yt)
-                    return fmt if attempt == 0 else "18"
-
-                rc = ff.returncode
-
-                # stop yt-dlp so communicate() won't hang forever
-                _terminate_proc(yt, grace=0.6, kill_after=0.6)
-
-                # safe read stderr (NO blocking read())
-                _, yt_stderr = _safe_communicate(yt, timeout=0.6)
+            stderr_join = ""
+            try:
+                if yt.stderr:
+                    stderr_bytes = yt.stderr.read() or b""
+                    stderr_join = stderr_bytes.decode("utf-8", errors="replace")
+            except Exception:
                 stderr_join = ""
-                try:
-                    stderr_join = (yt_stderr or b"").decode("utf-8", errors="replace")
-                except Exception:
-                    stderr_join = ""
 
-                bad_fmt = "Requested format is not available" in stderr_join
-                if rc == 0 and not bad_fmt:
-                    return fmt
+            # cleanup pipes
+            try:
+                if yt.stdout:
+                    yt.stdout.close()
+            except Exception:
+                pass
+            try:
+                if yt.stderr:
+                    yt.stderr.close()
+            except Exception:
+                pass
 
-                _dbg(f"preflight rc={rc}, yt-stderr-match={bad_fmt}")
-            except Exception as e:
-                _dbg(f"preflight exception: {e}")
-            finally:
-                try:
-                    if ff is not None:
-                        _terminate_proc(ff)
-                except Exception:
-                    pass
-                try:
-                    if yt is not None:
-                        _terminate_proc(yt)
-                except Exception:
-                    pass
+            if rc == 0 and "Requested format is not available" not in stderr_join:
+                return fmt
+            _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
 
         return "18"
 
-    # IMPORTANT: run preflight in a worker thread to avoid blocking Discord heartbeat
+    # IMPORTANT: éviter de bloquer l'event-loop discord → preflight en thread
     chosen_fmt = await asyncio.to_thread(_preflight_and_choose_format_sync)
     _dbg(f"PIPE chosen format: {chosen_fmt}")
 
