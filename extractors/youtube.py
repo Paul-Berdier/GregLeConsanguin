@@ -10,6 +10,7 @@
 # - Proxy: YTDLP_HTTP_PROXY/HTTPS_PROXY/ALL_PROXY propagés à yt-dlp & FFmpeg
 # - IPv4: source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
+
 from __future__ import annotations
 
 import argparse
@@ -174,6 +175,58 @@ def _parse_cookies_from_browser_spec(spec: Optional[str]):
     browser = parts[0].strip().lower()
     profile = parts[1].strip() if len(parts) > 1 else None
     return (browser,) if profile is None else (browser, profile)
+
+# ==== process helpers (IMPORTANT: avoid event-loop freezes) ====
+def _terminate_proc(proc: subprocess.Popen, *, grace: float = 0.8, kill_after: float = 0.8) -> None:
+    """
+    Stop a process reliably:
+      - terminate (if supported) then wait(grace)
+      - kill then wait(kill_after)
+    Never blocks forever.
+    """
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        pass
+
+    # terminate
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+
+    try:
+        proc.wait(timeout=grace)
+        return
+    except Exception:
+        pass
+
+    # kill
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+    try:
+        proc.wait(timeout=kill_after)
+    except Exception:
+        pass
+
+def _safe_communicate(proc: subprocess.Popen, *, timeout: float = 0.8) -> Tuple[bytes, bytes]:
+    """
+    communicate() with a timeout, never blocks forever.
+    Returns (stdout, stderr) bytes (possibly partial/empty).
+    """
+    if proc is None:
+        return b"", b""
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return out or b"", err or b""
+    except Exception:
+        return b"", b""
 
 # ==== yt-dlp opts builder ====
 def _mk_opts(
@@ -352,6 +405,7 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
 
 # ==== playlist / mix ====
 from urllib.parse import urlparse, parse_qs
+
 def is_playlist_or_mix_url(url: str) -> bool:
     try:
         u = urlparse(url)
@@ -596,7 +650,9 @@ async def stream(
             _dbg(f"preflight direct failed: {e}")
             return False
 
-    if not _preflight_direct_ok():
+    # IMPORTANT: don't block asyncio loop
+    direct_ok = await asyncio.to_thread(_preflight_direct_ok)
+    if not direct_ok:
         _dbg("STREAM: direct preflight failed → fallback to PIPE")
         return await stream_pipe(
             url_or_query, ffmpeg_path,
@@ -763,46 +819,100 @@ async def stream_pipe(
         cmd += [url_or_query]
         return cmd
 
-    def _preflight_and_choose_format() -> str:
+    def _preflight_and_choose_format_sync() -> str:
+        """
+        IMPORTANT:
+        - Runs sync (called in to_thread)
+        - Never blocks forever (timeouts everywhere)
+        - Never does yt.stderr.read() blocking
+        """
         primary_fmt = _FORMAT_CHAIN
         for attempt, fmt in enumerate([primary_fmt, "18"]):
-            cmd = _build_cmd(fmt)
-            _dbg(f"yt-dlp PRE-FLIGHT (attempt={attempt}, fmt={fmt}): {' '.join(shlex.quote(c) for c in cmd)}")
-            yt = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=False, bufsize=0, close_fds=True,
-                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-            )
-            ff = subprocess.Popen(
-                [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0",
-                 "-fflags", "nobuffer", "-flags", "low_delay",
-                 "-i", "pipe:0", "-t", "2", "-f", "null", "-"],
-                stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-            )
+            yt = None
+            ff = None
             try:
-                _ = ff.communicate(timeout=6)[0] or ""
-            except subprocess.TimeoutExpired:
-                try: ff.kill()
-                except Exception: pass
-                try: yt.kill()
-                except Exception: pass
-                return fmt if attempt == 0 else "18"
+                cmd = _build_cmd(fmt)
+                _dbg(f"yt-dlp PRE-FLIGHT (attempt={attempt}, fmt={fmt}): {' '.join(shlex.quote(c) for c in cmd)}")
 
-            rc = ff.returncode
-            stderr_join = ""
-            try:
-                stderr_join = (yt.stderr.read() or b"").decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            try: yt.kill()
-            except Exception: pass
+                yt = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=False,
+                    bufsize=0,
+                    close_fds=True,
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                )
 
-            if rc == 0 and "Requested format is not available" not in stderr_join:
-                return fmt
-            _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
+                ff = subprocess.Popen(
+                    [
+                        ff_exec,
+                        "-nostdin",
+                        "-probesize", "32k",
+                        "-analyzeduration", "0",
+                        "-fflags", "nobuffer",
+                        "-flags", "low_delay",
+                        "-i", "pipe:0",
+                        "-t", "2",
+                        "-f", "null", "-"
+                    ],
+                    stdin=yt.stdout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
+                # Parent should close its view of yt.stdout (ff holds it)
+                try:
+                    if yt.stdout:
+                        yt.stdout.close()
+                except Exception:
+                    pass
+
+                try:
+                    _ = ff.communicate(timeout=6)[0] or ""
+                except subprocess.TimeoutExpired:
+                    _dbg("preflight: ffmpeg timeout → kill procs")
+                    _terminate_proc(ff)
+                    _terminate_proc(yt)
+                    return fmt if attempt == 0 else "18"
+
+                rc = ff.returncode
+
+                # stop yt-dlp so communicate() won't hang forever
+                _terminate_proc(yt, grace=0.6, kill_after=0.6)
+
+                # safe read stderr (NO blocking read())
+                _, yt_stderr = _safe_communicate(yt, timeout=0.6)
+                stderr_join = ""
+                try:
+                    stderr_join = (yt_stderr or b"").decode("utf-8", errors="replace")
+                except Exception:
+                    stderr_join = ""
+
+                bad_fmt = "Requested format is not available" in stderr_join
+                if rc == 0 and not bad_fmt:
+                    return fmt
+
+                _dbg(f"preflight rc={rc}, yt-stderr-match={bad_fmt}")
+            except Exception as e:
+                _dbg(f"preflight exception: {e}")
+            finally:
+                try:
+                    if ff is not None:
+                        _terminate_proc(ff)
+                except Exception:
+                    pass
+                try:
+                    if yt is not None:
+                        _terminate_proc(yt)
+                except Exception:
+                    pass
+
         return "18"
 
-    chosen_fmt = _preflight_and_choose_format()
+    # IMPORTANT: run preflight in a worker thread to avoid blocking Discord heartbeat
+    chosen_fmt = await asyncio.to_thread(_preflight_and_choose_format_sync)
     _dbg(f"PIPE chosen format: {chosen_fmt}")
 
     yt = subprocess.Popen(
@@ -940,8 +1050,6 @@ if __name__ == "__main__":
     parser.add_argument("--cookies-from-browser", dest="cookies_from_browser", default=None, help="ex: chrome[:Profile]")
     parser.add_argument("--ratelimit-bps", type=int, default=None)
     args = parser.parse_args()
-
-    import asyncio
 
     async def _amain():
         if args.test == "direct":
