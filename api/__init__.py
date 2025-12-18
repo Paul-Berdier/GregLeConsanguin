@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from flask import Flask, render_template
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .core.config import Settings
 from .core.errors import register_error_handlers
@@ -18,14 +19,6 @@ API_PREFIX = "/api/v1"
 
 
 def create_app(pm: Optional[object] = None) -> Flask:
-    """
-    App factory Flask.
-    - Monte l'API sous /api/v1
-    - Sert l’UI web :
-        • GET /         -> assets/pages/index.html
-        • GET /static/* -> assets/static/*
-    - Injecte un bridge Player (pm) si fourni
-    """
     if not logging.getLogger().handlers:
         configure_logging()
 
@@ -41,6 +34,9 @@ def create_app(pm: Optional[object] = None) -> Flask:
     )
     app.config.from_object(Settings())
 
+    # IMPORTANT en prod (Railway / proxy) : corrige scheme/host pour url_for(_external=True) + cookies
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
     init_extensions(app)
 
     app.extensions["pm"] = pm
@@ -50,7 +46,7 @@ def create_app(pm: Optional[object] = None) -> Flask:
     register_error_handlers(app)
 
     _register_blueprints(app)
-    _register_socketio_handlers()  # ✅ important: charge les events
+    _register_socketio_handlers()
 
     @app.get("/")
     def index():
@@ -87,20 +83,14 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.spotify import bp as spotify_bp
     from .blueprints.search import bp as search_bp
 
-    app.register_blueprint(auth_bp)  # /auth/* + /api/v1/me
-    for bp in (users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
+    # Tout l'API (y compris auth) sous /api/v1
+    for bp in (auth_bp, users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
         app.register_blueprint(bp, url_prefix=API_PREFIX)
 
 
 def _register_socketio_handlers() -> None:
-    """
-    IMPORTANT:
-    Flask-SocketIO enregistre les handlers au moment de l'import (decorators).
-    Si tu n'importes jamais api.ws.events, tu n'auras aucun event WS.
-    """
-    # noqa: F401
-    from .ws import events  # déclenche l'enregistrement des @socketio.on(...)
-    from .ws import presence  # si tu l'utilises ailleurs
+    from .ws import events  # noqa: F401
+    from .ws import presence  # noqa: F401
 
 
 def _init_stores(app: Flask) -> None:
