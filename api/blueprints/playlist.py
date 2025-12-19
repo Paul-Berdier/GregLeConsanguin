@@ -4,16 +4,7 @@ import asyncio
 from typing import Any, Optional
 
 from flask import Blueprint, jsonify, request, current_app
-
 from api.ws.events import broadcast_playlist_update
-
-# Auth (si dispo). Sinon, no-op (utile en dev / compat).
-try:
-    from api.core.session import require_login  # type: ignore
-except Exception:  # pragma: no cover
-    def require_login(fn):  # type: ignore
-        return fn
-
 
 bp = Blueprint("playlist", __name__)
 
@@ -22,35 +13,57 @@ def PLAYER():
     return current_app.extensions.get("player")
 
 
-# ---------------------------------------------------------------------
-# Safe parsing helpers (fix int.strip(), bool.strip(), etc.)
-# ---------------------------------------------------------------------
-def _to_str(v: Any) -> str:
+# -----------------------------
+# Robust parsing helpers
+# -----------------------------
+def _as_str(v: Any) -> str:
+    """Return a safe string (never None), for strip()/comparisons."""
     if v is None:
         return ""
     try:
-        return str(v).strip()
+        return str(v)
     except Exception:
         return ""
 
 
-def _json(req) -> dict:
-    return req.get_json(silent=True) or {}
+def _json_dict(req) -> dict:
+    data = req.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
-def _gid_from(req) -> Optional[str]:
-    data = _json(req)
+def _gid_from(req, data: Optional[dict] = None) -> Optional[str]:
+    """
+    Accept guild_id from:
+      - query string ?guild_id=...
+      - header X-Guild-ID
+      - JSON body {guild_id: ...} (int OR str)
+    Returns a string guild_id or None.
+    """
+    if data is None:
+        data = _json_dict(req)
+
     gid = (
-        _to_str(req.args.get("guild_id"))
-        or _to_str(req.headers.get("X-Guild-ID"))
-        or _to_str(data.get("guild_id"))
+        _as_str(req.args.get("guild_id")).strip()
+        or _as_str(req.headers.get("X-Guild-ID")).strip()
+        or _as_str(data.get("guild_id")).strip()
     )
     return gid or None
 
 
-def _uid_from(req, data: dict) -> Optional[str]:
-    # data peut contenir user_id=int -> on stringifie
-    uid = _to_str(data.get("user_id")) or _to_str(req.headers.get("X-User-ID"))
+def _uid_from(req, data: Optional[dict] = None) -> Optional[str]:
+    """
+    Accept user_id from:
+      - JSON body {user_id: ...} (int OR str)
+      - header X-User-ID
+    Returns a string user_id or None.
+    """
+    if data is None:
+        data = _json_dict(req)
+
+    uid = (
+        _as_str(data.get("user_id")).strip()
+        or _as_str(req.headers.get("X-User-ID")).strip()
+    )
     return uid or None
 
 
@@ -62,20 +75,17 @@ def _broadcast(gid: str):
         state = player.get_state(int(gid))
         broadcast_playlist_update({"state": state}, guild_id=str(gid))
     except Exception:
-        # on ne casse jamais la requête HTTP à cause d'un broadcast
         pass
 
 
-def _is_url(s: Any) -> bool:
-    s = _to_str(s)
-    return bool(s) and s.startswith(("http://", "https://"))
+def _is_url(s: str) -> bool:
+    return isinstance(s, str) and s.startswith(("http://", "https://"))
 
 
-# ---------------------------------------------------------------------
+# -----------------------------
 # Routes
-# ---------------------------------------------------------------------
+# -----------------------------
 @bp.get("/playlist")
-@require_login
 def get_playlist_state():
     gid = _gid_from(request)
     player = PLAYER()
@@ -87,19 +97,19 @@ def get_playlist_state():
 
 
 @bp.post("/queue/add")
-@require_login
 def add_to_queue():
-    data = _json(request)
+    data = _json_dict(request)
 
-    raw = data.get("query") or data.get("url") or data.get("title")
-    raw = _to_str(raw)
-    if not raw:
-        return jsonify({"ok": False, "error": "missing query"}), 400
-
-    gid = _gid_from(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+
+    # compatible inputs: query OR url/webpage_url OR title
+    raw = data.get("query") or data.get("url") or data.get("webpage_url") or data.get("title")
+    raw = _as_str(raw).strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "missing query"}), 400
 
     player = PLAYER()
     if not player:
@@ -108,28 +118,53 @@ def add_to_queue():
     before = player.get_state(int(gid)) or {}
     was_empty = len(before.get("queue") or []) == 0 and not bool(before.get("current"))
 
-    item = None
-    if _is_url(raw):
-        item = {"url": raw}
-    else:
-        try:
-            from api.services.search import autocomplete  # local import (perf + avoid cycles)
+    # If client provided url + metadata, keep it.
+    url_in = _as_str(data.get("url") or data.get("webpage_url")).strip()
+    title_in = _as_str(data.get("title")).strip()
+    artist_in = _as_str(data.get("artist")).strip()
+    provider_in = _as_str(data.get("provider") or data.get("source")).strip()
+    thumb_in = data.get("thumb") or data.get("thumbnail")
 
-            res = autocomplete(raw, limit=1)
-            if res:
-                top = res[0]
-                item = {
-                    "url": _to_str(top.get("url")) or raw,
-                    "title": _to_str(top.get("title")) or raw,
-                    "duration": top.get("duration"),
-                    "thumb": top.get("thumbnail") or top.get("thumb"),
-                    "provider": top.get("provider"),
-                }
-        except Exception:
-            item = {"url": raw}
+    duration_in = data.get("duration")
+    # avoid sending None duration to internals
+    if duration_in is None:
+        pass
+
+    item = None
+
+    if url_in and _is_url(url_in):
+        item = {
+            "url": url_in,
+            "title": title_in or raw,
+            "artist": artist_in or None,
+            "duration": duration_in,
+            "thumb": thumb_in,
+            "provider": provider_in or None,
+        }
+    else:
+        # raw is either a URL or search query
+        if _is_url(raw):
+            item = {"url": raw, "title": title_in or raw, "thumb": thumb_in, "provider": provider_in or None}
+        else:
+            try:
+                from api.services.search import autocomplete
+                res = autocomplete(raw, limit=1)
+                if res:
+                    top = res[0] or {}
+                    item = {
+                        "url": top.get("url") or raw,
+                        "title": top.get("title") or raw,
+                        "duration": top.get("duration"),
+                        "thumb": top.get("thumbnail") or top.get("thumb"),
+                        "provider": top.get("provider") or top.get("source"),
+                    }
+                else:
+                    item = {"url": raw, "title": raw, "provider": provider_in or None}
+            except Exception:
+                item = {"url": raw, "title": raw, "provider": provider_in or None}
 
     async def _do():
-        return await player.enqueue(int(gid), int(uid), item or {"url": raw})
+        return await player.enqueue(int(gid), int(uid), item or {"url": raw, "title": raw})
 
     fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
@@ -141,6 +176,7 @@ def add_to_queue():
 
     autoplay = {"attempted": False, "ok": False, "reason": None}
 
+    # Autoplay if queue was empty: join requester's voice + play next
     if was_empty:
         async def _auto_play():
             g = player.bot.get_guild(int(gid))
@@ -172,10 +208,9 @@ def add_to_queue():
 
 
 @bp.post("/queue/skip")
-@require_login
 def skip_track():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     player = PLAYER()
@@ -200,10 +235,9 @@ def skip_track():
 
 
 @bp.post("/queue/stop")
-@require_login
 def stop_playback():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     player = PLAYER()
@@ -228,11 +262,10 @@ def stop_playback():
 
 
 @bp.post("/queue/remove")
-@require_login
 def remove_at():
-    data = _json(request)
+    data = _json_dict(request)
     idx = data.get("index")
-    gid = _gid_from(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     if idx is None:
@@ -256,12 +289,11 @@ def remove_at():
 
 
 @bp.post("/queue/move")
-@require_login
 def move_item():
-    data = _json(request)
+    data = _json_dict(request)
     src = data.get("src")
     dst = data.get("dst")
-    gid = _gid_from(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     if src is None or dst is None:
@@ -287,7 +319,6 @@ def move_item():
 # ⚠️ Endpoint "mutateur brut" conservé pour compat.
 # Ne déclenche pas play_next, ne rejoint pas le vocal.
 @bp.post("/queue/next")
-@require_login
 def pop_next():
     gid = _gid_from(request)
     player = PLAYER()
@@ -305,21 +336,20 @@ def pop_next():
 
 
 @bp.post("/playlist/play")
-@require_login
 def playlist_play():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     item = {
-        "url": data.get("url"),
-        "title": data.get("title") or data.get("query") or data.get("url"),
+        "url": data.get("url") or data.get("webpage_url"),
+        "title": data.get("title") or data.get("query") or data.get("url") or data.get("webpage_url"),
         "artist": data.get("artist"),
         "duration": data.get("duration"),
-        "thumb": data.get("thumb"),
-        "provider": data.get("provider"),
+        "thumb": data.get("thumb") or data.get("thumbnail"),
+        "provider": data.get("provider") or data.get("source"),
     }
-    if not (item["url"] or _to_str(data.get("query")) or _to_str(data.get("title"))):
+    if not (item["url"] or data.get("query") or data.get("title")):
         return jsonify({"ok": False, "error": "missing url/query"}), 400
 
     player = PLAYER()
@@ -344,10 +374,9 @@ def playlist_play():
 
 
 @bp.post("/playlist/play_at")
-@require_login
 def playlist_play_at():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
     idx = data.get("index")
     if idx is None:
@@ -394,10 +423,9 @@ def playlist_play_at():
 
 
 @bp.post("/playlist/toggle_pause")
-@require_login
 def playlist_toggle_pause():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     player = PLAYER()
@@ -432,11 +460,10 @@ def playlist_toggle_pause():
 
 
 @bp.post("/playlist/repeat")
-@require_login
 def playlist_repeat():
-    data = _json(request)
-    gid = _gid_from(request)
-    mode = _to_str(data.get("mode")).lower() or "toggle"
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
+    mode = _as_str(data.get("mode")).strip().lower() or "toggle"
 
     player = PLAYER()
     if not player:
@@ -459,10 +486,9 @@ def playlist_repeat():
 
 
 @bp.post("/playlist/restart")
-@require_login
 def playlist_restart():
-    data = _json(request)
-    gid = _gid_from(request)
+    data = _json_dict(request)
+    gid = _gid_from(request, data)
     uid = _uid_from(request, data)
 
     player = PLAYER()
