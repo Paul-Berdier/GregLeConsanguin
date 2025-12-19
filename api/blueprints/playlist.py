@@ -11,12 +11,25 @@ def PLAYER():
     return current_app.extensions.get("player")
 
 
+def _as_str(v):
+    if v is None:
+        return ""
+    # int/float/bool -> string
+    try:
+        return str(v)
+    except Exception:
+        return ""
+
+def _clean(v):
+    return _as_str(v).strip()
+
 def _gid_from(req):
-    return (
-        (req.args.get("guild_id") or "").strip()
-        or (req.headers.get("X-Guild-ID") or "").strip()
-        or ((req.json or {}).get("guild_id") or "").strip()
-    ) or None
+    gid = (
+        _clean(req.args.get("guild_id"))
+        or _clean(req.headers.get("X-Guild-ID"))
+        or _clean((req.json or {}).get("guild_id"))
+    )
+    return gid or None
 
 
 def _uid_from(req, data: dict):
