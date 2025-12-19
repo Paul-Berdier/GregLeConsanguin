@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, Optional
+
 from flask import Blueprint, jsonify, request, current_app
+
 from api.ws.events import broadcast_playlist_update
+
+# Auth (si dispo). Sinon, no-op (utile en dev / compat).
+try:
+    from api.core.session import require_login  # type: ignore
+except Exception:  # pragma: no cover
+    def require_login(fn):  # type: ignore
+        return fn
+
 
 bp = Blueprint("playlist", __name__)
 
@@ -11,29 +22,36 @@ def PLAYER():
     return current_app.extensions.get("player")
 
 
-def _as_str(v):
+# ---------------------------------------------------------------------
+# Safe parsing helpers (fix int.strip(), bool.strip(), etc.)
+# ---------------------------------------------------------------------
+def _to_str(v: Any) -> str:
     if v is None:
         return ""
-    # int/float/bool -> string
     try:
-        return str(v)
+        return str(v).strip()
     except Exception:
         return ""
 
-def _clean(v):
-    return _as_str(v).strip()
 
-def _gid_from(req):
+def _json(req) -> dict:
+    return req.get_json(silent=True) or {}
+
+
+def _gid_from(req) -> Optional[str]:
+    data = _json(req)
     gid = (
-        _clean(req.args.get("guild_id"))
-        or _clean(req.headers.get("X-Guild-ID"))
-        or _clean((req.json or {}).get("guild_id"))
+        _to_str(req.args.get("guild_id"))
+        or _to_str(req.headers.get("X-Guild-ID"))
+        or _to_str(data.get("guild_id"))
     )
     return gid or None
 
 
-def _uid_from(req, data: dict):
-    return (data.get("user_id") or req.headers.get("X-User-ID") or "").strip() or None
+def _uid_from(req, data: dict) -> Optional[str]:
+    # data peut contenir user_id=int -> on stringifie
+    uid = _to_str(data.get("user_id")) or _to_str(req.headers.get("X-User-ID"))
+    return uid or None
 
 
 def _broadcast(gid: str):
@@ -44,14 +62,20 @@ def _broadcast(gid: str):
         state = player.get_state(int(gid))
         broadcast_playlist_update({"state": state}, guild_id=str(gid))
     except Exception:
+        # on ne casse jamais la requête HTTP à cause d'un broadcast
         pass
 
 
-def _is_url(s: str) -> bool:
-    return isinstance(s, str) and s.startswith(("http://", "https://"))
+def _is_url(s: Any) -> bool:
+    s = _to_str(s)
+    return bool(s) and s.startswith(("http://", "https://"))
 
 
+# ---------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------
 @bp.get("/playlist")
+@require_login
 def get_playlist_state():
     gid = _gid_from(request)
     player = PLAYER()
@@ -63,9 +87,12 @@ def get_playlist_state():
 
 
 @bp.post("/queue/add")
+@require_login
 def add_to_queue():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
+
     raw = data.get("query") or data.get("url") or data.get("title")
+    raw = _to_str(raw)
     if not raw:
         return jsonify({"ok": False, "error": "missing query"}), 400
 
@@ -86,15 +113,16 @@ def add_to_queue():
         item = {"url": raw}
     else:
         try:
-            from api.services.search import autocomplete
+            from api.services.search import autocomplete  # local import (perf + avoid cycles)
+
             res = autocomplete(raw, limit=1)
             if res:
                 top = res[0]
                 item = {
-                    "url": top.get("url") or raw,
-                    "title": top.get("title") or raw,
+                    "url": _to_str(top.get("url")) or raw,
+                    "title": _to_str(top.get("title")) or raw,
                     "duration": top.get("duration"),
-                    "thumb": top.get("thumbnail"),
+                    "thumb": top.get("thumbnail") or top.get("thumb"),
                     "provider": top.get("provider"),
                 }
         except Exception:
@@ -144,8 +172,9 @@ def add_to_queue():
 
 
 @bp.post("/queue/skip")
+@require_login
 def skip_track():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
 
@@ -171,8 +200,9 @@ def skip_track():
 
 
 @bp.post("/queue/stop")
+@require_login
 def stop_playback():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
 
@@ -198,8 +228,9 @@ def stop_playback():
 
 
 @bp.post("/queue/remove")
+@require_login
 def remove_at():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     idx = data.get("index")
     gid = _gid_from(request)
     uid = _uid_from(request, data)
@@ -225,8 +256,9 @@ def remove_at():
 
 
 @bp.post("/queue/move")
+@require_login
 def move_item():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     src = data.get("src")
     dst = data.get("dst")
     gid = _gid_from(request)
@@ -255,6 +287,7 @@ def move_item():
 # ⚠️ Endpoint "mutateur brut" conservé pour compat.
 # Ne déclenche pas play_next, ne rejoint pas le vocal.
 @bp.post("/queue/next")
+@require_login
 def pop_next():
     gid = _gid_from(request)
     player = PLAYER()
@@ -272,8 +305,9 @@ def pop_next():
 
 
 @bp.post("/playlist/play")
+@require_login
 def playlist_play():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
 
@@ -285,7 +319,7 @@ def playlist_play():
         "thumb": data.get("thumb"),
         "provider": data.get("provider"),
     }
-    if not (item["url"] or data.get("query") or data.get("title")):
+    if not (item["url"] or _to_str(data.get("query")) or _to_str(data.get("title"))):
         return jsonify({"ok": False, "error": "missing url/query"}), 400
 
     player = PLAYER()
@@ -310,8 +344,9 @@ def playlist_play():
 
 
 @bp.post("/playlist/play_at")
+@require_login
 def playlist_play_at():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
     idx = data.get("index")
@@ -359,8 +394,9 @@ def playlist_play_at():
 
 
 @bp.post("/playlist/toggle_pause")
+@require_login
 def playlist_toggle_pause():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
 
@@ -396,10 +432,11 @@ def playlist_toggle_pause():
 
 
 @bp.post("/playlist/repeat")
+@require_login
 def playlist_repeat():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
-    mode = (data.get("mode") or "").strip().lower() or "toggle"
+    mode = _to_str(data.get("mode")).lower() or "toggle"
 
     player = PLAYER()
     if not player:
@@ -422,8 +459,9 @@ def playlist_repeat():
 
 
 @bp.post("/playlist/restart")
+@require_login
 def playlist_restart():
-    data = request.get_json(silent=True) or {}
+    data = _json(request)
     gid = _gid_from(request)
     uid = _uid_from(request, data)
 
