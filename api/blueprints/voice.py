@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Optional
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 
 bp = Blueprint("voice", __name__)
+log = logging.getLogger(__name__)
 
 
 def PLAYER():
@@ -48,54 +50,103 @@ def _uid_from(req, data: Optional[dict] = None) -> Optional[str]:
     return uid or None
 
 
+@bp.get("/voice/debug")
+def voice_debug():
+    """
+    Diagnostic endpoint: tells if the Discord bot is alive/ready and sees the guild.
+    """
+    player = PLAYER()
+    if not player:
+        return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
+
+    gid = _gid_from(request)
+    bot = getattr(player, "bot", None)
+
+    info = {
+        "ok": True,
+        "has_player": True,
+        "has_bot": bool(bot),
+        "bot_ready": bool(getattr(bot, "is_ready", lambda: False)()),
+        "bot_user": str(getattr(getattr(bot, "user", None), "id", "")) if bot else "",
+        "guild_count": len(getattr(bot, "guilds", []) or []) if bot else 0,
+        "guild_ids_sample": [str(g.id) for g in (getattr(bot, "guilds", []) or [])[:10]] if bot else [],
+        "requested_guild_id": gid or "",
+        "guild_found_in_cache": False,
+    }
+
+    if bot and gid:
+        g = bot.get_guild(int(gid))
+        info["guild_found_in_cache"] = bool(g)
+        info["guild_name"] = getattr(g, "name", None) if g else None
+
+    return jsonify(info), 200
+
+
 @bp.post("/voice/join")
 def voice_join():
     """
-    Best-effort voice join.
-    IMPORTANT: pour le web player, on évite volontairement les 4xx/5xx bruyants.
-    - 200 JSON si on a effectivement (re)joint un salon.
-    - 204 No Content si:
-        * déjà connecté au bon salon
-        * user pas en vocal
-        * guild introuvable / player indispo
-        * échec de join (best effort)
+    Best-effort: try to connect bot to the caller's voice channel.
+    Needs: bot alive + guild accessible + voice state cache.
     """
+    player = PLAYER()
+    if not player:
+        return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
+
     data = request.get_json(silent=True) or {}
     gid = _gid_from(request, data)
     uid = _uid_from(request, data)
+    reason = _to_str(data.get("reason") or request.args.get("reason") or "").strip()
 
-    player = PLAYER()
-    if not player or not gid or not uid:
-        return ("", 204)
+    if not gid or not uid:
+        return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+
+    bot = getattr(player, "bot", None)
+    if not bot:
+        return jsonify({"ok": False, "error": "BOT_MISSING"}), 503
+
+    bot_ready = bool(getattr(bot, "is_ready", lambda: False)())
+    g = bot.get_guild(int(gid))
+
+    log.warning(
+        "[voice/join] reason=%s gid=%s uid=%s bot_ready=%s bot_user=%s guild_found=%s guild_count=%s",
+        reason, gid, uid, bot_ready,
+        getattr(getattr(bot, "user", None), "id", None),
+        bool(g),
+        len(getattr(bot, "guilds", []) or []),
+    )
+
+    if not bot_ready:
+        return jsonify({"ok": False, "error": "BOT_NOT_READY"}), 409
+
+    if not g:
+        # This is exactly your current failure
+        return jsonify({"ok": False, "error": "GUILD_NOT_FOUND"}), 409
 
     async def _do():
-        g = player.bot.get_guild(int(gid))
-        if not g:
-            return {"action": "noop", "reason": "GUILD_NOT_FOUND"}
-
+        # Find member + voice channel (cache-based)
         m = g.get_member(int(uid))
         ch = m.voice.channel if (m and m.voice) else None
         if not ch:
-            return {"action": "noop", "reason": "USER_NOT_IN_VOICE"}
-
-        vc = g.voice_client
-        if vc and getattr(vc, "channel", None) == ch and getattr(vc, "is_connected", lambda: True)():
-            return {"action": "noop", "reason": "ALREADY_CONNECTED"}
+            return {"ok": False, "error": "USER_NOT_IN_VOICE_OR_NOT_CACHED"}
 
         ok = await player.ensure_connected(g, ch)
-        if ok:
-            return {"action": "joined", "channel_id": getattr(ch, "id", None)}
-        return {"action": "noop", "reason": "VOICE_CONNECT_FAILED"}
+        if not ok:
+            return {"ok": False, "error": "VOICE_CONNECT_FAILED"}
 
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
+        # If nothing is playing, try to start
+        try:
+            vc = g.voice_client
+            if vc and not (vc.is_playing() or vc.is_paused()):
+                await player.play_next(g)
+        except Exception as e:
+            return {"ok": False, "error": f"PLAY_NEXT_FAILED:{e}"}
+
+        return {"ok": True, "channel_id": getattr(ch, "id", None), "channel_name": getattr(ch, "name", None)}
+
+    fut = asyncio.run_coroutine_threadsafe(_do(), bot.loop)
     try:
         res = fut.result(timeout=12) or {}
-    except Exception:
-        # best effort => silencieux
-        return ("", 204)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    if res.get("action") == "joined":
-        return jsonify({"ok": True, "joined": True, "channel_id": res.get("channel_id")}), 200
-
-    # Tout le reste => no-op silencieux
-    return ("", 204)
+    return jsonify(res), 200 if res.get("ok") else 409
