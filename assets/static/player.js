@@ -708,41 +708,79 @@
   }
 
   function renderSpotify() {
-    if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
+  // Minimal required elements
+  if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
 
-    if (!state.me) {
-      el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
-      el.btnSpotifyLogin.disabled = true;
-      el.btnSpotifyLogout.disabled = true;
-      el.btnSpotifyLogout.classList.add("hidden");
-      el.btnSpotifyLogin.classList.remove("hidden");
-      if (el.spotifyMe) el.spotifyMe.textContent = "";
-      return;
-    }
+  const hasPanel = !!el.spotifyPanel;
 
-    el.btnSpotifyLogin.disabled = false;
-    el.btnSpotifyLogout.disabled = false;
+  const hidePanel = () => {
+    if (hasPanel) el.spotifyPanel.classList.add("hidden");
+    if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.add("hidden");
+    if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.add("hidden");
+    if (el.spotifySearchResults) el.spotifySearchResults.innerHTML = "";
+    if (el.spotifyPlaylists) el.spotifyPlaylists.innerHTML = "";
+    if (el.spotifyTracks) el.spotifyTracks.innerHTML = "";
+  };
 
-    if (!state.spotifyLinked) {
-      el.spotifyStatus.textContent = "Spotify non lié";
-      el.btnSpotifyLogout.classList.add("hidden");
-      el.btnSpotifyLogin.classList.remove("hidden");
-      if (el.spotifyMe) el.spotifyMe.textContent = "";
-      if (el.spotifyPlaylists) el.spotifyPlaylists.innerHTML = "";
-      if (el.spotifyTracks) el.spotifyTracks.innerHTML = "";
-      return;
-    }
+  const showPanel = () => {
+    if (hasPanel) el.spotifyPanel.classList.remove("hidden");
+    if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.remove("hidden");
+    if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.remove("hidden");
+  };
 
-    const prof = state.spotifyProfile;
-    const name = prof?.display_name || prof?.id || "Spotify lié";
-    el.spotifyStatus.textContent = `Spotify lié : ${name}`;
-    if (el.spotifyMe) el.spotifyMe.textContent = prof?.id ? `@${prof.id}` : "";
+  // 1) Not logged to Discord
+  if (!state.me) {
+    el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
 
-    el.btnSpotifyLogin.classList.add("hidden");
-    el.btnSpotifyLogout.classList.remove("hidden");
+    el.btnSpotifyLogin.disabled = true;
+    el.btnSpotifyLogout.disabled = true;
 
-    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
+    el.btnSpotifyLogout.classList.add("hidden");
+    el.btnSpotifyLogin.classList.remove("hidden");
+
+    if (el.spotifyMe) el.spotifyMe.textContent = "";
+    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = "";
+
+    hidePanel();
+    return;
   }
+
+  // 2) Logged to Discord (buttons enabled by default)
+  el.btnSpotifyLogin.disabled = false;
+  el.btnSpotifyLogout.disabled = false;
+
+  // 3) Spotify not linked
+  if (!state.spotifyLinked) {
+    el.spotifyStatus.textContent = "Spotify non lié";
+
+    el.btnSpotifyLogout.classList.add("hidden");
+    el.btnSpotifyLogin.classList.remove("hidden");
+
+    if (el.spotifyMe) el.spotifyMe.textContent = "";
+    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = "";
+
+    hidePanel();
+    return;
+  }
+
+  // 4) Spotify linked
+  const prof = state.spotifyProfile || null;
+  const name = prof?.display_name || prof?.id || "Spotify lié";
+
+  el.spotifyStatus.textContent = `Spotify lié : ${name}`;
+  if (el.spotifyMe) el.spotifyMe.textContent = prof?.id ? `@${prof.id}` : "";
+
+  el.btnSpotifyLogin.classList.add("hidden");
+  el.btnSpotifyLogout.classList.remove("hidden");
+
+  // If the panel exists in the DOM, show it
+  showPanel();
+
+  // Keep select in sync (don’t force it if empty and playlists not loaded yet)
+  if (el.spotifyPlaylistSelect) {
+    el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
+  }
+}
 
   function renderSpotifyPlaylists() {
     if (!el.spotifyPlaylists && !el.spotifyPlaylistSelect) return;

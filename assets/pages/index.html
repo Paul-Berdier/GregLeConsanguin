@@ -149,14 +149,64 @@
       </section>
 
       <section class="spotify">
-        <div class="spotify-row">
-          <div class="spotify-status" id="spotifyStatus">Spotify non lié</div>
-          <div class="spotify-actions">
-            <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
-            <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Délier</button>
-          </div>
-        </div>
-      </section>
+  <div class="spotify-row">
+    <div class="spotify-status">
+      <div id="spotifyStatus">Spotify non lié</div>
+      <div class="spotify-me" id="spotifyMe"></div>
+    </div>
+
+    <div class="spotify-actions">
+      <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
+      <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Délier</button>
+      <button class="btn btn--ghost hidden" id="btn-spotify-load-playlists" type="button">Charger playlists</button>
+    </div>
+  </div>
+
+  <!-- ✅ PANEL -->
+  <div class="spotify-panel" id="spotifyPanel">
+    <div class="spotify-toolbar">
+      <div class="spotify-toolbar-left">
+        <select id="spotifyPlaylistSelect" class="spotify-select">
+          <option value="">— Playlist —</option>
+        </select>
+      </div>
+
+      <div class="spotify-toolbar-right">
+        <button class="btn btn--ghost" id="btn-spotify-add-current" type="button">Ajouter le titre</button>
+        <button class="btn btn--ghost" id="btn-spotify-add-queue" type="button">Ajouter la queue</button>
+      </div>
+    </div>
+
+    <div class="spotify-grid">
+      <div class="spotify-col" id="spotifyPlaylistsWrap">
+        <div class="spotify-col-title">Playlists</div>
+        <div class="spotify-list" id="spotifyPlaylists"></div>
+      </div>
+
+      <div class="spotify-col" id="spotifyTracksWrap">
+        <div class="spotify-col-title">Titres</div>
+        <div class="spotify-list" id="spotifyTracks"></div>
+      </div>
+    </div>
+
+    <form id="spotifySearchForm" class="spotify-search" autocomplete="off">
+      <input id="spotifySearchInput" class="spotify-search-input" placeholder="Rechercher un titre Spotify…" />
+      <button class="btn btn--primary" type="submit">Chercher</button>
+    </form>
+
+    <div class="spotify-search-results" id="spotifySearchResults"></div>
+
+    <div class="spotify-create">
+      <input id="spotifyCreateName" class="spotify-create-input" placeholder="Nom de playlist (ex: Greg Bangers)" />
+      <label class="spotify-create-check">
+        <input id="spotifyCreatePublic" type="checkbox" checked />
+        <span>Publique</span>
+      </label>
+      <button class="btn btn--primary" id="btn-spotify-create-playlist" type="button">Créer playlist</button>
+    </div>
+  </div>
+</section>
+
     </main>
 
     <!-- Status (bottom) -->
