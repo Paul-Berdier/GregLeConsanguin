@@ -247,7 +247,12 @@ def remove_at():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    _broadcast(gid)
+    # 🔒 Ne casse pas la réponse si le broadcast plante
+    try:
+        _broadcast(gid)
+    except Exception as e:
+        print(f"[queue/remove] broadcast failed: {e}")
+
     return jsonify({"ok": bool(ok)}), 200 if ok else 409
 
 

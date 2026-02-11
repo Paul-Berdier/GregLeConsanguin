@@ -314,6 +314,21 @@ class PlaylistManager:
                 "queue": [_expose(it) for it in self.queue],
             }
 
+        # ------------------------- COMPAT / LEGACY -------------------------
+
+    def peek_all(self) -> Dict[str, Any]:
+        """
+        Compat rétro : certains endpoints/broadcasts attendent `peek_all()`.
+        Renvoie un snapshot sérialisable de l'état courant.
+        """
+        return self.to_dict()
+
+    def peek_queue(self) -> List[Dict[str, Any]]:
+        """
+        Compat éventuelle : renvoie une copie de la queue.
+        """
+        return self.get_queue()
+
 
 if __name__ == "__main__":
     pm = PlaylistManager(123456789)
