@@ -82,9 +82,9 @@ def _register_blueprints(app: Flask) -> None:
     from .blueprints.admin import bp as admin_bp
     from .blueprints.spotify import bp as spotify_bp
     from .blueprints.search import bp as search_bp
+    from .blueprints.voice import bp as voice_bp   # ✅ AJOUT
 
-    # Tout l'API (y compris auth) sous /api/v1
-    for bp in (auth_bp, users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp):
+    for bp in (auth_bp, users_bp, guilds_bp, playlist_bp, admin_bp, spotify_bp, search_bp, voice_bp):  # ✅ AJOUT
         app.register_blueprint(bp, url_prefix=API_PREFIX)
 
 
