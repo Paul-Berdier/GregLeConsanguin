@@ -1,10 +1,13 @@
-/* Greg le Consanguin — Web Player (pro, full)
-   - API routes: auth/users/guilds/search/playlist/admin + Spotify full
-   - Socket.IO: welcome / overlay_registered / overlay_pong / overlay_joined / overlay_left / playlist_update + spotify:linked
-   - Fallback: polling if sockets not available
-   - Robust: /users/me supports {ok:true,user:{...}} OR direct user object
-   - Robust: search supports /search/autocomplete (preferred) with fallback /autocomplete
-   - Robust: queue/add ALWAYS sends `query` + compat fields (url/webpage_url/thumb/thumbnail)
+/* Greg le Consanguin — Web Player (pro, full) — v2026-02-11
+   Fixes:
+   - Spotify: auto-load playlists after link + robust payload normalizations
+   - Autocomplete/add: stronger compat with backend (query/url fields + retry with querystring)
+   - Voice: optional /voice/join best-effort (won’t break if route doesn’t exist)
+   - API_BASE auto: if page is not served from Railway, defaults to Railway origin unless overridden
+
+   Usage:
+   - You can override API base by defining: window.GREG_API_BASE = "https://gregleconsanguin.up.railway.app/api/v1"
+   - You can enable debug: window.GREG_DEBUG = 1  OR localStorage.setItem("greg.webplayer.debug","1")
 */
 
 (() => {
@@ -14,15 +17,33 @@
   // Config
   // =============================
   const STATIC_BASE = window.GREG_STATIC_BASE || "/static";
-  const API_BASE = String(window.GREG_API_BASE || "/api/v1").replace(/\/+$/, "");
+
+  // Auto API base:
+  // - If you are NOT on railway.app and you didn't set GREG_API_BASE,
+  //   we default to your Railway deployment (so cookies/CORS are consistent).
+  const DEFAULT_RAILWAY = "https://gregleconsanguin.up.railway.app/api/v1";
+  const RAW_API_BASE = window.GREG_API_BASE || "/api/v1";
+  const API_BASE = (() => {
+    const b = String(RAW_API_BASE).trim();
+    if (!b) return DEFAULT_RAILWAY;
+
+    // If user provided an absolute base, keep it
+    if (/^https?:\/\//i.test(b)) return b.replace(/\/+$/, "");
+
+    // If page is served from railway.app, relative base is ok
+    if (String(location.hostname).includes("railway.app")) return b.replace(/\/+$/, "");
+
+    // If page is served elsewhere (local file / another domain), use Railway by default
+    if (b === "/api/v1") return DEFAULT_RAILWAY;
+
+    return b.replace(/\/+$/, "");
+  })();
 
   // Determine origin for Socket.IO
   const API_ORIGIN = (() => {
     try {
-      // If API_BASE is absolute: https://host/api/v1 -> origin https://host
       if (/^https?:\/\//i.test(API_BASE)) return new URL(API_BASE).origin;
-      // If API_BASE is relative: /api/v1 -> same-origin
-      return "";
+      return ""; // same-origin
     } catch {
       return "";
     }
@@ -140,8 +161,7 @@
   function toSeconds(v) {
     if (v == null) return null;
     if (typeof v === "number" && isFinite(v)) {
-      // sometimes ms comes in (>= 10k)
-      if (v > 10000) return Math.floor(v / 1000);
+      if (v > 10000) return Math.floor(v / 1000); // ms
       return Math.floor(v);
     }
     const s = String(v).trim();
@@ -157,22 +177,6 @@
     if (parts.length === 2) return parts[0] * 60 + parts[1];
     if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     return null;
-  }
-
-  function asStr(v, fallback = "") {
-    if (v == null) return fallback;
-    const s = String(v);
-    return s;
-  }
-
-  function asBool(v, fallback = false) {
-    if (v === true || v === false) return v;
-    if (typeof v === "number") return v !== 0;
-    const s = String(v ?? "").toLowerCase().trim();
-    if (!s) return fallback;
-    if (["1", "true", "yes", "y", "on"].includes(s)) return true;
-    if (["0", "false", "no", "n", "off"].includes(s)) return false;
-    return fallback;
   }
 
   function safeInt(v, fallback = null) {
@@ -223,7 +227,6 @@
 
   function discordAvatarUrl(me, size = 96) {
     if (!me || !me.id) return null;
-    // if backend already provides a full url
     if (me.avatar_url && typeof me.avatar_url === "string" && me.avatar_url.startsWith("http")) {
       return me.avatar_url;
     }
@@ -235,7 +238,7 @@
   }
 
   // =============================
-  // API Client
+  // API Client (with retries)
   // =============================
   class GregAPI {
     constructor(base) {
@@ -245,8 +248,6 @@
         users_me: { method: "GET", path: "/users/me" },
         auth_login: { method: "GET", path: "/auth/login" },
         auth_logout: { method: "POST", path: "/auth/logout" },
-        auth_device_start: { method: "POST", path: "/auth/device/start" },
-        auth_device_poll: { method: "GET", path: "/auth/device/poll" },
 
         // guilds
         guilds: { method: "GET", path: "/guilds" },
@@ -260,49 +261,42 @@
         playlist_state: { method: "GET", path: "/playlist" },
         queue_add: { method: "POST", path: "/queue/add" },
         queue_remove: { method: "POST", path: "/queue/remove" },
-        queue_move: { method: "POST", path: "/queue/move" },
         queue_skip: { method: "POST", path: "/queue/skip" },
         queue_stop: { method: "POST", path: "/queue/stop" },
-        queue_next: { method: "POST", path: "/queue/next" },
-
-        playlist_play: { method: "POST", path: "/playlist/play" },
         playlist_play_at: { method: "POST", path: "/playlist/play_at" },
         playlist_toggle_pause: { method: "POST", path: "/playlist/toggle_pause" },
         playlist_repeat: { method: "POST", path: "/playlist/repeat" },
         playlist_restart: { method: "POST", path: "/playlist/restart" },
 
+        // voice (optional — best effort)
+        voice_join: { method: "POST", path: "/voice/join" },
+
         // admin
         admin_overlays_online: { method: "GET", path: "/overlays_online" },
         admin_jumpscare: { method: "POST", path: "/jumpscare" },
 
-        // spotify (FULL)
+        // spotify
         spotify_login: { method: "GET", path: "/spotify/login" },
-        spotify_callback: { method: "GET", path: "/spotify/callback" }, // not called from JS
         spotify_status: { method: "GET", path: "/spotify/status" },
         spotify_me: { method: "GET", path: "/spotify/me" },
         spotify_playlists: { method: "GET", path: "/spotify/playlists" },
         spotify_playlist_tracks: { method: "GET", path: "/spotify/playlist_tracks" },
         spotify_search_tracks: { method: "GET", path: "/spotify/search_tracks" },
-
         spotify_playlist_create: { method: "POST", path: "/spotify/playlist_create" },
         spotify_playlist_add_track: { method: "POST", path: "/spotify/playlist_add_track" },
-        spotify_playlist_add_by_query: { method: "POST", path: "/spotify/playlist_add_by_query" },
+        spotify_playlist_remove_tracks: { method: "POST", path: "/spotify/playlist_remove_tracks" },
         spotify_add_current_to_playlist: { method: "POST", path: "/spotify/add_current_to_playlist" },
         spotify_add_queue_to_playlist: { method: "POST", path: "/spotify/add_queue_to_playlist" },
         spotify_quickplay: { method: "POST", path: "/spotify/quickplay" },
         spotify_logout: { method: "POST", path: "/spotify/logout" },
-        spotify_playlist_delete: { method: "POST", path: "/spotify/playlist_delete" },
-        spotify_playlist_remove_tracks: { method: "POST", path: "/spotify/playlist_remove_tracks" },
-        spotify_playlist_clear: { method: "POST", path: "/spotify/playlist_clear" },
       };
     }
 
     url(path) {
-      // base can be /api/v1 or https://host/api/v1
       return `${this.base}${path}`;
     }
 
-    async request(method, path, { query, json } = {}) {
+    async request(method, path, { query, json, allowText = false } = {}) {
       const url = new URL(this.url(path), location.href);
 
       if (query && typeof query === "object") {
@@ -328,9 +322,8 @@
 
       let payload = null;
       if (ct.includes("application/json")) payload = await res.json().catch(() => null);
-      else payload = await res.text().catch(() => null);
+      else payload = allowText ? await res.text().catch(() => null) : await res.text().catch(() => null);
 
-      // If backend returns {ok:false,...} with HTTP 200, treat as error too.
       if (res.ok && payload && typeof payload === "object" && payload.ok === false) {
         const msg = payload.error || payload.message || "Request failed";
         const err = new Error(msg);
@@ -356,6 +349,7 @@
     async get(path, query) {
       return this.request("GET", path, { query });
     }
+
     async post(path, json, query) {
       return this.request("POST", path, { json, query });
     }
@@ -375,7 +369,6 @@
     socket: null,
     socketReady: false,
     socketId: null,
-    socketLastPongAt: 0,
 
     playlist: {
       current: null,
@@ -404,6 +397,9 @@
     spotifyCurrentPlaylistId: "",
     spotifyTracks: [],
     spotifySearchResults: [],
+
+    // voice join throttling
+    voiceJoinLastAt: 0,
   };
 
   // =============================
@@ -432,7 +428,6 @@
       setStatus(`Socket connecté (${socket.id})`, "ok");
       dlog("socket connect", socket.id);
 
-      // Register overlay (web player)
       try {
         socket.emit("overlay_register", {
           kind: "web_player",
@@ -460,41 +455,22 @@
       dlog("socket disconnect", reason);
     });
 
-    // optional server events
-    socket.on("welcome", (payload) => {
-      dlog("welcome", payload);
-    });
-
-    socket.on("overlay_registered", (payload) => {
-      dlog("overlay_registered", payload);
-      setStatus("Overlay enregistré ✅", "ok");
-    });
-
-    socket.on("overlay_pong", (payload) => {
-      state.socketLastPongAt = Date.now();
-      dlog("overlay_pong", payload);
-    });
-
-    socket.on("overlay_joined", (payload) => {
-      dlog("overlay_joined", payload);
-    });
-
-    socket.on("overlay_left", (payload) => {
-      dlog("overlay_left", payload);
-    });
-
     socket.on("playlist_update", (payload) => {
       dlog("playlist_update", payload);
       applyPlaylistPayload(payload);
       renderAll();
     });
 
-    socket.on("spotify:linked", (payload) => {
+    socket.on("spotify:linked", async (payload) => {
       dlog("spotify:linked", payload);
       state.spotifyLinked = true;
       state.spotifyProfile = payload?.profile || payload?.data?.profile || null;
       renderSpotify();
       setStatus("Spotify lié ✅", "ok");
+
+      // 🔧 FIX: auto-load playlists right after linking (best effort)
+      await refreshSpotifyPlaylists().catch(() => {});
+      renderAll();
     });
 
     // keepalive ping
@@ -521,13 +497,10 @@
   // =============================
   function normalizeMePayload(payload) {
     if (!payload) return null;
-    // case 1: { ok:true, user:{...} }
     if (typeof payload === "object" && payload.ok === true && payload.user && typeof payload.user === "object") {
       return payload.user;
     }
-    // case 2: direct user object {id, username, ...}
     if (typeof payload === "object" && payload.id) return payload;
-    // case 3: {user:{...}} without ok
     if (typeof payload === "object" && payload.user && payload.user.id) return payload.user;
     return null;
   }
@@ -549,15 +522,7 @@
     const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
     const provider = it.provider || it.source || it.platform || null;
 
-    return {
-      title: asStr(title, ""),
-      url: asStr(url, ""),
-      artist: asStr(artist, ""),
-      duration,
-      thumb,
-      provider,
-      raw: it,
-    };
+    return { title: String(title || ""), url: String(url || ""), artist: String(artist || ""), duration, thumb, provider, raw: it };
   }
 
   function applyPlaylistPayload(payload) {
@@ -578,8 +543,7 @@
     const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? false);
 
     const position = toSeconds(p.position ?? p.pos ?? p.progress ?? p.current_time ?? 0) ?? 0;
-    const duration =
-      toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ?? (current?.duration ?? 0);
+    const duration = toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ?? (current?.duration ?? 0);
 
     state.playlist.current = current;
     state.playlist.queue = queue;
@@ -606,9 +570,6 @@
       if (el.userAvatar) {
         el.userAvatar.classList.remove("avatar--img");
         el.userAvatar.style.backgroundImage = "";
-        el.userAvatar.style.backgroundSize = "";
-        el.userAvatar.style.backgroundPosition = "";
-        el.userAvatar.style.backgroundRepeat = "";
         el.userAvatar.textContent = "?";
       }
       if (el.userName) el.userName.textContent = "Non connecté";
@@ -619,13 +580,11 @@
     }
 
     const name = me.global_name || me.display_name || me.username || me.name || `User ${me.id}`;
-
     if (el.userName) el.userName.textContent = name;
     if (el.userStatus) el.userStatus.textContent = "Connecté";
     if (el.btnLoginDiscord) el.btnLoginDiscord.classList.add("hidden");
     if (el.btnLogoutDiscord) el.btnLogoutDiscord.classList.remove("hidden");
 
-    // Avatar — avoid "zoom crop": force contain here too
     const url = discordAvatarUrl(me, 128);
     if (el.userAvatar) {
       if (url) {
@@ -651,7 +610,10 @@
     const current = state.guildId ? String(state.guildId) : "";
     const guilds = Array.isArray(state.guilds) ? state.guilds : [];
 
-    const keep0 = sel.querySelector("option[value='']") ? sel.querySelector("option[value='']").outerHTML : "<option value=''>— Choisir un serveur —</option>";
+    const keep0 = sel.querySelector("option[value='']")
+      ? sel.querySelector("option[value='']").outerHTML
+      : "<option value=''>— Choisir un serveur —</option>";
+
     sel.innerHTML = keep0;
 
     for (const g of guilds) {
@@ -680,11 +642,7 @@
 
     if (el.trackTitle) el.trackTitle.textContent = c.title || "Titre inconnu";
     if (el.trackArtist) el.trackArtist.textContent = c.artist || "—";
-
-    if (el.artwork) {
-      if (c.thumb) el.artwork.style.backgroundImage = `url("${c.thumb}")`;
-      else el.artwork.style.backgroundImage = "";
-    }
+    if (el.artwork) el.artwork.style.backgroundImage = c.thumb ? `url("${c.thumb}")` : "";
 
     const dur = state.playlist.duration || c.duration || 0;
     if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
@@ -696,7 +654,6 @@
   function renderQueue() {
     const q = state.playlist.queue || [];
     if (el.queueCount) el.queueCount.textContent = `${q.length} titre${q.length > 1 ? "s" : ""}`;
-
     if (!el.queueList) return;
 
     if (!q.length) {
@@ -730,11 +687,11 @@
 
     for (const row of el.queueList.querySelectorAll(".queue-item")) {
       const idx = Number(row.getAttribute("data-idx"));
-
       row.addEventListener("click", async (ev) => {
         const btn = ev.target.closest("button");
         if (btn) return;
         await safeAction(() => api_playlist_play_at(idx), `Lecture: item #${idx}`, true);
+        await bestEffortVoiceJoin("play_at");
       });
 
       const rm = row.querySelector("button[data-action='remove']");
@@ -769,7 +726,6 @@
       el.btnSpotifyLogout.classList.add("hidden");
       el.btnSpotifyLogin.classList.remove("hidden");
       if (el.spotifyMe) el.spotifyMe.textContent = "";
-      // optional advanced UI
       if (el.spotifyPlaylists) el.spotifyPlaylists.innerHTML = "";
       if (el.spotifyTracks) el.spotifyTracks.innerHTML = "";
       return;
@@ -783,10 +739,7 @@
     el.btnSpotifyLogin.classList.add("hidden");
     el.btnSpotifyLogout.classList.remove("hidden");
 
-    // If advanced panel exists, show playlists selector state
-    if (el.spotifyPlaylistSelect) {
-      el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
-    }
+    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
   }
 
   function renderSpotifyPlaylists() {
@@ -794,7 +747,6 @@
 
     const pls = Array.isArray(state.spotifyPlaylists) ? state.spotifyPlaylists : [];
 
-    // list view
     if (el.spotifyPlaylists) {
       if (!pls.length) {
         el.spotifyPlaylists.innerHTML = `<div class="queue-empty">Aucune playlist chargée</div>`;
@@ -804,8 +756,8 @@
             const name = escapeHtml(p.name || "Playlist");
             const id = escapeHtml(p.id || "");
             const owner = escapeHtml(p.owner?.display_name || p.owner?.id || "");
-            const tracks = escapeHtml(String(p.tracks?.total ?? p.tracks_total ?? ""));
-            const img = p.images?.[0]?.url || p.image || "";
+            const tracks = escapeHtml(String(p.tracks?.total ?? p.tracks_total ?? p.tracksCount ?? ""));
+            const img = p.images?.[0]?.url || p.image || p.cover || "";
             const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
             const active = state.spotifyCurrentPlaylistId && p.id === state.spotifyCurrentPlaylistId ? " is-active" : "";
             return `
@@ -833,11 +785,11 @@
       }
     }
 
-    // select view
     if (el.spotifyPlaylistSelect) {
       const keep0 = el.spotifyPlaylistSelect.querySelector("option[value='']")
         ? el.spotifyPlaylistSelect.querySelector("option[value='']").outerHTML
         : "<option value=''>— Playlist —</option>";
+
       el.spotifyPlaylistSelect.innerHTML = keep0;
 
       for (const p of pls) {
@@ -863,9 +815,7 @@
     el.spotifyTracks.innerHTML = rows
       .map((t, idx) => {
         const name = escapeHtml(t.name || t.title || "Track");
-        const artist = escapeHtml(
-          Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : (t.artist || "")
-        );
+        const artist = escapeHtml(Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : (t.artist || ""));
         const uri = escapeHtml(t.uri || "");
         const img = t.album?.images?.[0]?.url || t.image || "";
         const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
@@ -926,9 +876,7 @@
     el.spotifySearchResults.innerHTML = rows
       .map((t) => {
         const name = escapeHtml(t.name || "Track");
-        const artist = escapeHtml(
-          Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : ""
-        );
+        const artist = escapeHtml(Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : "");
         const uri = escapeHtml(t.uri || "");
         const img = t.album?.images?.[0]?.url || "";
         const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
@@ -976,11 +924,6 @@
     }
   }
 
-  function renderAdmin() {
-    if (!el.adminOverlayCount) return;
-    // no-op unless admin view present
-  }
-
   function renderAll() {
     renderAuth();
     renderGuilds();
@@ -990,7 +933,6 @@
     renderSpotifyPlaylists();
     renderSpotifyTracks();
     renderSpotifySearch();
-    renderAdmin();
   }
 
   // =============================
@@ -1086,17 +1028,11 @@
 
   async function fetchSuggestions(q) {
     if (state.sugAbort) {
-      try {
-        state.sugAbort.abort();
-      } catch {}
+      try { state.sugAbort.abort(); } catch {}
     }
     state.sugAbort = new AbortController();
 
-    // Prefer /search/autocomplete, fallback /autocomplete
-    const endpoints = [
-      api.routes.search_autocomplete.path,
-      api.routes.autocomplete_compat.path,
-    ];
+    const endpoints = [api.routes.search_autocomplete.path, api.routes.autocomplete_compat.path];
 
     for (const p of endpoints) {
       const url = new URL(`${API_BASE}${p}`, location.href);
@@ -1115,7 +1051,6 @@
       }
 
       const data = await res.json().catch(() => null);
-      // expected {ok:true, results:[...]}
       const rows = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
       return rows;
     }
@@ -1146,30 +1081,25 @@
   }, 160);
 
   async function addFromSuggestion(sug) {
-    const url = sug?.webpage_url || sug?.url || "";
-    const title = sug?.title || sug?.name || "";
-    const artist = sug?.artist || sug?.uploader || sug?.channel || "";
+    const url = (sug?.webpage_url || sug?.url || "").trim();
+    const title = (sug?.title || sug?.name || "").trim();
+    const artist = (sug?.artist || sug?.uploader || sug?.channel || "").trim();
     const duration = sug?.duration ?? null;
     const thumb = sug?.thumb || sug?.thumbnail || null;
 
-    if (!state.me) {
-      setStatus("Connecte-toi à Discord d'abord.", "err");
-      return;
-    }
-    if (!state.guildId) {
-      setStatus("Choisis un serveur.", "err");
-      return;
-    }
+    if (!state.me) return setStatus("Connecte-toi à Discord d'abord.", "err");
+    if (!state.guildId) return setStatus("Choisis un serveur.", "err");
 
     await safeAction(
       () =>
         api_queue_add({
-          url,
-          webpage_url: url,
-          title,
-          artist,
-          duration,
-          thumb,
+          query: url || title,
+          url: url || undefined,
+          webpage_url: url || undefined,
+          title: title || undefined,
+          artist: artist || undefined,
+          duration: duration ?? undefined,
+          thumb: thumb || undefined,
           thumbnail: thumb || undefined,
           source: sug?.source || sug?.provider || "yt",
           provider: sug?.provider || sug?.source || undefined,
@@ -1177,6 +1107,9 @@
       "Ajouté à la file ✅",
       true
     );
+
+    // 🔧 FIX voice: try to join after first add (best effort)
+    await bestEffortVoiceJoin("add_from_suggestion");
 
     if (el.searchInput) el.searchInput.value = "";
   }
@@ -1195,62 +1128,85 @@
     return api.get(api.routes.playlist_state.path, state.guildId ? { guild_id: state.guildId } : undefined);
   }
 
+  // 🔧 FIX: queue/add retry strategy:
+  // 1) POST JSON body
+  // 2) if fails (400/415/422/500 sometimes), retry by sending the same values as querystring
   async function api_queue_add(itemOrQuery) {
-    // IMPORTANT: ALWAYS send query for backend compatibility
-    let payload =
-      typeof itemOrQuery === "string"
-        ? basePayload({ query: itemOrQuery })
-        : basePayload(itemOrQuery || {});
+    let payload = typeof itemOrQuery === "string" ? basePayload({ query: itemOrQuery }) : basePayload(itemOrQuery || {});
 
-    const q = String(payload.query || "").trim();
     const url = String(payload.url || payload.webpage_url || "").trim();
     const title = String(payload.title || "").trim();
 
     if (!payload.query) payload.query = url || title || "";
     if (payload.url && !payload.webpage_url) payload.webpage_url = payload.url;
-
-    // Front expects thumb, but backend may accept thumbnail too
     if (payload.thumb && !payload.thumbnail) payload.thumbnail = payload.thumb;
     if (payload.thumbnail && !payload.thumb) payload.thumb = payload.thumbnail;
-
-    // Some backends reject null duration
     if (payload.duration == null) delete payload.duration;
 
-    // last resort: don't send empty payload
-    if (!String(payload.query || "").trim() && !String(payload.url || "").trim()) {
-      throw new Error("Ajout impossible: query/url vide.");
-    }
+    const queryStr = String(payload.query || "").trim();
+    const urlStr = String(payload.url || payload.webpage_url || "").trim();
+    if (!queryStr && !urlStr) throw new Error("Ajout impossible: query/url vide.");
 
     dlog("queue_add payload", payload);
-    return api.post(api.routes.queue_add.path, payload);
+
+    try {
+      return await api.post(api.routes.queue_add.path, payload);
+    } catch (e) {
+      const st = Number(e?.status || 0);
+      // Only retry on “likely format mismatch” errors
+      if (![400, 415, 422, 500].includes(st)) throw e;
+
+      const qs = {};
+      for (const [k, v] of Object.entries(payload)) {
+        if (v === undefined || v === null || v === "") continue;
+        qs[k] = String(v);
+      }
+      dlog("queue_add retry querystring", qs);
+
+      // Retry by posting empty JSON but querystring filled
+      return api.post(api.routes.queue_add.path, {}, qs);
+    }
   }
 
   async function api_queue_remove(index) {
     return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) }));
   }
-
   async function api_queue_skip() {
     return api.post(api.routes.queue_skip.path, basePayload({}));
   }
-
   async function api_queue_stop() {
     return api.post(api.routes.queue_stop.path, basePayload({}));
   }
-
   async function api_playlist_toggle_pause() {
     return api.post(api.routes.playlist_toggle_pause.path, basePayload({}));
   }
-
   async function api_playlist_restart() {
     return api.post(api.routes.playlist_restart.path, basePayload({}));
   }
-
   async function api_playlist_repeat() {
     return api.post(api.routes.playlist_repeat.path, basePayload({}));
   }
-
   async function api_playlist_play_at(index) {
     return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) }));
+  }
+
+  // 🔧 FIX voice: optional best-effort join
+  async function bestEffortVoiceJoin(reason) {
+    const now = Date.now();
+    if (now - state.voiceJoinLastAt < 8000) return; // throttle
+    state.voiceJoinLastAt = now;
+
+    if (!state.me || !state.guildId) return;
+
+    // If your backend uses /voice/join, it can use user_id+guild_id to detect the user's current voice channel.
+    // If route doesn't exist, ignore.
+    try {
+      await api.post(api.routes.voice_join.path, basePayload({ reason: String(reason || "") }));
+      dlog("voice_join ok");
+    } catch (e) {
+      // ignore 404, otherwise log
+      if (Number(e?.status || 0) !== 404) dlog("voice_join failed", e?.message || e);
+    }
   }
 
   // =============================
@@ -1259,32 +1215,34 @@
   async function api_spotify_status() {
     return api.get(api.routes.spotify_status.path);
   }
-
   async function api_spotify_logout() {
     return api.post(api.routes.spotify_logout.path, {});
   }
-
   async function api_spotify_me() {
     return api.get(api.routes.spotify_me.path);
   }
-
   async function api_spotify_playlists() {
     return api.get(api.routes.spotify_playlists.path);
   }
-
   async function api_spotify_playlist_tracks(playlistId) {
     const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
-    // normalize and store tracks
-    const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
-    // Spotify returns {items:[{track:{...}}]}
-    const tracks = items
-      .map((x) => x.track || x)
-      .filter(Boolean);
+
+    // Normalize tracks from multiple possible shapes:
+    // - {items:[{track:{...}}]}
+    // - {tracks:{items:[...]}}
+    // - {data:{items:[...]}}
+    const items =
+      (Array.isArray(data?.items) && data.items) ||
+      (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
+      (Array.isArray(data?.data?.items) && data.data.items) ||
+      (Array.isArray(data) && data) ||
+      [];
+
+    const tracks = items.map((x) => x?.track || x).filter(Boolean);
     state.spotifyTracks = tracks;
     renderSpotifyTracks();
     return data;
   }
-
   async function api_spotify_search_tracks(q) {
     const data = await api.get(api.routes.spotify_search_tracks.path, { q });
     const items = Array.isArray(data?.tracks?.items) ? data.tracks.items : Array.isArray(data?.items) ? data.items : [];
@@ -1292,43 +1250,21 @@
     renderSpotifySearch();
     return data;
   }
-
   async function api_spotify_playlist_create(name, isPublic) {
-    const data = await api.post(api.routes.spotify_playlist_create.path, {
-      name: name,
-      public: !!isPublic,
-    });
-    return data;
+    return api.post(api.routes.spotify_playlist_create.path, { name, public: !!isPublic });
   }
-
   async function api_spotify_playlist_add_track(playlistId, uri) {
-    return api.post(api.routes.spotify_playlist_add_track.path, {
-      playlist_id: playlistId,
-      uri,
-    });
+    return api.post(api.routes.spotify_playlist_add_track.path, { playlist_id: playlistId, uri });
   }
-
   async function api_spotify_playlist_remove_tracks(playlistId, uris) {
-    return api.post(api.routes.spotify_playlist_remove_tracks.path, {
-      playlist_id: playlistId,
-      uris: Array.isArray(uris) ? uris : [uris],
-    });
+    return api.post(api.routes.spotify_playlist_remove_tracks.path, { playlist_id: playlistId, uris: Array.isArray(uris) ? uris : [uris] });
   }
-
   async function api_spotify_add_current_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_current_to_playlist.path, {
-      playlist_id: playlistId,
-      guild_id: state.guildId ? Number(state.guildId) : undefined,
-    });
+    return api.post(api.routes.spotify_add_current_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? Number(state.guildId) : undefined });
   }
-
   async function api_spotify_add_queue_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_queue_to_playlist.path, {
-      playlist_id: playlistId,
-      guild_id: state.guildId ? Number(state.guildId) : undefined,
-    });
+    return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? Number(state.guildId) : undefined });
   }
-
   async function api_spotify_quickplay(uri) {
     return api.post(api.routes.spotify_quickplay.path, { uri });
   }
@@ -1336,28 +1272,21 @@
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = Math.round(window.top.outerHeight / 2 + window.top.screenY - h / 2);
     const x = Math.round(window.top.outerWidth / 2 + window.top.screenX - w / 2);
-    const win = window.open(
+    return window.open(
       url,
       name,
       `toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=${w},height=${h},top=${y},left=${x},noopener=yes`
     );
-    return win;
   }
 
   function spotifyLogin() {
-    if (!state.me) {
-      setStatus("Connecte-toi à Discord avant Spotify.", "err");
-      return;
-    }
+    if (!state.me) return setStatus("Connecte-toi à Discord avant Spotify.", "err");
 
     const sid = state.socketId || "";
     const url = `${API_BASE}${api.routes.spotify_login.path}?sid=${encodeURIComponent(sid)}`;
     const popup = openPopup(url, "spotify_link");
 
-    if (!popup) {
-      setStatus("Popup bloquée — autorise les popups puis réessaie.", "err");
-      return;
-    }
+    if (!popup) return setStatus("Popup bloquée — autorise les popups puis réessaie.", "err");
 
     setStatus("Ouverture Spotify…", "ok");
 
@@ -1368,37 +1297,13 @@
         await sleep(1500);
         await refreshSpotify();
         renderSpotify();
-        if (state.spotifyLinked) break;
-        if (popup.closed) {
-          // still keep polling a bit in case callback already hit server
-          await sleep(1200);
+        if (state.spotifyLinked) {
+          await refreshSpotifyPlaylists().catch(() => {});
+          break;
         }
+        if (popup.closed) await sleep(1200);
       }
     })().catch(() => {});
-  }
-
-  // =============================
-  // Admin actions (optional)
-  // =============================
-  async function refreshAdminOverlays() {
-    if (!el.adminOverlayCount) return;
-    try {
-      const data = await api.get(api.routes.admin_overlays_online.path);
-      const n = safeInt(data?.count ?? data?.online ?? (Array.isArray(data) ? data.length : null), 0) || 0;
-      el.adminOverlayCount.textContent = String(n);
-      setStatus("Overlays online: ok", "ok");
-    } catch (e) {
-      setStatus(e.message || "Admin overlays error", "err");
-    }
-  }
-
-  async function adminJumpscare(kind) {
-    try {
-      await api.post(api.routes.admin_jumpscare.path, { kind: kind || "default" });
-      setStatus("Jumpscare envoyé 😈", "ok");
-    } catch (e) {
-      setStatus(e.message || "Jumpscare error", "err");
-    }
   }
 
   // =============================
@@ -1409,7 +1314,7 @@
       const raw = await api.get(api.routes.users_me.path);
       state.me = normalizeMePayload(raw);
       return state.me;
-    } catch (e) {
+    } catch {
       state.me = null;
       return null;
     }
@@ -1424,7 +1329,7 @@
       const data = await api.get(api.routes.guilds.path);
       state.guilds = normalizeGuildsPayload(data);
       return state.guilds;
-    } catch (e) {
+    } catch {
       state.guilds = [];
       return [];
     }
@@ -1439,17 +1344,18 @@
 
     try {
       const st = await api_spotify_status();
+      // Accept multiple shapes:
+      // {linked:true, profile:{...}} OR {ok:true, linked:true, me:{...}} OR {ok:true, profile:{...}}
       state.spotifyLinked = !!(st?.linked ?? st?.ok ?? false);
-      state.spotifyProfile = st?.profile || st?.me || null;
+      state.spotifyProfile = st?.profile || st?.me || st?.data?.profile || st?.data?.me || null;
 
-      // If linked but no profile returned, try /spotify/me once
       if (state.spotifyLinked && !state.spotifyProfile) {
         try {
           const me = await api_spotify_me();
-          state.spotifyProfile = me?.profile || me?.me || me || null;
+          state.spotifyProfile = me?.profile || me?.me || me?.data?.profile || me?.data?.me || me || null;
         } catch {}
       }
-    } catch (e) {
+    } catch {
       state.spotifyLinked = false;
       state.spotifyProfile = null;
     }
@@ -1460,28 +1366,48 @@
       state.spotifyPlaylists = [];
       state.spotifyTracks = [];
       state.spotifySearchResults = [];
+      renderSpotifyPlaylists();
+      renderSpotifyTracks();
+      renderSpotifySearch();
       return;
     }
 
     try {
       const data = await api_spotify_playlists();
-      const items = Array.isArray(data?.items) ? data.items : Array.isArray(data?.playlists) ? data.playlists : Array.isArray(data) ? data : [];
+
+      // Normalize playlists from multiple shapes:
+      // - {items:[...]}
+      // - {playlists:[...]}
+      // - {data:{items:[...]}}
+      // - direct array
+      const items =
+        (Array.isArray(data?.items) && data.items) ||
+        (Array.isArray(data?.playlists) && data.playlists) ||
+        (Array.isArray(data?.data?.items) && data.data.items) ||
+        (Array.isArray(data?.data?.playlists) && data.data.playlists) ||
+        (Array.isArray(data) && data) ||
+        [];
+
       state.spotifyPlaylists = items;
 
-      // restore last playlist
       const saved = localStorage.getItem(LS_KEY_SPOTIFY_LAST_PLAYLIST) || "";
       if (!state.spotifyCurrentPlaylistId) state.spotifyCurrentPlaylistId = saved;
-      if (!state.spotifyCurrentPlaylistId && items.length) state.spotifyCurrentPlaylistId = items[0].id || "";
-
-      if (state.spotifyCurrentPlaylistId) {
-        await api_spotify_playlist_tracks(state.spotifyCurrentPlaylistId);
-      }
+      if (!state.spotifyCurrentPlaylistId && items.length) state.spotifyCurrentPlaylistId = items[0]?.id || "";
 
       renderSpotifyPlaylists();
-      renderSpotifyTracks();
+
+      if (state.spotifyCurrentPlaylistId) {
+        await api_spotify_playlist_tracks(state.spotifyCurrentPlaylistId).catch(() => {});
+      } else {
+        state.spotifyTracks = [];
+        renderSpotifyTracks();
+      }
     } catch (e) {
-      setStatus(e.message || "Spotify playlists error", "err");
+      setStatus(e?.message || "Spotify playlists error", "err");
       state.spotifyPlaylists = [];
+      state.spotifyTracks = [];
+      renderSpotifyPlaylists();
+      renderSpotifyTracks();
     }
   }
 
@@ -1494,7 +1420,7 @@
       const data = await api_playlist_state();
       applyPlaylistPayload(data);
     } catch (e) {
-      setStatus(String(e.message || e), "err");
+      setStatus(String(e?.message || e), "err");
     }
   }
 
@@ -1502,7 +1428,6 @@
     await refreshMe();
     await refreshGuilds();
 
-    // pick guild
     const saved = localStorage.getItem(LS_KEY_GUILD) || "";
     if (!state.guildId) {
       if (saved) state.guildId = saved;
@@ -1511,6 +1436,11 @@
     }
 
     await refreshSpotify();
+    if (state.spotifyLinked) {
+      // 🔧 FIX: attempt to load playlists automatically on boot if panel exists
+      await refreshSpotifyPlaylists().catch(() => {});
+    }
+
     await refreshPlaylist();
     renderAll();
   }
@@ -1536,7 +1466,6 @@
   // Polling fallback
   // =============================
   function startPolling() {
-    // Main polling (playlist + auth/spotify): only if no socket
     setInterval(async () => {
       if (state.socketReady) return;
       await refreshMe();
@@ -1545,10 +1474,8 @@
       renderAll();
     }, 2000);
 
-    // Spotify heavier polling (playlists etc) slower
     setInterval(async () => {
       if (!state.me || !state.spotifyLinked) return;
-      // only update profile/status quickly; playlists are manual via button
       await refreshSpotify();
       renderSpotify();
     }, 5000);
@@ -1558,10 +1485,8 @@
   // Events binding
   // =============================
   function bindUI() {
-    // Search input debounce
     if (el.searchInput) el.searchInput.addEventListener("input", onSearchInput);
 
-    // Search keyboard navigation
     if (el.searchInput) {
       el.searchInput.addEventListener("keydown", async (ev) => {
         if (!state.sugOpen) return;
@@ -1586,12 +1511,9 @@
         }
       });
 
-      el.searchInput.addEventListener("blur", () => {
-        setTimeout(() => closeSuggestions(), 120);
-      });
+      el.searchInput.addEventListener("blur", () => setTimeout(() => closeSuggestions(), 120));
     }
 
-    // Search submit
     if (el.searchForm) {
       el.searchForm.addEventListener("submit", async (ev) => {
         ev.preventDefault();
@@ -1607,11 +1529,11 @@
 
         closeSuggestions();
         await safeAction(() => api_queue_add(q), "Ajouté à la file ✅", true);
+        await bestEffortVoiceJoin("search_submit");
         if (el.searchInput) el.searchInput.value = "";
       });
     }
 
-    // Discord login/logout
     if (el.btnLoginDiscord) {
       el.btnLoginDiscord.addEventListener("click", () => {
         const url = `${API_BASE}${api.routes.auth_login.path}`;
@@ -1634,7 +1556,6 @@
       });
     }
 
-    // Guild select
     if (el.guildSelect) {
       el.guildSelect.addEventListener("change", async () => {
         const oldGid = state.guildId;
@@ -1650,14 +1571,12 @@
       });
     }
 
-    // Player controls
     if (el.btnStop) el.btnStop.addEventListener("click", async () => safeAction(() => api_queue_stop(), "Stop ✅", true));
     if (el.btnSkip) el.btnSkip.addEventListener("click", async () => safeAction(() => api_queue_skip(), "Skip ✅", true));
     if (el.btnPlayPause) el.btnPlayPause.addEventListener("click", async () => safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true));
     if (el.btnPrev) el.btnPrev.addEventListener("click", async () => safeAction(() => api_playlist_restart(), "Restart ✅", true));
     if (el.btnRepeat) el.btnRepeat.addEventListener("click", async () => safeAction(() => api_playlist_repeat(), "Repeat toggle ✅", true));
 
-    // Spotify login/logout
     if (el.btnSpotifyLogin) el.btnSpotifyLogin.addEventListener("click", () => spotifyLogin());
     if (el.btnSpotifyLogout) {
       el.btnSpotifyLogout.addEventListener("click", async () => {
@@ -1671,7 +1590,6 @@
       });
     }
 
-    // Spotify load playlists
     if (el.btnSpotifyLoadPlaylists) {
       el.btnSpotifyLoadPlaylists.addEventListener("click", async () => {
         if (!state.spotifyLinked) return setStatus("Spotify non lié.", "err");
@@ -1679,7 +1597,6 @@
       });
     }
 
-    // Spotify playlist select
     if (el.spotifyPlaylistSelect) {
       el.spotifyPlaylistSelect.addEventListener("change", async () => {
         const pid = el.spotifyPlaylistSelect.value || "";
@@ -1690,7 +1607,6 @@
       });
     }
 
-    // Spotify create playlist
     if (el.btnSpotifyCreatePlaylist) {
       el.btnSpotifyCreatePlaylist.addEventListener("click", async () => {
         if (!state.spotifyLinked) return setStatus("Spotify non lié.", "err");
@@ -1698,9 +1614,8 @@
         const isPublic = !!el.spotifyCreatePublic?.checked;
         const data = await safeAction(() => api_spotify_playlist_create(name, isPublic), "Playlist créée ✅", false);
 
-        // try to refresh playlists and select it
         await refreshSpotifyPlaylists();
-        const createdId = data?.id || data?.playlist_id || data?.playlist?.id || "";
+        const createdId = data?.id || data?.playlist_id || data?.playlist?.id || data?.data?.id || "";
         if (createdId) {
           state.spotifyCurrentPlaylistId = createdId;
           localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, createdId);
@@ -1710,7 +1625,6 @@
       });
     }
 
-    // Spotify add current / add queue
     if (el.btnSpotifyAddCurrent) {
       el.btnSpotifyAddCurrent.addEventListener("click", async () => {
         const pid = state.spotifyCurrentPlaylistId;
@@ -1726,7 +1640,6 @@
       });
     }
 
-    // Spotify search tracks
     if (el.spotifySearchForm) {
       el.spotifySearchForm.addEventListener("submit", async (ev) => {
         ev.preventDefault();
@@ -1737,29 +1650,23 @@
       });
     }
 
-    // Admin
-    if (el.adminRefreshOverlays) el.adminRefreshOverlays.addEventListener("click", () => refreshAdminOverlays().catch(() => {}));
-    if (el.adminJumpscareBtn) {
-      el.adminJumpscareBtn.addEventListener("click", () => {
-        const kind = el.adminJumpscareSelect?.value || "default";
-        adminJumpscare(kind).catch(() => {});
-      });
-    }
-
-    // Very reliable: on focus after OAuth/popup
+    // on focus after OAuth/popup
     window.addEventListener("focus", async () => {
       try {
         await refreshMe();
         await refreshSpotify();
+        if (state.spotifyLinked) await refreshSpotifyPlaylists().catch(() => {});
         renderAll();
       } catch {}
     });
 
-    // Click outside suggestions to close
+    // close suggestions on outside click
     document.addEventListener("click", (ev) => {
       if (!state.sugOpen) return;
       const target = ev.target;
-      const inside = (el.searchSuggestions && el.searchSuggestions.contains(target)) || (el.searchInput && el.searchInput.contains(target));
+      const inside =
+        (el.searchSuggestions && el.searchSuggestions.contains(target)) ||
+        (el.searchInput && el.searchInput.contains(target));
       if (!inside) closeSuggestions();
     });
   }
@@ -1770,7 +1677,6 @@
   async function boot() {
     setStatus("Initialisation…", "ok");
 
-    // Restore guild early (before socket connect)
     const saved = localStorage.getItem(LS_KEY_GUILD) || "";
     if (saved) state.guildId = saved;
 
@@ -1779,7 +1685,6 @@
 
     await refreshAll();
 
-    // If socket exists and already ready, subscribe current guild
     if (state.socket && state.socketReady && state.guildId) {
       try {
         state.socket.emit("overlay_subscribe_guild", { guild_id: Number(state.guildId) });
