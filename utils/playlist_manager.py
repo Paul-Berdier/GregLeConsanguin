@@ -316,18 +316,24 @@ class PlaylistManager:
 
         # ------------------------- COMPAT / LEGACY -------------------------
 
-    def peek_all(self) -> Dict[str, Any]:
-        """
-        Compat rétro : certains endpoints/broadcasts attendent `peek_all()`.
-        Renvoie un snapshot sérialisable de l'état courant.
-        """
-        return self.to_dict()
+        def peek_all(self) -> List[Dict[str, Any]]:
+            """
+            Compat rétro : historiquement `peek_all()` renvoyait la LISTE de la queue.
+            Certains services (priority rules) l'utilisent comme une liste indexable.
+            """
+            return self.get_queue()
 
-    def peek_queue(self) -> List[Dict[str, Any]]:
-        """
-        Compat éventuelle : renvoie une copie de la queue.
-        """
-        return self.get_queue()
+        def peek_queue(self) -> List[Dict[str, Any]]:
+            """
+            Compat éventuelle : renvoie une copie de la queue.
+            """
+            return self.get_queue()
+
+        def peek_state(self) -> Dict[str, Any]:
+            """
+            Snapshot complet (now_playing/current/queue) si besoin côté API/overlay.
+            """
+            return self.to_dict()
 
 
 if __name__ == "__main__":
