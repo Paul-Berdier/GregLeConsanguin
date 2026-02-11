@@ -757,9 +757,19 @@
           .map((p) => {
             const name = escapeHtml(p.name || "Playlist");
             const id = escapeHtml(p.id || "");
-            const owner = escapeHtml(p.owner?.display_name || p.owner?.id || "");
-            const tracks = escapeHtml(String(p.tracks?.total ?? p.tracks_total ?? p.tracksCount ?? ""));
+            const owner =
+              (typeof p.owner === "string" ? p.owner : (p.owner?.display_name || p.owner?.id || "")) || "";
+
+            const tracks =
+              String(
+                p.tracks?.total ??
+                p.tracks_total ??
+                p.tracksCount ??
+                p.tracksTotal ??
+                ""
+              );
             const img = p.images?.[0]?.url || p.image || p.cover || "";
+
             const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
             const active = state.spotifyCurrentPlaylistId && p.id === state.spotifyCurrentPlaylistId ? " is-active" : "";
             return `
@@ -817,7 +827,11 @@
     el.spotifyTracks.innerHTML = rows
       .map((t, idx) => {
         const name = escapeHtml(t.name || t.title || "Track");
-        const artist = escapeHtml(Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : (t.artist || ""));
+        const artist = escapeHtml(
+          Array.isArray(t.artists)
+            ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
+            : (t.artists || t.artist || "")
+        );
         const uri = escapeHtml(t.uri || "");
         const img = t.album?.images?.[0]?.url || t.image || "";
         const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
@@ -847,10 +861,30 @@
       const btnQuick = row.querySelector("button[data-action='quickplay']");
       if (btnQuick) {
         btnQuick.addEventListener("click", async (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          await safeAction(() => api_spotify_quickplay(uri), "Lecture Spotify ✅", false);
-        });
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  const idx = Number(row.getAttribute("data-idx"));
+  const t = state.spotifyTracks[idx];
+  if (!t) return setStatus("Track introuvable.", "err");
+  if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
+
+  const artistsStr =
+    Array.isArray(t.artists)
+      ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
+      : (t.artists || t.artist || "");
+
+  const tr = {
+    name: t.name || t.title || "",
+    artists: artistsStr,
+    duration_ms: t.duration_ms ?? null,
+    image: t.image || t.album?.images?.[0]?.url || null,
+    uri: t.uri || null,
+  };
+
+  await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", false);
+});
+
       }
 
       const btnRemove = row.querySelector("button[data-action='remove']");
@@ -878,7 +912,11 @@
     el.spotifySearchResults.innerHTML = rows
       .map((t) => {
         const name = escapeHtml(t.name || "Track");
-        const artist = escapeHtml(Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : "");
+const artist = escapeHtml(
+  Array.isArray(t.artists)
+    ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
+    : (t.artists || t.artist || "")
+);
         const uri = escapeHtml(t.uri || "");
         const img = t.album?.images?.[0]?.url || "";
         const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
@@ -1248,47 +1286,77 @@
   async function api_spotify_playlist_tracks(playlistId) {
     const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
 
-    // Normalize tracks from multiple possible shapes:
-    // - {items:[{track:{...}}]}
-    // - {tracks:{items:[...]}}
-    // - {data:{items:[...]}}
+    // Backend returns {tracks:[...]} (already flattened)
+    // Accept multiple shapes anyway.
     const items =
+      (Array.isArray(data?.tracks) && data.tracks) ||
       (Array.isArray(data?.items) && data.items) ||
       (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
       (Array.isArray(data?.data?.items) && data.data.items) ||
       (Array.isArray(data) && data) ||
       [];
 
+    // If Spotify raw shape sneaks in: {items:[{track:{...}}]}
     const tracks = items.map((x) => x?.track || x).filter(Boolean);
+
     state.spotifyTracks = tracks;
     renderSpotifyTracks();
     return data;
   }
-  async function api_spotify_search_tracks(q) {
-    const data = await api.get(api.routes.spotify_search_tracks.path, { q });
-    const items = Array.isArray(data?.tracks?.items) ? data.tracks.items : Array.isArray(data?.items) ? data.items : [];
-    state.spotifySearchResults = items;
-    renderSpotifySearch();
-    return data;
-  }
+
+async function api_spotify_search_tracks(q) {
+  const data = await api.get(api.routes.spotify_search_tracks.path, { q });
+
+  const items =
+    (Array.isArray(data?.tracks) && data.tracks) ||
+    (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
+    (Array.isArray(data?.items) && data.items) ||
+    [];
+
+  state.spotifySearchResults = items;
+  renderSpotifySearch();
+  return data;
+}
+
   async function api_spotify_playlist_create(name, isPublic) {
     return api.post(api.routes.spotify_playlist_create.path, { name, public: !!isPublic });
   }
-  async function api_spotify_playlist_add_track(playlistId, uri) {
-    return api.post(api.routes.spotify_playlist_add_track.path, { playlist_id: playlistId, uri });
-  }
-  async function api_spotify_playlist_remove_tracks(playlistId, uris) {
-    return api.post(api.routes.spotify_playlist_remove_tracks.path, { playlist_id: playlistId, uris: Array.isArray(uris) ? uris : [uris] });
-  }
+async function api_spotify_playlist_add_track(playlistId, uri) {
+  return api.post(api.routes.spotify_playlist_add_track.path, {
+    playlist_id: playlistId,
+    track_uri: uri,   // ✅ backend expects track_uri
+  });
+}
+
+async function api_spotify_playlist_remove_tracks(playlistId, uris) {
+  const arr = Array.isArray(uris) ? uris : [uris];
+  return api.post(api.routes.spotify_playlist_remove_tracks.path, {
+    playlist_id: playlistId,
+    track_uris: arr,   // ✅ backend expects track_uris
+  });
+}
+
   async function api_spotify_add_current_to_playlist(playlistId) {
     return api.post(api.routes.spotify_add_current_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
   }
   async function api_spotify_add_queue_to_playlist(playlistId) {
     return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
   }
-  async function api_spotify_quickplay(uri) {
-    return api.post(api.routes.spotify_quickplay.path, { uri });
-  }
+async function api_spotify_quickplay(trackObjOrUri) {
+  if (!state.guildId) throw new Error("missing guild_id");
+
+  const track =
+    typeof trackObjOrUri === "string"
+      ? { uri: trackObjOrUri }
+      : (trackObjOrUri && typeof trackObjOrUri === "object" ? trackObjOrUri : {});
+
+  return api.post(api.routes.spotify_quickplay.path, {
+    guild_id: String(state.guildId),
+    track,
+  });
+}
+
+
 
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = Math.round(window.top.outerHeight / 2 + window.top.screenY - h / 2);
@@ -1367,8 +1435,20 @@
       const st = await api_spotify_status();
       // Accept multiple shapes:
       // {linked:true, profile:{...}} OR {ok:true, linked:true, me:{...}} OR {ok:true, profile:{...}}
-      state.spotifyLinked = !!(st?.linked ?? st?.ok ?? false);
-      state.spotifyProfile = st?.profile || st?.me || st?.data?.profile || st?.data?.me || null;
+// linked: priorité à un champ explicite "linked" si présent
+if (st && typeof st === "object" && "linked" in st) {
+  state.spotifyLinked = !!st.linked;
+} else {
+  // fallback: certains backends mettent ok=true quand lié (moins propre, mais tu l’acceptes)
+  state.spotifyLinked = !!st?.ok;
+}
+
+state.spotifyProfile =
+  st?.profile ||
+  st?.me ||
+  st?.data?.profile ||
+  st?.data?.me ||
+  null;
 
       if (state.spotifyLinked && !state.spotifyProfile) {
         try {
