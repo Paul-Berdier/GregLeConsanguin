@@ -430,19 +430,21 @@
 
       try {
         socket.emit("overlay_register", {
-          kind: "web_player",
-          page: "player",
-          guild_id: state.guildId ? Number(state.guildId) : undefined,
-          user_id: state.me?.id ? Number(state.me.id) : undefined,
-          t: Date.now(),
-        });
+        kind: "web_player",
+        page: "player",
+        guild_id: state.guildId ? String(state.guildId) : undefined, // ✅
+        user_id: state.me?.id ? String(state.me.id) : undefined,     // ✅
+        t: Date.now(),
+      });
       } catch (e) {
         dlog("overlay_register failed", e);
       }
 
       if (state.guildId) {
         try {
-          socket.emit("overlay_subscribe_guild", { guild_id: Number(state.guildId) });
+        socket.emit("overlay_subscribe_guild", {
+          guild_id: String(state.guildId) // ✅
+        });  
         } catch (e) {
           dlog("overlay_subscribe_guild failed", e);
         }
@@ -487,8 +489,8 @@
   function socketResubscribeGuild(oldGid, newGid) {
     if (!state.socket || !state.socketReady) return;
     try {
-      if (oldGid) state.socket.emit("overlay_unsubscribe_guild", { guild_id: Number(oldGid) });
-      if (newGid) state.socket.emit("overlay_subscribe_guild", { guild_id: Number(newGid) });
+      if (oldGid) state.socket.emit("overlay_unsubscribe_guild", { guild_id: String(oldGid) });
+      if (newGid) state.socket.emit("overlay_subscribe_guild", { guild_id: String(newGid) });
     } catch {}
   }
 
@@ -1119,9 +1121,27 @@
   // =============================
   function basePayload(extra = {}) {
     const out = { ...extra };
-    if (state.guildId) out.guild_id = Number(state.guildId);
-    if (state.me?.id) out.user_id = Number(state.me.id);
+    if (state.guildId) out.guild_id = String(state.guildId);     // ✅ string
+    if (state.me?.id) out.user_id = String(state.me.id);         // ✅ string
     return out;
+  }
+
+  function assertSnowflake(label, v) {
+    const s = String(v ?? "");
+    const ok = /^\d{17,20}$/.test(s);
+    if (!ok) console.warn("[SnowflakeInvalid]", label, v);
+    if (typeof v === "number") console.warn("[SnowflakeNumber!!]", label, v, "precision lost likely");
+  }
+
+  function debugPayload(tag, payload) {
+    console.log("[DBG]", tag, payload, {
+      guild_id_type: typeof payload.guild_id,
+      user_id_type: typeof payload.user_id,
+      guild_id_len: String(payload.guild_id || "").length,
+      user_id_len: String(payload.user_id || "").length,
+    });
+    assertSnowflake("guild_id", payload.guild_id);
+    assertSnowflake("user_id", payload.user_id);
   }
 
   async function api_playlist_state() {
@@ -1162,6 +1182,7 @@
         qs[k] = String(v);
       }
       dlog("queue_add retry querystring", qs);
+      debugPayload("queue_add", payload);
 
       // Retry by posting empty JSON but querystring filled
       return api.post(api.routes.queue_add.path, {}, qs);
@@ -1260,10 +1281,10 @@
     return api.post(api.routes.spotify_playlist_remove_tracks.path, { playlist_id: playlistId, uris: Array.isArray(uris) ? uris : [uris] });
   }
   async function api_spotify_add_current_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_current_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? Number(state.guildId) : undefined });
+    return api.post(api.routes.spotify_add_current_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
   }
   async function api_spotify_add_queue_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? Number(state.guildId) : undefined });
+    return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
   }
   async function api_spotify_quickplay(uri) {
     return api.post(api.routes.spotify_quickplay.path, { uri });
@@ -1687,7 +1708,7 @@
 
     if (state.socket && state.socketReady && state.guildId) {
       try {
-        state.socket.emit("overlay_subscribe_guild", { guild_id: Number(state.guildId) });
+        state.socket.emit("overlay_subscribe_guild", { guild_id: String(state.guildId) });
       } catch {}
     }
 
