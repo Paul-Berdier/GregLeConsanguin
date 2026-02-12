@@ -630,72 +630,161 @@ socket.on("playlist_update", (payload) => {
   }
 
   function applyPlaylistPayload(payload) {
-  const p = payload?.state || payload?.pm || payload?.data || payload || {};
+  // ------------------------------------------------------------
+  // Object resolver: the backend sometimes wraps in {ok, state} or {state:{...}}
+  // and socket may send a partial "ticker" payload.
+  // ------------------------------------------------------------
+  const root =
+    (payload && typeof payload === "object" ? payload : {}) || {};
 
-  // ✅ Cas spécial: updates "ticker" (only_elapsed) => ne pas écraser current/queue
+  const p =
+    (root.state && typeof root.state === "object" ? root.state : null) ||
+    (root.pm && typeof root.pm === "object" ? root.pm : null) ||
+    (root.data && typeof root.data === "object" ? root.data : null) ||
+    root;
+
+  // "ticker" update from backend: do not overwrite current/queue unless provided
   const isTick = !!p.only_elapsed;
 
-  // Current + queue (si pas tick)
-  const current = isTick
-    ? state.playlist.current
-    : normalizeItem(p.current || p.now_playing || p.playing || null);
+  // ------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------
+  const pickFirst = (...vals) => {
+    for (const v of vals) {
+      if (v !== undefined && v !== null) return v;
+    }
+    return undefined;
+  };
 
-  const queueRaw = isTick
-    ? (state.playlist.queue || [])
-    : Array.isArray(p.queue)
-    ? p.queue
-    : Array.isArray(p.items)
-    ? p.items
-    : Array.isArray(p.list)
-    ? p.list
-    : [];
+  const toBool = (v) => {
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (["1", "true", "yes", "on"].includes(s)) return true;
+      if (["0", "false", "no", "off"].includes(s)) return false;
+    }
+    return !!v;
+  };
 
-  const queue = isTick ? queueRaw : queueRaw.map(normalizeItem).filter(Boolean);
+  // Normalize item only if we are given something
+  const normalizeMaybeItem = (it) => {
+    const n = normalizeItem(it);
+    return n && (n.title || n.url) ? n : null;
+  };
 
-  // ✅ paused/repeat depuis le BACK
-  const paused = !!(p.is_paused ?? p.paused ?? p.isPaused ?? p.pause ?? false);
-  const repeat = !!(p.repeat_all ?? p.repeat ?? p.repeat_mode ?? p.loop ?? false);
+  // ------------------------------------------------------------
+  // Current
+  // ------------------------------------------------------------
+  let current = state.playlist.current;
 
-  // ✅ position/duration depuis progress.{elapsed,duration}
-  const elapsed =
-    toSeconds(
-      p.progress?.elapsed ??
-        p.progress?.position ??
-        p.elapsed ??
-        p.position ??
-        p.pos ??
-        p.current_time ??
-        0
-    ) ?? 0;
+  if (!isTick) {
+    current = normalizeMaybeItem(p.current || p.now_playing || p.playing || null);
+  } else {
+    // tick payload MAY still include current; accept it if present
+    if (p.current || p.now_playing || p.playing) {
+      const maybe = normalizeMaybeItem(p.current || p.now_playing || p.playing);
+      if (maybe) current = maybe;
+    }
+  }
 
-  const duration =
-    toSeconds(
-      p.progress?.duration ??
-        p.duration ??
-        p.total ??
-        p.length ??
-        (current?.duration ?? 0)
-    ) ?? (current?.duration ?? 0);
+  // ------------------------------------------------------------
+  // Queue
+  // ------------------------------------------------------------
+  let queue = state.playlist.queue || [];
 
-  // ✅ Applique sans casser l’état en mode ticker
+  if (!isTick) {
+    const queueRaw = Array.isArray(p.queue)
+      ? p.queue
+      : Array.isArray(p.items)
+      ? p.items
+      : Array.isArray(p.list)
+      ? p.list
+      : [];
+
+    queue = queueRaw.map(normalizeItem).filter(Boolean);
+  } else {
+    // tick payload MAY include queue; accept it if present
+    const queueMaybe = Array.isArray(p.queue)
+      ? p.queue
+      : Array.isArray(p.items)
+      ? p.items
+      : Array.isArray(p.list)
+      ? p.list
+      : null;
+
+    if (queueMaybe) {
+      queue = queueMaybe.map(normalizeItem).filter(Boolean);
+    }
+  }
+
+  // ------------------------------------------------------------
+  // paused / repeat (backend authoritative)
+  // ------------------------------------------------------------
+  const paused = toBool(
+    pickFirst(p.is_paused, p.paused, p.isPaused, p.pause, false)
+  );
+
+  const repeat = toBool(
+    pickFirst(p.repeat_all, p.repeat, p.repeat_mode, p.loop, false)
+  );
+
+  // ------------------------------------------------------------
+  // progress (backend authoritative)
+  // Prefer progress.{elapsed,duration} if present.
+  // Also accept older shapes.
+  // ------------------------------------------------------------
+  const elapsed = toSeconds(
+    pickFirst(
+      p.progress?.elapsed,
+      p.progress?.position,
+      p.elapsed,
+      p.position,
+      p.pos,
+      p.current_time,
+      0
+    )
+  ) ?? 0;
+
+  const duration = toSeconds(
+    pickFirst(
+      p.progress?.duration,
+      p.duration,
+      p.total,
+      p.length,
+      current?.duration,
+      0
+    )
+  ) ?? 0;
+
+  // ------------------------------------------------------------
+  // Apply state
+  // ------------------------------------------------------------
   state.playlist.current = current;
   state.playlist.queue = queue;
 
-  // si current null => paused forcé
+  // If no current, force paused
   state.playlist.paused = paused || !current;
   state.playlist.repeat = repeat;
 
-  state.playlist.position = elapsed || 0;
-  state.playlist.duration = duration || 0;
+  state.playlist.position = Math.max(0, elapsed || 0);
+  state.playlist.duration = Math.max(0, duration || 0);
 
-  // base pour ton ticker UI
+  // Reset the UI ticker baseline from backend values
   state.tick.basePos = state.playlist.position;
   state.tick.baseAt = Date.now();
   state.tick.duration = state.playlist.duration;
 
   setRepeatActive(state.playlist.repeat);
   updatePlayPauseIcon(state.playlist.paused);
+
+  // If track ended / duration unknown, keep UI stable (avoid NaN / weird bar)
+  if (!state.playlist.duration || state.playlist.duration < 1) {
+    if (el.progressFill) el.progressFill.style.width = "0%";
+    if (el.progressTotal) el.progressTotal.textContent = "--:--";
+  }
 }
+
 
 
   // =============================

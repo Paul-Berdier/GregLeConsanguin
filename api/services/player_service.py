@@ -138,24 +138,30 @@ class PlayerService:
             except Exception:
                 pass
 
-        # alias compat front
-        position = elapsed
-        duration2 = int(duration) if duration is not None else None
+        # ✅ normalise toujours duration/position au root
+        pos = int(elapsed) if elapsed is not None else 0
+        dur = int(duration) if duration is not None else None
 
         return {
             "queue": queue,
             "current": cur,
-            "is_paused": is_paused_vc,
-            "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
+            # ✅ standard "paused"
+            "paused": bool(is_paused_vc),
+            "is_paused": bool(is_paused_vc),  # compat
 
-            "position": elapsed,  # ✅ compat
-            "duration": (int(duration) if duration is not None else None),  # ✅ compat
+            # ✅ standard "position/duration" (plats)
+            "position": pos,
+            "duration": dur,
+
+            # ✅ compat ancien format
+            "progress": {"elapsed": pos, "duration": dur},
 
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
             "requested_by_user": requested_by_user,
             "queue_users": queue_users,
         }
+
 
     # ✅ API unique pour REST + WS
     def get_state(self, guild_id: int) -> dict:
@@ -212,13 +218,22 @@ class PlayerService:
                     if duration is None and self.current_song.get(gid, {}).get("duration"):
                         duration = int(self.current_song[gid]["duration"])
 
+                    pos = int(elapsed) if elapsed is not None else 0
+                    dur = int(duration) if duration is not None else None
+
                     payload = {
                         "only_elapsed": True,
+                        "paused": bool(vc and vc.is_paused()),
                         "is_paused": bool(vc and vc.is_paused()),
-                        "position": elapsed,  # ✅ compat
-                        "duration": duration,  # ✅ compat
-                        "progress": {"elapsed": elapsed, "duration": duration},
+
+                        # ✅ champs plats
+                        "position": pos,
+                        "duration": dur,
+
+                        # ✅ compat
+                        "progress": {"elapsed": pos, "duration": dur},
                     }
+
 
                     self._emit_playlist_update(gid, payload)
                     await asyncio.sleep(1.0)
