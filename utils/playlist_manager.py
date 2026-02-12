@@ -25,12 +25,12 @@ class PlaylistManager:
     - Thread-safe via RLock
     - Écriture ATOMIQUE (tempfile + replace)
     - Source de vérité = mémoire (pas de reload pendant save)
+    - Migration automatique des vieux formats
     """
 
     def __init__(self, guild_id: str | int, playlist_dir: str | os.PathLike | None = None):
         self.guild_id = str(guild_id).strip()
 
-        # ✅ chemin robuste : par défaut ./playlists (racine process)
         base_dir = Path(playlist_dir) if playlist_dir else Path(os.getenv("PLAYLIST_DIR", "playlists"))
         base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -39,7 +39,6 @@ class PlaylistManager:
         self.now_playing: Optional[Dict[str, Any]] = None
         self.lock = RLock()
 
-        # Log minimal mais utile
         print(f"[PlaylistManager {self.guild_id}] ⚙️ Init — file={self.file}")
         self.reload()
 
@@ -47,7 +46,7 @@ class PlaylistManager:
 
     def _safe_write(self) -> None:
         """
-        Écrit *seulement* l'état courant en mémoire dans un tmp file, puis replace atomique.
+        Écrit l'état courant en mémoire dans un tmp file, puis replace atomique.
         """
         directory = Path(self.file).parent
         directory.mkdir(parents=True, exist_ok=True)
@@ -194,7 +193,7 @@ class PlaylistManager:
     # ------------------------- API PUBLIQUE -------------------------
 
     def add(self, item: Dict[str, Any] | str, added_by: Optional[str | int] = None) -> Dict[str, Any]:
-        """Ajoute un *seul* item (url ou dict). Retourne l'item normalisé."""
+        """Ajoute un item (url ou dict). Retourne l'item normalisé."""
         with self.lock:
             obj = self._coerce_item(item)
             if added_by is not None and str(added_by).strip():
@@ -219,9 +218,7 @@ class PlaylistManager:
             return count
 
     def pop_next(self) -> Optional[Dict[str, Any]]:
-        """
-        Retire et renvoie le prochain item (tête de file) et définit now_playing.
-        """
+        """Retire et renvoie le prochain item (tête de file) et définit now_playing."""
         with self.lock:
             if not self.queue:
                 print(f"[PlaylistManager {self.guild_id}] 💤 pop_next sur queue vide.")
@@ -233,10 +230,7 @@ class PlaylistManager:
             return item
 
     def skip(self) -> Optional[Dict[str, Any]]:
-        """
-        Supprime le 1er élément de queue (pas le now_playing).
-        Retourne l'élément supprimé ou None.
-        """
+        """Supprime le 1er élément de queue (pas le now_playing)."""
         with self.lock:
             if not self.queue:
                 print(f"[PlaylistManager {self.guild_id}] ⏩ Skip demandé mais queue vide.")
@@ -298,7 +292,7 @@ class PlaylistManager:
             return len(self.queue)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Snapshot sérialisable pour l'API."""
+        """Snapshot sérialisable pour l'API/overlay."""
         def _expose(track: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not isinstance(track, dict):
                 return None
@@ -314,26 +308,22 @@ class PlaylistManager:
                 "queue": [_expose(it) for it in self.queue],
             }
 
-        # ------------------------- COMPAT / LEGACY -------------------------
+    # ------------------------- COMPAT / LEGACY -------------------------
 
-        def peek_all(self) -> List[Dict[str, Any]]:
-            """
-            Compat rétro : historiquement `peek_all()` renvoyait la LISTE de la queue.
-            Certains services (priority rules) l'utilisent comme une liste indexable.
-            """
-            return self.get_queue()
+    def peek_all(self) -> List[Dict[str, Any]]:
+        """
+        Compat rétro : historiquement `peek_all()` doit renvoyer la LISTE de queue.
+        Ton PlayerService l'utilise comme une liste indexable (q[index]).
+        """
+        return self.get_queue()
 
-        def peek_queue(self) -> List[Dict[str, Any]]:
-            """
-            Compat éventuelle : renvoie une copie de la queue.
-            """
-            return self.get_queue()
+    def peek_queue(self) -> List[Dict[str, Any]]:
+        """Alias compat : copie de la queue."""
+        return self.get_queue()
 
-        def peek_state(self) -> Dict[str, Any]:
-            """
-            Snapshot complet (now_playing/current/queue) si besoin côté API/overlay.
-            """
-            return self.to_dict()
+    def peek_state(self) -> Dict[str, Any]:
+        """Snapshot complet (now_playing/current/queue)."""
+        return self.to_dict()
 
 
 if __name__ == "__main__":
