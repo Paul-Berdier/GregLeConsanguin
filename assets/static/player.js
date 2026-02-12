@@ -1,4 +1,9 @@
 /* Greg le Consanguin — Web Player (pro, streamlined) — v2026-02-12
+   PATCH (2026-02-12 / progress fix):
+   - Progress bar no longer depends only on ticker loop: renderNowPlaying sets initial progress.
+   - Persist playback snapshot in localStorage and restore after F5 to avoid hard reset to 0.
+   - Periodic lightweight resync while playing (every ~5s) to converge to server truth.
+
    Scope (as requested):
    - Spotify: link/unlink + load playlists + create playlist + delete playlist + play tracks from playlist
    - No Spotify search / no add-to-playlist / no remove-from-playlist / no “add current/queue”
@@ -46,6 +51,9 @@
   const LS_KEY_GUILD = "greg.webplayer.guild_id";
   const LS_KEY_SPOTIFY_LAST_PLAYLIST = "greg.spotify.last_playlist_id";
   const LS_KEY_DEBUG = "greg.webplayer.debug";
+
+  // PATCH: persist playback snapshot for progress restore
+  const LS_KEY_PROGRESS_PREFIX = "greg.webplayer.progress."; // + guild_id
 
   const DEBUG = (() => {
     const flag = (window.GREG_DEBUG ?? localStorage.getItem(LS_KEY_DEBUG) ?? "")
@@ -162,6 +170,12 @@
     return null;
   }
 
+  function clamp(n, a, b) {
+    n = Number(n);
+    if (!isFinite(n)) return a;
+    return Math.min(Math.max(n, a), b);
+  }
+
   function setStatus(text, kind = "info") {
     if (!el.statusText) return;
     el.statusText.textContent = text;
@@ -187,6 +201,94 @@
   function updatePlayPauseIcon(paused) {
     const href = paused ? "#icon-play" : "#icon-pause";
     if (el.playPauseUse) el.playPauseUse.setAttribute("href", href);
+  }
+
+  // =============================
+  // Progress persistence (PATCH)
+  // =============================
+  function progressKeyForGuild(guildId) {
+    const gid = String(guildId || "").trim();
+    return `${LS_KEY_PROGRESS_PREFIX}${gid || "noguild"}`;
+  }
+
+  function snapshotFromState() {
+    const c = state.playlist.current;
+    if (!c) return null;
+    return {
+      v: 1,
+      at: Date.now(),
+      track: {
+        url: c.url || "",
+        title: c.title || "",
+        artist: c.artist || "",
+        provider: c.provider || "",
+      },
+      pos: Number(state.playlist.position || 0),
+      dur: Number(state.playlist.duration || c.duration || 0),
+      paused: !!state.playlist.paused,
+      guildId: String(state.guildId || ""),
+    };
+  }
+
+  function saveProgressSnapshot() {
+    try {
+      if (!state.guildId) return;
+      const snap = snapshotFromState();
+      if (!snap) return;
+      localStorage.setItem(progressKeyForGuild(state.guildId), JSON.stringify(snap));
+    } catch {}
+  }
+
+  function tryRestoreProgressSnapshot() {
+    try {
+      if (!state.guildId) return false;
+      const raw = localStorage.getItem(progressKeyForGuild(state.guildId));
+      if (!raw) return false;
+      const snap = JSON.parse(raw);
+      if (!snap || typeof snap !== "object" || !snap.track) return false;
+
+      const age = Date.now() - Number(snap.at || 0);
+      if (!isFinite(age) || age < 0 || age > 2 * 60 * 60 * 1000) return false; // max 2h
+
+      const c = state.playlist.current;
+      if (!c) return false;
+
+      const sameTrack =
+        (snap.track.url && c.url && String(snap.track.url) === String(c.url)) ||
+        (
+          String(snap.track.title || "").toLowerCase() === String(c.title || "").toLowerCase() &&
+          String(snap.track.artist || "").toLowerCase() === String(c.artist || "").toLowerCase()
+        );
+
+      if (!sameTrack) return false;
+
+      // If server gave us a good position (>0), don't override.
+      // Only restore when backend is 0-ish.
+      const serverPos = Number(state.playlist.position || 0);
+      if (serverPos > 1) return false;
+
+      const basePos = Number(snap.pos || 0);
+      const dur = Number(snap.dur || 0) || Number(state.playlist.duration || c.duration || 0);
+
+      // If not paused at snapshot time, advance by elapsed
+      const wasPaused = !!snap.paused;
+      const elapsed = wasPaused ? 0 : age / 1000;
+
+      const seededPos = dur > 0 ? clamp(basePos + elapsed, 0, dur) : Math.max(0, basePos + elapsed);
+
+      state.playlist.position = seededPos;
+      if (!state.playlist.duration && dur) state.playlist.duration = dur;
+
+      state.tick.basePos = seededPos;
+      state.tick.baseAt = Date.now();
+      state.tick.duration = state.playlist.duration || dur || 0;
+
+      dlog("Progress restored from snapshot", { seededPos, dur, ageMs: age });
+      return true;
+    } catch (e) {
+      dlog("restore snapshot failed", e);
+      return false;
+    }
   }
 
   // =============================
@@ -359,6 +461,9 @@
 
     // voice join throttling
     voiceJoinLastAt: 0,
+
+    // PATCH: resync throttle
+    resync: { lastAt: 0 },
   };
 
   // =============================
@@ -475,7 +580,19 @@
     const title = it.title || it.name || it.track_title || it.track || "";
     const url = it.url || it.webpage_url || it.href || it.link || "";
     const artist = it.artist || it.uploader || it.author || it.channel || it.by || "";
-    const duration = toSeconds(it.duration ?? it.duration_s ?? it.duration_sec ?? it.duration_ms) ?? null;
+
+    // PATCH: accept more duration shapes
+    const duration =
+      toSeconds(
+        it.duration ??
+          it.duration_s ??
+          it.duration_sec ??
+          it.duration_ms ??
+          it.length ??
+          it.length_s ??
+          it.length_ms
+      ) ?? null;
+
     const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
     const provider = it.provider || it.source || it.platform || null;
 
@@ -488,6 +605,24 @@
       provider,
       raw: it,
     };
+  }
+
+  // PATCH: extra position/duration keys for robustness
+  function pickPositionSeconds(p) {
+    return (
+      toSeconds(p.position ?? p.pos ?? p.progress ?? p.current_time ?? p.currentTime ?? p.elapsed ?? 0) ??
+      toSeconds(p.position_ms ?? p.elapsed_ms ?? p.current_time_ms ?? 0) ??
+      0
+    );
+  }
+
+  function pickDurationSeconds(p, current) {
+    return (
+      toSeconds(p.duration ?? p.total ?? p.length ?? p.total_time ?? p.totalTime ?? (current?.duration ?? 0)) ??
+      toSeconds(p.duration_ms ?? p.total_ms ?? p.length_ms ?? 0) ??
+      (current?.duration ?? 0) ??
+      0
+    );
   }
 
   function applyPlaylistPayload(payload) {
@@ -507,9 +642,8 @@
     const paused = !!(p.paused ?? p.is_paused ?? p.pause ?? false);
     const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? false);
 
-    const position = toSeconds(p.position ?? p.pos ?? p.progress ?? p.current_time ?? 0) ?? 0;
-    const duration =
-      toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ?? (current?.duration ?? 0);
+    const position = pickPositionSeconds(p) || 0;
+    const duration = pickDurationSeconds(p, current) || 0;
 
     state.playlist.current = current;
     state.playlist.queue = queue;
@@ -524,6 +658,14 @@
 
     setRepeatActive(state.playlist.repeat);
     updatePlayPauseIcon(state.playlist.paused);
+
+    // PATCH: Save snapshot each time we apply a payload
+    saveProgressSnapshot();
+
+    // PATCH: If position is 0 but we have a snapshot and same track (after F5), restore smooth progress
+    if (state.playlist.current && state.playlist.position <= 1) {
+      tryRestoreProgressSnapshot();
+    }
   }
 
   // =============================
@@ -592,6 +734,7 @@
     sel.value = current;
   }
 
+  // PATCH: renderNowPlaying always sets initial progress immediately (no “missing” gauge)
   function renderNowPlaying() {
     const c = state.playlist.current;
 
@@ -611,7 +754,13 @@
     if (el.artwork) el.artwork.style.backgroundImage = c.thumb ? `url("${c.thumb}")` : "";
 
     const dur = state.playlist.duration || c.duration || 0;
+    const pos = state.playlist.position || 0;
+
+    if (el.progressCurrent) el.progressCurrent.textContent = formatTime(pos);
     if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
+
+    const pct = dur > 0 ? (clamp(pos, 0, dur) / dur) * 100 : 0;
+    if (el.progressFill) el.progressFill.style.width = `${clamp(pct, 0, 100)}%`;
 
     updatePlayPauseIcon(state.playlist.paused);
     setRepeatActive(state.playlist.repeat);
@@ -915,7 +1064,7 @@
     if (state.tick.running) return;
     state.tick.running = true;
 
-    setInterval(() => {
+    setInterval(async () => {
       const c = state.playlist.current;
       if (!c) return;
 
@@ -927,11 +1076,32 @@
       const pos = paused ? basePos : basePos + elapsed;
       const clamped = dur > 0 ? Math.min(Math.max(pos, 0), dur) : Math.max(pos, 0);
 
+      // Always update UI even if duration is unknown (dur=0)
       if (el.progressCurrent) el.progressCurrent.textContent = formatTime(clamped);
       if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
 
       const pct = dur > 0 ? (clamped / dur) * 100 : 0;
       if (el.progressFill) el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+
+      // PATCH: periodically persist & resync (avoid drift + fix reset after F5)
+      if (state.guildId && c) saveProgressSnapshot();
+
+      const now = Date.now();
+      const shouldResync =
+        !paused &&
+        state.me &&
+        state.guildId &&
+        (now - (state.resync.lastAt || 0) > 5000); // ~5s
+
+      if (shouldResync) {
+        state.resync.lastAt = now;
+        // If server was slow after reload, or our base was restored, converge to true server pos
+        try {
+          await refreshPlaylist();
+          // After refresh, renderNowPlaying will set bar deterministically
+          renderNowPlaying();
+        } catch {}
+      }
     }, 250);
   }
 
@@ -1218,22 +1388,21 @@
     return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
   }
 
-async function api_spotify_quickplay(trackObj) {
-  if (!state.guildId) throw new Error("missing guild_id");
+  async function api_spotify_quickplay(trackObj) {
+    if (!state.guildId) throw new Error("missing guild_id");
 
-  const track = trackObj && typeof trackObj === "object" ? trackObj : {};
+    const track = trackObj && typeof trackObj === "object" ? trackObj : {};
 
-  // IMPORTANT: include user_id like other endpoints
-  const payload = basePayload({ track });
+    // IMPORTANT: include user_id like other endpoints
+    const payload = basePayload({ track });
 
-  const res = await api.post(api.routes.spotify_quickplay.path, payload);
+    const res = await api.post(api.routes.spotify_quickplay.path, payload);
 
-  await sleep(250);
-  await refreshPlaylist();
-  renderAll();
-  return res;
-}
-
+    await sleep(250);
+    await refreshPlaylist();
+    renderAll();
+    return res;
+  }
 
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = Math.round(window.top.outerHeight / 2 + window.top.screenY - h / 2);
@@ -1403,6 +1572,12 @@ async function api_spotify_quickplay(trackObj) {
     }
 
     await refreshPlaylist();
+
+    // PATCH: after initial refresh, if server still gives 0, try restore snapshot once more
+    if (state.playlist.current && state.playlist.position <= 1) {
+      tryRestoreProgressSnapshot();
+    }
+
     renderAll();
   }
 
