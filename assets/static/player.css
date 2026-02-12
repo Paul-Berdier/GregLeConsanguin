@@ -531,6 +531,38 @@ body{
   flex-wrap:wrap;
   justify-content:flex-end;
 }
+/* ===== Spotify: target + add buttons (pro) ===== */
+
+.spotify-target{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(148,163,184,.14);
+  background: rgba(2,6,23,.22);
+  min-width: 220px;
+}
+
+.spotify-target-label{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.spotify-target-name{
+  font-weight: 900;
+  color: rgba(226,232,240,.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Disabled look (reuses .btn but clearer) */
+.btn:disabled{
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none !important;
+}
 
 /* Select */
 .spotify-select{

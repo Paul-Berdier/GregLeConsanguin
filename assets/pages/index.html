@@ -149,44 +149,62 @@
       </section>
 
       <section class="spotify">
-  <div class="spotify-row">
-    <div class="spotify-status">
-      <div id="spotifyStatus">Spotify non lié</div>
-      <div class="spotify-me" id="spotifyMe"></div>
-    </div>
+        <div class="spotify-row">
+          <div class="spotify-status">
+            <div id="spotifyStatus">Spotify non lié</div>
+            <div class="spotify-me" id="spotifyMe"></div>
+          </div>
 
-    <div class="spotify-actions">
-      <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
-      <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Délier</button>
-      <button class="btn btn--ghost hidden" id="btn-spotify-load-playlists" type="button">Charger playlists</button>
-    </div>
-  </div>
+          <div class="spotify-actions">
+            <button class="btn btn--ghost" id="btn-spotify-login" type="button">Lier Spotify</button>
+            <button class="btn btn--ghost hidden" id="btn-spotify-logout" type="button">Délier</button>
+            <button class="btn btn--ghost hidden" id="btn-spotify-load-playlists" type="button">Charger playlists</button>
+          </div>
+        </div>
 
-  <!-- ✅ PANEL -->
-  <div class="spotify-panel" id="spotifyPanel">
+        <!-- ✅ PANEL -->
+        <div class="spotify-panel" id="spotifyPanel">
 
-    <div class="spotify-grid">
-      <div class="spotify-col" id="spotifyPlaylistsWrap">
-        <div class="spotify-col-title">Playlists</div>
-        <div class="spotify-list" id="spotifyPlaylists"></div>
-      </div>
+          <!-- ✅ Toolbar: add current / add queue -->
+          <div class="spotify-toolbar" id="spotifyToolbar">
+            <div class="spotify-toolbar-left">
+              <div class="spotify-target">
+                <div class="spotify-target-label">Cible</div>
+                <div class="spotify-target-name" id="spotifyTargetName">—</div>
+              </div>
+            </div>
+            <div class="spotify-toolbar-right">
+              <button class="btn btn--ghost" id="btn-spotify-add-current" type="button" title="Ajouter le titre en cours à la playlist active">
+                + Titre en cours
+              </button>
+              <button class="btn btn--ghost" id="btn-spotify-add-queue" type="button" title="Ajouter la file d’attente à la playlist active">
+                + File
+              </button>
+            </div>
+          </div>
 
-      <div class="spotify-col" id="spotifyTracksWrap">
-        <div class="spotify-col-title">Titres</div>
-        <div class="spotify-list" id="spotifyTracks"></div>
-      </div>
-    </div>
+          <div class="spotify-grid">
+            <div class="spotify-col" id="spotifyPlaylistsWrap">
+              <div class="spotify-col-title">Playlists</div>
+              <div class="spotify-list" id="spotifyPlaylists"></div>
+            </div>
 
-    <div class="spotify-create">
-      <input id="spotifyCreateName" class="spotify-create-input" placeholder="Nom de playlist (ex: Greg Bangers)" />
-      <label class="spotify-create-check">
-        <input id="spotifyCreatePublic" type="checkbox" checked />
-        <span>Publique</span>
-      </label>
-      <button class="btn btn--primary" id="btn-spotify-create-playlist" type="button">Créer playlist</button>
-    </div>
-  </div>
-</section>
+            <div class="spotify-col" id="spotifyTracksWrap">
+              <div class="spotify-col-title">Titres</div>
+              <div class="spotify-list" id="spotifyTracks"></div>
+            </div>
+          </div>
+
+          <div class="spotify-create">
+            <input id="spotifyCreateName" class="spotify-create-input" placeholder="Nom de playlist (ex: Greg Bangers)" />
+            <label class="spotify-create-check">
+              <input id="spotifyCreatePublic" type="checkbox" checked />
+              <span>Publique</span>
+            </label>
+            <button class="btn btn--primary" id="btn-spotify-create-playlist" type="button">Créer playlist</button>
+          </div>
+        </div>
+      </section>
 
     </main>
 

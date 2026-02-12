@@ -4,12 +4,11 @@
    - Persist playback snapshot in localStorage and restore after F5 to avoid hard reset to 0.
    - Periodic lightweight resync while playing (every ~5s) to converge to server truth.
 
-   Scope (as requested):
-   - Spotify: link/unlink + load playlists + create playlist + delete playlist + play tracks from playlist
-   - No Spotify search / no add-to-playlist / no remove-from-playlist / no “add current/queue”
-   - YouTube: autocomplete + add to queue
-   - Player: queue + controls + optional /voice/join best-effort
-   - API_BASE auto: if page is not served from Railway, defaults to Railway origin unless overridden
+   ADD (Spotify add-to-playlist):
+   - Add buttons to add current track or queue to selected Spotify playlist
+   - Uses backend routes:
+     POST /spotify/add_current_to_playlist {playlist_id, guild_id}
+     POST /spotify/add_queue_to_playlist   {playlist_id, guild_id, max_items}
 
    Usage:
    - Override API base (optional):
@@ -121,6 +120,11 @@
     btnSpotifyCreatePlaylist: $("#btn-spotify-create-playlist"),
     spotifyCreateName: $("#spotifyCreateName"),
     spotifyCreatePublic: $("#spotifyCreatePublic"),
+
+    // ADD: spotify add-to-playlist toolbar
+    spotifyTargetName: $("#spotifyTargetName"),
+    btnSpotifyAddCurrent: $("#btn-spotify-add-current"),
+    btnSpotifyAddQueue: $("#btn-spotify-add-queue"),
 
     // status bar
     statusMessage: $("#statusMessage"),
@@ -262,15 +266,12 @@
 
       if (!sameTrack) return false;
 
-      // If server gave us a good position (>0), don't override.
-      // Only restore when backend is 0-ish.
       const serverPos = Number(state.playlist.position || 0);
       if (serverPos > 1) return false;
 
       const basePos = Number(snap.pos || 0);
       const dur = Number(snap.dur || 0) || Number(state.playlist.duration || c.duration || 0);
 
-      // If not paused at snapshot time, advance by elapsed
       const wasPaused = !!snap.paused;
       const elapsed = wasPaused ? 0 : age / 1000;
 
@@ -349,7 +350,7 @@
         // voice (optional)
         voice_join: { method: "POST", path: "/voice/join" },
 
-        // spotify (ONLY what you keep)
+        // spotify
         spotify_login: { method: "GET", path: "/spotify/login" },
         spotify_status: { method: "GET", path: "/spotify/status" },
         spotify_me: { method: "GET", path: "/spotify/me" },
@@ -359,6 +360,10 @@
         spotify_playlist_delete: { method: "POST", path: "/spotify/playlist_delete" },
         spotify_quickplay: { method: "POST", path: "/spotify/quickplay" },
         spotify_logout: { method: "POST", path: "/spotify/logout" },
+
+        // ADD: add to playlist
+        spotify_add_current_to_playlist: { method: "POST", path: "/spotify/add_current_to_playlist" },
+        spotify_add_queue_to_playlist: { method: "POST", path: "/spotify/add_queue_to_playlist" },
       };
     }
 
@@ -452,7 +457,7 @@
     sugIndex: -1,
     sugAbort: null,
 
-    // Spotify minimal
+    // Spotify
     spotifyLinked: false,
     spotifyProfile: null,
     spotifyPlaylists: [],
@@ -519,15 +524,14 @@
       dlog("socket disconnect", reason);
     });
 
-socket.on("playlist_update", (payload) => {
-  applyPlaylistPayload(payload);
+    socket.on("playlist_update", (payload) => {
+      applyPlaylistPayload(payload);
 
-  // ✅ si c’est juste un tick elapsed => pas besoin de rerender tout
-  const p = payload?.state || payload?.data || payload || {};
-  if (p.only_elapsed) return;
+      const p = payload?.state || payload?.data || payload || {};
+      if (p.only_elapsed) return;
 
-  renderAll();
-});
+      renderAll();
+    });
 
     socket.on("spotify:linked", async (payload) => {
       dlog("spotify:linked", payload);
@@ -585,7 +589,6 @@ socket.on("playlist_update", (payload) => {
     const url = it.url || it.webpage_url || it.href || it.link || "";
     const artist = it.artist || it.uploader || it.author || it.channel || it.by || "";
 
-    // PATCH: accept more duration shapes
     const duration =
       toSeconds(
         it.duration ??
@@ -611,181 +614,139 @@ socket.on("playlist_update", (payload) => {
     };
   }
 
-  // PATCH: extra position/duration keys for robustness
-  function pickPositionSeconds(p) {
-    return (
-      toSeconds(p.position ?? p.pos ?? p.progress ?? p.current_time ?? p.currentTime ?? p.elapsed ?? 0) ??
-      toSeconds(p.position_ms ?? p.elapsed_ms ?? p.current_time_ms ?? 0) ??
-      0
-    );
-  }
-
-  function pickDurationSeconds(p, current) {
-    return (
-      toSeconds(p.duration ?? p.total ?? p.length ?? p.total_time ?? p.totalTime ?? (current?.duration ?? 0)) ??
-      toSeconds(p.duration_ms ?? p.total_ms ?? p.length_ms ?? 0) ??
-      (current?.duration ?? 0) ??
-      0
-    );
-  }
-
   function applyPlaylistPayload(payload) {
-  // ------------------------------------------------------------
-  // Object resolver: the backend sometimes wraps in {ok, state} or {state:{...}}
-  // and socket may send a partial "ticker" payload.
-  // ------------------------------------------------------------
-  const root =
-    (payload && typeof payload === "object" ? payload : {}) || {};
+    const root = (payload && typeof payload === "object" ? payload : {}) || {};
+    const p =
+      (root.state && typeof root.state === "object" ? root.state : null) ||
+      (root.pm && typeof root.pm === "object" ? root.pm : null) ||
+      (root.data && typeof root.data === "object" ? root.data : null) ||
+      root;
 
-  const p =
-    (root.state && typeof root.state === "object" ? root.state : null) ||
-    (root.pm && typeof root.pm === "object" ? root.pm : null) ||
-    (root.data && typeof root.data === "object" ? root.data : null) ||
-    root;
+    const isTick = !!p.only_elapsed;
 
-  // "ticker" update from backend: do not overwrite current/queue unless provided
-  const isTick = !!p.only_elapsed;
+    const pickFirst = (...vals) => {
+      for (const v of vals) {
+        if (v !== undefined && v !== null) return v;
+      }
+      return undefined;
+    };
 
-  // ------------------------------------------------------------
-  // Helpers
-  // ------------------------------------------------------------
-  const pickFirst = (...vals) => {
-    for (const v of vals) {
-      if (v !== undefined && v !== null) return v;
+    const toBool = (v) => {
+      if (typeof v === "boolean") return v;
+      if (typeof v === "number") return v !== 0;
+      if (typeof v === "string") {
+        const s = v.trim().toLowerCase();
+        if (["1", "true", "yes", "on"].includes(s)) return true;
+        if (["0", "false", "no", "off"].includes(s)) return false;
+      }
+      return !!v;
+    };
+
+    const normalizeMaybeItem = (it) => {
+      const n = normalizeItem(it);
+      return n && (n.title || n.url) ? n : null;
+    };
+
+    let current = state.playlist.current;
+    if (!isTick) {
+      current = normalizeMaybeItem(p.current || p.now_playing || p.playing || null);
+    } else {
+      if (p.current || p.now_playing || p.playing) {
+        const maybe = normalizeMaybeItem(p.current || p.now_playing || p.playing);
+        if (maybe) current = maybe;
+      }
     }
-    return undefined;
-  };
 
-  const toBool = (v) => {
-    if (typeof v === "boolean") return v;
-    if (typeof v === "number") return v !== 0;
-    if (typeof v === "string") {
-      const s = v.trim().toLowerCase();
-      if (["1", "true", "yes", "on"].includes(s)) return true;
-      if (["0", "false", "no", "off"].includes(s)) return false;
+    let queue = state.playlist.queue || [];
+    if (!isTick) {
+      const queueRaw = Array.isArray(p.queue)
+        ? p.queue
+        : Array.isArray(p.items)
+        ? p.items
+        : Array.isArray(p.list)
+        ? p.list
+        : [];
+      queue = queueRaw.map(normalizeItem).filter(Boolean);
+    } else {
+      const queueMaybe = Array.isArray(p.queue)
+        ? p.queue
+        : Array.isArray(p.items)
+        ? p.items
+        : Array.isArray(p.list)
+        ? p.list
+        : null;
+      if (queueMaybe) queue = queueMaybe.map(normalizeItem).filter(Boolean);
     }
-    return !!v;
-  };
 
-  // Normalize item only if we are given something
-  const normalizeMaybeItem = (it) => {
-    const n = normalizeItem(it);
-    return n && (n.title || n.url) ? n : null;
-  };
+    const paused = toBool(pickFirst(p.is_paused, p.paused, p.isPaused, p.pause, false));
+    const repeat = toBool(pickFirst(p.repeat_all, p.repeat, p.repeat_mode, p.loop, false));
 
-  // ------------------------------------------------------------
-  // Current
-  // ------------------------------------------------------------
-  let current = state.playlist.current;
+    const elapsed = toSeconds(
+      pickFirst(
+        p.progress?.elapsed,
+        p.progress?.position,
+        p.elapsed,
+        p.position,
+        p.pos,
+        p.current_time,
+        0
+      )
+    ) ?? 0;
 
-  if (!isTick) {
-    current = normalizeMaybeItem(p.current || p.now_playing || p.playing || null);
-  } else {
-    // tick payload MAY still include current; accept it if present
-    if (p.current || p.now_playing || p.playing) {
-      const maybe = normalizeMaybeItem(p.current || p.now_playing || p.playing);
-      if (maybe) current = maybe;
+    const duration = toSeconds(
+      pickFirst(
+        p.progress?.duration,
+        p.duration,
+        p.total,
+        p.length,
+        current?.duration,
+        0
+      )
+    ) ?? 0;
+
+    state.playlist.current = current;
+    state.playlist.queue = queue;
+
+    state.playlist.paused = paused || !current;
+    state.playlist.repeat = repeat;
+
+    state.playlist.position = Math.max(0, elapsed || 0);
+    state.playlist.duration = Math.max(0, duration || 0);
+
+    state.tick.basePos = state.playlist.position;
+    state.tick.baseAt = Date.now();
+    state.tick.duration = state.playlist.duration;
+
+    setRepeatActive(state.playlist.repeat);
+    updatePlayPauseIcon(state.playlist.paused);
+
+    if (!state.playlist.duration || state.playlist.duration < 1) {
+      if (el.progressFill) el.progressFill.style.width = "0%";
+      if (el.progressTotal) el.progressTotal.textContent = "--:--";
     }
   }
 
-  // ------------------------------------------------------------
-  // Queue
-  // ------------------------------------------------------------
-  let queue = state.playlist.queue || [];
-
-  if (!isTick) {
-    const queueRaw = Array.isArray(p.queue)
-      ? p.queue
-      : Array.isArray(p.items)
-      ? p.items
-      : Array.isArray(p.list)
-      ? p.list
-      : [];
-
-    queue = queueRaw.map(normalizeItem).filter(Boolean);
-  } else {
-    // tick payload MAY include queue; accept it if present
-    const queueMaybe = Array.isArray(p.queue)
-      ? p.queue
-      : Array.isArray(p.items)
-      ? p.items
-      : Array.isArray(p.list)
-      ? p.list
-      : null;
-
-    if (queueMaybe) {
-      queue = queueMaybe.map(normalizeItem).filter(Boolean);
-    }
+  // =============================
+  // Helpers: Spotify target
+  // =============================
+  function getSpotifyTargetPlaylist() {
+    const pid = String(state.spotifyCurrentPlaylistId || "").trim();
+    if (!pid) return null;
+    const pls = Array.isArray(state.spotifyPlaylists) ? state.spotifyPlaylists : [];
+    const found = pls.find((p) => String(p.id || "") === pid) || null;
+    return found || { id: pid, name: "Playlist" };
   }
 
-  // ------------------------------------------------------------
-  // paused / repeat (backend authoritative)
-  // ------------------------------------------------------------
-  const paused = toBool(
-    pickFirst(p.is_paused, p.paused, p.isPaused, p.pause, false)
-  );
+  function updateSpotifyToolbarState() {
+    const hasTarget = !!getSpotifyTargetPlaylist();
+    const can = !!(state.me && state.spotifyLinked && state.guildId && hasTarget);
 
-  const repeat = toBool(
-    pickFirst(p.repeat_all, p.repeat, p.repeat_mode, p.loop, false)
-  );
+    const target = getSpotifyTargetPlaylist();
+    if (el.spotifyTargetName) el.spotifyTargetName.textContent = target?.name || "—";
 
-  // ------------------------------------------------------------
-  // progress (backend authoritative)
-  // Prefer progress.{elapsed,duration} if present.
-  // Also accept older shapes.
-  // ------------------------------------------------------------
-  const elapsed = toSeconds(
-    pickFirst(
-      p.progress?.elapsed,
-      p.progress?.position,
-      p.elapsed,
-      p.position,
-      p.pos,
-      p.current_time,
-      0
-    )
-  ) ?? 0;
-
-  const duration = toSeconds(
-    pickFirst(
-      p.progress?.duration,
-      p.duration,
-      p.total,
-      p.length,
-      current?.duration,
-      0
-    )
-  ) ?? 0;
-
-  // ------------------------------------------------------------
-  // Apply state
-  // ------------------------------------------------------------
-  state.playlist.current = current;
-  state.playlist.queue = queue;
-
-  // If no current, force paused
-  state.playlist.paused = paused || !current;
-  state.playlist.repeat = repeat;
-
-  state.playlist.position = Math.max(0, elapsed || 0);
-  state.playlist.duration = Math.max(0, duration || 0);
-
-  // Reset the UI ticker baseline from backend values
-  state.tick.basePos = state.playlist.position;
-  state.tick.baseAt = Date.now();
-  state.tick.duration = state.playlist.duration;
-
-  setRepeatActive(state.playlist.repeat);
-  updatePlayPauseIcon(state.playlist.paused);
-
-  // If track ended / duration unknown, keep UI stable (avoid NaN / weird bar)
-  if (!state.playlist.duration || state.playlist.duration < 1) {
-    if (el.progressFill) el.progressFill.style.width = "0%";
-    if (el.progressTotal) el.progressTotal.textContent = "--:--";
+    if (el.btnSpotifyAddCurrent) el.btnSpotifyAddCurrent.disabled = !can;
+    if (el.btnSpotifyAddQueue) el.btnSpotifyAddQueue.disabled = !can;
   }
-}
-
-
 
   // =============================
   // Rendering
@@ -853,7 +814,6 @@ socket.on("playlist_update", (payload) => {
     sel.value = current;
   }
 
-  // PATCH: renderNowPlaying always sets initial progress immediately (no “missing” gauge)
   function renderNowPlaying() {
     const c = state.playlist.current;
 
@@ -941,7 +901,7 @@ socket.on("playlist_update", (payload) => {
     }
   }
 
-  // -------- Spotify UI (minimal) --------
+  // -------- Spotify UI --------
   function renderSpotify() {
     if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
 
@@ -961,7 +921,6 @@ socket.on("playlist_update", (payload) => {
       if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.remove("hidden");
     };
 
-    // Not logged to Discord
     if (!state.me) {
       el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
       el.btnSpotifyLogin.disabled = true;
@@ -974,14 +933,13 @@ socket.on("playlist_update", (payload) => {
       if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.add("hidden");
 
       hidePanel();
+      updateSpotifyToolbarState();
       return;
     }
 
-    // Logged to Discord
     el.btnSpotifyLogin.disabled = false;
     el.btnSpotifyLogout.disabled = false;
 
-    // Spotify not linked
     if (!state.spotifyLinked) {
       el.spotifyStatus.textContent = "Spotify non lié";
 
@@ -992,10 +950,10 @@ socket.on("playlist_update", (payload) => {
       if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.add("hidden");
 
       hidePanel();
+      updateSpotifyToolbarState();
       return;
     }
 
-    // Spotify linked
     const prof = state.spotifyProfile || null;
     const name = prof?.display_name || prof?.id || "Spotify lié";
 
@@ -1008,6 +966,7 @@ socket.on("playlist_update", (payload) => {
     if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.remove("hidden");
 
     showPanel();
+    updateSpotifyToolbarState();
   }
 
   function renderSpotifyPlaylists() {
@@ -1016,6 +975,7 @@ socket.on("playlist_update", (payload) => {
     const pls = Array.isArray(state.spotifyPlaylists) ? state.spotifyPlaylists : [];
     if (!pls.length) {
       el.spotifyPlaylists.innerHTML = `<div class="queue-empty">Aucune playlist chargée</div>`;
+      updateSpotifyToolbarState();
       return;
     }
 
@@ -1064,6 +1024,7 @@ socket.on("playlist_update", (payload) => {
         state.spotifyCurrentPlaylistId = pid;
         localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, pid);
         renderSpotifyPlaylists();
+        updateSpotifyToolbarState();
 
         await safeAction(() => api_spotify_playlist_tracks(pid), "Titres chargés ✅", false);
       });
@@ -1090,13 +1051,17 @@ socket.on("playlist_update", (payload) => {
             localStorage.removeItem(LS_KEY_SPOTIFY_LAST_PLAYLIST);
             state.spotifyTracks = [];
             renderSpotifyTracks();
+            updateSpotifyToolbarState();
           }
 
           await refreshSpotifyPlaylists().catch(() => {});
           renderSpotifyPlaylists();
+          updateSpotifyToolbarState();
         });
       }
     }
+
+    updateSpotifyToolbarState();
   }
 
   function renderSpotifyTracks() {
@@ -1174,6 +1139,8 @@ socket.on("playlist_update", (payload) => {
     renderSpotify();
     renderSpotifyPlaylists();
     renderSpotifyTracks();
+
+    updateSpotifyToolbarState();
   }
 
   // =============================
@@ -1195,14 +1162,12 @@ socket.on("playlist_update", (payload) => {
       const pos = paused ? basePos : basePos + elapsed;
       const clamped = dur > 0 ? Math.min(Math.max(pos, 0), dur) : Math.max(pos, 0);
 
-      // Always update UI even if duration is unknown (dur=0)
       if (el.progressCurrent) el.progressCurrent.textContent = formatTime(clamped);
       if (el.progressTotal) el.progressTotal.textContent = dur > 0 ? formatTime(dur) : "--:--";
 
       const pct = dur > 0 ? (clamped / dur) * 100 : 0;
       if (el.progressFill) el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
 
-      // PATCH: periodically persist & resync (avoid drift + fix reset after F5)
       if (state.guildId && c) saveProgressSnapshot();
 
       const now = Date.now();
@@ -1210,14 +1175,12 @@ socket.on("playlist_update", (payload) => {
         !paused &&
         state.me &&
         state.guildId &&
-        (now - (state.resync.lastAt || 0) > 5000); // ~5s
+        (now - (state.resync.lastAt || 0) > 5000);
 
       if (shouldResync) {
         state.resync.lastAt = now;
-        // If server was slow after reload, or our base was restored, converge to true server pos
         try {
           await refreshPlaylist();
-          // After refresh, renderNowPlaying will set bar deterministically
           renderNowPlaying();
         } catch {}
       }
@@ -1290,9 +1253,7 @@ socket.on("playlist_update", (payload) => {
 
   async function fetchSuggestions(q) {
     if (state.sugAbort) {
-      try {
-        state.sugAbort.abort();
-      } catch {}
+      try { state.sugAbort.abort(); } catch {}
     }
     state.sugAbort = new AbortController();
 
@@ -1427,27 +1388,13 @@ socket.on("playlist_update", (payload) => {
     }
   }
 
-  async function api_queue_remove(index) {
-    return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) }));
-  }
-  async function api_queue_skip() {
-    return api.post(api.routes.queue_skip.path, basePayload({}));
-  }
-  async function api_queue_stop() {
-    return api.post(api.routes.queue_stop.path, basePayload({}));
-  }
-  async function api_playlist_toggle_pause() {
-    return api.post(api.routes.playlist_toggle_pause.path, basePayload({}));
-  }
-  async function api_playlist_restart() {
-    return api.post(api.routes.playlist_restart.path, basePayload({}));
-  }
-  async function api_playlist_repeat() {
-    return api.post(api.routes.playlist_repeat.path, basePayload({}));
-  }
-  async function api_playlist_play_at(index) {
-    return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) }));
-  }
+  async function api_queue_remove(index) { return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) })); }
+  async function api_queue_skip() { return api.post(api.routes.queue_skip.path, basePayload({})); }
+  async function api_queue_stop() { return api.post(api.routes.queue_stop.path, basePayload({})); }
+  async function api_playlist_toggle_pause() { return api.post(api.routes.playlist_toggle_pause.path, basePayload({})); }
+  async function api_playlist_restart() { return api.post(api.routes.playlist_restart.path, basePayload({})); }
+  async function api_playlist_repeat() { return api.post(api.routes.playlist_repeat.path, basePayload({})); }
+  async function api_playlist_play_at(index) { return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) })); }
 
   // Optional voice join
   async function bestEffortVoiceJoin(reason) {
@@ -1466,20 +1413,13 @@ socket.on("playlist_update", (payload) => {
   }
 
   // =============================
-  // Spotify actions (minimal)
+  // Spotify actions
   // =============================
-  async function api_spotify_status() {
-    return api.get(api.routes.spotify_status.path);
-  }
-  async function api_spotify_logout() {
-    return api.post(api.routes.spotify_logout.path, {});
-  }
-  async function api_spotify_me() {
-    return api.get(api.routes.spotify_me.path);
-  }
-  async function api_spotify_playlists() {
-    return api.get(api.routes.spotify_playlists.path);
-  }
+  async function api_spotify_status() { return api.get(api.routes.spotify_status.path); }
+  async function api_spotify_logout() { return api.post(api.routes.spotify_logout.path, {}); }
+  async function api_spotify_me() { return api.get(api.routes.spotify_me.path); }
+  async function api_spotify_playlists() { return api.get(api.routes.spotify_playlists.path); }
+
   async function api_spotify_playlist_tracks(playlistId) {
     const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
 
@@ -1511,8 +1451,6 @@ socket.on("playlist_update", (payload) => {
     if (!state.guildId) throw new Error("missing guild_id");
 
     const track = trackObj && typeof trackObj === "object" ? trackObj : {};
-
-    // IMPORTANT: include user_id like other endpoints
     const payload = basePayload({ track });
 
     const res = await api.post(api.routes.spotify_quickplay.path, payload);
@@ -1521,6 +1459,23 @@ socket.on("playlist_update", (payload) => {
     await refreshPlaylist();
     renderAll();
     return res;
+  }
+
+  // ADD: add current / add queue to playlist
+  async function api_spotify_add_current_to_playlist(playlistId) {
+    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
+    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
+
+    const payload = { playlist_id: String(playlistId), guild_id: String(state.guildId) };
+    return api.post(api.routes.spotify_add_current_to_playlist.path, payload);
+  }
+
+  async function api_spotify_add_queue_to_playlist(playlistId, maxItems = 20) {
+    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
+    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
+
+    const payload = { playlist_id: String(playlistId), guild_id: String(state.guildId), max_items: Number(maxItems) || 20 };
+    return api.post(api.routes.spotify_add_queue_to_playlist.path, payload);
   }
 
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
@@ -1621,6 +1576,7 @@ socket.on("playlist_update", (payload) => {
       state.spotifyTracks = [];
       renderSpotifyPlaylists();
       renderSpotifyTracks();
+      updateSpotifyToolbarState();
       return;
     }
 
@@ -1642,6 +1598,7 @@ socket.on("playlist_update", (payload) => {
       if (!state.spotifyCurrentPlaylistId && items.length) state.spotifyCurrentPlaylistId = items[0]?.id || "";
 
       renderSpotifyPlaylists();
+      updateSpotifyToolbarState();
 
       if (state.spotifyCurrentPlaylistId) {
         await api_spotify_playlist_tracks(state.spotifyCurrentPlaylistId).catch(() => {});
@@ -1655,6 +1612,7 @@ socket.on("playlist_update", (payload) => {
       state.spotifyTracks = [];
       renderSpotifyPlaylists();
       renderSpotifyTracks();
+      updateSpotifyToolbarState();
     }
   }
 
@@ -1692,7 +1650,6 @@ socket.on("playlist_update", (payload) => {
 
     await refreshPlaylist();
 
-    // PATCH: after initial refresh, if server still gives 0, try restore snapshot once more
     if (state.playlist.current && state.playlist.position <= 1) {
       tryRestoreProgressSnapshot();
     }
@@ -1733,6 +1690,7 @@ socket.on("playlist_update", (payload) => {
       if (!state.me || !state.spotifyLinked) return;
       await refreshSpotify();
       renderSpotify();
+      updateSpotifyToolbarState();
     }, 5000);
   }
 
@@ -1874,8 +1832,54 @@ socket.on("playlist_update", (payload) => {
           state.spotifyCurrentPlaylistId = String(createdId);
           localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, String(createdId));
           renderSpotifyPlaylists();
+          updateSpotifyToolbarState();
           await api_spotify_playlist_tracks(createdId).catch(() => {});
         }
+      });
+    }
+
+    // ADD: add current / add queue buttons
+    if (el.btnSpotifyAddCurrent) {
+      el.btnSpotifyAddCurrent.addEventListener("click", async () => {
+        const target = getSpotifyTargetPlaylist();
+        if (!target?.id) return setStatus("Choisis une playlist (colonne Playlists).", "err");
+        if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
+
+        const res = await safeAction(
+          () => api_spotify_add_current_to_playlist(target.id),
+          "Titre ajouté à la playlist ✅",
+          false
+        );
+
+        // Optional: refresh tracks to show it appears
+        await api_spotify_playlist_tracks(target.id).catch(() => {});
+        dlog("add_current_to_playlist result", res);
+      });
+    }
+
+    if (el.btnSpotifyAddQueue) {
+      el.btnSpotifyAddQueue.addEventListener("click", async () => {
+        const target = getSpotifyTargetPlaylist();
+        if (!target?.id) return setStatus("Choisis une playlist (colonne Playlists).", "err");
+        if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
+
+        const qlen = (state.playlist.queue || []).length;
+        if (!qlen) return setStatus("File d’attente vide.", "err");
+
+        const maxItems = 20;
+        const n = Math.min(qlen, maxItems);
+
+        const ok = window.confirm(`Ajouter ${n} titre${n > 1 ? "s" : ""} de la file à "${target.name}" ?`);
+        if (!ok) return;
+
+        const res = await safeAction(
+          () => api_spotify_add_queue_to_playlist(target.id, maxItems),
+          `File ajoutée ✅ (${res?.added ?? n} ajouté${(res?.added ?? n) > 1 ? "s" : ""})`,
+          false
+        );
+
+        await api_spotify_playlist_tracks(target.id).catch(() => {});
+        dlog("add_queue_to_playlist result", res);
       });
     }
 
