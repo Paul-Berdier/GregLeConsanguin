@@ -105,31 +105,18 @@
     spotifyStatus: $("#spotifyStatus"),
     btnSpotifyLogin: $("#btn-spotify-login"),
     btnSpotifyLogout: $("#btn-spotify-logout"),
+    btnSpotifyLoadPlaylists: $("#btn-spotify-load-playlists"),
 
-    // spotify (advanced UI - optional ids)
     spotifyPanel: $("#spotifyPanel"),
     spotifyMe: $("#spotifyMe"),
     spotifyPlaylistsWrap: $("#spotifyPlaylistsWrap"),
     spotifyPlaylists: $("#spotifyPlaylists"),
     spotifyTracksWrap: $("#spotifyTracksWrap"),
     spotifyTracks: $("#spotifyTracks"),
-    spotifySearchForm: $("#spotifySearchForm"),
-    spotifySearchInput: $("#spotifySearchInput"),
-    spotifySearchResults: $("#spotifySearchResults"),
 
-    btnSpotifyLoadPlaylists: $("#btn-spotify-load-playlists"),
-    btnSpotifyAddCurrent: $("#btn-spotify-add-current"),
-    btnSpotifyAddQueue: $("#btn-spotify-add-queue"),
     btnSpotifyCreatePlaylist: $("#btn-spotify-create-playlist"),
     spotifyCreateName: $("#spotifyCreateName"),
     spotifyCreatePublic: $("#spotifyCreatePublic"),
-    spotifyPlaylistSelect: $("#spotifyPlaylistSelect"),
-
-    // admin (optional)
-    adminOverlayCount: $("#adminOverlayCount"),
-    adminRefreshOverlays: $("#adminRefreshOverlays"),
-    adminJumpscareBtn: $("#adminJumpscareBtn"),
-    adminJumpscareSelect: $("#adminJumpscareSelect"),
 
     // status bar
     statusMessage: $("#statusMessage"),
@@ -179,18 +166,12 @@
     return null;
   }
 
-  function safeInt(v, fallback = null) {
-    if (v == null) return fallback;
-    const n = Number(v);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.trunc(n);
-  }
-
   function setStatus(text, kind = "info") {
     if (!el.statusText) return;
     el.statusText.textContent = text;
 
-    if (el.statusMessage) el.statusMessage.classList.remove("status-message--ok", "status-message--err");
+    if (el.statusMessage)
+      el.statusMessage.classList.remove("status-message--ok", "status-message--err");
     el.statusText.classList.remove("status-text--ok", "status-text--err");
 
     if (kind === "ok") {
@@ -238,7 +219,7 @@
   }
 
   // =============================
-  // API Client (with retries)
+  // API Client
   // =============================
   class GregAPI {
     constructor(base) {
@@ -252,9 +233,8 @@
         // guilds
         guilds: { method: "GET", path: "/guilds" },
 
-        // search (preferred)
+        // search (YouTube)
         search_autocomplete: { method: "GET", path: "/search/autocomplete" },
-        // compat
         autocomplete_compat: { method: "GET", path: "/autocomplete" },
 
         // playlist + queue
@@ -268,26 +248,17 @@
         playlist_repeat: { method: "POST", path: "/playlist/repeat" },
         playlist_restart: { method: "POST", path: "/playlist/restart" },
 
-        // voice (optional — best effort)
+        // voice (optional)
         voice_join: { method: "POST", path: "/voice/join" },
 
-        // admin
-        admin_overlays_online: { method: "GET", path: "/overlays_online" },
-        admin_jumpscare: { method: "POST", path: "/jumpscare" },
-
-        // spotify
+        // spotify (ONLY what you keep)
         spotify_login: { method: "GET", path: "/spotify/login" },
         spotify_status: { method: "GET", path: "/spotify/status" },
         spotify_me: { method: "GET", path: "/spotify/me" },
         spotify_playlists: { method: "GET", path: "/spotify/playlists" },
         spotify_playlist_tracks: { method: "GET", path: "/spotify/playlist_tracks" },
-        spotify_search_tracks: { method: "GET", path: "/spotify/search_tracks" },
         spotify_playlist_create: { method: "POST", path: "/spotify/playlist_create" },
         spotify_playlist_delete: { method: "POST", path: "/spotify/playlist_delete" },
-        spotify_playlist_add_track: { method: "POST", path: "/spotify/playlist_add_track" },
-        spotify_playlist_remove_tracks: { method: "POST", path: "/spotify/playlist_remove_tracks" },
-        spotify_add_current_to_playlist: { method: "POST", path: "/spotify/add_current_to_playlist" },
-        spotify_add_queue_to_playlist: { method: "POST", path: "/spotify/add_queue_to_playlist" },
         spotify_quickplay: { method: "POST", path: "/spotify/quickplay" },
         spotify_logout: { method: "POST", path: "/spotify/logout" },
       };
@@ -307,12 +278,7 @@
         }
       }
 
-      const opts = {
-        method,
-        credentials: "include",
-        headers: {},
-      };
-
+      const opts = { method, credentials: "include", headers: {} };
       if (json !== undefined) {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(json);
@@ -347,11 +313,11 @@
       return payload;
     }
 
-    async get(path, query) {
+    get(path, query) {
       return this.request("GET", path, { query });
     }
 
-    async post(path, json, query) {
+    post(path, json, query) {
       return this.request("POST", path, { json, query });
     }
   }
@@ -380,24 +346,20 @@
       duration: 0,
     },
 
-    tick: {
-      running: false,
-      basePos: 0,
-      baseAt: 0,
-      duration: 0,
-    },
+    tick: { running: false, basePos: 0, baseAt: 0, duration: 0 },
 
+    // YouTube suggestions
     suggestions: [],
     sugOpen: false,
     sugIndex: -1,
     sugAbort: null,
 
+    // Spotify minimal
     spotifyLinked: false,
     spotifyProfile: null,
     spotifyPlaylists: [],
     spotifyCurrentPlaylistId: "",
     spotifyTracks: [],
-    spotifySearchResults: [],
 
     // voice join throttling
     voiceJoinLastAt: 0,
@@ -431,21 +393,19 @@
 
       try {
         socket.emit("overlay_register", {
-        kind: "web_player",
-        page: "player",
-        guild_id: state.guildId ? String(state.guildId) : undefined, // ✅
-        user_id: state.me?.id ? String(state.me.id) : undefined,     // ✅
-        t: Date.now(),
-      });
+          kind: "web_player",
+          page: "player",
+          guild_id: state.guildId ? String(state.guildId) : undefined,
+          user_id: state.me?.id ? String(state.me.id) : undefined,
+          t: Date.now(),
+        });
       } catch (e) {
         dlog("overlay_register failed", e);
       }
 
       if (state.guildId) {
         try {
-        socket.emit("overlay_subscribe_guild", {
-          guild_id: String(state.guildId) // ✅
-        });  
+          socket.emit("overlay_subscribe_guild", { guild_id: String(state.guildId) });
         } catch (e) {
           dlog("overlay_subscribe_guild failed", e);
         }
@@ -471,12 +431,10 @@
       renderSpotify();
       setStatus("Spotify lié ✅", "ok");
 
-      // 🔧 FIX: auto-load playlists right after linking (best effort)
       await refreshSpotifyPlaylists().catch(() => {});
       renderAll();
     });
 
-    // keepalive ping
     setInterval(() => {
       if (!state.socketReady) return;
       try {
@@ -525,7 +483,15 @@
     const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
     const provider = it.provider || it.source || it.platform || null;
 
-    return { title: String(title || ""), url: String(url || ""), artist: String(artist || ""), duration, thumb, provider, raw: it };
+    return {
+      title: String(title || ""),
+      url: String(url || ""),
+      artist: String(artist || ""),
+      duration,
+      thumb,
+      provider,
+      raw: it,
+    };
   }
 
   function applyPlaylistPayload(payload) {
@@ -546,7 +512,8 @@
     const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? false);
 
     const position = toSeconds(p.position ?? p.pos ?? p.progress ?? p.current_time ?? 0) ?? 0;
-    const duration = toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ?? (current?.duration ?? 0);
+    const duration =
+      toSeconds(p.duration ?? p.total ?? p.length ?? (current?.duration ?? 0)) ?? (current?.duration ?? 0);
 
     state.playlist.current = current;
     state.playlist.queue = queue;
@@ -667,7 +634,9 @@
     const html = q
       .map((it, idx) => {
         const title = escapeHtml(it.title || "Titre inconnu");
-        const sub = escapeHtml([it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • "));
+        const sub = escapeHtml(
+          [it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • ")
+        );
         const thumbStyle = it.thumb ? `style="background-image:url('${escapeHtml(it.thumb)}')"` : "";
         return `
           <div class="queue-item" data-idx="${idx}">
@@ -708,198 +677,163 @@
     }
   }
 
+  // -------- Spotify UI (minimal) --------
   function renderSpotify() {
-  // Minimal required elements
-  if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
+    if (!el.spotifyStatus || !el.btnSpotifyLogin || !el.btnSpotifyLogout) return;
 
-  const hasPanel = !!el.spotifyPanel;
+    const hasPanel = !!el.spotifyPanel;
 
-  const hidePanel = () => {
-    if (hasPanel) el.spotifyPanel.classList.add("hidden");
-    if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.add("hidden");
-    if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.add("hidden");
-    if (el.spotifySearchResults) el.spotifySearchResults.innerHTML = "";
-    if (el.spotifyPlaylists) el.spotifyPlaylists.innerHTML = "";
-    if (el.spotifyTracks) el.spotifyTracks.innerHTML = "";
-  };
+    const hidePanel = () => {
+      if (hasPanel) el.spotifyPanel.classList.add("hidden");
+      if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.add("hidden");
+      if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.add("hidden");
+      if (el.spotifyPlaylists) el.spotifyPlaylists.innerHTML = "";
+      if (el.spotifyTracks) el.spotifyTracks.innerHTML = "";
+    };
 
-  const showPanel = () => {
-    if (hasPanel) el.spotifyPanel.classList.remove("hidden");
-    if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.remove("hidden");
-    if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.remove("hidden");
-  };
+    const showPanel = () => {
+      if (hasPanel) el.spotifyPanel.classList.remove("hidden");
+      if (el.spotifyPlaylistsWrap) el.spotifyPlaylistsWrap.classList.remove("hidden");
+      if (el.spotifyTracksWrap) el.spotifyTracksWrap.classList.remove("hidden");
+    };
 
-  // 1) Not logged to Discord
-  if (!state.me) {
-    el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
+    // Not logged to Discord
+    if (!state.me) {
+      el.spotifyStatus.textContent = "Connecte-toi à Discord pour lier Spotify";
+      el.btnSpotifyLogin.disabled = true;
+      el.btnSpotifyLogout.disabled = true;
 
-    el.btnSpotifyLogin.disabled = true;
-    el.btnSpotifyLogout.disabled = true;
+      el.btnSpotifyLogout.classList.add("hidden");
+      el.btnSpotifyLogin.classList.remove("hidden");
 
-    el.btnSpotifyLogout.classList.add("hidden");
-    el.btnSpotifyLogin.classList.remove("hidden");
+      if (el.spotifyMe) el.spotifyMe.textContent = "";
+      if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.add("hidden");
 
-    if (el.spotifyMe) el.spotifyMe.textContent = "";
-    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = "";
+      hidePanel();
+      return;
+    }
 
-    hidePanel();
-    return;
+    // Logged to Discord
+    el.btnSpotifyLogin.disabled = false;
+    el.btnSpotifyLogout.disabled = false;
+
+    // Spotify not linked
+    if (!state.spotifyLinked) {
+      el.spotifyStatus.textContent = "Spotify non lié";
+
+      el.btnSpotifyLogout.classList.add("hidden");
+      el.btnSpotifyLogin.classList.remove("hidden");
+
+      if (el.spotifyMe) el.spotifyMe.textContent = "";
+      if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.add("hidden");
+
+      hidePanel();
+      return;
+    }
+
+    // Spotify linked
+    const prof = state.spotifyProfile || null;
+    const name = prof?.display_name || prof?.id || "Spotify lié";
+
+    el.spotifyStatus.textContent = `Spotify lié : ${name}`;
+    if (el.spotifyMe) el.spotifyMe.textContent = prof?.id ? `@${prof.id}` : "";
+
+    el.btnSpotifyLogin.classList.add("hidden");
+    el.btnSpotifyLogout.classList.remove("hidden");
+
+    if (el.btnSpotifyLoadPlaylists) el.btnSpotifyLoadPlaylists.classList.remove("hidden");
+
+    showPanel();
   }
-
-  // 2) Logged to Discord (buttons enabled by default)
-  el.btnSpotifyLogin.disabled = false;
-  el.btnSpotifyLogout.disabled = false;
-
-  // 3) Spotify not linked
-  if (!state.spotifyLinked) {
-    el.spotifyStatus.textContent = "Spotify non lié";
-
-    el.btnSpotifyLogout.classList.add("hidden");
-    el.btnSpotifyLogin.classList.remove("hidden");
-
-    if (el.spotifyMe) el.spotifyMe.textContent = "";
-    if (el.spotifyPlaylistSelect) el.spotifyPlaylistSelect.value = "";
-
-    hidePanel();
-    return;
-  }
-
-  // 4) Spotify linked
-  const prof = state.spotifyProfile || null;
-  const name = prof?.display_name || prof?.id || "Spotify lié";
-
-  el.spotifyStatus.textContent = `Spotify lié : ${name}`;
-  if (el.spotifyMe) el.spotifyMe.textContent = prof?.id ? `@${prof.id}` : "";
-
-  el.btnSpotifyLogin.classList.add("hidden");
-  el.btnSpotifyLogout.classList.remove("hidden");
-
-  // If the panel exists in the DOM, show it
-  showPanel();
-
-  // Keep select in sync (don’t force it if empty and playlists not loaded yet)
-  if (el.spotifyPlaylistSelect) {
-    el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
-  }
-}
 
   function renderSpotifyPlaylists() {
-  if (!el.spotifyPlaylists && !el.spotifyPlaylistSelect) return;
+    if (!el.spotifyPlaylists) return;
 
-  const pls = Array.isArray(state.spotifyPlaylists) ? state.spotifyPlaylists : [];
-
-  if (el.spotifyPlaylists) {
+    const pls = Array.isArray(state.spotifyPlaylists) ? state.spotifyPlaylists : [];
     if (!pls.length) {
       el.spotifyPlaylists.innerHTML = `<div class="queue-empty">Aucune playlist chargée</div>`;
-    } else {
-      el.spotifyPlaylists.innerHTML = pls
-        .map((p) => {
-          const name = escapeHtml(p.name || "Playlist");
-          const id = escapeHtml(p.id || "");
-          const owner =
-            (typeof p.owner === "string" ? p.owner : (p.owner?.display_name || p.owner?.id || "")) || "";
+      return;
+    }
 
-          const tracks = String(
-            p.tracks?.total ??
-            p.tracks_total ??
-            p.tracksCount ??
-            p.tracksTotal ??
-            ""
-          );
+    el.spotifyPlaylists.innerHTML = pls
+      .map((p) => {
+        const name = escapeHtml(p.name || "Playlist");
+        const id = escapeHtml(p.id || "");
 
-          const img = p.images?.[0]?.url || p.image || p.cover || "";
-          const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
+        const owner =
+          (typeof p.owner === "string" ? p.owner : p.owner?.display_name || p.owner?.id || "") || "";
 
-          const active =
-            state.spotifyCurrentPlaylistId && String(p.id) === String(state.spotifyCurrentPlaylistId)
-              ? " is-active"
-              : "";
+        const tracks = String(p.tracks?.total ?? p.tracks_total ?? p.tracksCount ?? p.tracksTotal ?? "");
+        const img = p.images?.[0]?.url || p.image || p.cover || "";
+        const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
 
-          return `
-            <div class="queue-item${active}" data-spotify-pl="${id}">
-              <div class="queue-thumb" ${thumbStyle}></div>
+        const active =
+          state.spotifyCurrentPlaylistId && String(p.id) === String(state.spotifyCurrentPlaylistId)
+            ? " is-active"
+            : "";
 
-              <div class="queue-main">
-                <div class="queue-title">${name}</div>
-                <div class="queue-sub">${escapeHtml([owner, tracks ? `${tracks} tracks` : ""].filter(Boolean).join(" • "))}</div>
-              </div>
-
-              <div class="queue-actions">
-                <button class="queue-btn danger" data-action="delete-playlist" title="Supprimer (unfollow)">
-                  <svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
-                </button>
-              </div>
+        return `
+          <div class="queue-item${active}" data-spotify-pl="${id}">
+            <div class="queue-thumb" ${thumbStyle}></div>
+            <div class="queue-main">
+              <div class="queue-title">${name}</div>
+              <div class="queue-sub">${escapeHtml([owner, tracks ? `${tracks} tracks` : ""].filter(Boolean).join(" • "))}</div>
             </div>
-          `;
-        })
-        .join("");
+            <div class="queue-actions">
+              <button class="queue-btn danger" data-action="delete-playlist" title="Supprimer (unfollow)">
+                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
 
-      // Click row = select playlist
-      for (const row of el.spotifyPlaylists.querySelectorAll(".queue-item[data-spotify-pl]")) {
-        row.addEventListener("click", async () => {
+    for (const row of el.spotifyPlaylists.querySelectorAll(".queue-item[data-spotify-pl]")) {
+      row.addEventListener("click", async (ev) => {
+        const btn = ev.target.closest("button");
+        if (btn) return;
+
+        const pid = row.getAttribute("data-spotify-pl") || "";
+        if (!pid) return;
+
+        state.spotifyCurrentPlaylistId = pid;
+        localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, pid);
+        renderSpotifyPlaylists();
+
+        await safeAction(() => api_spotify_playlist_tracks(pid), "Titres chargés ✅", false);
+      });
+
+      const btnDel = row.querySelector("button[data-action='delete-playlist']");
+      if (btnDel) {
+        btnDel.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+
           const pid = row.getAttribute("data-spotify-pl") || "";
           if (!pid) return;
 
-          state.spotifyCurrentPlaylistId = pid;
-          localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, pid);
+          const pl = (state.spotifyPlaylists || []).find((x) => String(x.id) === String(pid));
+          const plName = pl?.name || pid;
+
+          const ok = window.confirm(`Supprimer / unfollow la playlist "${plName}" ?`);
+          if (!ok) return;
+
+          await safeAction(() => api_spotify_playlist_delete(pid), "Playlist supprimée ✅", false);
+
+          if (String(state.spotifyCurrentPlaylistId || "") === String(pid)) {
+            state.spotifyCurrentPlaylistId = "";
+            localStorage.removeItem(LS_KEY_SPOTIFY_LAST_PLAYLIST);
+            state.spotifyTracks = [];
+            renderSpotifyTracks();
+          }
+
+          await refreshSpotifyPlaylists().catch(() => {});
           renderSpotifyPlaylists();
-
-          await safeAction(() => api_spotify_playlist_tracks(pid), "Tracks chargés ✅", false);
         });
-
-        // Delete button
-        const btnDel = row.querySelector("button[data-action='delete-playlist']");
-        if (btnDel) {
-          btnDel.addEventListener("click", async (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-
-            const pid = row.getAttribute("data-spotify-pl") || "";
-            if (!pid) return;
-
-            const pl = pls.find((x) => String(x.id) === String(pid));
-            const plName = pl?.name || pid;
-
-            const ok = window.confirm(`Supprimer / unfollow la playlist "${plName}" ?`);
-            if (!ok) return;
-
-            await safeAction(() => api_spotify_playlist_delete(pid), "Playlist supprimée ✅", false);
-
-            // If we deleted the current one, reset selection
-            if (String(state.spotifyCurrentPlaylistId || "") === String(pid)) {
-              state.spotifyCurrentPlaylistId = "";
-              localStorage.removeItem(LS_KEY_SPOTIFY_LAST_PLAYLIST);
-              state.spotifyTracks = [];
-              renderSpotifyTracks();
-            }
-
-            // Refresh list from server
-            await refreshSpotifyPlaylists().catch(() => {});
-            renderSpotifyPlaylists();
-          });
-        }
       }
     }
   }
-
-  // Dropdown select (optional UI)
-  if (el.spotifyPlaylistSelect) {
-    const keep0 = el.spotifyPlaylistSelect.querySelector("option[value='']")
-      ? el.spotifyPlaylistSelect.querySelector("option[value='']").outerHTML
-      : "<option value=''>— Playlist —</option>";
-
-    el.spotifyPlaylistSelect.innerHTML = keep0;
-
-    for (const p of pls) {
-      const opt = document.createElement("option");
-      opt.value = String(p.id || "");
-      opt.textContent = p.name || String(p.id || "");
-      el.spotifyPlaylistSelect.appendChild(opt);
-    }
-
-    el.spotifyPlaylistSelect.value = state.spotifyCurrentPlaylistId || "";
-  }
-}
 
   function renderSpotifyTracks() {
     if (!el.spotifyTracks) return;
@@ -916,24 +850,20 @@
         const artist = escapeHtml(
           Array.isArray(t.artists)
             ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
-            : (t.artists || t.artist || "")
+            : t.artists || t.artist || ""
         );
-        const uri = escapeHtml(t.uri || "");
         const img = t.album?.images?.[0]?.url || t.image || "";
         const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
         return `
-          <div class="queue-item" data-spotify-uri="${uri}" data-idx="${idx}">
+          <div class="queue-item" data-idx="${idx}">
             <div class="queue-thumb" ${thumbStyle}></div>
             <div class="queue-main">
               <div class="queue-title">${name}</div>
               <div class="queue-sub">${artist || "&nbsp;"}</div>
             </div>
             <div class="queue-actions">
-              <button class="queue-btn" data-action="quickplay" title="Lire">
+              <button class="queue-btn" data-action="play" title="Lire">
                 <svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
-              </button>
-              <button class="queue-btn danger" data-action="remove" title="Retirer de la playlist">
-                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
               </button>
             </div>
           </div>
