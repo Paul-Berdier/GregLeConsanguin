@@ -108,24 +108,76 @@ def add_to_queue():
     before = player.get_state(int(gid)) or {}
     was_empty = len(before.get("queue") or []) == 0 and not bool(before.get("current"))
 
+    # ---------------------------
+    # ✅ NOUVEAU: récupère les métadonnées envoyées par le front
+    # ---------------------------
+    def _to_int(v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return None
+            if isinstance(v, (int, float)):
+                return int(v)
+            s = str(v).strip()
+            if not s:
+                return None
+            if s.isdigit():
+                return int(s)
+        except Exception:
+            return None
+        return None
+
+    url_in = _to_str(data.get("url") or data.get("webpage_url") or "").strip()
+    title_in = _to_str(data.get("title") or "").strip()
+    artist_in = _to_str(data.get("artist") or "").strip()
+    provider_in = _to_str(data.get("provider") or data.get("source") or "").strip() or None
+
+    thumb_in = _to_str(data.get("thumb") or data.get("thumbnail") or "").strip() or None
+
+    duration_in = data.get("duration")
+    duration_ms_in = data.get("duration_ms")
+
+    dur = _to_int(duration_in)
+    if dur is None:
+        dur_ms = _to_int(duration_ms_in)
+        if dur_ms is not None:
+            # duration_ms -> secondes
+            dur = int(dur_ms / 1000)
+
+    # ---------------------------
+    # ✅ Build item correctement
+    # - si URL: on garde les métadonnées du front
+    # - sinon: autocomplete back, mais on complète avec ce que le front a envoyé
+    # ---------------------------
     item = None
     if _is_url(raw):
-        item = {"url": raw}
+        item = {
+            "url": raw,
+            "title": title_in or raw,
+            "artist": artist_in or None,
+            "duration": dur,
+            "thumb": thumb_in,
+            "provider": provider_in,
+        }
     else:
         try:
             from api.services.search import autocomplete
             res = autocomplete(raw, limit=1)
             if res:
-                top = res[0]
+                top = res[0] or {}
                 item = {
-                    "url": top.get("url") or raw,
-                    "title": top.get("title") or raw,
-                    "duration": top.get("duration"),
-                    "thumb": top.get("thumbnail") or top.get("thumb"),
-                    "provider": top.get("provider"),
+                    "url": (top.get("url") or url_in or raw),
+                    "title": (top.get("title") or title_in or raw),
+                    "artist": (top.get("artist") or top.get("uploader") or artist_in or None),
+                    "duration": (top.get("duration") if top.get("duration") is not None else dur),
+                    "thumb": (top.get("thumbnail") or top.get("thumb") or thumb_in),
+                    "provider": (top.get("provider") or provider_in),
                 }
+            else:
+                item = {"url": url_in or raw, "title": title_in or raw, "artist": artist_in or None, "duration": dur, "thumb": thumb_in, "provider": provider_in}
         except Exception:
-            item = {"url": raw}
+            item = {"url": url_in or raw, "title": title_in or raw, "artist": artist_in or None, "duration": dur, "thumb": thumb_in, "provider": provider_in}
 
     async def _do():
         return await player.enqueue(int(gid), int(uid), item or {"url": raw})
@@ -168,7 +220,6 @@ def add_to_queue():
     _broadcast(gid)
     http_code = 200 if res.get("ok") else 409
     return jsonify({"ok": bool(res.get("ok")), "result": res, "autoplay": autoplay}), http_code
-
 
 @bp.post("/queue/skip")
 def skip_track():
