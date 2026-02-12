@@ -1,13 +1,16 @@
-/* Greg le Consanguin — Web Player (pro, full) — v2026-02-11
-   Fixes:
-   - Spotify: auto-load playlists after link + robust payload normalizations
-   - Autocomplete/add: stronger compat with backend (query/url fields + retry with querystring)
-   - Voice: optional /voice/join best-effort (won’t break if route doesn’t exist)
+/* Greg le Consanguin — Web Player (pro, streamlined) — v2026-02-12
+   Scope (as requested):
+   - Spotify: link/unlink + load playlists + create playlist + delete playlist + play tracks from playlist
+   - No Spotify search / no add-to-playlist / no remove-from-playlist / no “add current/queue”
+   - YouTube: autocomplete + add to queue
+   - Player: queue + controls + optional /voice/join best-effort
    - API_BASE auto: if page is not served from Railway, defaults to Railway origin unless overridden
 
    Usage:
-   - You can override API base by defining: window.GREG_API_BASE = "https://gregleconsanguin.up.railway.app/api/v1"
-   - You can enable debug: window.GREG_DEBUG = 1  OR localStorage.setItem("greg.webplayer.debug","1")
+   - Override API base (optional):
+     window.GREG_API_BASE = "https://gregleconsanguin.up.railway.app/api/v1"
+   - Enable debug:
+     window.GREG_DEBUG = 1  OR localStorage.setItem("greg.webplayer.debug","1")
 */
 
 (() => {
@@ -18,28 +21,19 @@
   // =============================
   const STATIC_BASE = window.GREG_STATIC_BASE || "/static";
 
-  // Auto API base:
-  // - If you are NOT on railway.app and you didn't set GREG_API_BASE,
-  //   we default to your Railway deployment (so cookies/CORS are consistent).
   const DEFAULT_RAILWAY = "https://gregleconsanguin.up.railway.app/api/v1";
   const RAW_API_BASE = window.GREG_API_BASE || "/api/v1";
   const API_BASE = (() => {
     const b = String(RAW_API_BASE).trim();
     if (!b) return DEFAULT_RAILWAY;
 
-    // If user provided an absolute base, keep it
     if (/^https?:\/\//i.test(b)) return b.replace(/\/+$/, "");
-
-    // If page is served from railway.app, relative base is ok
     if (String(location.hostname).includes("railway.app")) return b.replace(/\/+$/, "");
-
-    // If page is served elsewhere (local file / another domain), use Railway by default
     if (b === "/api/v1") return DEFAULT_RAILWAY;
 
     return b.replace(/\/+$/, "");
   })();
 
-  // Determine origin for Socket.IO
   const API_ORIGIN = (() => {
     try {
       if (/^https?:\/\//i.test(API_BASE)) return new URL(API_BASE).origin;
@@ -54,7 +48,9 @@
   const LS_KEY_DEBUG = "greg.webplayer.debug";
 
   const DEBUG = (() => {
-    const flag = (window.GREG_DEBUG ?? localStorage.getItem(LS_KEY_DEBUG) ?? "").toString().trim();
+    const flag = (window.GREG_DEBUG ?? localStorage.getItem(LS_KEY_DEBUG) ?? "")
+      .toString()
+      .trim();
     return flag === "1" || flag.toLowerCase() === "true";
   })();
 
@@ -76,7 +72,7 @@
     btnLogoutDiscord: $("#btn-logout-discord"),
     guildSelect: $("#guildSelect"),
 
-    // search
+    // search (YouTube)
     searchForm: $("#searchForm"),
     searchInput: $("#searchInput"),
     searchSuggestions: $("#searchSuggestions"),
@@ -101,7 +97,7 @@
     queueCount: $("#queueCount"),
     queueList: $("#queueList"),
 
-    // spotify (status)
+    // spotify (minimal)
     spotifyStatus: $("#spotifyStatus"),
     btnSpotifyLogin: $("#btn-spotify-login"),
     btnSpotifyLogout: $("#btn-spotify-logout"),
@@ -872,113 +868,32 @@
       .join("");
 
     for (const row of el.spotifyTracks.querySelectorAll(".queue-item")) {
-      const uri = row.getAttribute("data-spotify-uri") || "";
+      const btnPlay = row.querySelector("button[data-action='play']");
+      if (!btnPlay) continue;
 
-      const btnQuick = row.querySelector("button[data-action='quickplay']");
-      if (btnQuick) {
-        btnQuick.addEventListener("click", async (ev) => {
-  ev.preventDefault();
-  ev.stopPropagation();
+      btnPlay.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
 
-  const idx = Number(row.getAttribute("data-idx"));
-  const t = state.spotifyTracks[idx];
-  if (!t) return setStatus("Track introuvable.", "err");
-  if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
+        const idx = Number(row.getAttribute("data-idx"));
+        const t = state.spotifyTracks[idx];
+        if (!t) return setStatus("Track introuvable.", "err");
+        if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
 
-  const artistsStr =
-    Array.isArray(t.artists)
-      ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
-      : (t.artists || t.artist || "");
+        const artistsStr =
+          Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : t.artists || t.artist || "";
 
-  const tr = {
-    name: t.name || t.title || "",
-    artists: artistsStr,
-    duration_ms: t.duration_ms ?? null,
-    image: t.image || t.album?.images?.[0]?.url || null,
-    uri: t.uri || null,
-  };
+        const tr = {
+          name: t.name || t.title || "",
+          artists: artistsStr,
+          duration_ms: t.duration_ms ?? null,
+          image: t.image || t.album?.images?.[0]?.url || null,
+          uri: t.uri || null,
+        };
 
-  await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", true);
-  await bestEffortVoiceJoin("spotify_quickplay");
-});
-
-      }
-
-      const btnRemove = row.querySelector("button[data-action='remove']");
-      if (btnRemove) {
-        btnRemove.addEventListener("click", async (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const pid = state.spotifyCurrentPlaylistId;
-          if (!pid) return setStatus("Choisis une playlist.", "err");
-          await safeAction(() => api_spotify_playlist_remove_tracks(pid, [uri]), "Retiré ✅", true);
-        });
-      }
-    }
-  }
-
-  function renderSpotifySearch() {
-    if (!el.spotifySearchResults) return;
-
-    const rows = Array.isArray(state.spotifySearchResults) ? state.spotifySearchResults : [];
-    if (!rows.length) {
-      el.spotifySearchResults.innerHTML = `<div class="queue-empty">Aucun résultat</div>`;
-      return;
-    }
-
-    el.spotifySearchResults.innerHTML = rows
-      .map((t) => {
-        const name = escapeHtml(t.name || "Track");
-const artist = escapeHtml(
-  Array.isArray(t.artists)
-    ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
-    : (t.artists || t.artist || "")
-);
-        const uri = escapeHtml(t.uri || "");
-        const img = t.album?.images?.[0]?.url || "";
-        const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
-        return `
-          <div class="queue-item" data-spotify-uri="${uri}">
-            <div class="queue-thumb" ${thumbStyle}></div>
-            <div class="queue-main">
-              <div class="queue-title">${name}</div>
-              <div class="queue-sub">${artist || "&nbsp;"}</div>
-            </div>
-            <div class="queue-actions">
-              <button class="queue-btn" data-action="add" title="Ajouter">
-                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-plus"></use></svg>
-              </button>
-              <button class="queue-btn" data-action="quickplay" title="Lire">
-                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
-              </button>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-
-    for (const row of el.spotifySearchResults.querySelectorAll(".queue-item")) {
-      const uri = row.getAttribute("data-spotify-uri") || "";
-      const btnAdd = row.querySelector("button[data-action='add']");
-      const btnQuick = row.querySelector("button[data-action='quickplay']");
-
-      if (btnAdd) {
-        btnAdd.addEventListener("click", async (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const pid = state.spotifyCurrentPlaylistId;
-          if (!pid) return setStatus("Choisis une playlist.", "err");
-          await safeAction(() => api_spotify_playlist_add_track(pid, uri), "Ajouté ✅", false);
-        });
-      }
-      if (btnQuick) {
-        btnQuick.addEventListener("click", async (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          await safeAction(() => api_spotify_quickplay(uri), "Lecture Spotify ✅", true);
-          await bestEffortVoiceJoin("spotify_quickplay_search");
-        });
-      }
+        await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", true);
+        await bestEffortVoiceJoin("spotify_quickplay");
+      });
     }
   }
 
@@ -987,10 +902,10 @@ const artist = escapeHtml(
     renderGuilds();
     renderNowPlaying();
     renderQueue();
+
     renderSpotify();
     renderSpotifyPlaylists();
     renderSpotifyTracks();
-    renderSpotifySearch();
   }
 
   // =============================
@@ -1086,7 +1001,9 @@ const artist = escapeHtml(
 
   async function fetchSuggestions(q) {
     if (state.sugAbort) {
-      try { state.sugAbort.abort(); } catch {}
+      try {
+        state.sugAbort.abort();
+      } catch {}
     }
     state.sugAbort = new AbortController();
 
@@ -1166,7 +1083,6 @@ const artist = escapeHtml(
       true
     );
 
-    // 🔧 FIX voice: try to join after first add (best effort)
     await bestEffortVoiceJoin("add_from_suggestion");
 
     if (el.searchInput) el.searchInput.value = "";
@@ -1177,38 +1093,18 @@ const artist = escapeHtml(
   // =============================
   function basePayload(extra = {}) {
     const out = { ...extra };
-    if (state.guildId) out.guild_id = String(state.guildId);     // ✅ string
-    if (state.me?.id) out.user_id = String(state.me.id);         // ✅ string
+    if (state.guildId) out.guild_id = String(state.guildId);
+    if (state.me?.id) out.user_id = String(state.me.id);
     return out;
-  }
-
-  function assertSnowflake(label, v) {
-    const s = String(v ?? "");
-    const ok = /^\d{17,20}$/.test(s);
-    if (!ok) console.warn("[SnowflakeInvalid]", label, v);
-    if (typeof v === "number") console.warn("[SnowflakeNumber!!]", label, v, "precision lost likely");
-  }
-
-  function debugPayload(tag, payload) {
-    console.log("[DBG]", tag, payload, {
-      guild_id_type: typeof payload.guild_id,
-      user_id_type: typeof payload.user_id,
-      guild_id_len: String(payload.guild_id || "").length,
-      user_id_len: String(payload.user_id || "").length,
-    });
-    assertSnowflake("guild_id", payload.guild_id);
-    assertSnowflake("user_id", payload.user_id);
   }
 
   async function api_playlist_state() {
     return api.get(api.routes.playlist_state.path, state.guildId ? { guild_id: state.guildId } : undefined);
   }
 
-  // 🔧 FIX: queue/add retry strategy:
-  // 1) POST JSON body
-  // 2) if fails (400/415/422/500 sometimes), retry by sending the same values as querystring
   async function api_queue_add(itemOrQuery) {
-    let payload = typeof itemOrQuery === "string" ? basePayload({ query: itemOrQuery }) : basePayload(itemOrQuery || {});
+    let payload =
+      typeof itemOrQuery === "string" ? basePayload({ query: itemOrQuery }) : basePayload(itemOrQuery || {});
 
     const url = String(payload.url || payload.webpage_url || "").trim();
     const title = String(payload.title || "").trim();
@@ -1229,7 +1125,6 @@ const artist = escapeHtml(
       return await api.post(api.routes.queue_add.path, payload);
     } catch (e) {
       const st = Number(e?.status || 0);
-      // Only retry on “likely format mismatch” errors
       if (![400, 415, 422, 500].includes(st)) throw e;
 
       const qs = {};
@@ -1238,9 +1133,7 @@ const artist = escapeHtml(
         qs[k] = String(v);
       }
       dlog("queue_add retry querystring", qs);
-      debugPayload("queue_add", payload);
 
-      // Retry by posting empty JSON but querystring filled
       return api.post(api.routes.queue_add.path, {}, qs);
     }
   }
@@ -1267,27 +1160,24 @@ const artist = escapeHtml(
     return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) }));
   }
 
-  // 🔧 FIX voice: optional best-effort join
+  // Optional voice join
   async function bestEffortVoiceJoin(reason) {
     const now = Date.now();
-    if (now - state.voiceJoinLastAt < 8000) return; // throttle
+    if (now - state.voiceJoinLastAt < 8000) return;
     state.voiceJoinLastAt = now;
 
     if (!state.me || !state.guildId) return;
 
-    // If your backend uses /voice/join, it can use user_id+guild_id to detect the user's current voice channel.
-    // If route doesn't exist, ignore.
     try {
       await api.post(api.routes.voice_join.path, basePayload({ reason: String(reason || "") }));
       dlog("voice_join ok");
     } catch (e) {
-      // ignore 404, otherwise log
       if (Number(e?.status || 0) !== 404) dlog("voice_join failed", e?.message || e);
     }
   }
 
   // =============================
-  // Spotify actions
+  // Spotify actions (minimal)
   // =============================
   async function api_spotify_status() {
     return api.get(api.routes.spotify_status.path);
@@ -1304,8 +1194,6 @@ const artist = escapeHtml(
   async function api_spotify_playlist_tracks(playlistId) {
     const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
 
-    // Backend returns {tracks:[...]} (already flattened)
-    // Accept multiple shapes anyway.
     const items =
       (Array.isArray(data?.tracks) && data.tracks) ||
       (Array.isArray(data?.items) && data.items) ||
@@ -1314,7 +1202,6 @@ const artist = escapeHtml(
       (Array.isArray(data) && data) ||
       [];
 
-    // If Spotify raw shape sneaks in: {items:[{track:{...}}]}
     const tracks = items.map((x) => x?.track || x).filter(Boolean);
 
     state.spotifyTracks = tracks;
@@ -1322,70 +1209,31 @@ const artist = escapeHtml(
     return data;
   }
 
-async function api_spotify_search_tracks(q) {
-  const data = await api.get(api.routes.spotify_search_tracks.path, { q });
-
-  const items =
-    (Array.isArray(data?.tracks) && data.tracks) ||
-    (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
-    (Array.isArray(data?.items) && data.items) ||
-    [];
-
-  state.spotifySearchResults = items;
-  renderSpotifySearch();
-  return data;
-}
-
   async function api_spotify_playlist_create(name, isPublic) {
     return api.post(api.routes.spotify_playlist_create.path, { name, public: !!isPublic });
   }
 
   async function api_spotify_playlist_delete(playlistId) {
-  if (!playlistId) throw new Error("missing playlist_id");
-  return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
+    if (!playlistId) throw new Error("missing playlist_id");
+    return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
+  }
+
+async function api_spotify_quickplay(trackObj) {
+  if (!state.guildId) throw new Error("missing guild_id");
+
+  const track = trackObj && typeof trackObj === "object" ? trackObj : {};
+
+  // IMPORTANT: include user_id like other endpoints
+  const payload = basePayload({ track });
+
+  const res = await api.post(api.routes.spotify_quickplay.path, payload);
+
+  await sleep(250);
+  await refreshPlaylist();
+  renderAll();
+  return res;
 }
 
-async function api_spotify_playlist_add_track(playlistId, uri) {
-  return api.post(api.routes.spotify_playlist_add_track.path, {
-    playlist_id: playlistId,
-    track_uri: uri,   // ✅ backend expects track_uri
-  });
-}
-
-async function api_spotify_playlist_remove_tracks(playlistId, uris) {
-  const arr = Array.isArray(uris) ? uris : [uris];
-  return api.post(api.routes.spotify_playlist_remove_tracks.path, {
-    playlist_id: playlistId,
-    track_uris: arr,   // ✅ backend expects track_uris
-  });
-}
-
-  async function api_spotify_add_current_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_current_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
-  }
-  async function api_spotify_add_queue_to_playlist(playlistId) {
-    return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
-  }
-  async function api_spotify_quickplay(trackObjOrUri) {
-    if (!state.guildId) throw new Error("missing guild_id");
-
-    const track =
-      typeof trackObjOrUri === "string"
-        ? { uri: trackObjOrUri }
-        : (trackObjOrUri && typeof trackObjOrUri === "object" ? trackObjOrUri : {});
-
-    const res = await api.post(api.routes.spotify_quickplay.path, {
-      guild_id: String(state.guildId),
-      track,
-    });
-
-    // 🔧 Robust: certaines actions déclenchent la lecture un poil après
-    await sleep(250);
-    await refreshPlaylist();   // met à jour current + queue dans l'UI
-    renderAll();
-
-    return res;
-  }
 
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = Math.round(window.top.outerHeight / 2 + window.top.screenY - h / 2);
@@ -1408,7 +1256,6 @@ async function api_spotify_playlist_remove_tracks(playlistId, uris) {
 
     setStatus("Ouverture Spotify…", "ok");
 
-    // Polling 60s (robuste)
     (async () => {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
@@ -1462,22 +1309,11 @@ async function api_spotify_playlist_remove_tracks(playlistId, uris) {
 
     try {
       const st = await api_spotify_status();
-      // Accept multiple shapes:
-      // {linked:true, profile:{...}} OR {ok:true, linked:true, me:{...}} OR {ok:true, profile:{...}}
-// linked: priorité à un champ explicite "linked" si présent
-if (st && typeof st === "object" && "linked" in st) {
-  state.spotifyLinked = !!st.linked;
-} else {
-  // fallback: certains backends mettent ok=true quand lié (moins propre, mais tu l’acceptes)
-  state.spotifyLinked = !!st?.ok;
-}
 
-state.spotifyProfile =
-  st?.profile ||
-  st?.me ||
-  st?.data?.profile ||
-  st?.data?.me ||
-  null;
+      if (st && typeof st === "object" && "linked" in st) state.spotifyLinked = !!st.linked;
+      else state.spotifyLinked = !!st?.ok;
+
+      state.spotifyProfile = st?.profile || st?.me || st?.data?.profile || st?.data?.me || null;
 
       if (state.spotifyLinked && !state.spotifyProfile) {
         try {
@@ -1495,21 +1331,14 @@ state.spotifyProfile =
     if (!state.spotifyLinked) {
       state.spotifyPlaylists = [];
       state.spotifyTracks = [];
-      state.spotifySearchResults = [];
       renderSpotifyPlaylists();
       renderSpotifyTracks();
-      renderSpotifySearch();
       return;
     }
 
     try {
       const data = await api_spotify_playlists();
 
-      // Normalize playlists from multiple shapes:
-      // - {items:[...]}
-      // - {playlists:[...]}
-      // - {data:{items:[...]}}
-      // - direct array
       const items =
         (Array.isArray(data?.items) && data.items) ||
         (Array.isArray(data?.playlists) && data.playlists) ||
@@ -1567,8 +1396,10 @@ state.spotifyProfile =
 
     await refreshSpotify();
     if (state.spotifyLinked) {
-      // 🔧 FIX: attempt to load playlists automatically on boot if panel exists
       await refreshSpotifyPlaylists().catch(() => {});
+    } else {
+      state.spotifyPlaylists = [];
+      state.spotifyTracks = [];
     }
 
     await refreshPlaylist();
@@ -1615,6 +1446,7 @@ state.spotifyProfile =
   // Events binding
   // =============================
   function bindUI() {
+    // YouTube search/autocomplete
     if (el.searchInput) el.searchInput.addEventListener("input", onSearchInput);
 
     if (el.searchInput) {
@@ -1664,6 +1496,7 @@ state.spotifyProfile =
       });
     }
 
+    // Discord auth
     if (el.btnLoginDiscord) {
       el.btnLoginDiscord.addEventListener("click", () => {
         const url = `${API_BASE}${api.routes.auth_login.path}`;
@@ -1681,11 +1514,11 @@ state.spotifyProfile =
         state.spotifyProfile = null;
         state.spotifyPlaylists = [];
         state.spotifyTracks = [];
-        state.spotifySearchResults = [];
         await refreshAll();
       });
     }
 
+    // Guild select
     if (el.guildSelect) {
       el.guildSelect.addEventListener("change", async () => {
         const oldGid = state.guildId;
@@ -1701,13 +1534,17 @@ state.spotifyProfile =
       });
     }
 
+    // Player controls
     if (el.btnStop) el.btnStop.addEventListener("click", async () => safeAction(() => api_queue_stop(), "Stop ✅", true));
     if (el.btnSkip) el.btnSkip.addEventListener("click", async () => safeAction(() => api_queue_skip(), "Skip ✅", true));
-    if (el.btnPlayPause) el.btnPlayPause.addEventListener("click", async () => safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true));
+    if (el.btnPlayPause)
+      el.btnPlayPause.addEventListener("click", async () => safeAction(() => api_playlist_toggle_pause(), "Toggle ✅", true));
     if (el.btnPrev) el.btnPrev.addEventListener("click", async () => safeAction(() => api_playlist_restart(), "Restart ✅", true));
     if (el.btnRepeat) el.btnRepeat.addEventListener("click", async () => safeAction(() => api_playlist_repeat(), "Repeat toggle ✅", true));
 
+    // Spotify link/unlink/load/create
     if (el.btnSpotifyLogin) el.btnSpotifyLogin.addEventListener("click", () => spotifyLogin());
+
     if (el.btnSpotifyLogout) {
       el.btnSpotifyLogout.addEventListener("click", async () => {
         await safeAction(() => api_spotify_logout(), "Spotify délié ✅", false);
@@ -1715,7 +1552,8 @@ state.spotifyProfile =
         state.spotifyProfile = null;
         state.spotifyPlaylists = [];
         state.spotifyTracks = [];
-        state.spotifySearchResults = [];
+        state.spotifyCurrentPlaylistId = "";
+        localStorage.removeItem(LS_KEY_SPOTIFY_LAST_PLAYLIST);
         renderAll();
       });
     }
@@ -1727,60 +1565,27 @@ state.spotifyProfile =
       });
     }
 
-    if (el.spotifyPlaylistSelect) {
-      el.spotifyPlaylistSelect.addEventListener("change", async () => {
-        const pid = el.spotifyPlaylistSelect.value || "";
-        state.spotifyCurrentPlaylistId = pid;
-        if (pid) localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, pid);
-        renderSpotifyPlaylists();
-        if (pid) await safeAction(() => api_spotify_playlist_tracks(pid), "Tracks chargés ✅", false);
-      });
-    }
-
     if (el.btnSpotifyCreatePlaylist) {
       el.btnSpotifyCreatePlaylist.addEventListener("click", async () => {
         if (!state.spotifyLinked) return setStatus("Spotify non lié.", "err");
         const name = (el.spotifyCreateName?.value || "").trim() || "Greg Playlist";
         const isPublic = !!el.spotifyCreatePublic?.checked;
+
         const data = await safeAction(() => api_spotify_playlist_create(name, isPublic), "Playlist créée ✅", false);
 
         await refreshSpotifyPlaylists();
+
         const createdId = data?.id || data?.playlist_id || data?.playlist?.id || data?.data?.id || "";
         if (createdId) {
-          state.spotifyCurrentPlaylistId = createdId;
-          localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, createdId);
+          state.spotifyCurrentPlaylistId = String(createdId);
+          localStorage.setItem(LS_KEY_SPOTIFY_LAST_PLAYLIST, String(createdId));
           renderSpotifyPlaylists();
           await api_spotify_playlist_tracks(createdId).catch(() => {});
         }
       });
     }
 
-    if (el.btnSpotifyAddCurrent) {
-      el.btnSpotifyAddCurrent.addEventListener("click", async () => {
-        const pid = state.spotifyCurrentPlaylistId;
-        if (!pid) return setStatus("Choisis une playlist.", "err");
-        await safeAction(() => api_spotify_add_current_to_playlist(pid), "Track actuel ajouté ✅", false);
-      });
-    }
-    if (el.btnSpotifyAddQueue) {
-      el.btnSpotifyAddQueue.addEventListener("click", async () => {
-        const pid = state.spotifyCurrentPlaylistId;
-        if (!pid) return setStatus("Choisis une playlist.", "err");
-        await safeAction(() => api_spotify_add_queue_to_playlist(pid), "Queue ajoutée ✅", false);
-      });
-    }
-
-    if (el.spotifySearchForm) {
-      el.spotifySearchForm.addEventListener("submit", async (ev) => {
-        ev.preventDefault();
-        const q = (el.spotifySearchInput?.value || "").trim();
-        if (!q) return;
-        if (!state.spotifyLinked) return setStatus("Spotify non lié.", "err");
-        await safeAction(() => api_spotify_search_tracks(q), "Résultats Spotify ✅", false);
-      });
-    }
-
-    // on focus after OAuth/popup
+    // After OAuth popup, refresh
     window.addEventListener("focus", async () => {
       try {
         await refreshMe();
