@@ -148,8 +148,8 @@ class PlayerService:
             "is_paused": is_paused_vc,
             "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
 
-            "position": position,
-            "duration": duration2,
+            "position": elapsed,  # ✅ compat
+            "duration": (int(duration) if duration is not None else None),  # ✅ compat
 
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
@@ -215,8 +215,11 @@ class PlayerService:
                     payload = {
                         "only_elapsed": True,
                         "is_paused": bool(vc and vc.is_paused()),
+                        "position": elapsed,  # ✅ compat
+                        "duration": duration,  # ✅ compat
                         "progress": {"elapsed": elapsed, "duration": duration},
                     }
+
                     self._emit_playlist_update(gid, payload)
                     await asyncio.sleep(1.0)
             except asyncio.CancelledError:

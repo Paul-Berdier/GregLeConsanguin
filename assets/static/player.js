@@ -519,11 +519,15 @@
       dlog("socket disconnect", reason);
     });
 
-    socket.on("playlist_update", (payload) => {
-      dlog("playlist_update", payload);
-      applyPlaylistPayload(payload);
-      renderAll();
-    });
+socket.on("playlist_update", (payload) => {
+  applyPlaylistPayload(payload);
+
+  // ✅ si c’est juste un tick elapsed => pas besoin de rerender tout
+  const p = payload?.state || payload?.data || payload || {};
+  if (p.only_elapsed) return;
+
+  renderAll();
+});
 
     socket.on("spotify:linked", async (payload) => {
       dlog("spotify:linked", payload);
@@ -626,64 +630,19 @@
   }
 
   function applyPlaylistPayload(payload) {
-  // payload peut être:
-  // - { ok:true, state:{...} } via REST
-  // - { state:{...} } via WS broadcast
-  // - { only_elapsed:true, progress:{...} } via ticker WS
   const p = payload?.state || payload?.pm || payload?.data || payload || {};
 
-  const isOnlyElapsed = !!(p.only_elapsed || payload?.only_elapsed);
+  // ✅ Cas spécial: updates "ticker" (only_elapsed) => ne pas écraser current/queue
+  const isTick = !!p.only_elapsed;
 
-  // ---- Pause / repeat (supporte tes clés back) ----
-  const paused = !!(p.paused ?? p.is_paused ?? p.pause ?? false);
-  const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? p.repeat_all ?? false);
+  // Current + queue (si pas tick)
+  const current = isTick
+    ? state.playlist.current
+    : normalizeItem(p.current || p.now_playing || p.playing || null);
 
-  // ---- Progress : le BACK renvoie progress:{elapsed,duration} ----
-  const pr = (p.progress && typeof p.progress === "object") ? p.progress : null;
-
-  const position =
-    toSeconds(
-      pr?.elapsed ??
-      pr?.position ??
-      p.position ??
-      p.pos ??
-      p.current_time ??
-      0
-    ) ?? 0;
-
-  const duration =
-    toSeconds(
-      pr?.duration ??
-      p.duration ??
-      p.total ??
-      p.length ??
-      0
-    ) ?? 0;
-
-  // ---- Si c'est un patch "only_elapsed", on ne touche PAS au current/queue ----
-  if (isOnlyElapsed) {
-    // garde current/queue tels quels
-    state.playlist.paused = paused || !state.playlist.current;
-    state.playlist.repeat = repeat;
-
-    state.playlist.position = position || 0;
-    // si duration est fourni par ticker, on le met à jour
-    if (duration) state.playlist.duration = duration;
-
-    // recalage ticker local
-    state.tick.basePos = state.playlist.position;
-    state.tick.baseAt = Date.now();
-    state.tick.duration = state.playlist.duration || duration || 0;
-
-    setRepeatActive(state.playlist.repeat);
-    updatePlayPauseIcon(state.playlist.paused);
-    return;
-  }
-
-  // ---- Update complet ----
-  const current = normalizeItem(p.current || p.now_playing || p.playing || null);
-
-  const queueRaw = Array.isArray(p.queue)
+  const queueRaw = isTick
+    ? (state.playlist.queue || [])
+    : Array.isArray(p.queue)
     ? p.queue
     : Array.isArray(p.items)
     ? p.items
@@ -691,19 +650,45 @@
     ? p.list
     : [];
 
-  const queue = queueRaw.map(normalizeItem).filter(Boolean);
+  const queue = isTick ? queueRaw : queueRaw.map(normalizeItem).filter(Boolean);
 
-  // si le back n'a pas mis duration au top-level, fallback sur current.duration
-  const durFinal = duration || (current?.duration ?? 0);
+  // ✅ paused/repeat depuis le BACK
+  const paused = !!(p.is_paused ?? p.paused ?? p.isPaused ?? p.pause ?? false);
+  const repeat = !!(p.repeat_all ?? p.repeat ?? p.repeat_mode ?? p.loop ?? false);
 
+  // ✅ position/duration depuis progress.{elapsed,duration}
+  const elapsed =
+    toSeconds(
+      p.progress?.elapsed ??
+        p.progress?.position ??
+        p.elapsed ??
+        p.position ??
+        p.pos ??
+        p.current_time ??
+        0
+    ) ?? 0;
+
+  const duration =
+    toSeconds(
+      p.progress?.duration ??
+        p.duration ??
+        p.total ??
+        p.length ??
+        (current?.duration ?? 0)
+    ) ?? (current?.duration ?? 0);
+
+  // ✅ Applique sans casser l’état en mode ticker
   state.playlist.current = current;
   state.playlist.queue = queue;
+
+  // si current null => paused forcé
   state.playlist.paused = paused || !current;
   state.playlist.repeat = repeat;
 
-  state.playlist.position = position || 0;
-  state.playlist.duration = durFinal || 0;
+  state.playlist.position = elapsed || 0;
+  state.playlist.duration = duration || 0;
 
+  // base pour ton ticker UI
   state.tick.basePos = state.playlist.position;
   state.tick.baseAt = Date.now();
   state.tick.duration = state.playlist.duration;
@@ -711,6 +696,7 @@
   setRepeatActive(state.playlist.repeat);
   updatePlayPauseIcon(state.playlist.paused);
 }
+
 
   // =============================
   // Rendering
