@@ -138,11 +138,19 @@ class PlayerService:
             except Exception:
                 pass
 
+        # alias compat front
+        position = elapsed
+        duration2 = int(duration) if duration is not None else None
+
         return {
             "queue": queue,
             "current": cur,
             "is_paused": is_paused_vc,
             "progress": {"elapsed": elapsed, "duration": (int(duration) if duration is not None else None)},
+
+            "position": position,
+            "duration": duration2,
+
             "thumbnail": thumb,
             "repeat_all": bool(self.repeat_all.get(gid, False)),
             "requested_by_user": requested_by_user,

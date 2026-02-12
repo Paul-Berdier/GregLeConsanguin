@@ -626,47 +626,91 @@
   }
 
   function applyPlaylistPayload(payload) {
-    const p = payload?.state || payload?.pm || payload?.data || payload || {};
-    const current = normalizeItem(p.current || p.now_playing || p.playing || null);
+  // payload peut être:
+  // - { ok:true, state:{...} } via REST
+  // - { state:{...} } via WS broadcast
+  // - { only_elapsed:true, progress:{...} } via ticker WS
+  const p = payload?.state || payload?.pm || payload?.data || payload || {};
 
-    const queueRaw = Array.isArray(p.queue)
-      ? p.queue
-      : Array.isArray(p.items)
-      ? p.items
-      : Array.isArray(p.list)
-      ? p.list
-      : [];
+  const isOnlyElapsed = !!(p.only_elapsed || payload?.only_elapsed);
 
-    const queue = queueRaw.map(normalizeItem).filter(Boolean);
+  // ---- Pause / repeat (supporte tes clés back) ----
+  const paused = !!(p.paused ?? p.is_paused ?? p.pause ?? false);
+  const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? p.repeat_all ?? false);
 
-    const paused = !!(p.paused ?? p.is_paused ?? p.pause ?? false);
-    const repeat = !!(p.repeat ?? p.repeat_mode ?? p.loop ?? false);
+  // ---- Progress : le BACK renvoie progress:{elapsed,duration} ----
+  const pr = (p.progress && typeof p.progress === "object") ? p.progress : null;
 
-    const position = pickPositionSeconds(p) || 0;
-    const duration = pickDurationSeconds(p, current) || 0;
+  const position =
+    toSeconds(
+      pr?.elapsed ??
+      pr?.position ??
+      p.position ??
+      p.pos ??
+      p.current_time ??
+      0
+    ) ?? 0;
 
-    state.playlist.current = current;
-    state.playlist.queue = queue;
-    state.playlist.paused = paused || !current;
+  const duration =
+    toSeconds(
+      pr?.duration ??
+      p.duration ??
+      p.total ??
+      p.length ??
+      0
+    ) ?? 0;
+
+  // ---- Si c'est un patch "only_elapsed", on ne touche PAS au current/queue ----
+  if (isOnlyElapsed) {
+    // garde current/queue tels quels
+    state.playlist.paused = paused || !state.playlist.current;
     state.playlist.repeat = repeat;
-    state.playlist.position = position || 0;
-    state.playlist.duration = duration || 0;
 
+    state.playlist.position = position || 0;
+    // si duration est fourni par ticker, on le met à jour
+    if (duration) state.playlist.duration = duration;
+
+    // recalage ticker local
     state.tick.basePos = state.playlist.position;
     state.tick.baseAt = Date.now();
-    state.tick.duration = state.playlist.duration;
+    state.tick.duration = state.playlist.duration || duration || 0;
 
     setRepeatActive(state.playlist.repeat);
     updatePlayPauseIcon(state.playlist.paused);
-
-    // PATCH: Save snapshot each time we apply a payload
-    saveProgressSnapshot();
-
-    // PATCH: If position is 0 but we have a snapshot and same track (after F5), restore smooth progress
-    if (state.playlist.current && state.playlist.position <= 1) {
-      tryRestoreProgressSnapshot();
-    }
+    return;
   }
+
+  // ---- Update complet ----
+  const current = normalizeItem(p.current || p.now_playing || p.playing || null);
+
+  const queueRaw = Array.isArray(p.queue)
+    ? p.queue
+    : Array.isArray(p.items)
+    ? p.items
+    : Array.isArray(p.list)
+    ? p.list
+    : [];
+
+  const queue = queueRaw.map(normalizeItem).filter(Boolean);
+
+  // si le back n'a pas mis duration au top-level, fallback sur current.duration
+  const durFinal = duration || (current?.duration ?? 0);
+
+  state.playlist.current = current;
+  state.playlist.queue = queue;
+  state.playlist.paused = paused || !current;
+  state.playlist.repeat = repeat;
+
+  state.playlist.position = position || 0;
+  state.playlist.duration = durFinal || 0;
+
+  state.tick.basePos = state.playlist.position;
+  state.tick.baseAt = Date.now();
+  state.tick.duration = state.playlist.duration;
+
+  setRepeatActive(state.playlist.repeat);
+  updatePlayPauseIcon(state.playlist.paused);
+}
 
   // =============================
   // Rendering
@@ -1078,7 +1122,7 @@
 
       // Always update UI even if duration is unknown (dur=0)
       if (el.progressCurrent) el.progressCurrent.textContent = formatTime(clamped);
-      if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
+      if (el.progressTotal) el.progressTotal.textContent = dur > 0 ? formatTime(dur) : "--:--";
 
       const pct = dur > 0 ? (clamped / dur) * 100 : 0;
       if (el.progressFill) el.progressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
