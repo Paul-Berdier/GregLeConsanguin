@@ -35,7 +35,7 @@ SPOTIFY_SCOPES = os.getenv(
     "SPOTIFY_SCOPES",
     "playlist-read-private playlist-read-collaborative "
     "playlist-modify-public playlist-modify-private "
-    "user-read-email",
+    "user-read-email user-read-private",
 ).strip()
 
 STATE_SECRET_RAW = os.getenv("SPOTIFY_STATE_SECRET", "").strip()
@@ -423,8 +423,18 @@ def _sp_get(access_token: str, path: str, params: Optional[Dict[str, Any]] = Non
     headers = {"Authorization": f"Bearer {access_token}"}
     url = "https://api.spotify.com/v1" + path
     _log("GET Spotify API", path=path, params=bool(params))
+
     r = requests.get(url, headers=headers, params=params or {}, timeout=12)
-    r.raise_for_status()
+
+    if r.status_code >= 400:
+        # Log utile: Spotify renvoie souvent {"error":{"status":403,"message":"Insufficient client scope"}}
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+        _log("Spotify API error", status=r.status_code, path=path, body=body)
+        r.raise_for_status()
+
     return r.json()
 
 
@@ -663,6 +673,10 @@ def spotify_callback():
                 ), 403
 
             return f"Spotify profile fetch failed ({status}): {body or e}", 400
+        existing = _get_user_tokens(bind_uid) or {}
+        old_refresh = existing.get("refresh_token")
+
+        refresh_token = tok.get("refresh_token") or old_refresh
 
         _set_user_tokens(
             bind_uid,
@@ -1054,6 +1068,8 @@ def api_spotify_playlist_add_by_query():
     )
 
 
+import requests
+
 @bp.post("/spotify/add_current_to_playlist")
 @require_login
 def api_spotify_add_current_to_playlist():
@@ -1085,7 +1101,23 @@ def api_spotify_add_current_to_playlist():
         return _json_error("spotify_not_linked", 401)
 
     target_ms = _sec_to_ms(current.get("duration"))
-    best = _best_match_spotify_track(access, raw_title, raw_artist, target_ms)
+
+    try:
+        best = _best_match_spotify_track(access, raw_title, raw_artist, target_ms)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        try:
+            body = e.response.json()
+        except Exception:
+            body = (e.response.text if e.response is not None else str(e))
+        _log("Add current: search failed", status=status, body=body)
+
+        if status == 401:
+            return _json_error("spotify_token_invalid", 401, details=body)
+        if status == 403:
+            return _json_error("spotify_forbidden", 403, details=body)
+        return _json_error(f"http_{status}", status, details=body)
+
     if not best:
         _log("Add current: no Spotify match", title=raw_title, artist=raw_artist)
         return _json_error("no_spotify_match", 404)
@@ -1094,38 +1126,19 @@ def api_spotify_add_current_to_playlist():
 
     try:
         res = _add_tracks_to_playlist(access, pid, [uri])
-
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
-        body = ""
-        try:
-            body = e.response.text if e.response is not None else ""
-        except Exception:
-            pass
-        _log("Add current -> Spotify HTTPError", status=status, body=body[:500])
+        _log("Add current -> add failed", status=status)
         if status == 403:
             return _json_error("forbidden_or_not_editable", 403)
-        if status == 401:
-            # token invalide côté Spotify → forcer relink côté user
-            return _json_error("spotify_token_invalid", 401)
         return _json_error(f"http_{status}", status)
-
-    except requests.RequestException as e:
-        # timeouts / connection reset / DNS / etc.
-        _log("Add current -> Spotify RequestException", error=str(e))
-        return _json_error("spotify_network_error", 502, detail=str(e))
-
-    except Exception as e:
-        # Tout le reste → ne laisse plus jamais remonter en 500 brut
-        _log("Add current -> Unexpected error", error=str(e))
-        return _json_error("internal_error", 500, detail=str(e))
 
     title_used, artist_used = _clean_title_artist(raw_title, raw_artist)
 
     _log("Add current: added", pid=pid, chosen=best.get("name"), uri=uri)
     return jsonify(
         ok=True,
-        snapshot_id=(res or {}).get("snapshot_id"),
+        snapshot_id=res.get("snapshot_id"),
         matched={
             "title_raw": raw_title,
             "artist_raw": raw_artist,
@@ -1142,7 +1155,6 @@ def api_spotify_add_current_to_playlist():
         },
         added_uri=uri,
     )
-
 
 
 @bp.post("/spotify/add_queue_to_playlist")
