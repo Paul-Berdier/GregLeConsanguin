@@ -1066,19 +1066,38 @@ def api_spotify_add_current_to_playlist():
 
     try:
         res = _add_tracks_to_playlist(access, pid, [uri])
+
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
-        _log("Add current -> add failed", status=status)
+        body = ""
+        try:
+            body = e.response.text if e.response is not None else ""
+        except Exception:
+            pass
+        _log("Add current -> Spotify HTTPError", status=status, body=body[:500])
         if status == 403:
             return _json_error("forbidden_or_not_editable", 403)
+        if status == 401:
+            # token invalide côté Spotify → forcer relink côté user
+            return _json_error("spotify_token_invalid", 401)
         return _json_error(f"http_{status}", status)
+
+    except requests.RequestException as e:
+        # timeouts / connection reset / DNS / etc.
+        _log("Add current -> Spotify RequestException", error=str(e))
+        return _json_error("spotify_network_error", 502, detail=str(e))
+
+    except Exception as e:
+        # Tout le reste → ne laisse plus jamais remonter en 500 brut
+        _log("Add current -> Unexpected error", error=str(e))
+        return _json_error("internal_error", 500, detail=str(e))
 
     title_used, artist_used = _clean_title_artist(raw_title, raw_artist)
 
     _log("Add current: added", pid=pid, chosen=best.get("name"), uri=uri)
     return jsonify(
         ok=True,
-        snapshot_id=res.get("snapshot_id"),
+        snapshot_id=(res or {}).get("snapshot_id"),
         matched={
             "title_raw": raw_title,
             "artist_raw": raw_artist,
@@ -1095,6 +1114,7 @@ def api_spotify_add_current_to_playlist():
         },
         added_uri=uri,
     )
+
 
 
 @bp.post("/spotify/add_queue_to_playlist")
