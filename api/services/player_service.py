@@ -31,6 +31,7 @@ class PlayerService:
     def __init__(self, bot: discord.Client, emit_fn=None):
         self.bot = bot
         self.emit_fn = emit_fn
+        self.intro_playing: Dict[int, bool] = {}
 
         # ✅ Keys = int guild_id partout (pas de mix str/int)
         self.pm_map: Dict[int, PlaylistManager] = {}
@@ -264,6 +265,49 @@ class PlayerService:
         if not can_user_bump_over(self.bot, gid, int(requester_id), owner_w):
             raise PermissionError("PRIORITY_FORBIDDEN")
 
+    async def _play_intro_and_then_next(self, guild: discord.Guild, gid: int) -> None:
+        """
+        Joue un petit son d'intro, puis enchaîne sur play_next si rien ne joue déjà.
+        """
+        intro_path = os.path.join("assets", "sounds", "Ouais_cest_greg.mp3")
+        if not os.path.exists(intro_path):
+            return
+
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            return
+
+        # Si déjà en lecture (musique), ne pas interrompre
+        if vc.is_playing() or vc.is_paused():
+            return
+
+        # Évite de lancer 2 intros en parallèle
+        if self.intro_playing.get(gid):
+            return
+
+        self.intro_playing[gid] = True
+
+        def _after(_e: Exception | None):
+            self.intro_playing[gid] = False
+            # Dès que l'intro finit, si rien ne joue, on enchaîne sur la musique
+            try:
+                asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
+            except Exception:
+                pass
+
+        try:
+            # Utilise ton ffmpeg détecté
+            source = discord.FFmpegPCMAudio(
+                intro_path,
+                executable=self.ffmpeg_path,
+                before_options="-nostdin",
+                options="-vn"
+            )
+            vc.play(source, after=_after)
+        except Exception as e:
+            self.intro_playing[gid] = False
+            log.warning("Intro sound failed: %s", e)
+
     # ---------- normalisation ----------
     def _normalize_item(self, it: dict) -> dict:
         url = (it.get("url") or "").strip() or None
@@ -312,13 +356,22 @@ class PlayerService:
 
         vc = guild.voice_client
         try:
+            # Déjà connecté → move si besoin
             if vc and vc.is_connected():
                 if getattr(vc, "channel", None) and int(vc.channel.id) == int(channel.id):
                     return True
                 await vc.move_to(channel)
                 return True
 
+            # Pas connecté → connect
             await channel.connect()
+
+            # ✅ Intro uniquement à la connexion
+            try:
+                await self._play_intro_and_then_next(guild, int(guild.id))
+            except Exception:
+                pass
+
             return True
 
         except Exception as e:
