@@ -968,7 +968,8 @@
     uri: t.uri || null,
   };
 
-  await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", false);
+  await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", true);
+  await bestEffortVoiceJoin("spotify_quickplay");
 });
 
       }
@@ -1044,7 +1045,8 @@ const artist = escapeHtml(
         btnQuick.addEventListener("click", async (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          await safeAction(() => api_spotify_quickplay(uri), "Lecture Spotify ✅", false);
+          await safeAction(() => api_spotify_quickplay(uri), "Lecture Spotify ✅", true);
+          await bestEffortVoiceJoin("spotify_quickplay_search");
         });
       }
     }
@@ -1434,21 +1436,26 @@ async function api_spotify_playlist_remove_tracks(playlistId, uris) {
   async function api_spotify_add_queue_to_playlist(playlistId) {
     return api.post(api.routes.spotify_add_queue_to_playlist.path, { playlist_id: playlistId, guild_id: state.guildId ? String(state.guildId) : undefined });
   }
-async function api_spotify_quickplay(trackObjOrUri) {
-  if (!state.guildId) throw new Error("missing guild_id");
+  async function api_spotify_quickplay(trackObjOrUri) {
+    if (!state.guildId) throw new Error("missing guild_id");
 
-  const track =
-    typeof trackObjOrUri === "string"
-      ? { uri: trackObjOrUri }
-      : (trackObjOrUri && typeof trackObjOrUri === "object" ? trackObjOrUri : {});
+    const track =
+      typeof trackObjOrUri === "string"
+        ? { uri: trackObjOrUri }
+        : (trackObjOrUri && typeof trackObjOrUri === "object" ? trackObjOrUri : {});
 
-  return api.post(api.routes.spotify_quickplay.path, {
-    guild_id: String(state.guildId),
-    track,
-  });
-}
+    const res = await api.post(api.routes.spotify_quickplay.path, {
+      guild_id: String(state.guildId),
+      track,
+    });
 
+    // 🔧 Robust: certaines actions déclenchent la lecture un poil après
+    await sleep(250);
+    await refreshPlaylist();   // met à jour current + queue dans l'UI
+    renderAll();
 
+    return res;
+  }
 
   function openPopup(url, name = "greg_oauth", w = 520, h = 720) {
     const y = Math.round(window.top.outerHeight / 2 + window.top.screenY - h / 2);
