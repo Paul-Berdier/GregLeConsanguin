@@ -616,13 +616,11 @@ def spotify_callback():
         _log("Callback state invalid")
         return "Invalid state", 400
 
-    # CSRF protection: on exige que la session contienne le même state
     saved = session.pop("spotify_state", None)
     if not saved or saved != state:
         _log("Callback CSRF state mismatch", has_saved=bool(saved))
         return "State mismatch", 400
 
-    # Si un utilisateur est connecté, il doit matcher le uid du state
     u = current_user()
     if u and str(u.get("id")) != uid_from_state:
         _log("Callback user mismatch", current_uid=str(u.get("id")), state_uid=uid_from_state)
@@ -634,8 +632,37 @@ def spotify_callback():
         tok = _exchange_code_for_token(code)
         access_token = tok["access_token"]
         expires_in = int(tok.get("expires_in", 3600))
-        refresh_token = tok.get("refresh_token")  # peut être None si déjà accordé (rare au 1er échange)
-        profile = _me(access_token)
+        refresh_token = tok.get("refresh_token")
+
+        # 🔥 C'EST ICI QUE TON POTE PREND LE 403
+        try:
+            profile = _me(access_token)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 500
+            body = None
+            try:
+                body = e.response.text if e.response is not None else None
+            except Exception:
+                pass
+
+            _log("Spotify /me failed right after token exchange", status=status, body=body)
+
+            if status == 403:
+                # Très souvent: app en dev mode + user non allowlisté
+                return (
+                    "<!doctype html><meta charset='utf-8'>"
+                    "<title>Accès Spotify refusé</title>"
+                    "<style>body{font-family:system-ui;padding:24px;max-width:720px}</style>"
+                    "<h1>Accès Spotify refusé (403)</h1>"
+                    "<p>Ton compte n’est probablement pas autorisé à utiliser cette application Spotify.</p>"
+                    "<ul>"
+                    "<li>Si l’app est en <b>Development mode</b>, il faut ajouter ton compte dans l’allowlist (Users & Access) du dashboard Spotify.</li>"
+                    "<li>Sinon, il faut demander l’extension / passer l’app en mode public.</li>"
+                    "</ul>"
+                    "<p>Tu peux fermer cette fenêtre.</p>"
+                ), 403
+
+            return f"Spotify profile fetch failed ({status}): {body or e}", 400
 
         _set_user_tokens(
             bind_uid,
@@ -666,6 +693,7 @@ def spotify_callback():
             "<p>Tu peux fermer cette fenêtre.</p>"
             "<script>setTimeout(()=>window.close(), 700);</script>"
         )
+
     except Exception as e:
         _log("Token exchange failed", error=str(e))
         return f"Spotify token exchange failed: {e}", 400
