@@ -833,3 +833,52 @@ body{
   .spotify-actions{ width:100%; justify-content:flex-start; }
   .search-input{ font-size:13px; }
 }
+/* === Loading spinner on buttons === */
+.btn-loading{
+  position: relative;
+  pointer-events: none;
+  opacity: .75;
+}
+
+.btn-loading::after{
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: rgba(255,255,255,.95);
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: -2px;
+  animation: gregSpin .8s linear infinite;
+}
+
+@keyframes gregSpin { to { transform: rotate(360deg); } }
+
+/* === Loading overlay for panels === */
+.is-loading{
+  position: relative;
+  pointer-events: none;
+  opacity: .75;
+}
+
+.is-loading::before{
+  content:"";
+  position:absolute;
+  inset: 0;
+  background: rgba(0,0,0,.22);
+  border-radius: 10px;
+}
+
+.is-loading::after{
+  content:"";
+  position:absolute;
+  top: 12px;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: rgba(255,255,255,.95);
+  animation: gregSpin .8s linear infinite;
+}
