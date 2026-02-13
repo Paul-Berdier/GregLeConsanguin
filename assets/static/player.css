@@ -882,3 +882,115 @@ body{
   border-top-color: rgba(255,255,255,.95);
   animation: gregSpin .8s linear infinite;
 }
+
+/* =========================
+   Custom scrollbars (DA aligned)
+   Works: Chrome/Edge/Safari (webkit) + Firefox (scrollbar-color)
+   ========================= */
+
+/* 1) Variables dédiées */
+:root{
+  --sb-size: 12px;
+  --sb-track: rgba(2,6,23,.22);                 /* fond sombre comme tes cards internes */
+  --sb-track-border: rgba(148,163,184,.12);
+  --sb-thumb: rgba(148,163,184,.22);            /* thumb neutre */
+  --sb-thumb-hover: rgba(99,102,241,.35);       /* hover violet */
+  --sb-thumb-active: rgba(16,185,129,.35);      /* active vert */
+}
+
+/* 2) Cibles scrollables (ajoute/retire selon tes besoins) */
+.queue-list,
+.spotify-list,
+.spotify-search-results,
+#spotifyPlaylists,
+#spotifyTracks{
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--sb-thumb) var(--sb-track); /* Firefox */
+  scrollbar-gutter: stable; /* évite que le contenu "bouge" quand la scrollbar apparaît */
+}
+
+/* 3) Webkit (Chrome/Edge/Safari) */
+.queue-list::-webkit-scrollbar,
+.spotify-list::-webkit-scrollbar,
+.spotify-search-results::-webkit-scrollbar,
+#spotifyPlaylists::-webkit-scrollbar,
+#spotifyTracks::-webkit-scrollbar{
+  width: var(--sb-size);
+  height: var(--sb-size);
+}
+
+.queue-list::-webkit-scrollbar-track,
+.spotify-list::-webkit-scrollbar-track,
+.spotify-search-results::-webkit-scrollbar-track,
+#spotifyPlaylists::-webkit-scrollbar-track,
+#spotifyTracks::-webkit-scrollbar-track{
+  background: var(--sb-track);
+  border: 1px solid var(--sb-track-border);
+  border-radius: 999px;
+}
+
+.queue-list::-webkit-scrollbar-thumb,
+.spotify-list::-webkit-scrollbar-thumb,
+.spotify-search-results::-webkit-scrollbar-thumb,
+#spotifyPlaylists::-webkit-scrollbar-thumb,
+#spotifyTracks::-webkit-scrollbar-thumb{
+  background: linear-gradient(
+    180deg,
+    rgba(148,163,184,.28),
+    rgba(148,163,184,.16)
+  );
+  border: 1px solid rgba(148,163,184,.18);
+  border-radius: 999px;
+
+  /* donne l'effet "pillé dans ta DA" */
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.05),
+    0 0 0 3px rgba(99,102,241,.08);
+}
+
+.queue-list::-webkit-scrollbar-thumb:hover,
+.spotify-list::-webkit-scrollbar-thumb:hover,
+.spotify-search-results::-webkit-scrollbar-thumb:hover,
+#spotifyPlaylists::-webkit-scrollbar-thumb:hover,
+#spotifyTracks::-webkit-scrollbar-thumb:hover{
+  background: linear-gradient(
+    180deg,
+    rgba(99,102,241,.40),
+    rgba(99,102,241,.22)
+  );
+  border-color: rgba(99,102,241,.28);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.06),
+    0 0 0 3px rgba(99,102,241,.14);
+}
+
+.queue-list::-webkit-scrollbar-thumb:active,
+.spotify-list::-webkit-scrollbar-thumb:active,
+.spotify-search-results::-webkit-scrollbar-thumb:active,
+#spotifyPlaylists::-webkit-scrollbar-thumb:active,
+#spotifyTracks::-webkit-scrollbar-thumb:active{
+  background: linear-gradient(
+    180deg,
+    rgba(16,185,129,.35),
+    rgba(16,185,129,.18)
+  );
+  border-color: rgba(16,185,129,.22);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.06),
+    0 0 0 3px rgba(16,185,129,.12);
+}
+
+/* 4) Corner (quand scrollbar X+Y) */
+.queue-list::-webkit-scrollbar-corner,
+.spotify-list::-webkit-scrollbar-corner,
+.spotify-search-results::-webkit-scrollbar-corner,
+#spotifyPlaylists::-webkit-scrollbar-corner,
+#spotifyTracks::-webkit-scrollbar-corner{
+  background: transparent;
+}
+
+/* 5) Option: un peu plus fin sur petits écrans */
+@media (max-width: 700px){
+  :root{ --sb-size: 10px; }
+}
+
