@@ -357,6 +357,7 @@
         spotify_playlists: { method: "GET", path: "/spotify/playlists" },
         spotify_playlist_tracks: { method: "GET", path: "/spotify/playlist_tracks" },
         spotify_playlist_create: { method: "POST", path: "/spotify/playlist_create" },
+        spotify_track_delete: { method: "POST", path: "/spotify/playlist_remove_tracks" },
         spotify_playlist_delete: { method: "POST", path: "/spotify/playlist_delete" },
         spotify_quickplay: { method: "POST", path: "/spotify/quickplay" },
         spotify_logout: { method: "POST", path: "/spotify/logout" },
@@ -1065,70 +1066,138 @@
   }
 
   function renderSpotifyTracks() {
-    if (!el.spotifyTracks) return;
+  if (!el.spotifyTracks) return;
 
-    const rows = Array.isArray(state.spotifyTracks) ? state.spotifyTracks : [];
-    if (!rows.length) {
-      el.spotifyTracks.innerHTML = `<div class="queue-empty">Aucun titre chargé</div>`;
-      return;
-    }
+  const rows = Array.isArray(state.spotifyTracks) ? state.spotifyTracks : [];
+  const pid = String(state.spotifyCurrentPlaylistId || "").trim();
 
-    el.spotifyTracks.innerHTML = rows
-      .map((t, idx) => {
-        const name = escapeHtml(t.name || t.title || "Track");
-        const artist = escapeHtml(
-          Array.isArray(t.artists)
-            ? t.artists.map((a) => a.name).filter(Boolean).join(", ")
-            : t.artists || t.artist || ""
-        );
-        const img = t.album?.images?.[0]?.url || t.image || "";
-        const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
-        return `
-          <div class="queue-item" data-idx="${idx}">
-            <div class="queue-thumb" ${thumbStyle}></div>
-            <div class="queue-main">
-              <div class="queue-title">${name}</div>
-              <div class="queue-sub">${artist || "&nbsp;"}</div>
-            </div>
-            <div class="queue-actions">
-              <button class="queue-btn" data-action="play" title="Lire">
-                <svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
-              </button>
-            </div>
+  if (!rows.length) {
+    el.spotifyTracks.innerHTML = `<div class="queue-empty">Aucun titre chargé</div>`;
+    return;
+  }
+
+  // UI: on réutilise les classes .queue-item/.queue-actions déjà stylées côté CSS :contentReference[oaicite:0]{index=0}
+  el.spotifyTracks.innerHTML = rows
+    .map((t, idx) => {
+      const name = escapeHtml(t.name || t.title || "Track");
+      const artist = escapeHtml(
+        Array.isArray(t.artists)
+          ? t.artists.map((a) => a?.name).filter(Boolean).join(", ")
+          : t.artists || t.artist || ""
+      );
+
+      const img = t.album?.images?.[0]?.url || t.image || "";
+      const thumbStyle = img ? `style="background-image:url('${escapeHtml(img)}')"` : "";
+
+      // On conserve le plus possible d’infos pour l’action delete
+      const uri = String(t.uri || "").trim();      // spotify:track:...
+      const id = String(t.id || "").trim();        // 3n3Ppam7vgaVa1iaRUc9Lp
+      const safeUri = escapeHtml(uri);
+      const safeId = escapeHtml(id);
+
+      return `
+        <div class="queue-item" data-idx="${idx}" data-uri="${safeUri}" data-id="${safeId}">
+          <div class="queue-thumb" ${thumbStyle}></div>
+          <div class="queue-main">
+            <div class="queue-title">${name}</div>
+            <div class="queue-sub">${artist || "&nbsp;"}</div>
           </div>
-        `;
-      })
-      .join("");
+          <div class="queue-actions">
+            <button class="queue-btn" data-action="play" title="Lire">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-play"></use></svg>
+            </button>
+            <button class="queue-btn danger" data-action="delete-track" title="Retirer de la playlist">
+              <svg class="icon" viewBox="0 0 24 24"><use href="#icon-trash"></use></svg>
+            </button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
 
-    for (const row of el.spotifyTracks.querySelectorAll(".queue-item")) {
-      const btnPlay = row.querySelector("button[data-action='play']");
-      if (!btnPlay) continue;
+  for (const row of el.spotifyTracks.querySelectorAll(".queue-item")) {
+    const idx = Number(row.getAttribute("data-idx"));
+    const t = rows[idx];
 
+    // -------------------------
+    // PLAY (quickplay)
+    // -------------------------
+    const btnPlay = row.querySelector("button[data-action='play']");
+    if (btnPlay) {
       btnPlay.addEventListener("click", async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
 
-        const idx = Number(row.getAttribute("data-idx"));
-        const t = state.spotifyTracks[idx];
-        if (!t) return setStatus("Track introuvable.", "err");
+        const track = t || state.spotifyTracks[idx];
+        if (!track) return setStatus("Track introuvable.", "err");
         if (!state.guildId) return setStatus("Choisis un serveur Discord.", "err");
 
         const artistsStr =
-          Array.isArray(t.artists) ? t.artists.map((a) => a.name).filter(Boolean).join(", ") : t.artists || t.artist || "";
+          Array.isArray(track.artists)
+            ? track.artists.map((a) => a?.name).filter(Boolean).join(", ")
+            : track.artists || track.artist || "";
 
         const tr = {
-          name: t.name || t.title || "",
+          name: track.name || track.title || "",
           artists: artistsStr,
-          duration_ms: t.duration_ms ?? null,
-          image: t.image || t.album?.images?.[0]?.url || null,
-          uri: t.uri || null,
+          duration_ms: track.duration_ms ?? null,
+          image: track.image || track.album?.images?.[0]?.url || null,
+          uri: track.uri || null,
         };
 
         await safeAction(() => api_spotify_quickplay(tr), "Lecture Spotify ✅", true);
         await bestEffortVoiceJoin("spotify_quickplay");
       });
     }
+
+    // -------------------------
+    // DELETE TRACK (remove from playlist)
+    // -------------------------
+    const btnDel = row.querySelector("button[data-action='delete-track']");
+    if (btnDel) {
+      btnDel.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        if (!pid) return setStatus("Choisis une playlist Spotify (colonne Playlists).", "err");
+        if (!state.spotifyLinked) return setStatus("Spotify non lié.", "err");
+
+        const track = t || state.spotifyTracks[idx];
+        if (!track) return setStatus("Track introuvable.", "err");
+
+        // On tente uri d’abord (recommandé), sinon id -> spotify:track:{id}
+        const uri = String(track.uri || row.getAttribute("data-uri") || "").trim();
+        const id = String(track.id || row.getAttribute("data-id") || "").trim();
+
+        const normUri = uri || (id ? `spotify:track:${id}` : "");
+        if (!normUri) return setStatus("Impossible: uri/id manquant pour ce track.", "err");
+
+        const title = track.name || track.title || "ce titre";
+        const ok = window.confirm(`Retirer "${title}" de la playlist ?`);
+        if (!ok) return;
+
+        // Optimistic UI: retire localement avant refresh
+        const prev = Array.isArray(state.spotifyTracks) ? state.spotifyTracks : [];
+        const next = prev.filter((_, i) => i !== idx);
+        state.spotifyTracks = next;
+        renderSpotifyTracks();
+
+        try {
+          await safeAction(() => api_spotify_track_delete(pid, normUri), "Titre retiré ✅", false);
+        } catch (e) {
+          // rollback si erreur
+          state.spotifyTracks = prev;
+          renderSpotifyTracks();
+          throw e;
+        }
+
+        // Re-sync serveur pour être sûr (snapshot_id, ordres, etc.)
+        await api_spotify_playlist_tracks(pid).catch(() => {});
+      });
+    }
   }
+}
+
 
   function renderAll() {
     renderAuth();
@@ -1445,6 +1514,12 @@
   async function api_spotify_playlist_delete(playlistId) {
     if (!playlistId) throw new Error("missing playlist_id");
     return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
+  }
+
+  async function api_spotify_track_delete(playlistId, trackUris) {
+    if (!playlistId) throw new Error("missing playlist_id");
+    if (!trackId) throw new Error("missing track_id");
+    return api.post(api.routes.spotify_track_delete.path, { playlist_id: String(playlistId), trackUris: [String(trackId)] });
   }
 
   async function api_spotify_quickplay(trackObj) {
