@@ -201,6 +201,8 @@ def _mk_opts(
         "noplaylist": (not allow_playlist),
         "ignoreerrors": True,
         "retries": 5,
+        "socket_timeout": 20,
+        "http_chunk_size": 0,   # désactive chunking -> souvent + stable
         "fragment_retries": 5,
         "source_address": "0.0.0.0" if _FORCE_IPV4 else None,
         "http_headers": {
@@ -263,6 +265,21 @@ def _mk_opts(
         if ydl_opts[k] is None:
             del ydl_opts[k]
     return ydl_opts
+
+def _ff_reconnect_flags() -> List[str]:
+    """
+    Flags robustesse réseau pour ffmpeg (HTTPS YouTube/CDN).
+    """
+    return [
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_delay_max", "5",
+        # microsecondes
+        "-rw_timeout", "60000000",   # 60s I/O
+        "-timeout", "60000000",      # 60s connect (selon proto)
+    ]
 
 # ==== PO token auto/fallback ====
 _YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
@@ -591,19 +608,34 @@ async def stream(
             cmd = [
                 ff_exec,
                 "-nostdin",
+                "-loglevel", "warning",
+                "-hide_banner",
+
+                # ✅ robustesse réseau
+                *_ff_reconnect_flags(),
+            ]
+
+            # ✅ force IPv4 côté ffmpeg (utile sur Railway)
+            if _FORCE_IPV4:
+                cmd += ["-protocol_whitelist", "file,https,tcp,tls,crypto", "-dns_cache_clear", "1"]
+            else:
+                cmd += ["-protocol_whitelist", "file,https,tcp,tls,crypto"]
+
+            cmd += [
                 "-user_agent", ua,
                 "-headers", hdr_blob,
+
                 "-probesize", "32k",
                 "-analyzeduration", "0",
                 "-fflags", "nobuffer",
                 "-flags", "low_delay",
-                "-rw_timeout", "15000000",
-                "-protocol_whitelist", "file,https,tcp,tls,crypto",
+
                 "-i", stream_url,
                 "-t", "2",
                 "-f", "null", "-"
             ]
-            cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=18)
+
+            cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=25)
             return cp.returncode == 0
         except Exception as e:
             _dbg(f"preflight direct failed: {e}")
@@ -621,13 +653,24 @@ async def stream(
 
     before_opts = (
         "-nostdin "
+        "-hide_banner -loglevel warning "
         f"-user_agent {shlex.quote(ua)} "
         f"-headers {shlex.quote(hdr_blob)} "
         "-probesize 32k -analyzeduration 0 "
         "-fflags nobuffer -flags low_delay "
-        "-rw_timeout 15000000 "
+        # ✅ reconnect + timeouts
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 "
+        "-reconnect_on_network_error 1 -reconnect_delay_max 5 "
+        "-rw_timeout 60000000 -timeout 60000000 "
         "-protocol_whitelist file,https,tcp,tls,crypto"
     )
+
+    if _FORCE_IPV4:
+        # ffmpeg n’a pas un simple "--force-ipv4", mais en pratique
+        # le gros des soucis est côté DNS/stack IPv6 sur PaaS.
+        # Ici on garde surtout les timeouts + reconnect (le plus important).
+        pass
+
     if _HTTP_PROXY:
         before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
 

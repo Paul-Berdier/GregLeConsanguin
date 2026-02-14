@@ -448,7 +448,7 @@ class PlayerService:
             if self.repeat_all.get(gid):
                 await loop.run_in_executor(None, pm.add, item)
 
-            item = self._normalize_item(item)
+            item["attempts"] = int(item.get("attempts") or 0)
             url = item.get("url")
 
             self.current_song[gid] = {
@@ -526,6 +526,7 @@ class PlayerService:
 
         def _after(_e: Exception | None):
             try:
+                # cleanup source/proc comme tu fais
                 src = self.current_source.pop(gid, None)
                 if src and hasattr(src, "cleanup"):
                     try:
@@ -538,7 +539,41 @@ class PlayerService:
                         proc.kill()
                     except Exception:
                         pass
+
             finally:
+                # ✅ Si erreur + dernier provider youtube + pas déjà en pipe → retry pipe 1 fois
+                try:
+                    cur = self.current_song.get(gid) or {}
+                    url = cur.get("url")
+                    provider = cur.get("provider")
+                    # _e peut être None même si ça coupe, donc on retry quand même si youtube
+                    if provider == "youtube" and url and (cur.get("attempts") or 0) < 1:
+                        cur["attempts"] = int(cur.get("attempts") or 0) + 1
+                        self.current_song[gid] = cur
+                        self.now_playing[gid] = dict(cur)
+
+                        async def _retry_pipe():
+                            try:
+                                extractor = get_extractor(url)
+                                if extractor and hasattr(extractor, "stream_pipe"):
+                                    srcp, title = await extractor.stream_pipe(
+                                        url, self.ffmpeg_path,
+                                        cookies_file=self.youtube_cookies_file,
+                                        cookies_from_browser=None,
+                                        ratelimit_bps=self.yt_ratelimit,
+                                        afilter=self._afilter_for(gid),
+                                    )
+                                    await self._play_source(guild, gid, srcp)
+                                    return
+                            except Exception:
+                                pass
+                            await self.play_next(guild)
+
+                        asyncio.run_coroutine_threadsafe(_retry_pipe(), self.bot.loop)
+                        return
+                except Exception:
+                    pass
+
                 asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
 
         vc.play(srcp, after=_after)
