@@ -11,10 +11,10 @@
 # - IPv4: source_address=0.0.0.0 + --force-ipv4 pour le PIPE
 # - Recherche: ytsearch5 (flat)
 #
-# IMPORTANT (fix):
-# - Évite de bloquer l'event-loop Discord (heartbeat blocked) :
-#   * les "preflight" subprocess sont exécutés dans asyncio.to_thread()
-#   * la lecture stderr de yt-dlp en preflight ne fait plus un .read() bloquant
+# IMPORTANT (fix event-loop Discord):
+# - Les preflight subprocess tournent dans asyncio.to_thread()
+# - Aucun .read() bloquant sur stderr tant que le process tourne
+
 from __future__ import annotations
 
 import argparse
@@ -37,13 +37,19 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 __all__ = [
-    "is_valid", "search",
-    "is_playlist_like", "expand_bundle",
-    "stream", "stream_pipe", "download",
+    "is_valid",
+    "search",
+    "is_playlist_like",
+    "expand_bundle",
+    "stream",
+    "stream_pipe",
+    "download",
     "safe_cleanup",
 ]
 
-# ==== DEBUG flags ====
+# =======================
+# ====== DEBUG ==========
+# =======================
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
 _YTDBG_HTTP_PROBE = os.getenv("YTDBG_HTTP_PROBE", "0").lower() not in ("0", "false", "")
 
@@ -59,25 +65,35 @@ def _redact_headers(h: Dict[str, str]) -> Dict[str, str]:
             out[k] = f"<redacted:{len(v) if isinstance(v, str) else '?'}>"
     return out
 
-def _parse_qs(url: str) -> Dict[str, str]:
-    try:
-        q = _url.urlsplit(url).query
-        return {k: v[0] for k, v in _url.parse_qs(q).items()}
-    except Exception:
-        return {}
+# =======================
+# ====== URL utils ======
+# =======================
+_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
+
+def _extract_video_id(s: str) -> Optional[str]:
+    m = _YTID_RE.search(s or "")
+    return m.group(1) if m else None
 
 def is_valid(url: str) -> bool:
     if not isinstance(url, str):
         return False
     u = url.lower()
-    return ("youtube.com/watch" in u) or ("youtu.be/" in u) or ("youtube.com/shorts/" in u) or ("music.youtube.com/watch" in u)
+    return (
+        ("youtube.com/watch" in u)
+        or ("youtu.be/" in u)
+        or ("youtube.com/shorts/" in u)
+        or ("music.youtube.com/watch" in u)
+    )
 
-# ==== ENV / defaults ====
+# =======================
+# ====== ENV ============
+# =======================
 _YT_UA = os.getenv("YTDLP_FORCE_UA") or (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/138.0.0.0 Safari/537.36"
 )
+
 _FORCE_IPV4 = os.getenv("YTDLP_FORCE_IPV4", "1").lower() not in ("0", "false", "")
 _HTTP_PROXY = os.getenv("YTDLP_HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY")
 
@@ -89,59 +105,102 @@ else:
 
 _FORMAT_CHAIN = os.getenv(
     "YTDLP_FORMAT",
-    "bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/251/140/18/best[protocol^=m3u8]/best"
+    "bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/251/140/18/best[protocol^=m3u8]/best",
 )
-_COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
 
+_COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
 _AUTO_PIPE_ON_403 = os.getenv("YTDLP_AUTO_PIPE_ON_403", "1").lower() not in ("0", "false", "")
 
-# ==== PO tokens ====
+# =======================
+# ===== PO TOKENS =======
+# =======================
 _PO_TOKENS: List[str] = []
 
 def _collect_po_tokens_from_env() -> List[str]:
     raw = (os.getenv("YT_PO_TOKEN") or os.getenv("YTDLP_PO_TOKEN") or "").strip()
     prefixed = (os.getenv("YT_PO_TOKEN_PREFIXED") or "").strip()
     out: List[str] = []
+
+    # si token brut → on fabrique les 3 variantes
     if raw and "+" not in raw:
         out += [f"ios.gvs+{raw}", f"android.gvs+{raw}", f"web.gvs+{raw}"]
     if raw and "+" in raw:
         out.append(raw)
     if prefixed:
         out.append(prefixed)
+
     # dedup
     seen = set()
-    dedup = []
+    dedup: List[str] = []
     for t in out:
         if t and t not in seen:
             seen.add(t)
             dedup.append(t)
+
     if dedup:
         _dbg(f"ENV PO tokens → {', '.join(t.split('+',1)[0] for t in dedup)}")
     return dedup
 
-def _resolve_ffmpeg_paths(ffmpeg_hint: Optional[str]) -> Tuple[str, Optional[str]]:
-    exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    def _abs(p: str) -> str:
-        return os.path.abspath(os.path.expanduser(p))
-    if not ffmpeg_hint:
-        which = shutil.which(exe_name) or shutil.which("ffmpeg")
-        if which:
-            return which, os.path.dirname(which)
-        return "ffmpeg", None
-    p = _abs(ffmpeg_hint)
-    if os.path.isdir(p):
-        cand = os.path.join(p, exe_name)
-        if os.path.isfile(cand): return cand, p
-        cand2 = os.path.join(p, "bin", exe_name)
-        if os.path.isfile(cand2): return cand2, os.path.dirname(cand2)
-        raise FileNotFoundError(f"FFmpeg introuvable dans: {p}")
-    if os.path.isfile(p):
-        return p, os.path.dirname(p)
-    which = shutil.which(p)
-    if which:
-        return which, os.path.dirname(which)
-    raise FileNotFoundError(f"FFmpeg introuvable: {ffmpeg_hint}")
+def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None:
+    """Tente auto-fetch PO_TOKEN; sinon fallback ENV; sinon rien."""
+    global _PO_TOKENS
+    if _PO_TOKENS:
+        return
 
+    vid = _extract_video_id(query_or_url)
+
+    # si pas d'id, tente un extract_info rapide pour récupérer l'id
+    if not vid:
+        try:
+            with YoutubeDL(_mk_opts()) as ydl:
+                info = ydl.extract_info(query_or_url, download=False)
+                if info and "entries" in info and info["entries"]:
+                    info = info["entries"][0]
+                vid = (info or {}).get("id")
+        except Exception:
+            vid = None
+
+    token_from_env = _collect_po_tokens_from_env()
+
+    auto_token: Optional[str] = None
+    if vid:
+        try:
+            from extractors.token_fetcher import fetch_po_token  # type: ignore
+        except Exception:
+            fetch_po_token = None  # type: ignore
+
+        if fetch_po_token:
+            try:
+                _dbg(f"PO: attempting auto-fetch for video {vid}")
+                auto = fetch_po_token(vid, timeout_ms=15000)
+                if auto and isinstance(auto, str) and len(auto) > 10:
+                    auto_token = auto
+                    _dbg(f"PO: auto-fetch OK (len={len(auto_token)})")
+                else:
+                    _dbg("PO: auto-fetch returned none")
+            except Exception as e:
+                _dbg(f"PO: auto-fetch failed: {e}")
+        else:
+            _dbg("PO: token_fetcher unavailable (not importable)")
+
+    final: List[str] = []
+    if auto_token:
+        final += [f"ios.gvs+{auto_token}", f"android.gvs+{auto_token}", f"web.gvs+{auto_token}"]
+    elif token_from_env:
+        _dbg("PO: using env token(s)")
+        final += token_from_env
+
+    seen = set()
+    _PO_TOKENS = [t for t in final if (t and (t not in seen) and not seen.add(t))]
+
+    if _PO_TOKENS:
+        _dbg(f"PO tokens set: {', '.join(t.split('+',1)[0] for t in _PO_TOKENS)}")
+    else:
+        _dbg("PO tokens: none (will continue without)")
+
+# =======================
+# ===== Cookies =========
+# =======================
 def _ensure_cookiefile_from_b64(target_path: str) -> Optional[str]:
     b64 = os.getenv("YTDLP_COOKIES_B64")
     if not b64:
@@ -158,18 +217,22 @@ def _ensure_cookiefile_from_b64(target_path: str) -> Optional[str]:
         return None
 
 def _pick_cookiefile(cookies_file: Optional[str]) -> Optional[str]:
-    """Ordre de priorité: paramètre → env:YOUTUBE_COOKIES_PATH → local → YTDLP_COOKIES_B64."""
+    """Ordre: param → env:YOUTUBE_COOKIES_PATH → local → env:YTDLP_COOKIES_B64."""
     if cookies_file and os.path.exists(cookies_file):
         return cookies_file
+
     env_path = os.getenv("YOUTUBE_COOKIES_PATH")
     if env_path and os.path.exists(env_path):
         return env_path
+
     if os.path.exists(_COOKIE_FILE_DEFAULT):
         return _COOKIE_FILE_DEFAULT
+
     if os.getenv("YTDLP_COOKIES_B64"):
         _ensure_cookiefile_from_b64(_COOKIE_FILE_DEFAULT)
         if os.path.exists(_COOKIE_FILE_DEFAULT):
             return _COOKIE_FILE_DEFAULT
+
     return None
 
 def _parse_cookies_from_browser_spec(spec: Optional[str]):
@@ -180,7 +243,56 @@ def _parse_cookies_from_browser_spec(spec: Optional[str]):
     profile = parts[1].strip() if len(parts) > 1 else None
     return (browser,) if profile is None else (browser, profile)
 
-# ==== yt-dlp opts builder ====
+# =======================
+# ===== FFmpeg ==========
+# =======================
+def _resolve_ffmpeg_paths(ffmpeg_hint: Optional[str]) -> Tuple[str, Optional[str]]:
+    exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+    def _abs(p: str) -> str:
+        return os.path.abspath(os.path.expanduser(p))
+
+    if not ffmpeg_hint:
+        which = shutil.which(exe_name) or shutil.which("ffmpeg")
+        if which:
+            return which, os.path.dirname(which)
+        return "ffmpeg", None
+
+    p = _abs(ffmpeg_hint)
+    if os.path.isdir(p):
+        cand = os.path.join(p, exe_name)
+        if os.path.isfile(cand):
+            return cand, p
+        cand2 = os.path.join(p, "bin", exe_name)
+        if os.path.isfile(cand2):
+            return cand2, os.path.dirname(cand2)
+        raise FileNotFoundError(f"FFmpeg introuvable dans: {p}")
+
+    if os.path.isfile(p):
+        return p, os.path.dirname(p)
+
+    which = shutil.which(p)
+    if which:
+        return which, os.path.dirname(which)
+
+    raise FileNotFoundError(f"FFmpeg introuvable: {ffmpeg_hint}")
+
+def _ff_reconnect_flags() -> List[str]:
+    # Reconnect HTTP(S) (utile CDN / PaaS)
+    return [
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_delay_max", "5",
+        # microsecondes (AVIO rw_timeout)
+        "-rw_timeout", "60000000",   # 60s I/O
+        "-timeout", "60000000",      # 60s connect (selon proto)
+    ]
+
+# =======================
+# ===== yt-dlp opts =====
+# =======================
 def _mk_opts(
     *,
     ffmpeg_path: Optional[str] = None,
@@ -192,7 +304,6 @@ def _mk_opts(
     allow_playlist: bool = False,
     extract_flat: bool = False,
 ) -> Dict[str, Any]:
-
     cookies_file = _pick_cookiefile(cookies_file)
 
     ydl_opts: Dict[str, Any] = {
@@ -201,9 +312,11 @@ def _mk_opts(
         "noplaylist": (not allow_playlist),
         "ignoreerrors": True,
         "retries": 5,
-        "socket_timeout": 20,
-        "http_chunk_size": 0,   # désactive chunking -> souvent + stable
         "fragment_retries": 5,
+        "socket_timeout": 20,
+        # souvent + stable sur certains environnements/proxies
+        "http_chunk_size": 0,
+        # ipv4 workaround
         "source_address": "0.0.0.0" if _FORCE_IPV4 else None,
         "http_headers": {
             "User-Agent": _YT_UA,
@@ -227,10 +340,7 @@ def _mk_opts(
         ydl_opts["extract_flat"] = True
 
     if ffmpeg_path:
-        if os.path.isfile(ffmpeg_path):
-            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
-        else:
-            ydl_opts["ffmpeg_location"] = ffmpeg_path
+        ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path) if os.path.isfile(ffmpeg_path) else ffmpeg_path
 
     if _HTTP_PROXY:
         ydl_opts["proxy"] = _HTTP_PROXY
@@ -261,89 +371,16 @@ def _mk_opts(
             "postprocessor_args": ["-ar", "48000"],
         })
 
+    # purge None
     for k in list(ydl_opts.keys()):
         if ydl_opts[k] is None:
             del ydl_opts[k]
+
     return ydl_opts
 
-def _ff_reconnect_flags() -> List[str]:
-    """
-    Flags robustesse réseau pour ffmpeg (HTTPS YouTube/CDN).
-    """
-    return [
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_at_eof", "1",
-        "-reconnect_on_network_error", "1",
-        "-reconnect_delay_max", "5",
-        # microsecondes
-        "-rw_timeout", "60000000",   # 60s I/O
-        "-timeout", "60000000",      # 60s connect (selon proto)
-    ]
-
-# ==== PO token auto/fallback ====
-_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
-
-def _extract_video_id(s: str) -> Optional[str]:
-    m = _YTID_RE.search(s or "")
-    return m.group(1) if m else None
-
-def _ensure_po_tokens_for(query_or_url: str, ffmpeg_hint: Optional[str]) -> None:
-    """ Tente d'obtenir un PO token auto; sinon fallback ENV; sinon rien. """
-    global _PO_TOKENS
-    if _PO_TOKENS:
-        return
-
-    vid = _extract_video_id(query_or_url)
-
-    if not vid:
-        try:
-            with YoutubeDL(_mk_opts()) as ydl:
-                info = ydl.extract_info(query_or_url, download=False)
-                if info and "entries" in info and info["entries"]:
-                    info = info["entries"][0]
-                vid = (info or {}).get("id")
-        except Exception:
-            vid = None
-
-    token_from_env = _collect_po_tokens_from_env()
-
-    auto_token = None
-    if vid:
-        try:
-            from extractors.token_fetcher import fetch_po_token
-        except Exception:
-            fetch_po_token = None  # type: ignore
-
-        if fetch_po_token:
-            try:
-                _dbg(f"PO: attempting auto-fetch for video {vid}")
-                auto = fetch_po_token(vid, timeout_ms=15000)
-                if auto and isinstance(auto, str) and len(auto) > 10:
-                    auto_token = auto
-                    _dbg(f"PO: auto-fetch OK (len={len(auto_token)})")
-                else:
-                    _dbg("PO: auto-fetch returned none")
-            except Exception as e:
-                _dbg(f"PO: auto-fetch failed: {e}")
-        else:
-            _dbg("PO: token_fetcher unavailable (not importable)")
-
-    final: List[str] = []
-    if auto_token:
-        final += [f"ios.gvs+{auto_token}", f"android.gvs+{auto_token}", f"web.gvs+{auto_token}"]
-    elif token_from_env:
-        _dbg("PO: using env token(s)")
-        final += token_from_env
-
-    seen = set()
-    _PO_TOKENS = [t for t in final if (t and (t not in seen) and not seen.add(t))]
-    if _PO_TOKENS:
-        _dbg(f"PO tokens set: {', '.join(t.split('+',1)[0] for t in _PO_TOKENS)}")
-    else:
-        _dbg("PO tokens: none (will continue without)")
-
-# ==== search ====
+# =======================
+# ===== Search ==========
+# =======================
 def _normalize_search_entries(entries: List[dict]) -> List[dict]:
     out = []
     for e in entries or []:
@@ -372,8 +409,11 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
         entries = (data or {}).get("entries") or []
         return _normalize_search_entries(entries)
 
-# ==== playlist / mix ====
+# =======================
+# ===== Playlist/mix =====
+# =======================
 from urllib.parse import urlparse, parse_qs
+
 def is_playlist_or_mix_url(url: str) -> bool:
     try:
         u = urlparse(url)
@@ -384,18 +424,12 @@ def is_playlist_or_mix_url(url: str) -> bool:
             return False
         q = parse_qs(u.query)
 
-        # cas 1: vraies playlists
         if (q.get("list") or [None])[0]:
             return True
-
-        # cas 2: "radio/mix" partagé sans list= (start_radio=1 & rv=…)
         if (q.get("start_radio") or ["0"])[0] in ("1", "true"):
             return True
-
-        # cas 3: page playlist directe
         if u.path.strip("/").lower() == "playlist":
             return True
-
         return False
     except Exception:
         return False
@@ -416,6 +450,7 @@ def expand_bundle(
     parsed = urlparse(page_url)
     q = parse_qs(parsed.query)
     list_id = (q.get("list") or [None])[0]
+
     start_idx: Optional[int] = None
     try:
         raw_idx = (q.get("index") or [None])[0]
@@ -431,38 +466,37 @@ def expand_bundle(
         "extract_flat": True,
         "noplaylist": False,
         "playlistend": N,
+        "socket_timeout": 20,
+        "http_chunk_size": 0,
         "http_headers": {
             "User-Agent": _YT_UA,
             "Referer": "https://www.youtube.com/",
             "Origin": "https://www.youtube.com",
         },
-        "extractor_args": { "youtube": { "player_client": list(_CLIENTS_ORDER) } }
+        "extractor_args": {"youtube": {"player_client": list(_CLIENTS_ORDER)}},
     }
+
     if start_idx:
         ydl_opts["playliststart"] = start_idx
-        ydl_opts["playlistend"]   = start_idx + N - 1
-    else:
-        ydl_opts["playlistend"] = N
+        ydl_opts["playlistend"] = start_idx + N - 1
 
     if _PO_TOKENS:
         ydl_opts["extractor_args"]["youtube"]["po_token"] = ",".join(_PO_TOKENS)
 
-    if cookies_file:
-        ydl_opts["cookiefile"] = cookies_file
+    picked = _pick_cookiefile(cookies_file)
     if cookies_from_browser:
-        ydl_opts["cookiesfrombrowser"] = tuple(
-            cookies_from_browser.split(":", 1)
-        ) if ":" in cookies_from_browser else (cookies_from_browser,)
+        ydl_opts["cookiesfrombrowser"] = tuple(cookies_from_browser.split(":", 1)) if ":" in cookies_from_browser else (cookies_from_browser,)
+    elif picked:
+        ydl_opts["cookiefile"] = picked
 
-    def _extract(u):
+    def _extract(u: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(u, download=False)
 
     info = _extract(page_url)
 
     if (not info or not info.get("entries")) and list_id:
-        playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
-        info2 = _extract(playlist_url)
+        info2 = _extract(f"https://www.youtube.com/playlist?list={list_id}")
         if info2 and info2.get("entries"):
             info = info2
 
@@ -478,6 +512,7 @@ def expand_bundle(
     if not entries:
         return []
 
+    # si watch?v=xxx&list=... → essaye de démarrer à partir de v
     v_id = None
     try:
         v_id = (parse_qs(urlparse(page_url).query).get("v") or [None])[0]
@@ -497,13 +532,16 @@ def expand_bundle(
         vid = e.get("id") or e.get("url")
         if not vid:
             continue
+
         title = e.get("title") or ""
         artist = e.get("uploader") or e.get("channel") or e.get("uploader_id")
         thumb = e.get("thumbnail") or (e.get("thumbnails") or [{}])[-1].get("url") or None
         dur = e.get("duration")
+
         url = f"https://www.youtube.com/watch?v={vid}"
         if list_id:
             url += f"&list={list_id}"
+
         out.append({
             "title": title or url,
             "url": url,
@@ -515,17 +553,23 @@ def expand_bundle(
         })
         if len(out) >= N:
             break
+
     return out
 
+# =======================
+# ===== HTTP probe ======
+# =======================
 def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
     if not _YTDBG_HTTP_PROBE:
         return None
+
     opener = None
     try:
         handlers = []
         if _HTTP_PROXY:
             handlers.append(_ureq.ProxyHandler({"http": _HTTP_PROXY, "https": _HTTP_PROXY}))
         opener = _ureq.build_opener(*handlers) if handlers else _ureq.build_opener()
+
         r = _ureq.Request(url, method="HEAD", headers=headers)
         with opener.open(r, timeout=8) as resp:
             code = getattr(resp, "status", None) or resp.getcode()
@@ -533,6 +577,7 @@ def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
             return int(code)
     except Exception as e:
         _dbg(f"HTTP_PROBE: HEAD failed: {e}")
+
     try:
         req_h2 = dict(headers or {})
         req_h2["Range"] = "bytes=0-1"
@@ -546,7 +591,9 @@ def _http_probe(url: str, headers: Dict[str, str]) -> Optional[int]:
         _dbg(f"HTTP_PROBE: GET Range failed: {e}")
         return None
 
-# ==== helpers: process kill ====
+# =======================
+# ===== helpers procs ====
+# =======================
 def _kill_proc(p: Optional[subprocess.Popen]) -> None:
     try:
         if p and getattr(p, "poll", lambda: None)() is None:
@@ -554,147 +601,13 @@ def _kill_proc(p: Optional[subprocess.Popen]) -> None:
     except Exception:
         pass
 
-# ==== STREAM direct (URL) ====
-async def stream(
-    url_or_query: str,
-    ffmpeg_path: str,
-    *,
-    cookies_file: Optional[str] = None,
-    cookies_from_browser: Optional[str] = None,
-    ratelimit_bps: Optional[int] = None,
-    afilter: Optional[str] = None,
-) -> Tuple[discord.FFmpegPCMAudio, str]:
-
-    await asyncio.to_thread(_ensure_po_tokens_for, url_or_query, ffmpeg_path)
-
-    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
-    _dbg(f"STREAM request: {url_or_query!r}")
-
-    loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(None, functools.partial(
-        _best_info_with_fallbacks,
-        url_or_query,
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-        ffmpeg_path=ff_loc or ff_exec,
-        ratelimit_bps=ratelimit_bps,
-    ))
-    if not info:
-        raise RuntimeError("Aucun résultat YouTube (aucun client n’a fourni d’URL).")
-
-    stream_url = info.get("url")
-    title = info.get("title", "Musique inconnue")
-    if not stream_url:
-        raise RuntimeError("Flux audio indisponible (clients bloqués).")
-
-    headers = dict(info.get("http_headers") or {})
-    ua = headers.pop("User-Agent", _YT_UA)
-    headers["Referer"] = "https://www.youtube.com/"
-    headers["Origin"] = "https://www.youtube.com"
-    hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
-
-    code = _http_probe(stream_url, {"User-Agent": ua, "Referer": "https://www.youtube.com/",
-                                    "Origin": "https://www.youtube.com"}) or 200
-    if _AUTO_PIPE_ON_403 and code in (403, 410, 429):
-        _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
-        return await stream_pipe(
-            url_or_query, ffmpeg_path,
-            cookies_file=cookies_file, cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=ratelimit_bps, afilter=afilter,
-        )
-
-    def _preflight_direct_ok_sync() -> bool:
-        try:
-            cmd = [
-                ff_exec,
-                "-nostdin",
-                "-loglevel", "warning",
-                "-hide_banner",
-
-                # ✅ robustesse réseau
-                *_ff_reconnect_flags(),
-            ]
-
-            # ✅ force IPv4 côté ffmpeg (utile sur Railway)
-            if _FORCE_IPV4:
-                cmd += ["-protocol_whitelist", "file,https,tcp,tls,crypto", "-dns_cache_clear", "1"]
-            else:
-                cmd += ["-protocol_whitelist", "file,https,tcp,tls,crypto"]
-
-            cmd += [
-                "-user_agent", ua,
-                "-headers", hdr_blob,
-
-                "-probesize", "32k",
-                "-analyzeduration", "0",
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-
-                "-i", stream_url,
-                "-t", "2",
-                "-f", "null", "-"
-            ]
-
-            cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=25)
-            return cp.returncode == 0
-        except Exception as e:
-            _dbg(f"preflight direct failed: {e}")
-            return False
-
-    # IMPORTANT: éviter de bloquer l'event-loop discord → preflight en thread
-    ok_direct = await asyncio.to_thread(_preflight_direct_ok_sync)
-    if not ok_direct:
-        _dbg("STREAM: direct preflight failed → fallback to PIPE")
-        return await stream_pipe(
-            url_or_query, ffmpeg_path,
-            cookies_file=cookies_file, cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=ratelimit_bps, afilter=afilter,
-        )
-
-    before_opts = (
-        "-nostdin "
-        "-hide_banner -loglevel warning "
-        f"-user_agent {shlex.quote(ua)} "
-        f"-headers {shlex.quote(hdr_blob)} "
-        "-probesize 32k -analyzeduration 0 "
-        "-fflags nobuffer -flags low_delay "
-        # ✅ reconnect + timeouts
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 "
-        "-reconnect_on_network_error 1 -reconnect_delay_max 5 "
-        "-rw_timeout 60000000 -timeout 60000000 "
-        "-protocol_whitelist file,https,tcp,tls,crypto"
-    )
-
-    if _FORCE_IPV4:
-        # ffmpeg n’a pas un simple "--force-ipv4", mais en pratique
-        # le gros des soucis est côté DNS/stack IPv6 sur PaaS.
-        # Ici on garde surtout les timeouts + reconnect (le plus important).
-        pass
-
-    if _HTTP_PROXY:
-        before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
-
-    out_opts = "-vn"
-    if afilter:
-        out_opts += f" -af {shlex.quote(afilter)}"
-
-    _dbg(f"FFMPEG before_options={before_opts}")
-    _dbg(f"FFMPEG headers (redacted)={_redact_headers({'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com'})}")
-
-    source = discord.FFmpegPCMAudio(
-        stream_url,
-        before_options=before_opts,
-        options=out_opts,
-        executable=ff_exec,
-    )
-    setattr(source, "_ytdlp_proc", None)
-    return source, title
-
-# ==== helpers: info with fallbacks ====
 def _resolve_ytdlp_cli() -> List[str]:
     exe = shutil.which("yt-dlp")
     return [exe] if exe else [sys.executable, "-m", "yt_dlp"]
 
+# =======================
+# ===== info fallbacks ===
+# =======================
 def _probe_with_client(
     query: str,
     *,
@@ -730,6 +643,7 @@ def _best_info_with_fallbacks(
     ratelimit_bps: Optional[int],
 ) -> Optional[dict]:
     _dbg(f"_best_info_with_fallbacks(query={query})")
+
     info = _probe_with_client(
         query,
         cookies_file=cookies_file,
@@ -754,11 +668,148 @@ def _best_info_with_fallbacks(
         if info and info.get("url"):
             _dbg(f"fallback client={c} worked, title={info.get('title')!r}")
             return info
-        else:
-            _dbg(f"client={c} → no direct url")
+        _dbg(f"client={c} → no direct url")
+
     return None
 
-# ==== STREAM PIPE ====
+# =======================
+# ===== STREAM direct ====
+# =======================
+async def stream(
+    url_or_query: str,
+    ffmpeg_path: str,
+    *,
+    cookies_file: Optional[str] = None,
+    cookies_from_browser: Optional[str] = None,
+    ratelimit_bps: Optional[int] = None,
+    afilter: Optional[str] = None,
+) -> Tuple[discord.FFmpegPCMAudio, str]:
+    # important: token fetch potentially heavy → thread
+    await asyncio.to_thread(_ensure_po_tokens_for, url_or_query, ffmpeg_path)
+
+    ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
+    _dbg(f"STREAM request: {url_or_query!r}")
+
+    loop = asyncio.get_running_loop()
+    info = await loop.run_in_executor(
+        None,
+        functools.partial(
+            _best_info_with_fallbacks,
+            url_or_query,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            ffmpeg_path=ff_loc or ff_exec,
+            ratelimit_bps=ratelimit_bps,
+        ),
+    )
+    if not info:
+        raise RuntimeError("Aucun résultat YouTube (aucun client n’a fourni d’URL).")
+
+    stream_url = info.get("url")
+    title = info.get("title", "Musique inconnue")
+    if not stream_url:
+        raise RuntimeError("Flux audio indisponible (clients bloqués).")
+
+    headers = dict(info.get("http_headers") or {})
+    ua = headers.pop("User-Agent", _YT_UA)
+
+    hdr_blob = "Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n"
+
+    code = _http_probe(
+        stream_url,
+        {"User-Agent": ua, "Referer": "https://www.youtube.com/", "Origin": "https://www.youtube.com"},
+    ) or 200
+
+    if _AUTO_PIPE_ON_403 and code in (403, 410, 429):
+        _dbg(f"STREAM: probe got HTTP {code} → auto fallback to PIPE")
+        return await stream_pipe(
+            url_or_query,
+            ffmpeg_path,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            ratelimit_bps=ratelimit_bps,
+            afilter=afilter,
+        )
+
+    def _preflight_direct_ok_sync() -> bool:
+        try:
+            cmd = [
+                ff_exec,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel", "warning",
+                *_ff_reconnect_flags(),
+                "-protocol_whitelist", "file,https,tcp,tls,crypto",
+                "-user_agent", ua,
+                "-headers", hdr_blob,
+                "-probesize", "32k",
+                "-analyzeduration", "0",
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-i", stream_url,
+                "-t", "2",
+                "-f", "null", "-",
+            ]
+            cp = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=25,
+            )
+            if cp.returncode != 0:
+                _dbg(f"preflight direct rc={cp.returncode} out={cp.stdout[-400:] if cp.stdout else ''}")
+            return cp.returncode == 0
+        except Exception as e:
+            _dbg(f"preflight direct failed: {e}")
+            return False
+
+    ok_direct = await asyncio.to_thread(_preflight_direct_ok_sync)
+    if not ok_direct:
+        _dbg("STREAM: direct preflight failed → fallback to PIPE")
+        return await stream_pipe(
+            url_or_query,
+            ffmpeg_path,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            ratelimit_bps=ratelimit_bps,
+            afilter=afilter,
+        )
+
+    before_opts = (
+        "-nostdin "
+        "-hide_banner -loglevel warning "
+        f"-user_agent {shlex.quote(ua)} "
+        f"-headers {shlex.quote(hdr_blob)} "
+        "-probesize 32k -analyzeduration 0 "
+        "-fflags nobuffer -flags low_delay "
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 "
+        "-reconnect_on_network_error 1 -reconnect_delay_max 5 "
+        "-rw_timeout 60000000 -timeout 60000000 "
+        "-protocol_whitelist file,https,tcp,tls,crypto"
+    )
+    if _HTTP_PROXY:
+        before_opts += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
+
+    out_opts = "-vn"
+    if afilter:
+        out_opts += f" -af {shlex.quote(afilter)}"
+
+    _dbg(f"FFMPEG before_options={before_opts}")
+    _dbg(f"FFMPEG headers (redacted)={_redact_headers({'Referer': 'https://www.youtube.com/', 'Origin': 'https://www.youtube.com'})}")
+
+    source = discord.FFmpegPCMAudio(
+        stream_url,
+        before_options=before_opts,
+        options=out_opts,
+        executable=ff_exec,
+    )
+    setattr(source, "_ytdlp_proc", None)
+    return source, title
+
+# =======================
+# ===== STREAM PIPE =====
+# =======================
 async def stream_pipe(
     url_or_query: str,
     ffmpeg_path: str,
@@ -768,21 +819,23 @@ async def stream_pipe(
     ratelimit_bps: Optional[int] = None,
     afilter: Optional[str] = None,
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
-
     await asyncio.to_thread(_ensure_po_tokens_for, url_or_query, ffmpeg_path)
 
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
     _dbg(f"STREAM_PIPE request: {url_or_query!r}")
 
     loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(None, functools.partial(
-        _best_info_with_fallbacks,
-        url_or_query,
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-        ffmpeg_path=ff_loc or ff_exec,
-        ratelimit_bps=ratelimit_bps,
-    ))
+    info = await loop.run_in_executor(
+        None,
+        functools.partial(
+            _best_info_with_fallbacks,
+            url_or_query,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            ffmpeg_path=ff_loc or ff_exec,
+            ratelimit_bps=ratelimit_bps,
+        ),
+    )
     title = (info or {}).get("title", "Musique inconnue")
 
     ea_parts = [f"player_client={','.join(_CLIENTS_ORDER)}"]
@@ -809,6 +862,7 @@ async def stream_pipe(
             cmd += ["--force-ipv4"]
         if _HTTP_PROXY:
             cmd += ["--proxy", _HTTP_PROXY]
+
         spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER")) or None
         if spec:
             cmd += ["--cookies-from-browser", spec]
@@ -816,77 +870,101 @@ async def stream_pipe(
             picked = _pick_cookiefile(cookies_file)
             if picked:
                 cmd += ["--cookies", picked]
+
         if ratelimit_bps:
             cmd += ["--limit-rate", str(int(ratelimit_bps))]
+
         cmd += [url_or_query]
         return cmd
 
     def _preflight_and_choose_format_sync() -> str:
-        """
-        IMPORTANT:
-        - Ne jamais faire yt.stderr.read() tant que le process n'est pas terminé (peut bloquer)
-        - On kill + wait puis on lit ce qui reste.
-        """
         primary_fmt = _FORMAT_CHAIN
+
         for attempt, fmt in enumerate([primary_fmt, "18"]):
             cmd = _build_cmd(fmt)
             _dbg(f"yt-dlp PRE-FLIGHT (attempt={attempt}, fmt={fmt}): {' '.join(shlex.quote(c) for c in cmd)}")
 
-            yt = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=False, bufsize=0, close_fds=True,
-                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-            )
-            ff = subprocess.Popen(
-                [ff_exec, "-nostdin", "-probesize", "32k", "-analyzeduration", "0",
-                 "-fflags", "nobuffer", "-flags", "low_delay",
-                 "-i", "pipe:0", "-t", "2", "-f", "null", "-"],
-                stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-            )
+            yt: Optional[subprocess.Popen] = None
+            ff: Optional[subprocess.Popen] = None
 
             try:
-                _ = ff.communicate(timeout=6)[0] or ""
-            except subprocess.TimeoutExpired:
+                yt = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=False,
+                    bufsize=0,
+                    close_fds=True,
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                )
+                if not yt.stdout:
+                    _kill_proc(yt)
+                    continue
+
+                ff = subprocess.Popen(
+                    [
+                        ff_exec,
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel", "warning",
+                        "-probesize", "32k",
+                        "-analyzeduration", "0",
+                        "-fflags", "nobuffer",
+                        "-flags", "low_delay",
+                        "-i", "pipe:0",
+                        "-t", "2",
+                        "-f", "null", "-",
+                    ],
+                    stdin=yt.stdout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
+                try:
+                    _ = ff.communicate(timeout=8)[0] or ""
+                except subprocess.TimeoutExpired:
+                    _dbg("preflight: ffmpeg timeout → fallback fmt")
+                    return fmt if attempt == 0 else "18"
+
+                rc = ff.returncode
+
+                # stop yt proprement avant de lire stderr
+                _kill_proc(yt)
+                try:
+                    yt.wait(timeout=1)
+                except Exception:
+                    pass
+
+                stderr_join = ""
+                try:
+                    if yt.stderr:
+                        stderr_bytes = yt.stderr.read() or b""
+                        stderr_join = stderr_bytes.decode("utf-8", errors="replace")
+                except Exception:
+                    stderr_join = ""
+
+                if rc == 0 and "Requested format is not available" not in stderr_join:
+                    return fmt
+
+                _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
+
+            finally:
+                try:
+                    if yt and yt.stdout:
+                        yt.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    if yt and yt.stderr:
+                        yt.stderr.close()
+                except Exception:
+                    pass
                 _kill_proc(ff)
                 _kill_proc(yt)
-                return fmt if attempt == 0 else "18"
-
-            rc = ff.returncode
-
-            # kill yt avant de lire stderr (sinon .read() peut bloquer)
-            _kill_proc(yt)
-            try:
-                yt.wait(timeout=1)
-            except Exception:
-                pass
-
-            stderr_join = ""
-            try:
-                if yt.stderr:
-                    stderr_bytes = yt.stderr.read() or b""
-                    stderr_join = stderr_bytes.decode("utf-8", errors="replace")
-            except Exception:
-                stderr_join = ""
-
-            # cleanup pipes
-            try:
-                if yt.stdout:
-                    yt.stdout.close()
-            except Exception:
-                pass
-            try:
-                if yt.stderr:
-                    yt.stderr.close()
-            except Exception:
-                pass
-
-            if rc == 0 and "Requested format is not available" not in stderr_join:
-                return fmt
-            _dbg(f"preflight rc={rc}, yt-stderr-match={'Requested format is not available' in stderr_join}")
 
         return "18"
 
-    # IMPORTANT: éviter de bloquer l'event-loop discord → preflight en thread
     chosen_fmt = await asyncio.to_thread(_preflight_and_choose_format_sync)
     _dbg(f"PIPE chosen format: {chosen_fmt}")
 
@@ -899,9 +977,14 @@ async def stream_pipe(
         close_fds=True,
         creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
+    if not yt.stdout:
+        _kill_proc(yt)
+        raise RuntimeError("yt-dlp did not provide stdout pipe")
 
-    def _drain_stderr():
+    def _drain_stderr() -> None:
         try:
+            if not yt.stderr:
+                return
             while True:
                 chunk = yt.stderr.readline()
                 if not chunk:
@@ -917,7 +1000,7 @@ async def stream_pipe(
 
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
-    before_opts = "-nostdin -re -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
+    before_opts = "-nostdin -re -hide_banner -loglevel warning -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
     out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
@@ -933,7 +1016,9 @@ async def stream_pipe(
     setattr(src, "_title", title)
     return src, title
 
-# ==== DOWNLOAD ====
+# =======================
+# ===== DOWNLOAD =========
+# =======================
 def download(
     url: str,
     ffmpeg_path: str,
@@ -974,6 +1059,7 @@ def download(
             duration = (info or {}).get("duration")
             _dbg(f"DOWNLOAD ok: path={filepath}, title={title!r}, dur={duration}")
             return filepath, title, duration
+
     except DownloadError as e:
         _dbg(f"DOWNLOAD failed: {e}")
         if "Requested format is not available" in str(e):
@@ -987,20 +1073,25 @@ def download(
             opts2["format"] = "18"
             opts2["paths"] = {"home": out_dir}
             opts2["outtmpl"] = "%(title).200B - %(id)s.%(ext)s"
+
             with YoutubeDL(opts2) as ydl2:
                 _dbg("DOWNLOAD fallback: itag=18")
                 info = ydl2.extract_info(url, download=True)
                 if info and "entries" in info and info["entries"]:
                     info = info["entries"][0]
+
                 req = (info or {}).get("requested_downloads") or []
                 filepath = req[0].get("filepath") if req else (os.path.splitext(ydl2.prepare_filename(info))[0] + ".mp3")
                 title = (info or {}).get("title", "Musique inconnue")
                 duration = (info or {}).get("duration")
                 _dbg(f"DOWNLOAD fallback ok: path={filepath}, title={title!r}, dur={duration}")
                 return filepath, title, duration
+
         raise RuntimeError(f"Échec download YouTube: {e}") from e
 
-# ==== Nettoyage sûr des process ====
+# =======================
+# ===== Cleanup ==========
+# =======================
 def safe_cleanup(src: Any) -> None:
     try:
         proc = getattr(src, "_ytdlp_proc", None)
@@ -1029,18 +1120,21 @@ if __name__ == "__main__":
     async def _amain():
         if args.test == "direct":
             src, title = await stream(
-                args.url, args.ffmpeg,
+                args.url,
+                args.ffmpeg,
                 cookies_file=args.cookies_file,
                 cookies_from_browser=args.cookies_from_browser,
                 ratelimit_bps=args.ratelimit_bps,
             )
         else:
             src, title = await stream_pipe(
-                args.url, args.ffmpeg,
+                args.url,
+                args.ffmpeg,
                 cookies_file=args.cookies_file,
                 cookies_from_browser=args.cookies_from_browser,
                 ratelimit_bps=args.ratelimit_bps,
             )
+
         print(f"[TEST] OK: source créée — title={title!r}")
         safe_cleanup(src)
         print("[TEST] Cleanup OK")
