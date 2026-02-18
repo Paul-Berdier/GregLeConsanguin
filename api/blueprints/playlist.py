@@ -8,6 +8,9 @@ from typing import Any, Optional
 from flask import Blueprint, jsonify, request, current_app
 from api.ws.events import broadcast_playlist_update
 
+# ✅ NEW: bundle support (playlist/mix)
+from extractors import is_bundle_url, expand_bundle
+
 bp = Blueprint("playlist", __name__)
 
 
@@ -109,7 +112,7 @@ def add_to_queue():
     was_empty = len(before.get("queue") or []) == 0 and not bool(before.get("current"))
 
     # ---------------------------
-    # ✅ NOUVEAU: récupère les métadonnées envoyées par le front
+    # ✅ Helpers: int conversion
     # ---------------------------
     def _to_int(v):
         try:
@@ -128,11 +131,13 @@ def add_to_queue():
             return None
         return None
 
+    # ---------------------------
+    # ✅ Metadata from front
+    # ---------------------------
     url_in = _to_str(data.get("url") or data.get("webpage_url") or "").strip()
     title_in = _to_str(data.get("title") or "").strip()
     artist_in = _to_str(data.get("artist") or "").strip()
     provider_in = _to_str(data.get("provider") or data.get("source") or "").strip() or None
-
     thumb_in = _to_str(data.get("thumb") or data.get("thumbnail") or "").strip() or None
 
     duration_in = data.get("duration")
@@ -142,57 +147,155 @@ def add_to_queue():
     if dur is None:
         dur_ms = _to_int(duration_ms_in)
         if dur_ms is not None:
-            # duration_ms -> secondes
             dur = int(dur_ms / 1000)
 
     # ---------------------------
-    # ✅ Build item correctement
-    # - si URL: on garde les métadonnées du front
-    # - sinon: autocomplete back, mais on complète avec ce que le front a envoyé
+    # ✅ Build item(s)
+    # - URL normal: 1 item
+    # - URL playlist/mix: expand_bundle -> up to 10 items
+    # - Text search: autocomplete -> 1 item
     # ---------------------------
-    item = None
+    bundle_info = {
+        "is_bundle": False,
+        "added": 1,
+        "reason": None,
+    }
+
+    items_to_add = []
+
+    # ✅ CASE 1: raw is URL
     if _is_url(raw):
-        item = {
-            "url": raw,
-            "title": title_in or raw,
-            "artist": artist_in or None,
-            "duration": dur,
-            "thumb": thumb_in,
-            "provider": provider_in,
-        }
+        # ✅ playlist / mix support
+        if is_bundle_url(raw):
+            try:
+                bundle_entries = expand_bundle(
+                    raw,
+                    limit=10,
+                    cookies_file=getattr(player, "youtube_cookies_file", None),
+                    cookies_from_browser=None,
+                ) or []
+            except Exception as e:
+                bundle_entries = []
+                bundle_info["reason"] = f"EXPAND_FAILED:{e}"
+
+            if bundle_entries:
+                bundle_info["is_bundle"] = True
+                bundle_info["added"] = min(10, len(bundle_entries))
+
+                head = bundle_entries[0] or {}
+                # Merge head with front metadata if provided
+                head_item = {
+                    "url": head.get("url") or raw,
+                    "title": head.get("title") or title_in or raw,
+                    "artist": head.get("artist") or artist_in or None,
+                    "duration": head.get("duration") if head.get("duration") is not None else dur,
+                    "thumb": head.get("thumb") or thumb_in,
+                    "provider": head.get("provider") or provider_in or "youtube",
+                }
+                items_to_add.append(head_item)
+
+                # Tail (up to 9 more)
+                for e in bundle_entries[1:10]:
+                    if not e:
+                        continue
+                    items_to_add.append({
+                        "url": e.get("url") or raw,
+                        "title": e.get("title") or (e.get("url") or raw),
+                        "artist": e.get("artist") or None,
+                        "duration": e.get("duration"),
+                        "thumb": e.get("thumb"),
+                        "provider": e.get("provider") or "youtube",
+                    })
+            else:
+                # fallback to single URL item if expansion produced nothing
+                items_to_add.append({
+                    "url": raw,
+                    "title": title_in or raw,
+                    "artist": artist_in or None,
+                    "duration": dur,
+                    "thumb": thumb_in,
+                    "provider": provider_in,
+                })
+        else:
+            # simple URL
+            items_to_add.append({
+                "url": raw,
+                "title": title_in or raw,
+                "artist": artist_in or None,
+                "duration": dur,
+                "thumb": thumb_in,
+                "provider": provider_in,
+            })
+
+    # ✅ CASE 2: raw is text -> autocomplete
     else:
         try:
             from api.services.search import autocomplete
             res = autocomplete(raw, limit=1)
             if res:
                 top = res[0] or {}
-                item = {
+                items_to_add.append({
                     "url": (top.get("url") or url_in or raw),
                     "title": (top.get("title") or title_in or raw),
                     "artist": (top.get("artist") or top.get("uploader") or artist_in or None),
                     "duration": (top.get("duration") if top.get("duration") is not None else dur),
                     "thumb": (top.get("thumbnail") or top.get("thumb") or thumb_in),
                     "provider": (top.get("provider") or provider_in),
-                }
+                })
             else:
-                item = {"url": url_in or raw, "title": title_in or raw, "artist": artist_in or None, "duration": dur, "thumb": thumb_in, "provider": provider_in}
+                items_to_add.append({
+                    "url": url_in or raw,
+                    "title": title_in or raw,
+                    "artist": artist_in or None,
+                    "duration": dur,
+                    "thumb": thumb_in,
+                    "provider": provider_in,
+                })
         except Exception:
-            item = {"url": url_in or raw, "title": title_in or raw, "artist": artist_in or None, "duration": dur, "thumb": thumb_in, "provider": provider_in}
+            items_to_add.append({
+                "url": url_in or raw,
+                "title": title_in or raw,
+                "artist": artist_in or None,
+                "duration": dur,
+                "thumb": thumb_in,
+                "provider": provider_in,
+            })
 
-    async def _do():
-        return await player.enqueue(int(gid), int(uid), item or {"url": raw})
+    # Safety
+    if not items_to_add:
+        return jsonify({"ok": False, "error": "NO_ITEM_BUILT"}), 500
 
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
+    # ---------------------------
+    # ✅ Enqueue ALL items in a single coroutine (atomic-ish)
+    # ---------------------------
+    async def _do_many():
+        out = {"ok": True, "results": [], "count": 0}
+        for it in items_to_add:
+            r = await player.enqueue(int(gid), int(uid), it or {"url": raw})
+            out["results"].append(r)
+            out["count"] += 1
+            # If one fails, stop (keeps behavior deterministic)
+            if not (r or {}).get("ok"):
+                out["ok"] = False
+                out["error"] = (r or {}).get("error") or "ENQUEUE_FAILED"
+                break
+        return out
+
+    fut = asyncio.run_coroutine_threadsafe(_do_many(), player.bot.loop)
     try:
-        res = fut.result(timeout=12) or {}
+        res = fut.result(timeout=25) or {}
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+    # ---------------------------
+    # ✅ Autoplay if queue was empty BEFORE
+    # (after we added items)
+    # ---------------------------
     autoplay = {"attempted": False, "ok": False, "reason": None}
 
-    if was_empty:
+    if was_empty and res.get("ok"):
         async def _auto_play():
             g = player.bot.get_guild(int(gid))
             if not g:
@@ -219,7 +322,13 @@ def add_to_queue():
 
     _broadcast(gid)
     http_code = 200 if res.get("ok") else 409
-    return jsonify({"ok": bool(res.get("ok")), "result": res, "autoplay": autoplay}), http_code
+    return jsonify({
+        "ok": bool(res.get("ok")),
+        "result": res,
+        "autoplay": autoplay,
+        "bundle": bundle_info,
+    }), http_code
+
 
 @bp.post("/queue/skip")
 def skip_track():
@@ -298,7 +407,6 @@ def remove_at():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    # 🔒 Ne casse pas la réponse si le broadcast plante
     try:
         _broadcast(gid)
     except Exception as e:
@@ -335,8 +443,6 @@ def move_item():
     return jsonify({"ok": bool(ok)}), 200 if ok else 409
 
 
-# ⚠️ Endpoint "mutateur brut" conservé pour compat.
-# Ne déclenche pas play_next, ne rejoint pas le vocal.
 @bp.post("/queue/next")
 def pop_next():
     gid = _gid_from(request)
