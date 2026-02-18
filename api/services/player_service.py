@@ -539,16 +539,44 @@ class PlayerService:
                         proc.kill()
                     except Exception:
                         pass
-
             finally:
-                # ✅ Si erreur + dernier provider youtube + pas déjà en pipe → retry pipe 1 fois
+                # ====== Detect if playback ended normally or was interrupted ======
                 try:
                     cur = self.current_song.get(gid) or {}
-                    url = cur.get("url")
                     provider = cur.get("provider")
-                    # _e peut être None même si ça coupe, donc on retry quand même si youtube
-                    if provider == "youtube" and url and (cur.get("attempts") or 0) < 1:
-                        cur["attempts"] = int(cur.get("attempts") or 0) + 1
+                    url = cur.get("url")
+
+                    # duration connue ?
+                    meta = self.current_meta.get(gid, {}) or {}
+                    dur = meta.get("duration")
+                    if dur is None:
+                        dur = cur.get("duration")
+                    dur = int(dur) if isinstance(dur, (int, float)) else None
+
+                    # combien de temps a été joué ?
+                    start = self.play_start.get(gid)
+                    paused_total = float(self.paused_total.get(gid, 0.0) or 0.0)
+                    played = None
+                    if start:
+                        played = max(0.0, (time.monotonic() - start - paused_total))
+
+                    # Interruption si:
+                    # - erreur explicite _e
+                    # - OU durée connue et played est significativement plus court que dur
+                    interrupted = False
+                    if _e is not None:
+                        interrupted = True
+                    elif dur is not None and played is not None:
+                        # marge: 2.5s
+                        if played < max(0, dur - 2.5):
+                            interrupted = True
+
+                    # ====== Optional: one retry via PIPE only when interrupted ======
+                    # (si tu as ajouté attempts)
+                    attempts = int(cur.get("attempts") or 0)
+
+                    if interrupted and provider == "youtube" and url and attempts < 1:
+                        cur["attempts"] = attempts + 1
                         self.current_song[gid] = cur
                         self.now_playing[gid] = dict(cur)
 
@@ -563,17 +591,21 @@ class PlayerService:
                                         ratelimit_bps=self.yt_ratelimit,
                                         afilter=self._afilter_for(gid),
                                     )
+                                    # rejoue la même track (pas play_next)
                                     await self._play_source(guild, gid, srcp)
                                     return
                             except Exception:
                                 pass
+                            # si retry pipe échoue -> next
                             await self.play_next(guild)
 
                         asyncio.run_coroutine_threadsafe(_retry_pipe(), self.bot.loop)
                         return
+
                 except Exception:
                     pass
 
+                # fin normale -> next
                 asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
 
         vc.play(srcp, after=_after)
