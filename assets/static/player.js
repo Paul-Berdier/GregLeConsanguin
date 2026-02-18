@@ -1,8 +1,9 @@
-/* Greg le Consanguin — Web Player (pro, streamlined) — v2026-02-13
-   - Refactor: architecture propre + actions robustes + messages status niveau
-   - FIX: Spotify remove track payload (track_uris) + variable bug
-   - PERF: progress ticker via requestAnimationFrame + render ciblé
-   - UX: verrouillage boutons pendant action, statuts riches, raccourcis clavier, confirmations intelligentes
+/* Greg le Consanguin — Web Player (pro, streamlined) — v2026-02-18
+   - Refactor: architecture propre + actions robustes + statuts riches + locks anti-spam
+   - FIX: Spotify remove track payload = {playlist_id, track_uris:[...]} (✅)
+   - FIX: API_BASE safe fallback + Socket.IO origin handling + polling fallback stable
+   - PERF: progress ticker via requestAnimationFrame + render diff + resync serveur
+   - UX: boutons verrouillés pendant action, confirmations, raccourcis clavier
 
    Backend routes used:
    - Discord/Auth:
@@ -47,7 +48,6 @@
   // =============================
   // Config
   // =============================
-  const STATIC_BASE = window.GREG_STATIC_BASE || "/static";
   const DEFAULT_RAILWAY = "https://gregleconsanguin.up.railway.app/api/v1";
 
   const LS = {
@@ -67,9 +67,15 @@
     const b = String(RAW_API_BASE).trim();
     if (!b) return DEFAULT_RAILWAY;
 
+    // absolute
     if (/^https?:\/\//i.test(b)) return b.replace(/\/+$/, "");
+
+    // if hosted on railway and you kept /api/v1, use same-origin relative
     if (String(location.hostname).includes("railway.app")) return b.replace(/\/+$/, "");
+
+    // local static build opened elsewhere → default to railway
     if (b === "/api/v1") return DEFAULT_RAILWAY;
+
     return b.replace(/\/+$/, "");
   })();
 
@@ -82,10 +88,10 @@
     }
   })();
 
-  const RESYNC_MS = 5000;               // converge server truth while playing
-  const POLL_FALLBACK_MS = 2000;        // when socket disconnected
-  const SPOTIFY_POLL_MS = 5000;         // spotify status refresh
-  const VOICE_JOIN_COOLDOWN_MS = 8000;  // throttle join
+  const RESYNC_MS = 5000;                     // converge server truth while playing
+  const POLL_FALLBACK_MS = 2000;              // when socket disconnected
+  const SPOTIFY_POLL_MS = 5000;               // spotify status refresh
+  const VOICE_JOIN_COOLDOWN_MS = 8000;        // throttle join
   const PROGRESS_SNAPSHOT_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2h
 
   function dlog(...args) {
@@ -189,22 +195,32 @@
   function toSeconds(v) {
     if (v == null) return null;
     if (typeof v === "number" && isFinite(v)) {
-      if (v > 10000) return Math.floor(v / 1000);
+      if (v > 10000) return Math.floor(v / 1000); // looks like ms
       return Math.floor(v);
     }
     const s = String(v).trim();
     if (!s) return null;
+
     if (/^\d+(\.\d+)?$/.test(s)) {
       const n = Number(s);
       if (!isFinite(n)) return null;
       if (n > 10000) return Math.floor(n / 1000);
       return Math.floor(n);
     }
+
     const parts = s.split(":").map((x) => Number(x));
     if (parts.some((x) => !isFinite(x))) return null;
     if (parts.length === 2) return parts[0] * 60 + parts[1];
     if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     return null;
+  }
+
+  function debounce(fn, ms) {
+    let t = null;
+    return (...args) => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
   }
 
   // =============================
@@ -218,7 +234,6 @@
     function set(text, kind = "info", { sticky = false } = {}) {
       if (!el.statusText) return;
 
-      // prevent noisy duplicates
       const key = `${kind}::${text}`;
       if (key === `${lastKind}::${lastText}`) return;
       lastText = text;
@@ -242,12 +257,10 @@
         el.statusText.classList.add("status-text--warn");
       }
 
-      // auto clear (except sticky)
       if (toastTimer) clearTimeout(toastTimer);
       if (!sticky) {
         toastTimer = setTimeout(() => {
-          // keep lastText? or clear lightly
-          // optional: el.statusText.textContent = "";
+          // keep last status (no auto wipe) — change if you want
         }, 4500);
       }
     }
@@ -268,18 +281,11 @@
     if (el.playPauseUse) el.playPauseUse.setAttribute("href", href);
   }
 
-  function setBusy(node, busy) {
-    if (!node) return;
-    node.disabled = !!busy;
-    node.classList.toggle("is-busy", !!busy);
-  }
-
   function setBtnLoading(btn, loading, labelWhenLoading) {
     if (!btn) return;
     btn.classList.toggle("btn-loading", !!loading);
     btn.disabled = !!loading;
 
-    // optionnel: change le texte pendant chargement
     if (labelWhenLoading) {
       if (loading) {
         btn.dataset._oldLabel = btn.textContent;
@@ -291,7 +297,6 @@
     }
   }
 
-  // mini wrapper pratique
   async function withBtnLoading(btn, label, fn) {
     setBtnLoading(btn, true, label);
     try {
@@ -310,7 +315,6 @@
     }
   }
 
-  // Global action lock to avoid double-click spam
   const ActionLock = (() => {
     const locks = new Map();
     function isLocked(key) { return locks.get(key) === true; }
@@ -323,7 +327,6 @@
     if (el.searchForm) el.searchForm.classList.toggle("is-loading", !!loading);
     if (el.searchInput) el.searchInput.disabled = !!loading;
 
-    // si tu as un bouton submit dans le form
     const btn = el.searchForm?.querySelector("button[type='submit']");
     if (btn) setBtnLoading(btn, !!loading, "Ajout…");
   }
@@ -336,6 +339,60 @@
       setSearchLoading(false);
     }
   }
+
+  // =============================
+  // State
+  // =============================
+  const state = {
+    me: null,
+    guilds: [],
+    guildId: "",
+
+    socket: null,
+    socketReady: false,
+    socketId: null,
+
+    playlist: {
+      current: null,
+      queue: [],
+      paused: true,
+      repeat: false,
+      position: 0,
+      duration: 0,
+    },
+
+    tick: {
+      running: false,
+      basePos: 0,
+      baseAt: 0, // performance.now()
+      duration: 0,
+      rafId: null,
+    },
+
+    suggestions: [],
+    sugOpen: false,
+    sugIndex: -1,
+    sugAbort: null,
+
+    spotifyLinked: false,
+    spotifyProfile: null,
+    spotifyPlaylists: [],
+    spotifyCurrentPlaylistId: "",
+    spotifyTracks: [],
+
+    voiceJoinLastAt: 0,
+    resync: { lastAt: 0 },
+
+    renderCache: {
+      nowKey: "",
+      queueKey: "",
+      spotifyPlaylistsKey: "",
+      spotifyTracksKey: "",
+      authKey: "",
+      guildKey: "",
+      spotifyKey: "",
+    },
+  };
 
   // =============================
   // Progress persistence
@@ -396,7 +453,6 @@
 
       if (!sameTrack) return false;
 
-      // if server already gives reliable position, don’t override
       const serverPos = Number(state.playlist.position || 0);
       if (serverPos > 1) return false;
 
@@ -541,61 +597,6 @@
 
   const api = new GregAPI(API_BASE);
   window.GregAPI = api;
-
-  // =============================
-  // State
-  // =============================
-  const state = {
-    me: null,
-    guilds: [],
-    guildId: "",
-
-    socket: null,
-    socketReady: false,
-    socketId: null,
-
-    playlist: {
-      current: null,
-      queue: [],
-      paused: true,
-      repeat: false,
-      position: 0,
-      duration: 0,
-    },
-
-    tick: {
-      running: false,
-      basePos: 0,
-      baseAt: 0,     // performance.now()
-      duration: 0,
-      rafId: null,
-    },
-
-    suggestions: [],
-    sugOpen: false,
-    sugIndex: -1,
-    sugAbort: null,
-
-    spotifyLinked: false,
-    spotifyProfile: null,
-    spotifyPlaylists: [],
-    spotifyCurrentPlaylistId: "",
-    spotifyTracks: [],
-
-    voiceJoinLastAt: 0,
-    resync: { lastAt: 0 },
-
-    // Render diff cache
-    renderCache: {
-      nowKey: "",
-      queueKey: "",
-      spotifyPlaylistsKey: "",
-      spotifyTracksKey: "",
-      authKey: "",
-      guildKey: "",
-      spotifyKey: "",
-    },
-  };
 
   // =============================
   // Normalization
@@ -837,7 +838,6 @@
     if (el.trackArtist) el.trackArtist.textContent = c.artist || "—";
     if (el.artwork) el.artwork.style.backgroundImage = c.thumb ? `url("${c.thumb}")` : "";
 
-    // initialize progress immediately
     const pos = state.playlist.position || 0;
     if (el.progressCurrent) el.progressCurrent.textContent = formatTime(pos);
     if (el.progressTotal) el.progressTotal.textContent = formatTime(dur);
@@ -1052,9 +1052,9 @@
 
           await withPanelLoading(el.spotifyTracksWrap, async () => {
             await safeAction(
-              `spotify_tracks_${pid}`,
-              () => api_spotify_playlist_tracks(pid),
-              "Titres Spotify chargés ✅",
+              `spotify_delete_playlist_${pid}`,
+              () => api_spotify_playlist_delete(pid),
+              "Playlist supprimée ✅",
               false
             );
           });
@@ -1159,6 +1159,7 @@
           ev.preventDefault();
           ev.stopPropagation();
 
+          const pid = String(state.spotifyCurrentPlaylistId || "").trim();
           if (!pid) return Status.set("Choisis une playlist Spotify (colonne Playlists).", "warn");
           if (!state.spotifyLinked) return Status.set("Spotify non lié.", "warn");
 
@@ -1180,20 +1181,18 @@
           try {
             await withPanelLoading(el.spotifyTracksWrap, async () => {
               await safeAction(
-                `spotify_delete_track_${idx}`,
+                `spotify_delete_track_${pid}_${idx}`,
                 () => api_spotify_track_delete(pid, [normUri]),
                 "Titre retiré ✅",
                 false
               );
             });
           } catch (e) {
-            // rollback
             state.spotifyTracks = prev;
             renderSpotifyTracks();
             throw e;
           }
 
-          // server resync
           await api_spotify_playlist_tracks(pid).catch(() => {});
         });
       }
@@ -1212,61 +1211,173 @@
   }
 
   // =============================
-  // Progress ticker (requestAnimationFrame)
+  // API actions
   // =============================
-  function computeLivePosition() {
-    const c = state.playlist.current;
-    if (!c) return { pos: 0, dur: 0, pct: 0 };
-
-    const dur = state.playlist.duration || c.duration || 0;
-    const basePos = state.tick.basePos || 0;
-    const paused = !!state.playlist.paused;
-
-    const now = performance.now();
-    const elapsed = paused ? 0 : (now - (state.tick.baseAt || now)) / 1000;
-    const pos = paused ? basePos : basePos + elapsed;
-    const clamped = dur > 0 ? clamp(pos, 0, dur) : Math.max(0, pos);
-    const pct = dur > 0 ? (clamped / dur) * 100 : 0;
-
-    return { pos: clamped, dur, pct: clamp(pct, 0, 100) };
+  function basePayload(extra = {}) {
+    const out = { ...extra };
+    if (state.guildId) out.guild_id = String(state.guildId);
+    if (state.me?.id) out.user_id = String(state.me.id);
+    return out;
   }
 
-  function tickProgress() {
-    const c = state.playlist.current;
-    if (c) {
-      const { pos, dur, pct } = computeLivePosition();
+  async function api_playlist_state() {
+    return api.get(api.routes.playlist_state.path, state.guildId ? { guild_id: state.guildId } : undefined);
+  }
 
-      if (el.progressCurrent) el.progressCurrent.textContent = formatTime(pos);
-      if (el.progressTotal) el.progressTotal.textContent = dur > 0 ? formatTime(dur) : "--:--";
-      if (el.progressFill) el.progressFill.style.width = `${pct}%`;
+  async function api_queue_add(itemOrQuery) {
+    let payload = typeof itemOrQuery === "string"
+      ? basePayload({ query: itemOrQuery })
+      : basePayload(itemOrQuery || {});
 
-      // Persist snapshot sometimes (not every frame)
-      if (state.guildId) {
-        // cheap throttle using modulo time
-        if ((Date.now() % 1000) < 40) saveProgressSnapshot();
+    const url = String(payload.url || payload.webpage_url || "").trim();
+    const title = String(payload.title || "").trim();
+
+    if (!payload.query) payload.query = url || title || "";
+    if (payload.url && !payload.webpage_url) payload.webpage_url = payload.url;
+    if (payload.thumb && !payload.thumbnail) payload.thumbnail = payload.thumb;
+    if (payload.thumbnail && !payload.thumb) payload.thumb = payload.thumbnail;
+    if (payload.duration == null) delete payload.duration;
+
+    const queryStr = String(payload.query || "").trim();
+    const urlStr = String(payload.url || payload.webpage_url || "").trim();
+    if (!queryStr && !urlStr) throw new Error("Ajout impossible: query/url vide.");
+
+    dlog("queue_add payload", payload);
+
+    try {
+      return await api.post(api.routes.queue_add.path, payload);
+    } catch (e) {
+      const st = Number(e?.status || 0);
+      if (![400, 415, 422, 500].includes(st)) throw e;
+
+      // Fallback compat: send as querystring
+      const qs = {};
+      for (const [k, v] of Object.entries(payload)) {
+        if (v === undefined || v === null || v === "") continue;
+        qs[k] = String(v);
       }
-
-      // periodic resync while playing
-      const now = Date.now();
-      const shouldResync = !state.playlist.paused && state.me && state.guildId && (now - (state.resync.lastAt || 0) > RESYNC_MS);
-      if (shouldResync) {
-        state.resync.lastAt = now;
-        refreshPlaylist().then(() => {
-          // don’t full render if unchanged; nowPlaying diff handles it
-          renderNowPlaying();
-          renderQueue();
-        }).catch(() => {});
-      }
+      dlog("queue_add retry querystring", qs);
+      return api.post(api.routes.queue_add.path, {}, qs);
     }
-
-    state.tick.rafId = requestAnimationFrame(tickProgress);
   }
 
-  function startProgressLoop() {
-    if (state.tick.running) return;
-    state.tick.running = true;
-    state.tick.baseAt = performance.now();
-    state.tick.rafId = requestAnimationFrame(tickProgress);
+  async function api_queue_remove(index) {
+    return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) }));
+  }
+
+  async function api_queue_skip() { return api.post(api.routes.queue_skip.path, basePayload({})); }
+  async function api_queue_stop() { return api.post(api.routes.queue_stop.path, basePayload({})); }
+  async function api_playlist_toggle_pause() { return api.post(api.routes.playlist_toggle_pause.path, basePayload({})); }
+  async function api_playlist_restart() { return api.post(api.routes.playlist_restart.path, basePayload({})); }
+  async function api_playlist_repeat() { return api.post(api.routes.playlist_repeat.path, basePayload({})); }
+  async function api_playlist_play_at(index) { return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) })); }
+
+  async function bestEffortVoiceJoin(reason) {
+    const now = Date.now();
+    if (now - state.voiceJoinLastAt < VOICE_JOIN_COOLDOWN_MS) return;
+    state.voiceJoinLastAt = now;
+    if (!state.me || !state.guildId) return;
+
+    try {
+      await api.post(api.routes.voice_join.path, basePayload({ reason: String(reason || "") }));
+      dlog("voice_join ok");
+    } catch (e) {
+      if (Number(e?.status || 0) !== 404) dlog("voice_join failed", e?.message || e);
+    }
+  }
+
+  // Spotify API
+  async function api_spotify_status() { return api.get(api.routes.spotify_status.path); }
+  async function api_spotify_logout() { return api.post(api.routes.spotify_logout.path, {}); }
+  async function api_spotify_me() { return api.get(api.routes.spotify_me.path); }
+  async function api_spotify_playlists() { return api.get(api.routes.spotify_playlists.path); }
+
+  async function api_spotify_playlist_tracks(playlistId) {
+    const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
+
+    const items =
+      (Array.isArray(data?.tracks) && data.tracks) ||
+      (Array.isArray(data?.items) && data.items) ||
+      (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
+      (Array.isArray(data?.data?.items) && data.data.items) ||
+      (Array.isArray(data) && data) ||
+      [];
+
+    const tracks = items.map((x) => x?.track || x).filter(Boolean);
+    state.spotifyTracks = tracks;
+    renderSpotifyTracks();
+    return data;
+  }
+
+  async function api_spotify_playlist_create(name, isPublic) {
+    return api.post(api.routes.spotify_playlist_create.path, { name, public: !!isPublic });
+  }
+
+  async function api_spotify_playlist_delete(playlistId) {
+    if (!playlistId) throw new Error("missing playlist_id");
+    return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
+  }
+
+  // ✅ FIXED payload
+  async function api_spotify_track_delete(playlistId, trackUris) {
+    if (!playlistId) throw new Error("missing playlist_id");
+    const uris = Array.isArray(trackUris) ? trackUris.map(String).filter(Boolean) : [String(trackUris || "")].filter(Boolean);
+    if (!uris.length) throw new Error("missing track_uris");
+    return api.post(api.routes.spotify_track_delete.path, { playlist_id: String(playlistId), track_uris: uris });
+  }
+
+  async function api_spotify_quickplay(trackObj) {
+    if (!state.guildId) throw new Error("missing guild_id");
+    const track = trackObj && typeof trackObj === "object" ? trackObj : {};
+    const payload = basePayload({ track });
+
+    const res = await api.post(api.routes.spotify_quickplay.path, payload);
+    await sleep(250);
+    await refreshPlaylist();
+    renderAll();
+    return res;
+  }
+
+  async function api_spotify_add_current_to_playlist(playlistId) {
+    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
+    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
+    return api.post(api.routes.spotify_add_current_to_playlist.path, {
+      playlist_id: String(playlistId),
+      guild_id: String(state.guildId),
+    });
+  }
+
+  async function api_spotify_add_queue_to_playlist(playlistId, maxItems = 20) {
+    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
+    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
+    return api.post(api.routes.spotify_add_queue_to_playlist.path, {
+      playlist_id: String(playlistId),
+      guild_id: String(state.guildId),
+      max_items: Number(maxItems) || 20,
+    });
+  }
+
+  // =============================
+  // Safe action helper (locked, consistent status)
+  // =============================
+  async function safeAction(lockKey, fn, okText, refreshAfter = false) {
+    if (ActionLock.isLocked(lockKey)) return;
+    ActionLock.lock(lockKey);
+
+    try {
+      Status.set("Action en cours…", "info");
+      const res = await fn();
+      if (okText) Status.set(okText, "ok");
+      if (refreshAfter) await refreshPlaylist();
+      renderAll();
+      return res;
+    } catch (e) {
+      const msg = e?.payload?.error || e?.payload?.message || e?.message || String(e);
+      Status.set(msg, "err", { sticky: false });
+      throw e;
+    } finally {
+      ActionLock.unlock(lockKey);
+    }
   }
 
   // =============================
@@ -1361,14 +1472,6 @@
     return [];
   }
 
-  function debounce(fn, ms) {
-    let t = null;
-    return (...args) => {
-      if (t) clearTimeout(t);
-      t = setTimeout(() => fn(...args), ms);
-    };
-  }
-
   const onSearchInput = debounce(async () => {
     const q = (el.searchInput?.value || "").trim();
     if (q.length < 2) { closeSuggestions(); return; }
@@ -1413,149 +1516,59 @@
   }
 
   // =============================
-  // API actions
+  // Progress ticker (requestAnimationFrame)
   // =============================
-  function basePayload(extra = {}) {
-    const out = { ...extra };
-    if (state.guildId) out.guild_id = String(state.guildId);
-    if (state.me?.id) out.user_id = String(state.me.id);
-    return out;
+  function computeLivePosition() {
+    const c = state.playlist.current;
+    if (!c) return { pos: 0, dur: 0, pct: 0 };
+
+    const dur = state.playlist.duration || c.duration || 0;
+    const basePos = state.tick.basePos || 0;
+    const paused = !!state.playlist.paused;
+
+    const now = performance.now();
+    const elapsed = paused ? 0 : (now - (state.tick.baseAt || now)) / 1000;
+    const pos = paused ? basePos : basePos + elapsed;
+    const clamped = dur > 0 ? clamp(pos, 0, dur) : Math.max(0, pos);
+    const pct = dur > 0 ? (clamped / dur) * 100 : 0;
+
+    return { pos: clamped, dur, pct: clamp(pct, 0, 100) };
   }
 
-  async function api_playlist_state() {
-    return api.get(api.routes.playlist_state.path, state.guildId ? { guild_id: state.guildId } : undefined);
-  }
+  function tickProgress() {
+    const c = state.playlist.current;
+    if (c) {
+      const { pos, dur, pct } = computeLivePosition();
 
-  async function api_queue_add(itemOrQuery) {
-    let payload = typeof itemOrQuery === "string"
-      ? basePayload({ query: itemOrQuery })
-      : basePayload(itemOrQuery || {});
+      if (el.progressCurrent) el.progressCurrent.textContent = formatTime(pos);
+      if (el.progressTotal) el.progressTotal.textContent = dur > 0 ? formatTime(dur) : "--:--";
+      if (el.progressFill) el.progressFill.style.width = `${pct}%`;
 
-    const url = String(payload.url || payload.webpage_url || "").trim();
-    const title = String(payload.title || "").trim();
-
-    if (!payload.query) payload.query = url || title || "";
-    if (payload.url && !payload.webpage_url) payload.webpage_url = payload.url;
-    if (payload.thumb && !payload.thumbnail) payload.thumbnail = payload.thumb;
-    if (payload.thumbnail && !payload.thumb) payload.thumb = payload.thumbnail;
-    if (payload.duration == null) delete payload.duration;
-
-    const queryStr = String(payload.query || "").trim();
-    const urlStr = String(payload.url || payload.webpage_url || "").trim();
-    if (!queryStr && !urlStr) throw new Error("Ajout impossible: query/url vide.");
-
-    dlog("queue_add payload", payload);
-
-    // Retry strategy: body JSON first, then querystring fallback for older backends
-    try {
-      return await api.post(api.routes.queue_add.path, payload);
-    } catch (e) {
-      const st = Number(e?.status || 0);
-      if (![400, 415, 422, 500].includes(st)) throw e;
-
-      const qs = {};
-      for (const [k, v] of Object.entries(payload)) {
-        if (v === undefined || v === null || v === "") continue;
-        qs[k] = String(v);
+      // snapshot cheap save
+      if (state.guildId) {
+        if ((Date.now() % 1000) < 40) saveProgressSnapshot();
       }
-      dlog("queue_add retry querystring", qs);
-      return api.post(api.routes.queue_add.path, {}, qs);
+
+      // server resync while playing
+      const now = Date.now();
+      const shouldResync = !state.playlist.paused && state.me && state.guildId && (now - (state.resync.lastAt || 0) > RESYNC_MS);
+      if (shouldResync) {
+        state.resync.lastAt = now;
+        refreshPlaylist().then(() => {
+          renderNowPlaying();
+          renderQueue();
+        }).catch(() => {});
+      }
     }
+
+    state.tick.rafId = requestAnimationFrame(tickProgress);
   }
 
-  async function api_queue_remove(index) {
-    return api.post(api.routes.queue_remove.path, basePayload({ index: Number(index) }));
-  }
-  async function api_queue_skip() { return api.post(api.routes.queue_skip.path, basePayload({})); }
-  async function api_queue_stop() { return api.post(api.routes.queue_stop.path, basePayload({})); }
-  async function api_playlist_toggle_pause() { return api.post(api.routes.playlist_toggle_pause.path, basePayload({})); }
-  async function api_playlist_restart() { return api.post(api.routes.playlist_restart.path, basePayload({})); }
-  async function api_playlist_repeat() { return api.post(api.routes.playlist_repeat.path, basePayload({})); }
-  async function api_playlist_play_at(index) { return api.post(api.routes.playlist_play_at.path, basePayload({ index: Number(index) })); }
-
-  async function bestEffortVoiceJoin(reason) {
-    const now = Date.now();
-    if (now - state.voiceJoinLastAt < VOICE_JOIN_COOLDOWN_MS) return;
-    state.voiceJoinLastAt = now;
-    if (!state.me || !state.guildId) return;
-
-    try {
-      await api.post(api.routes.voice_join.path, basePayload({ reason: String(reason || "") }));
-      dlog("voice_join ok");
-    } catch (e) {
-      if (Number(e?.status || 0) !== 404) dlog("voice_join failed", e?.message || e);
-    }
-  }
-
-  // Spotify API
-  async function api_spotify_status() { return api.get(api.routes.spotify_status.path); }
-  async function api_spotify_logout() { return api.post(api.routes.spotify_logout.path, {}); }
-  async function api_spotify_me() { return api.get(api.routes.spotify_me.path); }
-  async function api_spotify_playlists() { return api.get(api.routes.spotify_playlists.path); }
-
-  async function api_spotify_playlist_tracks(playlistId) {
-    const data = await api.get(api.routes.spotify_playlist_tracks.path, { playlist_id: playlistId });
-
-    const items =
-      (Array.isArray(data?.tracks) && data.tracks) ||
-      (Array.isArray(data?.items) && data.items) ||
-      (Array.isArray(data?.tracks?.items) && data.tracks.items) ||
-      (Array.isArray(data?.data?.items) && data.data.items) ||
-      (Array.isArray(data) && data) ||
-      [];
-
-    const tracks = items.map((x) => x?.track || x).filter(Boolean);
-    state.spotifyTracks = tracks;
-    renderSpotifyTracks();
-    return data;
-  }
-
-  async function api_spotify_playlist_create(name, isPublic) {
-    return api.post(api.routes.spotify_playlist_create.path, { name, public: !!isPublic });
-  }
-
-  async function api_spotify_playlist_delete(playlistId) {
-    if (!playlistId) throw new Error("missing playlist_id");
-    return api.post(api.routes.spotify_playlist_delete.path, { playlist_id: String(playlistId) });
-  }
-
-  // ✅ FIXED: correct payload for backend
-  async function api_spotify_track_delete(playlistId, trackUris) {
-    if (!playlistId) throw new Error("missing playlist_id");
-    const uris = Array.isArray(trackUris) ? trackUris.map(String).filter(Boolean) : [String(trackUris || "")].filter(Boolean);
-    if (!uris.length) throw new Error("missing track_uris");
-    return api.post(api.routes.spotify_track_delete.path, { playlist_id: String(playlistId), track_uris: uris });
-  }
-
-  async function api_spotify_quickplay(trackObj) {
-    if (!state.guildId) throw new Error("missing guild_id");
-    const track = trackObj && typeof trackObj === "object" ? trackObj : {};
-    const payload = basePayload({ track });
-
-    const res = await api.post(api.routes.spotify_quickplay.path, payload);
-    await sleep(250);
-    await refreshPlaylist();
-    renderAll();
-    return res;
-  }
-
-  async function api_spotify_add_current_to_playlist(playlistId) {
-    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
-    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
-    return api.post(api.routes.spotify_add_current_to_playlist.path, {
-      playlist_id: String(playlistId),
-      guild_id: String(state.guildId),
-    });
-  }
-
-  async function api_spotify_add_queue_to_playlist(playlistId, maxItems = 20) {
-    if (!state.guildId) throw new Error("Choisis un serveur Discord.");
-    if (!playlistId) throw new Error("Choisis une playlist Spotify.");
-    return api.post(api.routes.spotify_add_queue_to_playlist.path, {
-      playlist_id: String(playlistId),
-      guild_id: String(state.guildId),
-      max_items: Number(maxItems) || 20,
-    });
+  function startProgressLoop() {
+    if (state.tick.running) return;
+    state.tick.running = true;
+    state.tick.baseAt = performance.now();
+    state.tick.rafId = requestAnimationFrame(tickProgress);
   }
 
   // =============================
@@ -1581,7 +1594,7 @@
     socket.on("connect", () => {
       state.socketReady = true;
       state.socketId = socket.id;
-      Status.set(`Socket connecté ✅`, "ok");
+      Status.set("Socket connecté ✅", "ok");
       dlog("socket connect", socket.id);
 
       try {
@@ -1603,14 +1616,14 @@
 
     socket.on("disconnect", (reason) => {
       state.socketReady = false;
-      Status.set(`Socket déconnecté — polling actif`, "warn");
+      Status.set("Socket déconnecté — polling actif", "warn");
       dlog("socket disconnect", reason);
     });
 
     socket.on("playlist_update", (payload) => {
       applyPlaylistPayload(payload);
       const p = payload?.state || payload?.data || payload || {};
-      if (p.only_elapsed) return;
+      if (p.only_elapsed) return; // small tick event
       renderAll();
     });
 
@@ -1624,6 +1637,7 @@
       renderAll();
     });
 
+    // keep-alive (optional)
     setInterval(() => {
       if (!state.socketReady) return;
       try { socket.emit("overlay_ping", { t: Date.now(), sid: state.socketId || undefined }); } catch {}
@@ -1764,35 +1778,11 @@
 
     await refreshPlaylist();
 
-    // restore progress if server pos unreliable
     if (state.playlist.current && state.playlist.position <= 1) {
       tryRestoreProgressSnapshot();
     }
 
     renderAll();
-  }
-
-  // =============================
-  // Safe action helper (locked, consistent status)
-  // =============================
-  async function safeAction(lockKey, fn, okText, refreshAfter = false) {
-    if (ActionLock.isLocked(lockKey)) return;
-    ActionLock.lock(lockKey);
-
-    try {
-      Status.set("Action en cours…", "info");
-      const res = await fn();
-      if (okText) Status.set(okText, "ok");
-      if (refreshAfter) await refreshPlaylist();
-      renderAll();
-      return res;
-    } catch (e) {
-      const msg = e?.payload?.error || e?.payload?.message || e?.message || String(e);
-      Status.set(msg, "err", { sticky: false });
-      throw e;
-    } finally {
-      ActionLock.unlock(lockKey);
-    }
   }
 
   // =============================
@@ -1855,14 +1845,11 @@
     }, SPOTIFY_POLL_MS);
   }
 
-   async function reloadSpotifyTracksForTarget(targetId) {
-     if (typeof withPanelLoading === "function") {
-       return withPanelLoading(el.spotifyTracksWrap, async () => {
-         await api_spotify_playlist_tracks(targetId).catch(() => {});
-       });
-     }
-     return api_spotify_playlist_tracks(targetId).catch(() => {});
-   }
+  async function reloadSpotifyTracksForTarget(targetId) {
+    return withPanelLoading(el.spotifyTracksWrap, async () => {
+      await api_spotify_playlist_tracks(targetId).catch(() => {});
+    });
+  }
 
   // =============================
   // Events binding (+ keyboard shortcuts)
@@ -1906,11 +1893,10 @@
         if (!q) return;
 
         await withSearchLoading(async () => {
-          // si suggestion sélectionnée, on l’utilise
           if (state.sugOpen && state.sugIndex >= 0 && state.suggestions[state.sugIndex]) {
             const pick = state.suggestions[state.sugIndex];
             closeSuggestions();
-            await addFromSuggestion(pick); // addFromSuggestion fait déjà safeAction
+            await addFromSuggestion(pick);
           } else {
             closeSuggestions();
             await safeAction("queue_add_text", () => api_queue_add(q), "Ajouté à la file ✅", true);
@@ -1940,6 +1926,9 @@
         state.spotifyProfile = null;
         state.spotifyPlaylists = [];
         state.spotifyTracks = [];
+        state.spotifyCurrentPlaylistId = "";
+        localStorage.removeItem(LS.GUILD);
+        localStorage.removeItem(LS.SPOTIFY_LAST_PLAYLIST);
         await refreshAll();
       });
     }
@@ -1988,12 +1977,7 @@
         if (!state.spotifyLinked) return Status.set("Spotify non lié.", "warn");
 
         await withBtnLoading(el.btnSpotifyLoadPlaylists, "Chargement…", async () => {
-          await safeAction(
-            "spotify_load_playlists",
-            () => refreshSpotifyPlaylists(),
-            "Playlists chargées ✅",
-            false
-          );
+          await safeAction("spotify_load_playlists", () => refreshSpotifyPlaylists(), "Playlists chargées ✅", false);
         });
       });
     }
@@ -2006,20 +1990,12 @@
         const name = (el.spotifyCreateName?.value || "").trim() || "Greg Playlist";
         const isPublic = !!el.spotifyCreatePublic?.checked;
 
-        // Spinner + lock + status ok/err via safeAction
         const data = await withBtnLoading(el.btnSpotifyCreatePlaylist, "Création…", async () => {
-          return safeAction(
-            "spotify_create_playlist",
-            () => api_spotify_playlist_create(name, isPublic),
-            "Playlist créée ✅",
-            false
-          );
+          return safeAction("spotify_create_playlist", () => api_spotify_playlist_create(name, isPublic), "Playlist créée ✅", false);
         });
 
-        // Refresh playlists after creation
         await refreshSpotifyPlaylists().catch(() => {});
 
-        // Try to focus/select the newly created playlist (id may be in different places)
         const createdId =
           data?.id ||
           data?.playlist_id ||
@@ -2035,7 +2011,6 @@
         renderSpotifyPlaylists();
         updateSpotifyToolbarState();
 
-        // Load tracks for the newly created playlist
         await reloadSpotifyTracksForTarget(createdId).catch(() => {});
       });
     }
@@ -2048,12 +2023,7 @@
         if (!state.guildId) return Status.set("Choisis un serveur Discord.", "warn");
 
         await withBtnLoading(el.btnSpotifyAddCurrent, "Ajout…", async () => {
-          await safeAction(
-            "spotify_add_current",
-            () => api_spotify_add_current_to_playlist(target.id),
-            "Titre ajouté à la playlist ✅",
-            false
-          );
+          await safeAction("spotify_add_current", () => api_spotify_add_current_to_playlist(target.id), "Titre ajouté à la playlist ✅", false);
         });
 
         await reloadSpotifyTracksForTarget(target.id).catch(() => {});
@@ -2076,13 +2046,7 @@
         if (!ok) return;
 
         await withBtnLoading(el.btnSpotifyAddQueue, "Ajout…", async () => {
-          const res = await safeAction(
-            "spotify_add_queue",
-            () => api_spotify_add_queue_to_playlist(target.id, maxItems),
-            "File ajoutée ✅",
-            false
-          );
-          dlog("add_queue_to_playlist result", res);
+          await safeAction("spotify_add_queue", () => api_spotify_add_queue_to_playlist(target.id, maxItems), "File ajoutée ✅", false);
         });
 
         await reloadSpotifyTracksForTarget(target.id).catch(() => {});
@@ -2109,13 +2073,10 @@
       if (!inside) closeSuggestions();
     });
 
-    // ✅ Keyboard shortcuts (comfort)
-    // Space: play/pause (if not typing in input)
-    // N: skip, P: restart, R: repeat
+    // ✅ Keyboard shortcuts (not inside input)
     document.addEventListener("keydown", async (ev) => {
       const tag = (ev.target?.tagName || "").toLowerCase();
       const inInput = tag === "input" || tag === "textarea" || ev.target?.isContentEditable;
-
       if (inInput) return;
 
       if (ev.code === "Space") {
