@@ -109,7 +109,8 @@ def add_to_queue():
         return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
 
     before = player.get_state(int(gid)) or {}
-    was_empty = len(before.get("queue") or []) == 0 and not bool(before.get("current"))
+    cur = before.get("current")
+    was_empty = (len(before.get("queue") or []) == 0) and (not cur or not cur.get("url"))
 
     # ---------------------------
     # ✅ Helpers: int conversion

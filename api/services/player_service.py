@@ -448,7 +448,9 @@ class PlayerService:
             if self.repeat_all.get(gid):
                 await loop.run_in_executor(None, pm.add, item)
 
+            # ✅ attempts persist
             item["attempts"] = int(item.get("attempts") or 0)
+
             url = item.get("url")
 
             self.current_song[gid] = {
@@ -460,6 +462,7 @@ class PlayerService:
                 "added_by": item.get("added_by"),
                 "priority": item.get("priority"),
                 "provider": item.get("provider"),
+                "attempts": item.get("attempts", 0),  # ✅ store attempts
             }
             dur_int = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur_int, "thumbnail": item.get("thumb")}
@@ -490,7 +493,8 @@ class PlayerService:
 
             # try direct then pipe
             try:
-                srcp, real_title = await self._call_extractor(extractor, "stream", url, self.ffmpeg_path, **_kw("stream"))
+                srcp, real_title = await self._call_extractor(extractor, "stream", url, self.ffmpeg_path,
+                                                              **_kw("stream"))
                 if real_title and isinstance(real_title, str):
                     self.current_song[gid]["title"] = real_title
                     self.now_playing[gid]["title"] = real_title
@@ -499,11 +503,117 @@ class PlayerService:
             except Exception as ex_direct:
                 log.debug("[stream direct KO] %s", ex_direct)
 
-            srcp, real_title = await self._call_extractor(extractor, "stream_pipe", url, self.ffmpeg_path, **_kw("stream_pipe"))
+            srcp, real_title = await self._call_extractor(extractor, "stream_pipe", url, self.ffmpeg_path,
+                                                          **_kw("stream_pipe"))
             if real_title and isinstance(real_title, str):
                 self.current_song[gid]["title"] = real_title
                 self.now_playing[gid]["title"] = real_title
             await self._play_source(guild, gid, srcp)
+
+    async def _play_source(self, guild: discord.Guild, gid: int, srcp):
+        vc = guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        self.current_source[gid] = srcp
+
+        def _after(_e: Exception | None):
+            try:
+                # cleanup source/proc
+                src = self.current_source.pop(gid, None)
+                if src and hasattr(src, "cleanup"):
+                    try:
+                        src.cleanup()
+                    except Exception:
+                        pass
+                proc = getattr(src, "_ytdlp_proc", None)
+                if proc:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    cur = self.current_song.get(gid) or {}
+                    provider = cur.get("provider")
+                    url = cur.get("url")
+
+                    meta = self.current_meta.get(gid, {}) or {}
+                    dur = meta.get("duration")
+                    if dur is None:
+                        dur = cur.get("duration")
+                    dur = int(dur) if isinstance(dur, (int, float)) else None
+
+                    start = self.play_start.get(gid)
+                    paused_total = float(self.paused_total.get(gid, 0.0) or 0.0)
+                    played = None
+                    if start:
+                        played = max(0.0, (time.monotonic() - start - paused_total))
+
+                    interrupted = False
+                    if _e is not None:
+                        interrupted = True
+                    elif dur is not None and played is not None:
+                        if played < max(0, dur - 2.5):
+                            interrupted = True
+
+                    attempts = int(cur.get("attempts") or 0)
+
+                    # ✅ one retry via PIPE only when interrupted + only once
+                    if interrupted and provider == "youtube" and url and attempts < 1:
+                        cur["attempts"] = attempts + 1
+                        self.current_song[gid] = cur
+                        self.now_playing[gid] = dict(cur)
+
+                        async def _retry_pipe():
+                            try:
+                                extractor = get_extractor(url)
+                                if not extractor or not hasattr(extractor, "stream_pipe"):
+                                    raise RuntimeError("NO_STREAM_PIPE")
+
+                                # ✅ pass only supported kwargs
+                                import inspect
+                                fn = getattr(extractor, "stream_pipe", None)
+                                kw = {}
+                                if fn:
+                                    try:
+                                        sig = inspect.signature(fn)
+                                        cand = dict(
+                                            cookies_file=self.youtube_cookies_file,
+                                            cookies_from_browser=None,
+                                            ratelimit_bps=self.yt_ratelimit,
+                                            afilter=self._afilter_for(gid),
+                                        )
+                                        kw = {k: v for k, v in cand.items() if k in sig.parameters}
+                                    except Exception:
+                                        kw = {}
+
+                                srcp2, title2 = await self._call_extractor(extractor, "stream_pipe", url,
+                                                                           self.ffmpeg_path, **kw)
+                                if title2 and isinstance(title2, str):
+                                    self.current_song[gid]["title"] = title2
+                                    self.now_playing[gid]["title"] = title2
+
+                                await self._play_source(guild, gid, srcp2)
+                                return
+                            except Exception:
+                                # retry failed -> next
+                                await self.play_next(guild)
+
+                        asyncio.run_coroutine_threadsafe(_retry_pipe(), self.bot.loop)
+                        return
+
+                except Exception:
+                    pass
+
+                asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
+
+        vc.play(srcp, after=_after)
+        self.play_start[gid] = time.monotonic()
+        self.paused_total[gid] = 0.0
+        self.paused_since.pop(gid, None)
+        self.is_playing[gid] = True
+        self._ensure_ticker(gid)
+        self._emit_playlist_update(gid)
 
     async def _call_extractor(self, extractor_module, method_name: str, *args, **kwargs):
         """
