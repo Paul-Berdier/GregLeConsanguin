@@ -1,5 +1,5 @@
 import os, json
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List, Tuple
 
 # Poids par défaut (plus haut = plus prioritaire)
 DEFAULT_WEIGHTS: Dict[str, int] = {
@@ -16,6 +16,7 @@ OWNER_WEIGHT = 10_000  # bien plus haut que n'importe quel rôle
 # Fichier de config persistée (overrides)
 CONFIG_PATH = os.getenv("PRIORITY_FILE", "data/priority.json")
 
+
 def _to_int(v):
     try:
         return int(v)
@@ -25,9 +26,11 @@ def _to_int(v):
         except Exception:
             return None
 
+
 def is_owner(user_id) -> bool:
     oid = _to_int(os.getenv("GREG_OWNER_ID", ""))
     return (oid is not None) and (_to_int(user_id) == oid)
+
 
 # --- lecture overrides ENV (legacy) ---
 def _load_custom_weights_env() -> Dict[str, int]:
@@ -40,8 +43,10 @@ def _load_custom_weights_env() -> Dict[str, int]:
     except Exception:
         return {}
 
+
 # --- lecture/écriture overrides fichier ---
 _OVERRIDES = {"weights": {}, "cap": None}
+
 
 def _ensure_dir(path: str):
     try:
@@ -50,6 +55,7 @@ def _ensure_dir(path: str):
             os.makedirs(d, exist_ok=True)
     except Exception:
         pass
+
 
 def _load_overrides_file():
     global _OVERRIDES
@@ -70,6 +76,7 @@ def _load_overrides_file():
     except Exception:
         pass
 
+
 def _save_overrides_file():
     try:
         _ensure_dir(CONFIG_PATH)
@@ -78,9 +85,11 @@ def _save_overrides_file():
     except Exception:
         pass
 
+
 # état en mémoire
 CUSTOM: Dict[str, int] = {}
 PER_USER_CAP: int = int(os.getenv("QUEUE_PER_USER_CAP", "10") or 10)
+
 
 # init
 def _init_state():
@@ -92,20 +101,25 @@ def _init_state():
     if _OVERRIDES.get("cap") is not None:
         PER_USER_CAP = int(_OVERRIDES["cap"])
 
+
 _init_state()
 
 # === API publique (config) ===
 
+
 def get_overrides():
     return {"weights": dict(_OVERRIDES.get("weights", {})), "cap": int(PER_USER_CAP)}
 
+
 def list_keys():
     return ["__ADMIN__", "__MANAGE_GUILD__", "__DEFAULT__"]
+
 
 def get_weights() -> Dict[str, int]:
     w = DEFAULT_WEIGHTS.copy()
     w.update(CUSTOM)
     return w
+
 
 def set_role_weight(name: str, weight: int) -> Dict[str, int]:
     name = str(name).strip()
@@ -114,12 +128,14 @@ def set_role_weight(name: str, weight: int) -> Dict[str, int]:
     _save_overrides_file()
     return get_weights()
 
+
 def reset_role_weight(name: str) -> Dict[str, int]:
     name = str(name).strip()
     CUSTOM.pop(name, None)
     _OVERRIDES["weights"].pop(name, None)
     _save_overrides_file()
     return get_weights()
+
 
 def set_key_weight(key: str, weight: int) -> Dict[str, int]:
     key = str(key).strip()
@@ -130,6 +146,7 @@ def set_key_weight(key: str, weight: int) -> Dict[str, int]:
     _save_overrides_file()
     return get_weights()
 
+
 def set_per_user_cap(n: int) -> int:
     global PER_USER_CAP
     PER_USER_CAP = max(0, int(n))
@@ -137,13 +154,49 @@ def set_per_user_cap(n: int) -> int:
     _save_overrides_file()
     return PER_USER_CAP
 
+
 # === logique de poids / droits ===
 
-def _member_roles_names(member) -> list[str]:
+
+def _member_roles_names(member) -> List[str]:
     try:
         return [r.name for r in (getattr(member, "roles", []) or []) if r and r.name and r.name != "@everyone"]
     except Exception:
         return []
+
+
+def _best_weight_and_key_for_member(member, weights: Dict[str, int]) -> Tuple[int, str]:
+    """
+    Retourne (best_weight, best_key) pour debug/UI.
+    best_key = "__ADMIN__" / "__MANAGE_GUILD__" / nom de rôle / "__DEFAULT__"
+    """
+    if not member:
+        return int(weights.get("__DEFAULT__", 10)), "__DEFAULT__"
+
+    # Admin
+    if getattr(member.guild_permissions, "administrator", False):
+        return int(weights.get("__ADMIN__", 100)), "__ADMIN__"
+
+    # Manage guild/channels
+    if getattr(member.guild_permissions, "manage_guild", False) or getattr(member.guild_permissions, "manage_channels", False):
+        base = int(weights.get("__MANAGE_GUILD__", 90))
+        best_w, best_k = base, "__MANAGE_GUILD__"
+        for r in getattr(member, "roles", []) or []:
+            if r and r.name in weights:
+                w = int(weights[r.name])
+                if w > best_w:
+                    best_w, best_k = w, r.name
+        return best_w, best_k
+
+    # Default + rôles nommés
+    best_w, best_k = int(weights.get("__DEFAULT__", 10)), "__DEFAULT__"
+    for r in getattr(member, "roles", []) or []:
+        if r and r.name in weights:
+            w = int(weights[r.name])
+            if w > best_w:
+                best_w, best_k = w, r.name
+    return best_w, best_k
+
 
 def get_member_weight(bot, guild_id: int, user_id: int) -> int:
     if is_owner(user_id):
@@ -157,22 +210,28 @@ def get_member_weight(bot, guild_id: int, user_id: int) -> int:
     if not member:
         return int(weights.get("__DEFAULT__", 10))
 
-    # Admin / Manage Guild
-    if getattr(member.guild_permissions, "administrator", False):
-        return int(weights.get("__ADMIN__", 100))
-    if getattr(member.guild_permissions, "manage_guild", False) or getattr(member.guild_permissions, "manage_channels", False):
-        base = int(weights.get("__MANAGE_GUILD__", 90))
-        best_named = base
-        for r in getattr(member, "roles", []) or []:
-            if r and r.name in weights:
-                best_named = max(best_named, int(weights[r.name]))
-        return best_named
+    best_w, _ = _best_weight_and_key_for_member(member, weights)
+    return int(best_w)
 
-    best = int(weights.get("__DEFAULT__", 10))
-    for r in getattr(member, "roles", []) or []:
-        if r and r.name in weights:
-            best = max(best, int(weights[r.name]))
-    return best
+
+def get_member_weight_key(bot, guild_id: int, user_id: int) -> Tuple[int, str]:
+    """
+    Version enrichie: renvoie (poids, clé) où clé = __ADMIN__/__MANAGE_GUILD__/DJ/VIP/.../__DEFAULT__/__OWNER__
+    """
+    if is_owner(user_id):
+        return OWNER_WEIGHT, "__OWNER__"
+
+    weights = get_weights()
+    guild = bot.get_guild(int(guild_id)) if bot else None
+    if not guild:
+        return int(weights.get("__DEFAULT__", 10)), "__DEFAULT__"
+    member = guild.get_member(int(user_id)) if guild else None
+    if not member:
+        return int(weights.get("__DEFAULT__", 10)), "__DEFAULT__"
+
+    w, k = _best_weight_and_key_for_member(member, weights)
+    return int(w), str(k)
+
 
 def can_bypass_quota(bot, guild_id: int, user_id: int) -> bool:
     if is_owner(user_id):
@@ -180,6 +239,7 @@ def can_bypass_quota(bot, guild_id: int, user_id: int) -> bool:
     guild = bot.get_guild(int(guild_id)) if bot else None
     m = guild and guild.get_member(int(user_id))
     return bool(m and (m.guild_permissions.administrator or m.guild_permissions.manage_guild))
+
 
 def can_user_bump_over(bot, guild_id: int, requester_id: int, owner_weight: int) -> bool:
     if is_owner(requester_id):
@@ -189,16 +249,20 @@ def can_user_bump_over(bot, guild_id: int, requester_id: int, owner_weight: int)
         return True
     return req_w > int(owner_weight or 0)
 
+
 # === helpers d’objets (utiles au service & API) ===
+
 
 def is_priority_item(item: dict) -> bool:
     return bool(item and (item.get("priority") or item.get("pin") or item.get("pinned")))
 
-def first_non_priority_index(queue: list[dict]) -> int:
+
+def first_non_priority_index(queue: List[dict]) -> int:
     for i, it in enumerate(queue or []):
         if not is_priority_item(it):
             return i
     return len(queue or [])
+
 
 def can_user_edit_item(bot, guild_id: int, requester_id: int, item: dict) -> bool:
     # owner OK, admin OK, poids >= owner_weight OK
@@ -209,6 +273,7 @@ def can_user_edit_item(bot, guild_id: int, requester_id: int, item: dict) -> boo
         return True
     if can_bypass_quota(bot, guild_id, requester_id):
         return True
+
     owner_w = int(item.get("priority") or 0)
     if owner_w <= 0:
         # fallback si l'item n'expose pas la priorité
@@ -219,6 +284,7 @@ def can_user_edit_item(bot, guild_id: int, requester_id: int, item: dict) -> boo
             owner_w = 0
     return can_user_bump_over(bot, guild_id, requester_id, owner_w)
 
+
 def build_user_meta(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
     """
     Métadonnées légères pour la logique de file/priorité.
@@ -228,16 +294,35 @@ def build_user_meta(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
 
     roles = _member_roles_names(member) if member else []
     is_admin = bool(member and (member.guild_permissions.administrator or member.guild_permissions.manage_guild))
-    weight = get_member_weight(bot, guild_id, user_id)
+
+    weight, weight_key = get_member_weight_key(bot, guild_id, user_id)
+
+    # username + display (utile pour logs)
+    if member:
+        username = getattr(member, "name", str(user_id))
+        display = getattr(member, "display_name", username) or username
+        discriminator = getattr(member, "discriminator", None)
+        try:
+            avatar = str(member.display_avatar.url) if getattr(member, "display_avatar", None) else None
+        except Exception:
+            avatar = None
+    else:
+        username, display, discriminator, avatar = str(user_id), str(user_id), None, None
 
     return {
         "user_id": str(user_id),
         "roles": roles,
         "weight": int(weight),
+        "weight_key": str(weight_key),
         "is_admin": is_admin,
         "is_owner": bool(is_owner(user_id)),
         "can_bypass": bool(is_admin or is_owner(user_id)),
+        "username": username,
+        "display_name": display,
+        "discriminator": discriminator,
+        "avatar": avatar,
     }
+
 
 def build_user_out(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
     """
@@ -248,6 +333,7 @@ def build_user_out(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
 
     if member:
         username = getattr(member, "name", str(user_id))
+        display_name = getattr(member, "display_name", username) or username
         # avatar url
         try:
             avatar = str(member.display_avatar.url) if getattr(member, "display_avatar", None) else None
@@ -257,21 +343,61 @@ def build_user_out(bot, guild_id: int, user_id: int) -> Dict[str, Any]:
         roles = _member_roles_names(member)
         is_admin = bool(member.guild_permissions.administrator or member.guild_permissions.manage_guild)
     else:
-        username, avatar, discriminator, roles, is_admin = str(user_id), None, None, [], False
+        username, display_name, avatar, discriminator, roles, is_admin = str(user_id), str(user_id), None, None, [], False
+
+    w, k = get_member_weight_key(bot, guild_id, user_id)
 
     return {
         "id": str(user_id),
         "username": username,
+        "display_name": display_name,
         "avatar": avatar,
         "discriminator": discriminator,
         "roles": roles,
-        "weight": int(get_member_weight(bot, guild_id, user_id)),
+        "weight": int(w),
+        "weight_key": str(k),
         "is_admin": bool(is_admin),
         "is_owner": bool(is_owner(user_id)),
     }
 
+
+def format_user_display(user_out: Dict[str, Any]) -> str:
+    """
+    Retourne un display 'propre' à afficher.
+    Ex: 'Paul' ou 'Paul#1234' si discriminant dispo.
+    """
+    if not user_out:
+        return "Unknown"
+    name = (user_out.get("display_name") or user_out.get("username") or user_out.get("id") or "Unknown")
+    disc = user_out.get("discriminator")
+    # Discord moderne: discriminator parfois None / "0"
+    if disc and str(disc) not in ("0", "None"):
+        return f"{name}#{disc}"
+    return str(name)
+
+
 def build_track_prio(item: Dict[str, Any], user_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enrichit un item de queue avec identité + priorité.
+    """
     out = dict(item or {})
-    out["priority"] = int(user_meta.get("weight", 0))
-    out["added_by"] = user_meta.get("user_id")
+    weight = int(user_meta.get("weight", 0) or 0)
+
+    out["priority"] = weight
+    out["priority_key"] = str(user_meta.get("weight_key") or "")
+
+    out["added_by"] = str(user_meta.get("user_id") or "")
+    out["added_by_name"] = str(user_meta.get("display_name") or user_meta.get("username") or out["added_by"])
+    out["added_by_avatar"] = user_meta.get("avatar")
+    out["added_by_roles"] = list(user_meta.get("roles") or [])
+
+    # Format affichage
+    user_out_like = {
+        "display_name": user_meta.get("display_name"),
+        "username": user_meta.get("username"),
+        "id": user_meta.get("user_id"),
+        "discriminator": user_meta.get("discriminator"),
+    }
+    out["added_by_display"] = format_user_display(user_out_like)
+
     return out

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 from flask import Blueprint, jsonify, request, current_app
+
 from api.ws.events import broadcast_playlist_update
 
 # ✅ NEW: bundle support (playlist/mix)
@@ -15,13 +16,17 @@ bp = Blueprint("playlist", __name__)
 
 
 def PLAYER():
-    return current_app.extensions.get("player")
+    """
+    Priority:
+      1) app.extensions["player"]  (PlayerService - discord bot mode)
+      2) app.extensions["pm"]      (PlayerAPIBridge - API only mode)
+    """
+    ex = current_app.extensions or {}
+    return ex.get("player") or ex.get("pm")
 
 
 def _to_str(v: Any) -> str:
-    """
-    Normalize any value (int/float/bool/None/str) into a safe string.
-    """
+    """Normalize any value (int/float/bool/None/str) into a safe string."""
     if v is None:
         return ""
     try:
@@ -69,7 +74,11 @@ def _broadcast(gid: str):
     if not player or not gid:
         return
     try:
-        state = player.get_state(int(gid))
+        # si bridge: get_state() existe aussi
+        if hasattr(player, "get_state"):
+            state = player.get_state(int(gid))
+        else:
+            return
         broadcast_playlist_update({"state": state}, guild_id=str(gid))
     except Exception:
         pass
@@ -79,6 +88,64 @@ def _is_url(s: str) -> bool:
     return isinstance(s, str) and s.startswith(("http://", "https://"))
 
 
+def _to_int(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return int(v)
+        if isinstance(v, float):
+            return int(v)
+        s = str(v).strip()
+        if not s:
+            return None
+        if s.isdigit():
+            return int(s)
+        # tolère "123.0"
+        try:
+            f = float(s)
+            return int(f)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _call_player(run_fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+    """
+    Exécute un appel vers le player en supportant:
+      - PlayerService (async via discord loop)
+      - PlayerAPIBridge (sync, pas de loop)
+
+    run_fn doit retourner:
+      - soit une coroutine
+      - soit une valeur directe
+    """
+    player = PLAYER()
+    if not player:
+        raise RuntimeError("PLAYER_UNAVAILABLE")
+
+    # Mode Discord (PlayerService): on a bot.loop
+    bot = getattr(player, "bot", None)
+    loop = getattr(bot, "loop", None) if bot else None
+
+    out = run_fn()
+
+    # si c'est une coroutine et qu'on a un loop discord: thread-safe
+    if asyncio.iscoroutine(out):
+        if loop:
+            fut = asyncio.run_coroutine_threadsafe(out, loop)
+            return fut.result(timeout=timeout)
+
+        # sinon: API-only mode → on exécute localement
+        return asyncio.run(out)
+
+    # valeur sync
+    return out
+
+
 @bp.get("/playlist")
 def get_playlist_state():
     gid = _gid_from(request)
@@ -86,7 +153,11 @@ def get_playlist_state():
     if not gid or not player:
         return jsonify({"ok": False, "error": "missing guild_id/player"}), 400
 
-    state = player.get_state(int(gid))
+    try:
+        state = player.get_state(int(gid))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
     return jsonify({"ok": True, "state": state}), 200
 
 
@@ -108,33 +179,16 @@ def add_to_queue():
     if not player:
         return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
 
-    before = player.get_state(int(gid)) or {}
+    # état avant (pour autoplay)
+    try:
+        before = player.get_state(int(gid)) or {}
+    except Exception:
+        before = {}
+
     cur = before.get("current")
     was_empty = (len(before.get("queue") or []) == 0) and (not cur or not cur.get("url"))
 
-    # ---------------------------
-    # ✅ Helpers: int conversion
-    # ---------------------------
-    def _to_int(v):
-        try:
-            if v is None:
-                return None
-            if isinstance(v, bool):
-                return None
-            if isinstance(v, (int, float)):
-                return int(v)
-            s = str(v).strip()
-            if not s:
-                return None
-            if s.isdigit():
-                return int(s)
-        except Exception:
-            return None
-        return None
-
-    # ---------------------------
-    # ✅ Metadata from front
-    # ---------------------------
+    # metadata
     url_in = _to_str(data.get("url") or data.get("webpage_url") or "").strip()
     title_in = _to_str(data.get("title") or "").strip()
     artist_in = _to_str(data.get("artist") or "").strip()
@@ -150,23 +204,11 @@ def add_to_queue():
         if dur_ms is not None:
             dur = int(dur_ms / 1000)
 
-    # ---------------------------
-    # ✅ Build item(s)
-    # - URL normal: 1 item
-    # - URL playlist/mix: expand_bundle -> up to 10 items
-    # - Text search: autocomplete -> 1 item
-    # ---------------------------
-    bundle_info = {
-        "is_bundle": False,
-        "added": 1,
-        "reason": None,
-    }
+    bundle_info = {"is_bundle": False, "added": 1, "reason": None}
+    items_to_add: list[dict] = []
 
-    items_to_add = []
-
-    # ✅ CASE 1: raw is URL
+    # CASE 1 URL
     if _is_url(raw):
-        # ✅ playlist / mix support
         if is_bundle_url(raw):
             try:
                 bundle_entries = expand_bundle(
@@ -184,18 +226,15 @@ def add_to_queue():
                 bundle_info["added"] = min(10, len(bundle_entries))
 
                 head = bundle_entries[0] or {}
-                # Merge head with front metadata if provided
-                head_item = {
+                items_to_add.append({
                     "url": head.get("url") or raw,
                     "title": head.get("title") or title_in or raw,
                     "artist": head.get("artist") or artist_in or None,
                     "duration": head.get("duration") if head.get("duration") is not None else dur,
                     "thumb": head.get("thumb") or thumb_in,
                     "provider": head.get("provider") or provider_in or "youtube",
-                }
-                items_to_add.append(head_item)
+                })
 
-                # Tail (up to 9 more)
                 for e in bundle_entries[1:10]:
                     if not e:
                         continue
@@ -208,7 +247,6 @@ def add_to_queue():
                         "provider": e.get("provider") or "youtube",
                     })
             else:
-                # fallback to single URL item if expansion produced nothing
                 items_to_add.append({
                     "url": raw,
                     "title": title_in or raw,
@@ -218,7 +256,6 @@ def add_to_queue():
                     "provider": provider_in,
                 })
         else:
-            # simple URL
             items_to_add.append({
                 "url": raw,
                 "title": title_in or raw,
@@ -228,7 +265,7 @@ def add_to_queue():
                 "provider": provider_in,
             })
 
-    # ✅ CASE 2: raw is text -> autocomplete
+    # CASE 2 TEXT search
     else:
         try:
             from api.services.search import autocomplete
@@ -262,62 +299,76 @@ def add_to_queue():
                 "provider": provider_in,
             })
 
-    # Safety
     if not items_to_add:
         return jsonify({"ok": False, "error": "NO_ITEM_BUILT"}), 500
 
-    # ---------------------------
-    # ✅ Enqueue ALL items in a single coroutine (atomic-ish)
-    # ---------------------------
-    async def _do_many():
-        out = {"ok": True, "results": [], "count": 0}
-        for it in items_to_add:
-            r = await player.enqueue(int(gid), int(uid), it or {"url": raw})
-            out["results"].append(r)
-            out["count"] += 1
-            # If one fails, stop (keeps behavior deterministic)
-            if not (r or {}).get("ok"):
-                out["ok"] = False
-                out["error"] = (r or {}).get("error") or "ENQUEUE_FAILED"
-                break
-        return out
+    # enqueue all
+    def _do_many_sync_or_coro():
+        async def _do_many():
+            out = {"ok": True, "results": [], "count": 0}
+            for it in items_to_add:
+                r = await player.enqueue(int(gid), int(uid), it or {"url": raw})
+                out["results"].append(r)
+                out["count"] += 1
+                if not (r or {}).get("ok"):
+                    out["ok"] = False
+                    out["error"] = (r or {}).get("error") or "ENQUEUE_FAILED"
+                    break
+            return out
 
-    fut = asyncio.run_coroutine_threadsafe(_do_many(), player.bot.loop)
+        # si player.enqueue est sync (bridge), on appelle direct en boucle
+        if not asyncio.iscoroutinefunction(getattr(player, "enqueue", None)):
+            out = {"ok": True, "results": [], "count": 0}
+            for it in items_to_add:
+                r = player.enqueue(it or {"url": raw}, user_id=str(uid), guild_id=str(gid))
+                out["results"].append(r)
+                out["count"] += 1
+                if not (r or {}).get("ok"):
+                    out["ok"] = False
+                    out["error"] = (r or {}).get("error") or "ENQUEUE_FAILED"
+                    break
+            return out
+
+        return _do_many()
+
     try:
-        res = fut.result(timeout=25) or {}
+        res = _call_player(_do_many_sync_or_coro, timeout=25) or {}
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    # ---------------------------
-    # ✅ Autoplay if queue was empty BEFORE
-    # (after we added items)
-    # ---------------------------
+    # autoplay if was empty
     autoplay = {"attempted": False, "ok": False, "reason": None}
 
     if was_empty and res.get("ok"):
-        async def _auto_play():
-            g = player.bot.get_guild(int(gid))
-            if not g:
-                return {"ok": False, "reason": "GUILD_NOT_FOUND"}
+        def _auto_play_sync_or_coro():
+            async def _auto():
+                g = player.bot.get_guild(int(gid))
+                if not g:
+                    return {"ok": False, "reason": "GUILD_NOT_FOUND"}
 
-            m = g.get_member(int(uid))
-            ch = m.voice.channel if (m and m.voice) else None
-            if not ch:
-                return {"ok": False, "reason": "USER_NOT_IN_VOICE"}
+                m = g.get_member(int(uid))
+                ch = m.voice.channel if (m and m.voice) else None
+                if not ch:
+                    return {"ok": False, "reason": "USER_NOT_IN_VOICE"}
 
-            ok = await player.ensure_connected(g, ch)
-            if not ok:
-                return {"ok": False, "reason": "VOICE_CONNECT_FAILED"}
+                ok = await player.ensure_connected(g, ch)
+                if not ok:
+                    return {"ok": False, "reason": "VOICE_CONNECT_FAILED"}
 
-            await player.play_next(g)
-            return {"ok": True, "reason": None}
+                await player.play_next(g)
+                return {"ok": True, "reason": None}
 
-        fut2 = asyncio.run_coroutine_threadsafe(_auto_play(), player.bot.loop)
+            # si pas de bot.loop → pas d’autoplay (API-only)
+            if not getattr(getattr(player, "bot", None), "loop", None):
+                return {"ok": False, "reason": "AUTOPLAY_DISABLED_NO_DISCORD"}
+
+            return _auto()
+
         autoplay["attempted"] = True
         try:
-            autoplay.update(fut2.result(timeout=12) or {})
+            autoplay.update(_call_player(_auto_play_sync_or_coro, timeout=12) or {})
         except Exception as e:
             autoplay.update({"ok": False, "reason": f"AUTOPLAY_ERROR:{e}"})
 
@@ -343,12 +394,13 @@ def skip_track():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    async def _do():
-        return await player.skip(int(gid), requester_id=int(uid))
-
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        fut.result(timeout=8)
+        # async PlayerService
+        if asyncio.iscoroutinefunction(getattr(player, "skip", None)):
+            _call_player(lambda: player.skip(int(gid), requester_id=int(uid)), timeout=8)
+        else:
+            # bridge
+            player.skip(guild_id=str(gid))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -370,12 +422,11 @@ def stop_playback():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    async def _do():
-        return await player.stop(int(gid), requester_id=int(uid))
-
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        fut.result(timeout=8)
+        if asyncio.iscoroutinefunction(getattr(player, "stop", None)):
+            _call_player(lambda: player.stop(int(gid), requester_id=int(uid)), timeout=8)
+        else:
+            player.stop(guild_id=str(gid))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -402,7 +453,7 @@ def remove_at():
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
     try:
-        ok = player.remove_at(int(gid), int(uid), int(idx))
+        ok = player.remove_at(int(gid), int(uid), int(idx)) if hasattr(player, "remove_at") else False
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -434,7 +485,7 @@ def move_item():
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
     try:
-        ok = player.move(int(gid), int(uid), int(src), int(dst))
+        ok = player.move(int(gid), int(uid), int(src), int(dst)) if hasattr(player, "move") else False
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -451,9 +502,14 @@ def pop_next():
     if not gid or not player:
         return jsonify({"ok": False, "error": "missing guild_id/player"}), 400
     try:
-        pm = player._get_pm(int(gid))
-        pm.reload()
-        res = pm.pop_next()
+        # PlayerService
+        if hasattr(player, "_get_pm"):
+            pm = player._get_pm(int(gid))
+            pm.reload()
+            res = pm.pop_next()
+        else:
+            # Bridge
+            res = player.pop_next(guild_id=str(gid))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -484,19 +540,19 @@ def playlist_play():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    async def _do():
-        return await player.play_for_user(int(gid), int(uid), item)
-
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        res = fut.result(timeout=12)
+        if asyncio.iscoroutinefunction(getattr(player, "play_for_user", None)):
+            res = _call_player(lambda: player.play_for_user(int(gid), int(uid), item), timeout=12)
+        else:
+            # Bridge: emulate play via enqueue (pas de voice connect)
+            res = player.enqueue(item, user_id=str(uid), guild_id=str(gid))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
     _broadcast(gid)
-    return jsonify({"ok": bool(res.get("ok")), "result": res}), 200 if res.get("ok") else 409
+    return jsonify({"ok": bool((res or {}).get("ok")), "result": res}), 200 if (res or {}).get("ok") else 409
 
 
 @bp.post("/playlist/play_at")
@@ -514,6 +570,19 @@ def playlist_play_at():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
+    # API-only mode: on fait juste move index -> 0
+    if not getattr(getattr(player, "bot", None), "loop", None):
+        try:
+            ok_move = player.move(int(gid), int(uid), int(idx), 0)
+        except PermissionError:
+            return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+        _broadcast(gid)
+        return jsonify({"ok": bool(ok_move), "note": "API-only: moved, no voice autoplay"}), 200 if ok_move else 409
+
+    # Discord mode: move then skip/play
     try:
         ok_move = player.move(int(gid), int(uid), int(idx), 0)
         if not ok_move:
@@ -536,9 +605,8 @@ def playlist_play_at():
             return True
         return False
 
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        ok = bool(fut.result(timeout=12))
+        ok = bool(_call_player(lambda: _do(), timeout=12))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -560,6 +628,10 @@ def playlist_toggle_pause():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
+    # API-only: pas de voice
+    if not getattr(getattr(player, "bot", None), "loop", None):
+        return jsonify({"ok": False, "error": "NO_VOICE_IN_API_ONLY_MODE"}), 409
+
     async def _do():
         g = player.bot.get_guild(int(gid))
         vc = g and g.voice_client
@@ -573,9 +645,8 @@ def playlist_toggle_pause():
             return {"ok": ok, "action": "pause" if ok else "noop"}
         return {"ok": False, "error": "NOT_PLAYING"}
 
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        res = fut.result(timeout=8)
+        res = _call_player(lambda: _do(), timeout=8)
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:
@@ -597,18 +668,18 @@ def playlist_repeat():
     if not gid:
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
 
-    async def _do():
-        val = await player.toggle_repeat(int(gid), mode)
-        return {"ok": True, "repeat_all": bool(val)}
-
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        res = fut.result(timeout=8)
+        if asyncio.iscoroutinefunction(getattr(player, "toggle_repeat", None)):
+            val = _call_player(lambda: player.toggle_repeat(int(gid), mode), timeout=8)
+            res = {"ok": True, "repeat_all": bool(val)}
+        else:
+            # bridge: pas forcément repeat
+            res = {"ok": False, "error": "REPEAT_UNSUPPORTED_IN_BRIDGE"}
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
     _broadcast(gid)
-    return jsonify(res), 200
+    return jsonify(res), 200 if res.get("ok") else 409
 
 
 @bp.post("/playlist/restart")
@@ -622,6 +693,10 @@ def playlist_restart():
         return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+
+    # API-only mode: pas possible de restart propre (pas de current + voice)
+    if not getattr(getattr(player, "bot", None), "loop", None):
+        return jsonify({"ok": False, "error": "RESTART_UNSUPPORTED_IN_API_ONLY_MODE"}), 409
 
     async def _do():
         g = player.bot.get_guild(int(gid))
@@ -652,9 +727,8 @@ def playlist_restart():
         await player.skip(int(gid), requester_id=int(uid))
         return {"ok": True}
 
-    fut = asyncio.run_coroutine_threadsafe(_do(), player.bot.loop)
     try:
-        res = fut.result(timeout=12)
+        res = _call_player(lambda: _do(), timeout=12)
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
     except Exception as e:

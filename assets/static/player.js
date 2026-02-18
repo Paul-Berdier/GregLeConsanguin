@@ -620,35 +620,71 @@
   }
 
   function normalizeItem(it) {
-    if (!it || typeof it !== "object") return null;
-    const title = it.title || it.name || it.track_title || it.track || "";
-    const url = it.url || it.webpage_url || it.href || it.link || "";
-    const artist = it.artist || it.uploader || it.author || it.channel || it.by || "";
+  if (!it || typeof it !== "object") return null;
 
-    const duration =
-      toSeconds(
-        it.duration ??
-        it.duration_s ??
-        it.duration_sec ??
-        it.duration_ms ??
-        it.length ??
-        it.length_s ??
-        it.length_ms
-      ) ?? null;
+  const title = it.title || it.name || it.track_title || it.track || "";
+  const url = it.url || it.webpage_url || it.href || it.link || "";
+  const artist = it.artist || it.uploader || it.author || it.channel || it.by || "";
 
-    const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
-    const provider = it.provider || it.source || it.platform || null;
+  const duration =
+    toSeconds(
+      it.duration ??
+      it.duration_s ??
+      it.duration_sec ??
+      it.duration_ms ??
+      it.length ??
+      it.length_s ??
+      it.length_ms
+    ) ?? null;
 
-    return {
-      title: String(title || ""),
-      url: String(url || ""),
-      artist: String(artist || ""),
-      duration,
-      thumb,
-      provider,
-      raw: it,
-    };
-  }
+  const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
+  const provider = it.provider || it.source || it.platform || null;
+
+  // ✅ Who added/requested this?
+  // Support multiple backend shapes:
+  // - requested_by: {id, username, display_name, global_name}
+  // - added_by: {id, name, username}
+  // - user_id + user_name
+  // - requester / author fields
+  const rb =
+    it.requested_by ||
+    it.added_by ||
+    it.requester ||
+    it.user ||
+    null;
+
+  const addedById =
+    (rb && (rb.id || rb.user_id)) ||
+    it.requested_by_id ||
+    it.added_by_id ||
+    it.user_id ||
+    null;
+
+  const addedByName =
+    (rb && (rb.display_name || rb.global_name || rb.username || rb.name)) ||
+    it.requested_by_name ||
+    it.added_by_name ||
+    it.user_name ||
+    it.username ||
+    it.requester_name ||
+    "";
+
+  const addedBy = (addedById || addedByName)
+    ? { id: addedById ? String(addedById) : "", name: String(addedByName || "").trim() }
+    : null;
+
+  return {
+    title: String(title || ""),
+    url: String(url || ""),
+    artist: String(artist || ""),
+    duration,
+    thumb,
+    provider,
+    addedBy,     // ✅ NEW
+    raw: it,
+  };
+}
+
 
   function applyPlaylistPayload(payload) {
     const root = (payload && typeof payload === "object" ? payload : {}) || {};
@@ -868,7 +904,12 @@
 
     const html = q.map((it, idx) => {
       const title = escapeHtml(it.title || "Titre inconnu");
-      const sub = escapeHtml([it.artist || "", it.duration != null ? formatTime(it.duration) : ""].filter(Boolean).join(" • "));
+      const added = it.addedBy?.name ? `Ajouté par ${it.addedBy.name}` : "";
+      const sub = escapeHtml(
+        [it.artist || "", it.duration != null ? formatTime(it.duration) : "", added]
+          .filter(Boolean)
+          .join(" • ")
+      );
       const thumbStyle = it.thumb ? `style="background-image:url('${escapeHtml(it.thumb)}')"` : "";
       return `
         <div class="queue-item" data-idx="${idx}">
