@@ -74,7 +74,6 @@ def _broadcast(gid: str):
     if not player or not gid:
         return
     try:
-        # si bridge: get_state() existe aussi
         if hasattr(player, "get_state"):
             state = player.get_state(int(gid))
         else:
@@ -103,7 +102,7 @@ def _to_int(v):
             return None
         if s.isdigit():
             return int(s)
-        # tolère "123.0"
+        # tolerate "123.0"
         try:
             f = float(s)
             return int(f)
@@ -127,23 +126,116 @@ def _call_player(run_fn: Callable[[], Any], timeout: float = 15.0) -> Any:
     if not player:
         raise RuntimeError("PLAYER_UNAVAILABLE")
 
-    # Mode Discord (PlayerService): on a bot.loop
     bot = getattr(player, "bot", None)
     loop = getattr(bot, "loop", None) if bot else None
 
     out = run_fn()
 
-    # si c'est une coroutine et qu'on a un loop discord: thread-safe
     if asyncio.iscoroutine(out):
         if loop:
             fut = asyncio.run_coroutine_threadsafe(out, loop)
             return fut.result(timeout=timeout)
-
-        # sinon: API-only mode → on exécute localement
         return asyncio.run(out)
 
-    # valeur sync
     return out
+
+
+# ==========================
+# ✅ NEW: "added by" helpers
+# ==========================
+def _discord_user_payload(gid: str, uid: str) -> dict:
+    """
+    Build a stable requester payload:
+      requested_by: {id, username, display_name, global_name, avatar_url?}
+    Also exposes legacy fields requested_by_id / requested_by_name for compatibility.
+    Works best in Discord mode; in API-only mode we fallback to id-only.
+    """
+    uid_s = _to_str(uid).strip()
+    gid_s = _to_str(gid).strip()
+    out = {
+        "requested_by": {"id": uid_s},
+        "requested_by_id": uid_s,
+        "requested_by_name": "",
+    }
+
+    player = PLAYER()
+    bot = getattr(player, "bot", None)
+    if not bot:
+        return out
+
+    try:
+        g = bot.get_guild(int(gid_s)) if gid_s else None
+        if not g:
+            return out
+
+        m = g.get_member(int(uid_s))
+        if not m:
+            return out
+
+        # Discord.py: display_name is always available; global_name may not exist depending on version
+        display_name = getattr(m, "display_name", "") or ""
+        username = getattr(m, "name", "") or ""
+        global_name = getattr(m, "global_name", "") or ""
+
+        avatar_url = ""
+        try:
+            av = getattr(m, "display_avatar", None) or getattr(m, "avatar", None)
+            if av:
+                avatar_url = str(av.url)
+        except Exception:
+            avatar_url = ""
+
+        out["requested_by"] = {
+            "id": uid_s,
+            "username": _to_str(username).strip(),
+            "display_name": _to_str(display_name).strip(),
+            "global_name": _to_str(global_name).strip(),
+            "avatar_url": _to_str(avatar_url).strip(),
+        }
+
+        # Prefer display_name for UI
+        out["requested_by_name"] = _to_str(display_name or global_name or username).strip()
+        return out
+    except Exception:
+        return out
+
+
+def _attach_requester(item: dict, gid: str, uid: str) -> dict:
+    """
+    Mutates + returns item, ensuring requester fields exist.
+    Does not override if already present (unless empty).
+    """
+    if not isinstance(item, dict):
+        return item
+
+    meta = _discord_user_payload(gid, uid)
+
+    # If item already has requested_by, keep it (but fill missing id/name if needed)
+    rb = item.get("requested_by")
+    if isinstance(rb, dict):
+        rb_id = _to_str(rb.get("id")).strip()
+        if not rb_id:
+            rb["id"] = meta["requested_by"]["id"]
+        # Fill names if missing
+        if not _to_str(rb.get("display_name")).strip() and _to_str(meta["requested_by"].get("display_name")).strip():
+            rb["display_name"] = meta["requested_by"]["display_name"]
+        if not _to_str(rb.get("username")).strip() and _to_str(meta["requested_by"].get("username")).strip():
+            rb["username"] = meta["requested_by"]["username"]
+        if not _to_str(rb.get("global_name")).strip() and _to_str(meta["requested_by"].get("global_name")).strip():
+            rb["global_name"] = meta["requested_by"]["global_name"]
+        if not _to_str(rb.get("avatar_url")).strip() and _to_str(meta["requested_by"].get("avatar_url")).strip():
+            rb["avatar_url"] = meta["requested_by"]["avatar_url"]
+        item["requested_by"] = rb
+    else:
+        item["requested_by"] = meta["requested_by"]
+
+    # Legacy compatibility fields (frontends / logs)
+    if not _to_str(item.get("requested_by_id")).strip():
+        item["requested_by_id"] = meta["requested_by_id"]
+    if not _to_str(item.get("requested_by_name")).strip():
+        item["requested_by_name"] = meta["requested_by_name"]
+
+    return item
 
 
 @bp.get("/playlist")
@@ -179,7 +271,7 @@ def add_to_queue():
     if not player:
         return jsonify({"ok": False, "error": "PLAYER_UNAVAILABLE"}), 503
 
-    # état avant (pour autoplay)
+    # state before (autoplay decision)
     try:
         before = player.get_state(int(gid)) or {}
     except Exception:
@@ -302,7 +394,10 @@ def add_to_queue():
     if not items_to_add:
         return jsonify({"ok": False, "error": "NO_ITEM_BUILT"}), 500
 
-    # enqueue all
+    # ✅ Attach requester info to every item (this is what your frontend needs)
+    for it in items_to_add:
+        _attach_requester(it, gid, uid)
+
     def _do_many_sync_or_coro():
         async def _do_many():
             out = {"ok": True, "results": [], "count": 0}
@@ -316,7 +411,7 @@ def add_to_queue():
                     break
             return out
 
-        # si player.enqueue est sync (bridge), on appelle direct en boucle
+        # bridge sync
         if not asyncio.iscoroutinefunction(getattr(player, "enqueue", None)):
             out = {"ok": True, "results": [], "count": 0}
             for it in items_to_add:
@@ -360,7 +455,6 @@ def add_to_queue():
                 await player.play_next(g)
                 return {"ok": True, "reason": None}
 
-            # si pas de bot.loop → pas d’autoplay (API-only)
             if not getattr(getattr(player, "bot", None), "loop", None):
                 return {"ok": False, "reason": "AUTOPLAY_DISABLED_NO_DISCORD"}
 
@@ -395,11 +489,9 @@ def skip_track():
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
     try:
-        # async PlayerService
         if asyncio.iscoroutinefunction(getattr(player, "skip", None)):
             _call_player(lambda: player.skip(int(gid), requester_id=int(uid)), timeout=8)
         else:
-            # bridge
             player.skip(guild_id=str(gid))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
@@ -502,13 +594,11 @@ def pop_next():
     if not gid or not player:
         return jsonify({"ok": False, "error": "missing guild_id/player"}), 400
     try:
-        # PlayerService
         if hasattr(player, "_get_pm"):
             pm = player._get_pm(int(gid))
             pm.reload()
             res = pm.pop_next()
         else:
-            # Bridge
             res = player.pop_next(guild_id=str(gid))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -540,11 +630,13 @@ def playlist_play():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
+    # ✅ Ensure requester info exists for "play" too
+    _attach_requester(item, gid, uid)
+
     try:
         if asyncio.iscoroutinefunction(getattr(player, "play_for_user", None)):
             res = _call_player(lambda: player.play_for_user(int(gid), int(uid), item), timeout=12)
         else:
-            # Bridge: emulate play via enqueue (pas de voice connect)
             res = player.enqueue(item, user_id=str(uid), guild_id=str(gid))
     except PermissionError:
         return jsonify({"ok": False, "error": "PRIORITY_FORBIDDEN"}), 403
@@ -570,7 +662,6 @@ def playlist_play_at():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    # API-only mode: on fait juste move index -> 0
     if not getattr(getattr(player, "bot", None), "loop", None):
         try:
             ok_move = player.move(int(gid), int(uid), int(idx), 0)
@@ -582,7 +673,6 @@ def playlist_play_at():
         _broadcast(gid)
         return jsonify({"ok": bool(ok_move), "note": "API-only: moved, no voice autoplay"}), 200 if ok_move else 409
 
-    # Discord mode: move then skip/play
     try:
         ok_move = player.move(int(gid), int(uid), int(idx), 0)
         if not ok_move:
@@ -628,7 +718,6 @@ def playlist_toggle_pause():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    # API-only: pas de voice
     if not getattr(getattr(player, "bot", None), "loop", None):
         return jsonify({"ok": False, "error": "NO_VOICE_IN_API_ONLY_MODE"}), 409
 
@@ -673,7 +762,6 @@ def playlist_repeat():
             val = _call_player(lambda: player.toggle_repeat(int(gid), mode), timeout=8)
             res = {"ok": True, "repeat_all": bool(val)}
         else:
-            # bridge: pas forcément repeat
             res = {"ok": False, "error": "REPEAT_UNSUPPORTED_IN_BRIDGE"}
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -694,7 +782,6 @@ def playlist_restart():
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    # API-only mode: pas possible de restart propre (pas de current + voice)
     if not getattr(getattr(player, "bot", None), "loop", None):
         return jsonify({"ok": False, "error": "RESTART_UNSUPPORTED_IN_API_ONLY_MODE"}), 409
 
@@ -707,14 +794,19 @@ def playlist_restart():
         if not cur:
             return {"ok": False, "error": "NO_CURRENT"}
 
-        res = await player.enqueue(int(gid), int(uid), {
+        item = {
             "url": cur.get("url"),
             "title": cur.get("title"),
             "artist": cur.get("artist"),
             "thumb": cur.get("thumb") or cur.get("thumbnail"),
             "duration": cur.get("duration"),
             "provider": cur.get("provider") or "youtube",
-        })
+        }
+
+        # ✅ Keep requester attribution on restart (the requester is the one who clicked restart)
+        _attach_requester(item, gid, uid)
+
+        res = await player.enqueue(int(gid), int(uid), item)
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error") or "ENQUEUE_FAILED"}
 
