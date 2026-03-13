@@ -1,29 +1,30 @@
-# api/services/player_service.py
 from __future__ import annotations
 
-import os
-import time
 import asyncio
 import logging
-from typing import Any, Optional, Dict, List
+import os
+import time
+from typing import Any, Dict, List, Optional
 
 import discord
 
+from api.services.oembed import oembed
+from extractors import expand_bundle, get_extractor, is_bundle_url
+from utils.ffmpeg import detect_ffmpeg
 from utils.playlist_manager import PlaylistManager
 from utils.priority_rules import (
-    get_member_weight, can_user_bump_over, can_bypass_quota,
-    first_non_priority_index, can_user_edit_item, build_user_out
+    build_user_out,
+    can_bypass_quota,
+    can_user_bump_over,
+    can_user_edit_item,
+    first_non_priority_index,
+    get_member_weight,
 )
-
-from utils.ffmpeg import detect_ffmpeg
-from api.services.oembed import oembed
-
-from extractors import get_extractor, is_bundle_url, expand_bundle
 
 log = logging.getLogger(__name__)
 
 AUDIO_EQ_PRESETS = {
-    "off":   None,
+    "off": None,
     "music": "highpass=f=32,volume=-6dB,bass=g=4:f=95:w=1.0,alimiter=limit=0.98:attack=5:release=50",
 }
 
@@ -34,7 +35,6 @@ class PlayerService:
         self.emit_fn = emit_fn
         self.intro_playing: Dict[int, bool] = {}
 
-        # ✅ Keys = int guild_id partout (pas de mix str/int)
         self.pm_map: Dict[int, PlaylistManager] = {}
         self.ffmpeg_path = detect_ffmpeg()
 
@@ -57,6 +57,8 @@ class PlayerService:
             or (os.getenv("YOUTUBE_COOKIES_PATH") if os.getenv("YOUTUBE_COOKIES_PATH") else None)
             or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
         )
+        self.youtube_cookies_from_browser = (os.getenv("YTDLP_COOKIES_BROWSER") or "").strip() or None
+
         try:
             self.yt_ratelimit = int(os.getenv("YTDLP_LIMIT_BPS", "2500000"))
         except Exception:
@@ -82,10 +84,39 @@ class PlayerService:
         return pm
 
     def _afilter_for(self, gid: int) -> Optional[str]:
-        mode = self.audio_mode.get(gid, "music")
-        return AUDIO_EQ_PRESETS.get(mode)
+        return AUDIO_EQ_PRESETS.get(self.audio_mode.get(gid, "music"))
 
-    # ---------- overlay payload ----------
+    def _extractor_kwargs(self, extractor: Any, method_name: str, gid: int) -> dict:
+        import inspect
+
+        fn = getattr(extractor, method_name, None)
+        if not fn:
+            return {}
+
+        try:
+            sig = inspect.signature(fn)
+            candidates = {
+                "cookies_file": self.youtube_cookies_file,
+                "cookies_from_browser": self.youtube_cookies_from_browser,
+                "ratelimit_bps": self.yt_ratelimit,
+                "afilter": self._afilter_for(gid),
+            }
+            return {k: v for k, v in candidates.items() if k in sig.parameters}
+        except Exception:
+            return {}
+
+    def _clear_now_playing_state(self, gid: int) -> None:
+        self.is_playing[gid] = False
+        for d in (
+            self.current_song,
+            self.play_start,
+            self.paused_since,
+            self.paused_total,
+            self.current_meta,
+            self.now_playing,
+        ):
+            d.pop(gid, None)
+
     def _overlay_payload(self, gid: int) -> dict:
         g = self.bot.get_guild(int(gid))
         vc = g.voice_client if g else None
@@ -104,7 +135,7 @@ class PlayerService:
         duration = meta.get("duration")
         thumb = meta.get("thumbnail")
 
-        cur = (self.now_playing.get(gid) or self.current_song.get(gid))
+        cur = self.now_playing.get(gid) or self.current_song.get(gid)
         if isinstance(cur, dict):
             if duration is None and isinstance(cur.get("duration"), (int, float)):
                 duration = int(cur["duration"])
@@ -210,18 +241,17 @@ class PlayerService:
                     if duration is None and self.current_song.get(gid, {}).get("duration"):
                         duration = int(self.current_song[gid]["duration"])
 
-                    pos = int(elapsed) if elapsed is not None else 0
-                    dur = int(duration) if duration is not None else None
-
                     payload = {
                         "only_elapsed": True,
                         "paused": bool(vc and vc.is_paused()),
                         "is_paused": bool(vc and vc.is_paused()),
-                        "position": pos,
-                        "duration": dur,
-                        "progress": {"elapsed": pos, "duration": dur},
+                        "position": int(elapsed) if elapsed is not None else 0,
+                        "duration": int(duration) if duration is not None else None,
+                        "progress": {
+                            "elapsed": int(elapsed) if elapsed is not None else 0,
+                            "duration": int(duration) if duration is not None else None,
+                        },
                     }
-
                     self._emit_playlist_update(gid, payload)
                     await asyncio.sleep(1.0)
             except asyncio.CancelledError:
@@ -252,19 +282,12 @@ class PlayerService:
             raise PermissionError("PRIORITY_FORBIDDEN")
 
     async def _play_intro_and_then_next(self, guild: discord.Guild, gid: int) -> None:
-        """Joue un petit son d'intro, puis enchaîne sur play_next si rien ne joue déjà."""
         intro_path = os.path.join("assets", "sounds", "Ouais_cest_greg.mp3")
         if not os.path.exists(intro_path):
             return
 
         vc = guild.voice_client
-        if not vc or not vc.is_connected():
-            return
-
-        if vc.is_playing() or vc.is_paused():
-            return
-
-        if self.intro_playing.get(gid):
+        if not vc or not vc.is_connected() or vc.is_playing() or vc.is_paused() or self.intro_playing.get(gid):
             return
 
         self.intro_playing[gid] = True
@@ -281,19 +304,18 @@ class PlayerService:
                 intro_path,
                 executable=self.ffmpeg_path,
                 before_options="-nostdin",
-                options="-vn"
+                options="-vn",
             )
             vc.play(source, after=_after)
         except Exception as e:
             self.intro_playing[gid] = False
             log.warning("Intro sound failed: %s", e)
 
-    # ---------- normalisation ----------
     def _normalize_item(self, it: dict) -> dict:
         url = (it.get("url") or "").strip() or None
         title = (it.get("title") or "").strip()
         artist = (it.get("artist") or "").strip() or None
-        thumb = (it.get("thumb") or it.get("thumbnail") or None)
+        thumb = it.get("thumb") or it.get("thumbnail") or None
         provider = it.get("provider")
 
         if url and (not title or not artist or not thumb):
@@ -329,7 +351,6 @@ class PlayerService:
                 out[k] = it[k]
         return out
 
-    # ---------- opérations publiques ----------
     async def ensure_connected(self, guild: discord.Guild, channel: Optional[discord.abc.GuildChannel]) -> bool:
         if not channel or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             return False
@@ -402,6 +423,7 @@ class PlayerService:
     async def play_next(self, guild: discord.Guild):
         gid = int(guild.id)
         lock = self._guild_lock(gid)
+
         async with lock:
             loop = asyncio.get_running_loop()
             pm = self._get_pm(gid)
@@ -415,10 +437,7 @@ class PlayerService:
 
             item = await loop.run_in_executor(None, pm.pop_next)
             if not item:
-                self.is_playing[gid] = False
-                for d in (self.current_song, self.play_start, self.paused_since,
-                          self.paused_total, self.current_meta, self.now_playing):
-                    d.pop(gid, None)
+                self._clear_now_playing_state(gid)
                 self._emit_playlist_update(gid)
                 return
 
@@ -445,30 +464,17 @@ class PlayerService:
 
             extractor = get_extractor(url)
             if extractor is None:
-                self.is_playing[gid] = False
+                self._clear_now_playing_state(gid)
                 self._emit_playlist_update(gid)
                 return
 
-            def _kw(method):
-                import inspect
-                fn = getattr(extractor, method, None)
-                if not fn:
-                    return {}
-                try:
-                    sig = inspect.signature(fn)
-                    cand = dict(
-                        cookies_file=self.youtube_cookies_file,
-                        cookies_from_browser=None,
-                        ratelimit_bps=self.yt_ratelimit,
-                        afilter=self._afilter_for(gid),
-                    )
-                    return {k: v for k, v in cand.items() if k in sig.parameters}
-                except Exception:
-                    return {}
-
             try:
                 srcp, real_title = await self._call_extractor(
-                    extractor, "stream", url, self.ffmpeg_path, **_kw("stream")
+                    extractor,
+                    "stream",
+                    url,
+                    self.ffmpeg_path,
+                    **self._extractor_kwargs(extractor, "stream", gid),
                 )
                 if real_title and isinstance(real_title, str):
                     self.current_song[gid]["title"] = real_title
@@ -476,18 +482,28 @@ class PlayerService:
                 await self._play_source(guild, gid, srcp)
                 return
             except Exception as ex_direct:
-                log.debug("[stream direct KO] %s", ex_direct)
+                log.warning("[stream direct KO] guild=%s url=%s err=%s", gid, url, ex_direct)
 
-            srcp, real_title = await self._call_extractor(
-                extractor, "stream_pipe", url, self.ffmpeg_path, **_kw("stream_pipe")
-            )
-            if real_title and isinstance(real_title, str):
-                self.current_song[gid]["title"] = real_title
-                self.now_playing[gid]["title"] = real_title
-            await self._play_source(guild, gid, srcp)
+            try:
+                srcp, real_title = await self._call_extractor(
+                    extractor,
+                    "stream_pipe",
+                    url,
+                    self.ffmpeg_path,
+                    **self._extractor_kwargs(extractor, "stream_pipe", gid),
+                )
+                if real_title and isinstance(real_title, str):
+                    self.current_song[gid]["title"] = real_title
+                    self.now_playing[gid]["title"] = real_title
+                await self._play_source(guild, gid, srcp)
+                return
+            except Exception as ex_pipe:
+                log.exception("[stream pipe KO] guild=%s url=%s err=%s", gid, url, ex_pipe)
+                self._clear_now_playing_state(gid)
+                self._emit_playlist_update(gid)
+                asyncio.create_task(self.play_next(guild))
 
     async def _call_extractor(self, extractor_module, method_name: str, *args, **kwargs):
-        """✅ IMPORTANT: pas de asyncio.run(). extractor YouTube déjà async."""
         fn = getattr(extractor_module, method_name, None)
         if not fn:
             raise AttributeError(f"{extractor_module} has no method {method_name}")
@@ -530,17 +546,11 @@ class PlayerService:
 
                     start = self.play_start.get(gid)
                     paused_total = float(self.paused_total.get(gid, 0.0) or 0.0)
-                    played = None
-                    if start:
-                        played = max(0.0, (time.monotonic() - start - paused_total))
+                    played = max(0.0, (time.monotonic() - start - paused_total)) if start else None
 
-                    interrupted = False
-                    if _e is not None:
-                        interrupted = True
-                    elif dur is not None and played is not None:
-                        if played < max(0, dur - 2.5):
-                            interrupted = True
-
+                    interrupted = _e is not None or (
+                        dur is not None and played is not None and played < max(0, dur - 2.5)
+                    )
                     attempts = int(cur.get("attempts") or 0)
 
                     if interrupted and provider == "youtube" and url and attempts < 1:
@@ -554,24 +564,12 @@ class PlayerService:
                                 if not extractor or not hasattr(extractor, "stream_pipe"):
                                     raise RuntimeError("NO_STREAM_PIPE")
 
-                                import inspect
-                                fn = getattr(extractor, "stream_pipe", None)
-                                kw = {}
-                                if fn:
-                                    try:
-                                        sig = inspect.signature(fn)
-                                        cand = dict(
-                                            cookies_file=self.youtube_cookies_file,
-                                            cookies_from_browser=None,
-                                            ratelimit_bps=self.yt_ratelimit,
-                                            afilter=self._afilter_for(gid),
-                                        )
-                                        kw = {k: v for k, v in cand.items() if k in sig.parameters}
-                                    except Exception:
-                                        kw = {}
-
                                 srcp2, title2 = await self._call_extractor(
-                                    extractor, "stream_pipe", url, self.ffmpeg_path, **kw
+                                    extractor,
+                                    "stream_pipe",
+                                    url,
+                                    self.ffmpeg_path,
+                                    **self._extractor_kwargs(extractor, "stream_pipe", gid),
                                 )
                                 if title2 and isinstance(title2, str):
                                     self.current_song[gid]["title"] = title2
@@ -598,8 +596,6 @@ class PlayerService:
         self._ensure_ticker(gid)
         self._emit_playlist_update(gid)
 
-    # === commandes protégées par la priorité =====================
-
     async def stop(self, guild_id: int, requester_id: int | None = None) -> bool:
         gid = int(guild_id)
         if requester_id is not None:
@@ -615,10 +611,7 @@ class PlayerService:
             vc.stop()
 
         self._cancel_ticker(gid)
-        self.is_playing[gid] = False
-        for d in (self.current_song, self.now_playing, self.play_start,
-                  self.paused_since, self.paused_total, self.current_meta):
-            d.pop(gid, None)
+        self._clear_now_playing_state(gid)
         self._emit_playlist_update(gid)
         return True
 
@@ -631,9 +624,9 @@ class PlayerService:
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-        else:
-            if g:
-                await self.play_next(g)
+        elif g:
+            await self.play_next(g)
+
         self._emit_playlist_update(gid)
         return True
 
@@ -666,8 +659,6 @@ class PlayerService:
             self._emit_playlist_update(gid)
             return True
         return False
-
-    # === édition de queue protégée par la priorité ================
 
     def remove_at(self, guild_id: int, requester_id: int, index: int) -> bool:
         gid = int(guild_id)
@@ -705,8 +696,6 @@ class PlayerService:
             self._emit_playlist_update(gid)
         return ok
 
-    # === réglages ================================================
-
     async def toggle_repeat(self, guild_id: int, mode: Optional[str] = None) -> bool:
         gid = int(guild_id)
         cur = bool(self.repeat_all.get(gid, False))
@@ -724,8 +713,6 @@ class PlayerService:
             new_mode = "off" if cur != "off" else "music"
         self.audio_mode[gid] = new_mode
         return new_mode == "music"
-
-    # === entrée principale (commande / web) ======================
 
     async def play_for_user(self, guild_id: int, user_id: int, item: dict):
         gid = int(guild_id)
@@ -745,38 +732,47 @@ class PlayerService:
         if is_bundle_url(url):
             try:
                 bundle_entries = expand_bundle(
-                    url, limit=10, cookies_file=self.youtube_cookies_file, cookies_from_browser=None
+                    url,
+                    limit=10,
+                    cookies_file=self.youtube_cookies_file,
+                    cookies_from_browser=self.youtube_cookies_from_browser,
                 ) or []
             except Exception:
                 bundle_entries = []
 
             if bundle_entries:
                 head = bundle_entries[0]
-                item = {**item, **{
-                    "title": head.get("title") or item.get("title"),
-                    "url": head.get("url") or item.get("url"),
-                    "artist": head.get("artist"),
-                    "thumb": head.get("thumb"),
-                    "duration": head.get("duration"),
-                    "provider": head.get("provider") or "youtube",
-                }}
+                item = {
+                    **item,
+                    **{
+                        "title": head.get("title") or item.get("title"),
+                        "url": head.get("url") or item.get("url"),
+                        "artist": head.get("artist"),
+                        "thumb": head.get("thumb"),
+                        "duration": head.get("duration"),
+                        "provider": head.get("provider") or "youtube",
+                    },
+                }
 
         res = await self.enqueue(gid, int(user_id), item)
         if not res.get("ok"):
             return res
 
         if bundle_entries and len(bundle_entries) > 1:
-            tail = bundle_entries[1:10]
-            for e in tail:
+            for e in bundle_entries[1:10]:
                 try:
-                    _ = await self.enqueue(gid, int(user_id), {
-                        "title": e.get("title"),
-                        "url": e.get("url"),
-                        "artist": e.get("artist"),
-                        "thumb": e.get("thumb"),
-                        "duration": e.get("duration"),
-                        "provider": e.get("provider") or "youtube",
-                    })
+                    await self.enqueue(
+                        gid,
+                        int(user_id),
+                        {
+                            "title": e.get("title"),
+                            "url": e.get("url"),
+                            "artist": e.get("artist"),
+                            "thumb": e.get("thumb"),
+                            "duration": e.get("duration"),
+                            "provider": e.get("provider") or "youtube",
+                        },
+                    )
                 except Exception:
                     pass
             self._emit_playlist_update(gid)
