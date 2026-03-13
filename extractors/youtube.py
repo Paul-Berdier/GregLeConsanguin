@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import functools
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -38,7 +39,6 @@ __all__ = [
 
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
 _YTDBG_HTTP_PROBE = os.getenv("YTDBG_HTTP_PROBE", "0").lower() not in ("0", "false", "")
-
 _YT_UA = os.getenv("YTDLP_FORCE_UA") or (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -51,20 +51,24 @@ _HTTP_PROXY = (
     or os.getenv("HTTP_PROXY")
     or os.getenv("ALL_PROXY")
 )
+
 _DEFAULT_FORMAT_CHAIN = os.getenv(
     "YTDLP_FORMAT",
     "bestaudio/best[protocol^=m3u8]/best",
 )
 _COOKIE_FILE_DEFAULT = "youtube.com_cookies.txt"
-
-_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
 _PO_TOKEN_CACHE: Dict[Tuple[str, str], Tuple[str, float]] = {}
 _PO_TOKEN_TTL_SECONDS = int(os.getenv("YTDLP_PO_TOKEN_TTL", "900"))
+_PIPE_VALIDATION_BYTES = int(os.getenv("YTDLP_PIPE_VALIDATION_BYTES", "32768"))
+_PIPE_VALIDATION_TIMEOUT = float(os.getenv("YTDLP_PIPE_VALIDATION_TIMEOUT", "12"))
 
 
 def _dbg(msg: str) -> None:
     if _YTDBG:
         print(f"[YTDBG] {msg}")
+
+
+_YTID_RE = re.compile(r"(?:v=|/shorts/|youtu\.be/)([A-Za-z0-9_\-]{11})")
 
 
 def _extract_video_id(s: str) -> Optional[str]:
@@ -153,14 +157,12 @@ def _po_token_from_env_for(client: str) -> Optional[str]:
         if not raw:
             continue
 
-        # Cas "mweb.gvs+TOKEN"
         if "+" in raw:
             prefix, token = raw.split("+", 1)
             if prefix == f"{client}.gvs":
                 return token.strip() or None
             continue
 
-        # Cas token brut
         return raw
 
     return None
@@ -247,13 +249,10 @@ def _base_ydl_opts(
 
     if ffmpeg_path:
         opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path) if os.path.isfile(ffmpeg_path) else ffmpeg_path
-
     if _HTTP_PROXY:
         opts["proxy"] = _HTTP_PROXY
-
     if ratelimit_bps:
         opts["ratelimit"] = int(ratelimit_bps)
-
     if search:
         opts["default_search"] = "ytsearch5"
 
@@ -326,20 +325,27 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
     if not query or not query.strip():
         return []
 
-    strategy = strategy_order(cookies_file, cookies_from_browser)[0]
-    with YoutubeDL(
-        _opts_for_strategy(
-            strategy,
-            query,
-            ffmpeg_path=None,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=None,
-            search=True,
-        )
-    ) as ydl:
-        data = ydl.extract_info(f"ytsearch5:{query}", download=False)
-        return _normalize_search_entries((data or {}).get("entries") or [])
+    for strategy in strategy_order(cookies_file, cookies_from_browser):
+        try:
+            with YoutubeDL(
+                _opts_for_strategy(
+                    strategy,
+                    query,
+                    ffmpeg_path=None,
+                    cookies_file=cookies_file,
+                    cookies_from_browser=cookies_from_browser,
+                    ratelimit_bps=None,
+                    search=True,
+                )
+            ) as ydl:
+                data = ydl.extract_info(f"ytsearch5:{query}", download=False)
+                entries = _normalize_search_entries((data or {}).get("entries") or [])
+                if entries:
+                    return entries
+        except Exception as e:
+            _dbg(f"search strategy failed [{strategy.display_name()}]: {e}")
+
+    return []
 
 
 from urllib.parse import parse_qs, urlparse
@@ -381,10 +387,8 @@ def expand_bundle(
     q = parse_qs(parsed.query)
     list_id = (q.get("list") or [None])[0]
 
-    strategies = strategy_order(cookies_file, cookies_from_browser)
     info = None
-
-    for strategy in strategies:
+    for strategy in strategy_order(cookies_file, cookies_from_browser):
         try:
             opts = _opts_for_strategy(
                 strategy,
@@ -402,10 +406,10 @@ def expand_bundle(
             if info and info.get("entries"):
                 break
         except Exception as e:
-            _dbg(f"expand_bundle strategy {strategy.display_name()} failed: {e}")
+            _dbg(f"expand_bundle failed [{strategy.display_name()}]: {e}")
 
     if (not info or not info.get("entries")) and list_id:
-        for strategy in strategies:
+        for strategy in strategy_order(cookies_file, cookies_from_browser):
             try:
                 playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
                 opts = _opts_for_strategy(
@@ -583,6 +587,158 @@ def _build_cli_command(
     return cmd
 
 
+class _PrefixedPipe:
+    """
+    File-like object :
+    - sert d'abord un prébuffer déjà lu pendant la validation
+    - puis relit directement dans le stdout du process yt-dlp
+    """
+
+    def __init__(self, prefix: bytes, raw_pipe):
+        self._prefix = bytearray(prefix or b"")
+        self._pipe = raw_pipe
+
+    def read(self, n: int = -1):
+        if n is None or n < 0:
+            if self._prefix:
+                data = bytes(self._prefix)
+                self._prefix.clear()
+                tail = self._pipe.read()
+                return data + (tail or b"")
+            return self._pipe.read()
+
+        if self._prefix:
+            take = min(n, len(self._prefix))
+            head = bytes(self._prefix[:take])
+            del self._prefix[:take]
+            if take == n:
+                return head
+            rest = self._pipe.read(n - take)
+            return head + (rest or b"")
+
+        return self._pipe.read(n)
+
+    def close(self):
+        try:
+            if self._pipe:
+                self._pipe.close()
+        except Exception:
+            pass
+
+    def fileno(self):
+        return self._pipe.fileno()
+
+
+def _stderr_collector_thread(stderr_pipe, out_queue: queue.Queue):
+    try:
+        while True:
+            chunk = stderr_pipe.readline()
+            if not chunk:
+                break
+            line = chunk.decode("utf-8", errors="replace").rstrip("\n")
+            if line:
+                out_queue.put(line)
+    except Exception:
+        pass
+    finally:
+        out_queue.put(None)
+
+
+def _validate_pipe_start_sync(
+    strategy: YouTubeStrategy,
+    query: str,
+    *,
+    fmt: str,
+    cookies_file: Optional[str],
+    cookies_from_browser: Optional[str],
+    ratelimit_bps: Optional[int],
+) -> Tuple[bool, Optional[subprocess.Popen], bytes, List[str]]:
+    """
+    Lance réellement yt-dlp et considère la stratégie valide uniquement si :
+    - on reçoit suffisamment d'octets sur stdout
+    - sans erreur 403 / page reload pendant la fenêtre de validation
+
+    Si succès :
+      retourne le process vivant + les premiers bytes déjà lus
+    Sinon :
+      nettoie le process et retourne False.
+    """
+    cmd = _build_cli_command(
+        strategy,
+        query,
+        fmt=fmt,
+        cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
+        ratelimit_bps=ratelimit_bps,
+    )
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        bufsize=0,
+        close_fds=True,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+
+    if not proc.stdout or not proc.stderr:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return False, None, b"", ["yt-dlp pipe unavailable"]
+
+    stderr_lines: List[str] = []
+    stderr_q: queue.Queue = queue.Queue()
+    threading.Thread(target=_stderr_collector_thread, args=(proc.stderr, stderr_q), daemon=True).start()
+
+    start = time.monotonic()
+    prefix = bytearray()
+
+    while (time.monotonic() - start) < _PIPE_VALIDATION_TIMEOUT:
+        try:
+            while True:
+                item = stderr_q.get_nowait()
+                if item is None:
+                    break
+                stderr_lines.append(item)
+                low = item.lower()
+                if ("http error 403" in low) or ("forbidden" in low) or ("the page needs to be reloaded" in low):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return False, None, bytes(prefix), stderr_lines
+        except queue.Empty:
+            pass
+
+        try:
+            chunk = os.read(proc.stdout.fileno(), 8192)
+        except BlockingIOError:
+            chunk = b""
+        except Exception:
+            chunk = b""
+
+        if chunk:
+            prefix.extend(chunk)
+            if len(prefix) >= _PIPE_VALIDATION_BYTES:
+                return True, proc, bytes(prefix), stderr_lines
+
+        rc = proc.poll()
+        if rc is not None:
+            return False, None, bytes(prefix), stderr_lines
+
+        time.sleep(0.05)
+
+    # timeout sans volume de données suffisant => on considère que ce n'est pas assez fiable
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    return False, None, bytes(prefix), stderr_lines
+
+
 async def stream(
     url_or_query: str,
     ffmpeg_path: str,
@@ -634,48 +790,6 @@ async def stream(
             afilter=afilter,
         )
 
-    def _preflight_direct_ok_sync() -> bool:
-        try:
-            cmd = [
-                ff_exec,
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel", "warning",
-                *_ff_reconnect_flags(),
-                "-protocol_whitelist", "file,https,tcp,tls,crypto",
-                "-user_agent", ua,
-                "-headers", hdr_blob,
-                "-probesize", "32k",
-                "-analyzeduration", "0",
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-                "-i", stream_url,
-                "-t", "2",
-                "-f", "null", "-",
-            ]
-            cp = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=25,
-            )
-            return cp.returncode == 0
-        except Exception:
-            return False
-
-    ok_direct = await asyncio.to_thread(_preflight_direct_ok_sync)
-    if not ok_direct:
-        _dbg(f"direct preflight failed for strategy={strategy.display_name()}, switching to pipe")
-        return await stream_pipe(
-            url_or_query,
-            ffmpeg_path,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=ratelimit_bps,
-            afilter=afilter,
-        )
-
     before_opts = (
         "-nostdin -hide_banner -loglevel warning "
         f"-user_agent {shlex.quote(ua)} "
@@ -715,7 +829,7 @@ async def stream_pipe(
 ) -> Tuple[discord.FFmpegPCMAudio, str]:
     ff_exec, ff_loc = _resolve_ffmpeg_paths(ffmpeg_path)
 
-    info, _strategy = await asyncio.get_running_loop().run_in_executor(
+    info, _ = await asyncio.get_running_loop().run_in_executor(
         None,
         functools.partial(
             _best_info_with_fallbacks,
@@ -727,130 +841,50 @@ async def stream_pipe(
         ),
     )
     title = (info or {}).get("title", "Musique inconnue")
-    strategies = strategy_order(cookies_file, cookies_from_browser)
 
-    def _preflight_strategy_sync(strategy: YouTubeStrategy, fmt: str) -> bool:
-        cmd = _build_cli_command(
-            strategy,
-            url_or_query,
-            fmt=fmt,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
-            ratelimit_bps=ratelimit_bps,
-        )
-
-        yt = None
-        ff = None
-        try:
-            yt = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=False,
-                bufsize=0,
-                close_fds=True,
-                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-            )
-            if not yt.stdout:
-                return False
-
-            ff = subprocess.Popen(
-                [
-                    ff_exec,
-                    "-nostdin",
-                    "-hide_banner",
-                    "-loglevel", "warning",
-                    "-probesize", "32k",
-                    "-analyzeduration", "0",
-                    "-fflags", "nobuffer",
-                    "-flags", "low_delay",
-                    "-i", "pipe:0",
-                    "-t", "2",
-                    "-f", "null", "-",
-                ],
-                stdin=yt.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-
-            try:
-                ff.communicate(timeout=8)
-            except subprocess.TimeoutExpired:
-                return True
-
-            return ff.returncode == 0
-        finally:
-            try:
-                if yt and yt.stdout:
-                    yt.stdout.close()
-            except Exception:
-                pass
-            try:
-                if yt and yt.stderr:
-                    yt.stderr.close()
-            except Exception:
-                pass
-            try:
-                if ff and ff.poll() is None:
-                    ff.kill()
-            except Exception:
-                pass
-            try:
-                if yt and yt.poll() is None:
-                    yt.kill()
-            except Exception:
-                pass
-
+    chosen_proc = None
+    chosen_prefix = b""
     chosen_strategy = None
     chosen_format = None
 
-    for strategy in strategies:
+    for strategy in strategy_order(cookies_file, cookies_from_browser):
         for fmt in (_DEFAULT_FORMAT_CHAIN, "18"):
-            ok = await asyncio.to_thread(_preflight_strategy_sync, strategy, fmt)
-            _dbg(f"pipe preflight [{strategy.display_name()}] fmt={fmt} ok={ok}")
-            if ok:
+            ok, proc, prefix, stderr_lines = await asyncio.to_thread(
+                _validate_pipe_start_sync,
+                strategy,
+                url_or_query,
+                fmt=fmt,
+                cookies_file=cookies_file,
+                cookies_from_browser=cookies_from_browser,
+                ratelimit_bps=ratelimit_bps,
+            )
+            _dbg(
+                f"pipe validate [{strategy.display_name()}] fmt={fmt} ok={ok} "
+                f"bytes={len(prefix)} stderr_last={(stderr_lines[-1] if stderr_lines else '')}"
+            )
+            if ok and proc:
+                chosen_proc = proc
+                chosen_prefix = prefix
                 chosen_strategy = strategy
                 chosen_format = fmt
                 break
-        if chosen_strategy:
+        if chosen_proc:
             break
 
-    if not chosen_strategy or not chosen_format:
-        raise RuntimeError("Aucune stratégie yt-dlp/ffmpeg n'a permis d'ouvrir le flux YouTube.")
+    if not chosen_proc or not chosen_strategy or not chosen_format or not chosen_proc.stdout:
+        raise RuntimeError("Aucune stratégie yt-dlp/YouTube n'a démarré un flux pipe valide.")
 
-    cmd = _build_cli_command(
-        chosen_strategy,
-        url_or_query,
-        fmt=chosen_format,
-        cookies_file=cookies_file,
-        cookies_from_browser=cookies_from_browser,
-        ratelimit_bps=ratelimit_bps,
+    _dbg(
+        f"PIPE chosen strategy={chosen_strategy.display_name()} "
+        f"fmt={chosen_format} prefix_bytes={len(chosen_prefix)}"
     )
-    _dbg("PIPE command=" + " ".join(shlex.quote(c) for c in cmd))
-
-    yt = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        bufsize=0,
-        close_fds=True,
-        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-    )
-    if not yt.stdout:
-        try:
-            yt.kill()
-        except Exception:
-            pass
-        raise RuntimeError("yt-dlp did not provide stdout pipe")
 
     def _drain_stderr() -> None:
         try:
-            if not yt.stderr:
+            if not chosen_proc.stderr:
                 return
             while True:
-                chunk = yt.stderr.readline()
+                chunk = chosen_proc.stderr.readline()
                 if not chunk:
                     break
                 line = chunk.decode("utf-8", errors="replace").rstrip("\n")
@@ -861,19 +895,21 @@ async def stream_pipe(
 
     threading.Thread(target=_drain_stderr, daemon=True).start()
 
+    prefixed = _PrefixedPipe(chosen_prefix, chosen_proc.stdout)
+
     before_opts = "-nostdin -re -hide_banner -loglevel warning -probesize 32k -analyzeduration 0 -fflags nobuffer -flags low_delay"
     out_opts = "-vn"
     if afilter:
         out_opts += f" -af {shlex.quote(afilter)}"
 
     src = discord.FFmpegPCMAudio(
-        source=yt.stdout,
+        source=prefixed,
         executable=ff_exec,
         before_options=before_opts,
         options=out_opts,
         pipe=True,
     )
-    setattr(src, "_ytdlp_proc", yt)
+    setattr(src, "_ytdlp_proc", chosen_proc)
     setattr(src, "_title", title)
     return src, title
 

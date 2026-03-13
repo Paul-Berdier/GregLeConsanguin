@@ -1,18 +1,3 @@
-# extractors/token_fetcher.py
-# ------------------------------------------------------------
-# Récupération robuste du PO_TOKEN depuis YouTube
-# - pip install playwright
-# - python -m playwright install chromium
-# - Headless par défaut (PLAYWRIGHT_HEADLESS=0 pour débug visuel)
-# - Cookies optionnels via YTDLP_COOKIES_B64 (format Netscape, texte)
-#
-# Public:
-#   fetch_po_token(video_id: str, timeout_ms: int = 15000) -> Optional[str]
-#
-# Thread-safe:
-# - Utilise l’API sync Playwright dans un thread séparé pour éviter
-#   "Sync API inside asyncio loop".
-# ------------------------------------------------------------
 from __future__ import annotations
 
 import base64
@@ -22,15 +7,21 @@ from typing import Optional
 
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
 
+
 def _dbg(msg: str) -> None:
     if _YTDBG:
         print(f"[YTDBG][po] {msg}")
 
+
 def _inject_cookies_from_b64(context) -> None:
-    """Injecte des cookies depuis YTDLP_COOKIES_B64 (format Netscape)."""
+    """
+    Injecte des cookies depuis YTDLP_COOKIES_B64 (format Netscape).
+    Utile si le provider Playwright a besoin d'un contexte déjà authentifié.
+    """
     b64 = os.getenv("YTDLP_COOKIES_B64")
     if not b64:
         return
+
     try:
         raw = base64.b64decode(b64).decode("utf-8", errors="replace")
     except Exception:
@@ -76,11 +67,15 @@ def _inject_cookies_from_b64(context) -> None:
         except Exception as e:
             _dbg(f"cookies inject fail: {e}")
 
+
 def _maybe_handle_consent(page, timeout_ms: int) -> None:
-    """Essaye de fermer les bannières de consentement si présentes."""
+    """
+    Ferme les bannières de consentement si présentes.
+    """
     try:
         candidates = [
             'button:has-text("I agree")',
+            'button:has-text("Accept all")',
             'button:has-text("J\'accepte")',
             'button:has-text("J’accepte")',
             "#introAgreeButton",
@@ -98,55 +93,56 @@ def _maybe_handle_consent(page, timeout_ms: int) -> None:
     except Exception:
         pass
 
+
 def _extract_token_js(page) -> Optional[str]:
-    """Essaie plusieurs méthodes JS pour extraire PO_TOKEN côté client."""
-    js_primary = """
+    """
+    Plusieurs méthodes JS pour extraire un PO token.
+    """
+    js_candidates = [
+        """
         (() => {
           try {
-            const g = (window.ytcfg && ((window.ytcfg.data) || (window.ytcfg.get && window.ytcfg.get()))) || {};
+            const g = (window.ytcfg && ((window.ytcfg.data_) || (window.ytcfg.data) || (window.ytcfg.get && window.ytcfg.get()))) || {};
             return (g && (g.PO_TOKEN || g['PO_TOKEN'])) || null;
           } catch(e) { return null; }
         })();
-    """
-    token = page.evaluate(js_primary)
-    if token and isinstance(token, str) and len(token) > 10:
-        return token
-
-    js_cfg = """
+        """,
+        """
         (() => {
           try {
-            if (window.yt && window.yt.config_ && window.yt.config_.PO_TOKEN)
+            if (window.yt && window.yt.config_ && window.yt.config_.PO_TOKEN) {
               return window.yt.config_.PO_TOKEN;
+            }
             return null;
           } catch(e) { return null; }
         })();
-    """
-    token2 = page.evaluate(js_cfg)
-    if token2 and isinstance(token2, str) and len(token2) > 10:
-        return token2
-
-    js_scan = """
+        """,
+        """
         (() => {
           try {
-            const scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent || '');
-            for (const code of scripts) {
-              const m = code.match(/"PO_TOKEN"\\s*:\\s*"([^"]{20,})"/);
-              if (m) return m[1];
-            }
-            const html = document.documentElement.innerHTML;
-            const m2 = html.match(/"PO_TOKEN"\\s*:\\s*"([^"]{20,})"/);
-            return m2 ? m2[1] : null;
+            const html = document.documentElement.outerHTML || '';
+            const m = html.match(/"PO_TOKEN"\\s*:\\s*"([^"]{20,})"/);
+            return m ? m[1] : null;
           } catch(e) { return null; }
         })();
-    """
-    token3 = page.evaluate(js_scan)
-    if token3 and isinstance(token3, str) and len(token3) > 10:
-        return token3
+        """,
+    ]
+
+    for js in js_candidates:
+        try:
+            token = page.evaluate(js)
+            if token and isinstance(token, str) and len(token) > 10:
+                return token
+        except Exception:
+            pass
 
     return None
 
+
 def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
-    """Exécuté dans un thread séparé → autorise l'usage de l'API Sync Playwright."""
+    """
+    Thread worker pour éviter l'usage sync Playwright dans la loop asyncio.
+    """
     try:
         from playwright.sync_api import sync_playwright  # type: ignore
     except Exception:
@@ -161,16 +157,12 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
         "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     )
-    desktop_ua = os.getenv("YTDLP_FORCE_UA_DESKTOP") or (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
 
+    # On se concentre sur les surfaces les plus utiles pour mweb / youtube music
     tries = [
         (f"https://m.youtube.com/watch?v={video_id}&app=m&persist_app=1", mobile_ua),
-        (f"https://m.youtube.com/watch?v={video_id}&pbj=1", mobile_ua),
-        (f"https://www.youtube.com/watch?v={video_id}&bpctr=9999999999", desktop_ua),
-        (f"https://music.youtube.com/watch?v={video_id}", desktop_ua),
+        (f"https://music.youtube.com/watch?v={video_id}", mobile_ua),
+        (f"https://www.youtube.com/watch?v={video_id}&bpctr=9999999999", mobile_ua),
     ]
 
     with sync_playwright() as p:
@@ -196,16 +188,16 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
                 _maybe_handle_consent(page, timeout_ms)
 
                 try:
-                    page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                    page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
                 except Exception:
                     pass
 
-                for _ in range(8):
+                for _ in range(10):
                     tok = _extract_token_js(page)
                     if tok and len(tok) > 10:
                         out["token"] = tok
                         out["why"] = "ok"
-                        _dbg(f"found PO_TOKEN (len={len(tok)})")
+                        _dbg(f"found PO token (len={len(tok)})")
                         return
                     page.wait_for_timeout(300)
 
@@ -226,24 +218,22 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
         out["token"] = None
         out["why"] = "not_found"
 
+
 def fetch_po_token(video_id: str, timeout_ms: int = 15000) -> Optional[str]:
     """
-    Ouvre différentes variantes de watch (m/www/music) et tente d’extraire PO_TOKEN.
-    Retourne le token brut (sans préfixe) ou None.
+    Retourne un token brut (sans préfixe client.gvs+).
     """
     _dbg(f"auto-fetch for video {video_id}")
     box = {"token": None, "why": "init"}
 
     t = threading.Thread(target=_worker_fetch, args=(video_id, timeout_ms, box), daemon=True)
     t.start()
-    t.join(timeout=(timeout_ms / 1000.0) + 8.0)  # marge
+    t.join(timeout=(timeout_ms / 1000.0) + 8.0)
 
-    if not box.get("token"):
-        _dbg(f"auto-fetch ended: {box.get('why')}")
-    return box.get("token")
+    token = box.get("token")
+    why = box.get("why")
+    if token and isinstance(token, str) and len(token) > 10:
+        return token
 
-if __name__ == "__main__":
-    import sys
-    vid = (sys.argv[1] if len(sys.argv) > 1 else "dQw4w9WgXcQ")
-    tok = fetch_po_token(vid, timeout_ms=15000)
-    print("PO_TOKEN:", ("<none>" if not tok else f"{tok[:12]}... (len={len(tok)})"))
+    _dbg(f"auto-fetch ended: {why}")
+    return None
