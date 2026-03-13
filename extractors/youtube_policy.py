@@ -74,47 +74,31 @@ def has_auth_cookies(cookies_file: Optional[str], cookies_from_browser: Optional
     return bool(cookiefile or browser)
 
 
-def client_supports_cookies(client: str) -> bool:
-    """
-    yt-dlp/YouTube ne supportent pas toutes les combinaisons client+cookies de façon équivalente.
-    On limite les clients auth aux clients web-like.
-    """
-    return client in {"mweb", "web", "web_creator"}
-
-
 def strategy_order(cookies_file: Optional[str], cookies_from_browser: Optional[str]) -> List[YouTubeStrategy]:
     """
     Politique de fallback propre et déterministe.
 
-    Règles :
-    - priorité à mweb + PO token
-    - quand on a des cookies, on NE démarre PAS par mweb+cookies :
-      on tente d'abord mweb+po sans cookies pour éviter les 403 observés
-    - les clients ios/android ne sont jamais combinés avec cookies
-    - web/web_creator restent des fallbacks tardifs
+    État actuel :
+    - yt-dlp recommande mweb + PO token
+    - mais dans les contextes anti-bot, les cookies doivent souvent être prioritaires
+    - ios/android restent uniquement sans cookies
     """
     has_auth = has_auth_cookies(cookies_file, cookies_from_browser)
     out: List[YouTubeStrategy] = []
 
-    # 1) voie principale recommandée
-    out.append(YouTubeStrategy("mweb", use_cookies=False, needs_po_token=True, label="mweb+po-nocookie"))
-
-    # 2) même client mais avec auth seulement en second temps
     if has_auth:
+        # Stratégies auth en premier
         out.append(YouTubeStrategy("mweb", use_cookies=True, needs_po_token=True, label="mweb+po+cookies"))
-
-    # 3) web-like fallback avec cookies si dispo
-    if has_auth:
         out.append(YouTubeStrategy("web_creator", use_cookies=True, needs_po_token=False, label="web_creator+cookies"))
         out.append(YouTubeStrategy("web", use_cookies=True, needs_po_token=False, label="web+cookies"))
 
-    # 4) fallback no-cookie
+    # Fallbacks no-cookie
+    out.append(YouTubeStrategy("mweb", use_cookies=False, needs_po_token=True, label="mweb+po-nocookie"))
     out.append(YouTubeStrategy("ios", use_cookies=False, needs_po_token=False, label="ios-nocookie"))
     out.append(YouTubeStrategy("android", use_cookies=False, needs_po_token=False, label="android-nocookie"))
     out.append(YouTubeStrategy("web_creator", use_cookies=False, needs_po_token=False, label="web_creator-nocookie"))
     out.append(YouTubeStrategy("web", use_cookies=False, needs_po_token=False, label="web-nocookie"))
 
-    # déduplication stable
     seen = set()
     deduped: List[YouTubeStrategy] = []
     for s in out:

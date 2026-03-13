@@ -225,7 +225,7 @@ def _base_ydl_opts(
     ratelimit_bps: Optional[int],
     allow_playlist: bool,
     extract_flat: bool,
-    search: bool,
+    search_mode: bool,
 ) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "quiet": True,
@@ -253,7 +253,7 @@ def _base_ydl_opts(
         opts["proxy"] = _HTTP_PROXY
     if ratelimit_bps:
         opts["ratelimit"] = int(ratelimit_bps)
-    if search:
+    if search_mode:
         opts["default_search"] = "ytsearch5"
 
     for k in list(opts.keys()):
@@ -273,14 +273,14 @@ def _opts_for_strategy(
     ratelimit_bps: Optional[int],
     allow_playlist: bool = False,
     extract_flat: bool = False,
-    search: bool = False,
+    search_mode: bool = False,
 ) -> Dict[str, Any]:
     opts = _base_ydl_opts(
         ffmpeg_path=ffmpeg_path,
         ratelimit_bps=ratelimit_bps,
         allow_playlist=allow_playlist,
         extract_flat=extract_flat,
-        search=search,
+        search_mode=search_mode,
     )
 
     opts["extractor_args"]["youtube"]["player_client"] = [strategy.client]
@@ -300,15 +300,32 @@ def _opts_for_strategy(
     return opts
 
 
-def _normalize_search_entries(entries: List[dict]) -> List[dict]:
-    out = []
+def _normalize_info(info: Any) -> Optional[dict]:
+    if not info or not isinstance(info, dict):
+        return None
+
+    if "entries" in info and isinstance(info.get("entries"), list):
+        entries = [e for e in info.get("entries") or [] if isinstance(e, dict)]
+        if not entries:
+            return None
+        info = entries[0]
+
+    return info if isinstance(info, dict) else None
+
+
+def _normalize_search_entries(entries: List[Any]) -> List[dict]:
+    out: List[dict] = []
     for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+
         title = e.get("title") or "Titre inconnu"
         url = e.get("webpage_url") or e.get("url") or ""
-        if not (url.startswith("http://") or url.startswith("https://")):
+        if not (isinstance(url, str) and (url.startswith("http://") or url.startswith("https://"))):
             vid = e.get("id")
             if vid:
                 url = f"https://www.youtube.com/watch?v={vid}"
+
         out.append({
             "title": title,
             "url": url,
@@ -335,13 +352,19 @@ def search(query: str, *, cookies_file: Optional[str] = None, cookies_from_brows
                     cookies_file=cookies_file,
                     cookies_from_browser=cookies_from_browser,
                     ratelimit_bps=None,
-                    search=True,
+                    search_mode=True,
                 )
             ) as ydl:
                 data = ydl.extract_info(f"ytsearch5:{query}", download=False)
-                entries = _normalize_search_entries((data or {}).get("entries") or [])
-                if entries:
-                    return entries
+
+            if not isinstance(data, dict):
+                _dbg(f"search returned non-dict for [{strategy.display_name()}]")
+                continue
+
+            entries = _normalize_search_entries(data.get("entries") or [])
+            if entries:
+                return entries
+
         except Exception as e:
             _dbg(f"search strategy failed [{strategy.display_name()}]: {e}")
 
@@ -402,8 +425,9 @@ def expand_bundle(
             )
             opts["playlistend"] = n
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(page_url, download=False)
-            if info and info.get("entries"):
+                candidate = ydl.extract_info(page_url, download=False)
+            if isinstance(candidate, dict) and candidate.get("entries"):
+                info = candidate
                 break
         except Exception as e:
             _dbg(f"expand_bundle failed [{strategy.display_name()}]: {e}")
@@ -424,8 +448,9 @@ def expand_bundle(
                 )
                 opts["playlistend"] = n
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(playlist_url, download=False)
-                if info and info.get("entries"):
+                    candidate = ydl.extract_info(playlist_url, download=False)
+                if isinstance(candidate, dict) and candidate.get("entries"):
+                    info = candidate
                     break
             except Exception:
                 pass
@@ -434,6 +459,9 @@ def expand_bundle(
     out: List[Dict[str, Any]] = []
 
     for e in entries:
+        if not isinstance(e, dict):
+            continue
+
         vid = e.get("id") or e.get("url")
         if not vid:
             continue
@@ -501,12 +529,11 @@ def _probe_info_once(
             ratelimit_bps=ratelimit_bps,
         )
         with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if info and "entries" in info and info["entries"]:
-                info = info["entries"][0]
-            if info:
-                info["_strategy"] = strategy.display_name()
-            return info or None
+            raw = ydl.extract_info(query, download=False)
+        info = _normalize_info(raw)
+        if info:
+            info["_strategy"] = strategy.display_name()
+        return info
     except Exception as e:
         _dbg(f"info probe failed [{strategy.display_name()}]: {e}")
         return None
@@ -588,12 +615,6 @@ def _build_cli_command(
 
 
 class _PrefixedPipe:
-    """
-    File-like object :
-    - sert d'abord un prébuffer déjà lu pendant la validation
-    - puis relit directement dans le stdout du process yt-dlp
-    """
-
     def __init__(self, prefix: bytes, raw_pipe):
         self._prefix = bytearray(prefix or b"")
         self._pipe = raw_pipe
@@ -653,16 +674,6 @@ def _validate_pipe_start_sync(
     cookies_from_browser: Optional[str],
     ratelimit_bps: Optional[int],
 ) -> Tuple[bool, Optional[subprocess.Popen], bytes, List[str]]:
-    """
-    Lance réellement yt-dlp et considère la stratégie valide uniquement si :
-    - on reçoit suffisamment d'octets sur stdout
-    - sans erreur 403 / page reload pendant la fenêtre de validation
-
-    Si succès :
-      retourne le process vivant + les premiers bytes déjà lus
-    Sinon :
-      nettoie le process et retourne False.
-    """
     cmd = _build_cli_command(
         strategy,
         query,
@@ -704,7 +715,13 @@ def _validate_pipe_start_sync(
                     break
                 stderr_lines.append(item)
                 low = item.lower()
-                if ("http error 403" in low) or ("forbidden" in low) or ("the page needs to be reloaded" in low):
+                if (
+                    "http error 403" in low
+                    or "forbidden" in low
+                    or "the page needs to be reloaded" in low
+                    or "sign in to confirm you’re not a bot" in low
+                    or "sign in to confirm you're not a bot" in low
+                ):
                     try:
                         proc.kill()
                     except Exception:
@@ -731,7 +748,6 @@ def _validate_pipe_start_sync(
 
         time.sleep(0.05)
 
-    # timeout sans volume de données suffisant => on considère que ce n'est pas assez fiable
     try:
         proc.kill()
     except Exception:
@@ -949,17 +965,19 @@ def download(
             })
 
             with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info and "entries" in info and info["entries"]:
-                    info = info["entries"][0]
+                raw = ydl.extract_info(url, download=True)
 
-                req = (info or {}).get("requested_downloads") or []
-                filepath = req[0].get("filepath") if req else (os.path.splitext(ydl.prepare_filename(info))[0] + ".mp3")
-                title = (info or {}).get("title", "Musique inconnue")
-                duration = (info or {}).get("duration")
+                info = _normalize_info(raw)
+                if not info:
+                    raise RuntimeError("Aucune info vidéo exploitable après download")
+
+                req = info.get("requested_downloads") or []
+                filepath = req[0].get("filepath") if req and isinstance(req[0], dict) else (os.path.splitext(ydl.prepare_filename(info))[0] + ".mp3")
+                title = info.get("title", "Musique inconnue")
+                duration = info.get("duration")
                 return filepath, title, duration
 
-        except DownloadError as e:
+        except Exception as e:
             last_error = e
             _dbg(f"download strategy failed [{strategy.display_name()}]: {e}")
             continue
