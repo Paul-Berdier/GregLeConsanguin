@@ -21,6 +21,7 @@ class GregSettings(BaseSettings):
     log_level: str = "INFO"
     flask_secret_key: str = "change-me-in-production"
     redis_url: str = "redis://localhost:6379"
+    web_url: str = ""
 
     # ── Discord ──
     discord_token: str = ""
