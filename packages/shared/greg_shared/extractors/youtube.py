@@ -19,7 +19,7 @@ import discord
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
-from extractors.youtube_policy import (
+from .youtube_policy import (
     YouTubeStrategy,
     resolve_cookie_inputs,
     strategy_order,
@@ -185,7 +185,7 @@ def _fetch_po_token_for(video_id: str, client: str) -> Optional[str]:
         return env_token
 
     try:
-        from extractors.token_fetcher import fetch_po_token
+        from .token_fetcher import fetch_po_token
     except Exception:
         fetch_po_token = None
 
