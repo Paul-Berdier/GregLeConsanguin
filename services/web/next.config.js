@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // output: 'standalone',
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'i.ytimg.com' },
@@ -7,8 +8,12 @@ const nextConfig = {
       { protocol: 'https', hostname: 'cdn.discordapp.com' },
     ],
   },
+
   async rewrites() {
     const apiUrl = process.env.API_URL || 'http://api.railway.internal:3000';
+
+    console.log('[next.config] API rewrite target =', apiUrl);
+
     return [
       {
         source: '/api/:path*',

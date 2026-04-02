@@ -1,31 +1,50 @@
 import type { ApiResponse, SearchResult } from './types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL
-  ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1`
-  : '/api/v1';
+const API_BASE = '/api/v1';
 
-async function request<T = any>(path: string, opts: RequestInit = {}): Promise<ApiResponse<T>> {
+async function request<T = any>(
+  path: string,
+  opts: RequestInit = {}
+): Promise<ApiResponse<T>> {
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...opts.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        ...opts.headers,
+      },
       ...opts,
     });
+
     return await res.json();
   } catch (e) {
-    return { ok: false, error: String(e) };
+    return {
+      ok: false,
+      error: String(e),
+    };
   }
 }
 
 export const api = {
   // Player
   getState: (guildId: string) =>
-    request(`/player/state?guild_id=${guildId}`),
+    request(`/player/state?guild_id=${encodeURIComponent(guildId)}`),
 
-  enqueue: (guildId: string, userId: string, query: string, meta?: Record<string, any>) =>
+  enqueue: (
+    guildId: string,
+    userId: string,
+    query: string,
+    meta?: Record<string, any>
+  ) =>
     request('/player/enqueue', {
       method: 'POST',
-      body: JSON.stringify({ guild_id: guildId, user_id: userId, query, url: query, ...meta }),
+      body: JSON.stringify({
+        guild_id: guildId,
+        user_id: userId,
+        query,
+        url: query,
+        ...meta,
+      }),
     }),
 
   skip: (guildId: string, userId: string) =>
