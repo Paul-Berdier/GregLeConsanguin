@@ -1,6 +1,7 @@
 """Redis listener — reçoit les state updates du bot et les relaye en WebSocket.
 
-Fonctionne dans un thread séparé (eventlet compatible).
+Utilise get_message() en polling au lieu de listen() pour éviter
+les socket_timeout avec eventlet.
 """
 from __future__ import annotations
 
@@ -23,17 +24,29 @@ def start_redis_listener(socketio):
     """Écoute les channels Redis et relaye en Socket.IO."""
     while True:
         try:
-            r = redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=5)
+            r = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=10,
+                # PAS de socket_timeout ici — on gère le polling nous-mêmes
+            )
             pubsub = r.pubsub()
             pubsub.subscribe(CHANNEL_STATE, CHANNEL_PROGRESS, CHANNEL_BOT_STATUS)
-            logger.info("Redis listener connected, listening on %s", [CHANNEL_STATE, CHANNEL_PROGRESS, CHANNEL_BOT_STATUS])
+            logger.info(
+                "Redis listener connected, listening on %s",
+                [CHANNEL_STATE, CHANNEL_PROGRESS, CHANNEL_BOT_STATUS],
+            )
 
-            for message in pubsub.listen():
-                if message["type"] != "message":
+            # Polling loop au lieu de listen() bloquant
+            while True:
+                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg is None:
+                    continue
+                if msg["type"] != "message":
                     continue
                 try:
-                    data = json.loads(message["data"])
-                    channel = message["channel"]
+                    data = json.loads(msg["data"])
+                    channel = msg["channel"]
                     _handle_message(socketio, channel, data)
                 except Exception as e:
                     logger.error("Error handling Redis message: %s", e)

@@ -71,7 +71,7 @@ export const api = {
     }),
 
   // Search
-  autocomplete: (q: string, limit = 8): Promise<ApiResponse<SearchResult[]>> =>
+  autocomplete: (q: string, limit = 8): Promise<ApiResponse<SearchResult>> =>
     request(`/search/autocomplete?q=${encodeURIComponent(q)}&limit=${limit}`),
 
   // Auth
