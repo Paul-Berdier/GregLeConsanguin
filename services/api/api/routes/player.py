@@ -33,8 +33,21 @@ def get_state():
     gid = _gid(request)
     if not gid:
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
+
     res = send_command("get_state", gid, timeout=8)
-    return jsonify(res), 200 if res.get("ok") else 500
+
+    if res.get("ok"):
+        return jsonify(res), 200
+
+    return jsonify({
+        "ok": True,
+        "current": None,
+        "queue": [],
+        "is_paused": True,
+        "repeat_all": False,
+        "progress": {"elapsed": 0, "duration": 0},
+        "backend_error": res.get("error", "unknown"),
+    }), 200
 
 
 @bp.post("/player/enqueue")

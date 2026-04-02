@@ -611,8 +611,17 @@ export function usePlayer() {
       useStore.getState().setGuildId(s.guilds[0].id);
     }
 
-    await refreshSpotify();
-    if (useStore.getState().spotifyLinked) await refreshSpotifyPlaylists().catch(() => {});
+    try {
+      await refreshSpotify();
+      if (useStore.getState().spotifyLinked) {
+        await refreshSpotifyPlaylists().catch(() => {});
+      }
+    } catch {
+      useStore.getState().setSpotifyLinked(false);
+      useStore.getState().setSpotifyProfile(null);
+      useStore.getState().setSpotifyPlaylists([]);
+      useStore.getState().setSpotifyTracks([]);
+    }
 
     await refreshPlaylist().catch(() => {});
     useStore.getState().setStatus('Prêt ✅', 'ok');
