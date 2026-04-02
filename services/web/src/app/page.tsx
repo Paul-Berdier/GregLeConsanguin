@@ -92,23 +92,25 @@ function SearchBar() {
   const [sugIdx, setSugIdx] = useState(-1);
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   const fetchSuggestions = useCallback(async (q: string) => {
-    if (q.length < 2) {
+    if (q.trim().length < 2) {
       setSuggestions([]);
       setShowSugs(false);
       return;
     }
 
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-
     try {
-      const rows = await api.autocomplete(q, 8);
-      setSuggestions(Array.isArray(rows) ? rows : []);
-      setShowSugs(Array.isArray(rows) && rows.length > 0);
-      setSugIdx(-1);
+      const res = await api.autocomplete(q, 8);
+
+      if (res.ok && Array.isArray(res.results)) {
+        setSuggestions(res.results);
+        setShowSugs(res.results.length > 0);
+        setSugIdx(-1);
+      } else {
+        setSuggestions([]);
+        setShowSugs(false);
+      }
     } catch {
       setSuggestions([]);
       setShowSugs(false);
@@ -117,17 +119,26 @@ function SearchBar() {
 
   const handleInput = (val: string) => {
     setQuery(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchSuggestions(val), 180);
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = setTimeout(() => {
+      fetchSuggestions(val);
+    }, 180);
   };
 
-  const submit = async (payload: Record<string, any>) => {
+  const submit = async (rawQuery: string, meta?: Record<string, any>) => {
+    if (!rawQuery.trim()) return;
+
     setLoading(true);
     setShowSugs(false);
     setSuggestions([]);
     setQuery('');
+
     try {
-      await enqueue(payload);
+      await enqueue(rawQuery, meta);
     } finally {
       setLoading(false);
     }
@@ -137,10 +148,7 @@ function SearchBar() {
     const url = sug.webpage_url || sug.url || '';
     const title = sug.title || '';
 
-    submit({
-      query: url || title,
-      url: url || undefined,
-      webpage_url: url || undefined,
+    submit(url || title, {
       title: title || undefined,
       artist: sug.artist || sug.uploader || sug.channel || undefined,
       duration: sug.duration ?? undefined,
@@ -148,6 +156,8 @@ function SearchBar() {
       thumbnail: sug.thumb || sug.thumbnail || undefined,
       source: sug.source || sug.provider || 'yt',
       provider: sug.provider || sug.source || undefined,
+      webpage_url: url || undefined,
+      url: url || undefined,
     });
   };
 
@@ -157,7 +167,7 @@ function SearchBar() {
     if (sugIdx >= 0 && suggestions[sugIdx]) {
       submitFromSuggestion(suggestions[sugIdx]);
     } else {
-      submit({ query: query.trim() });
+      submit(query.trim());
     }
   };
 
@@ -212,7 +222,7 @@ function SearchBar() {
         <div className="suggestion-dropdown animate-fade-in">
           {suggestions.map((sug, i) => (
             <div
-              key={`${sug.url}-${i}`}
+              key={`${sug.url || sug.title || 'sug'}-${i}`}
               className={`suggestion-item ${i === sugIdx ? 'active' : ''}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => submitFromSuggestion(sug)}
