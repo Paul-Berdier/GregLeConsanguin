@@ -19,16 +19,21 @@ def main():
     from api.services.redis_listener import start_redis_listener
 
     app = create_app()
-    port = int(os.getenv("PORT", "3000"))
 
-    # Start Redis listener in background thread
-    threading.Thread(target=start_redis_listener, args=(socketio,), daemon=True).start()
+    port = int(os.getenv("PORT", "3000"))
+    host = os.getenv("HOST", "::")  # Railway private networking: bind IPv6/dual-stack
+
+    threading.Thread(
+        target=start_redis_listener,
+        args=(socketio,),
+        daemon=True,
+    ).start()
     logger.info("Redis listener started in background thread.")
 
-    logger.info("Starting API on 0.0.0.0:%d", port)
+    logger.info("Starting API on %s:%d", host, port)
     socketio.run(
         app,
-        host="0.0.0.0",
+        host=host,
         port=port,
         use_reloader=False,
         allow_unsafe_werkzeug=True,
