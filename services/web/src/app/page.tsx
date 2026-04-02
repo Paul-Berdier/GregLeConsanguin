@@ -1,75 +1,179 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { usePlayer } from '@/hooks/usePlayer';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { usePlayer, useStore } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
 import { randomQuote } from '@/theme/greg-quotes';
-import type { SearchResult, GuildInfo } from '@/lib/types';
+import type { SearchResult, SpotifyPlaylist, SpotifyTrack, Track } from '@/lib/types';
 
-function formatTime(sec?: number): string {
-  if (sec == null || sec < 0) return '--:--';
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
+// ── Helpers ──
+function formatTime(sec?: number | null): string {
+  if (sec == null || !isFinite(sec) || sec < 0) return '--:--';
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
 }
 
-// ─── Search Bar ───
-function SearchBar({ onAdd }: { onAdd: (q: string, meta?: any) => void }) {
+function discordAvatarUrl(me: any, size = 96): string | null {
+  if (!me?.id) return null;
+  if (me.avatar_url && typeof me.avatar_url === 'string' && me.avatar_url.startsWith('http')) return me.avatar_url;
+  if (me.avatar) return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
+  try {
+    const id = BigInt(String(me.id || '0'));
+    const idx = Number((id >> 22n) % 6n);
+    return `https://cdn.discordapp.com/embed/avatars/${isFinite(idx) ? idx : 0}.png`;
+  } catch { return null; }
+}
+
+// ── Icons (SVG inline) ──
+const Icons = {
+  play: <path fill="currentColor" d="M8 5v14l11-7z" />,
+  pause: <path fill="currentColor" d="M6 5h4v14H6zm8 0h4v14h-4z" />,
+  skip: <path fill="currentColor" d="M7 6v12l8.5-6zM17 6h2v12h-2z" />,
+  prev: <path fill="currentColor" d="M7 6h2v12H7zm3 6l10 6V6z" />,
+  stop: <path fill="currentColor" d="M6 6h12v12H6z" />,
+  repeat: <path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z" />,
+  trash: <path fill="currentColor" d="M9 3h6l1 2h5v2H3V5h5zm1 6h2v10h-2zm4 0h2v10h-2z" />,
+  search: <path fill="currentColor" d="M10 4a6 6 0 1 0 3.6 10.8l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />,
+  user: <path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z" />,
+};
+
+function Icon({ icon, size = 18 }: { icon: keyof typeof Icons; size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} className="flex-shrink-0">
+      {Icons[icon]}
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════
+// Search Bar
+// ═══════════════════════════════════════════
+function SearchBar() {
+  const { enqueue } = usePlayer();
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const debounce = useRef<any>(null);
+  const [showSugs, setShowSugs] = useState(false);
+  const [sugIdx, setSugIdx] = useState(-1);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<any>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const search = useCallback(async (q: string) => {
-    if (q.length < 2) { setSuggestions([]); return; }
-    const res = await api.autocomplete(q, 6);
-    if (res.ok && res.results) setSuggestions(res.results);
+  const fetchSuggestions = useCallback(async (q: string) => {
+    if (q.length < 2) { setSuggestions([]); setShowSugs(false); return; }
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    try {
+      const rows = await api.autocomplete(q, 8);
+      setSuggestions(rows);
+      setShowSugs(rows.length > 0);
+      setSugIdx(-1);
+    } catch {}
   }, []);
 
   const handleInput = (val: string) => {
     setQuery(val);
-    clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => search(val), 300);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSuggestions(val), 180);
   };
 
-  const submit = (q: string, meta?: any) => {
-    onAdd(q, meta);
-    setQuery('');
+  const submit = async (payload: Record<string, any>) => {
+    setLoading(true);
+    setShowSugs(false);
     setSuggestions([]);
-    setShowSuggestions(false);
+    setQuery('');
+    try { await enqueue(payload); } finally { setLoading(false); }
+  };
+
+  const submitFromSuggestion = (sug: SearchResult) => {
+    const url = sug.webpage_url || sug.url || '';
+    const title = sug.title || '';
+    submit({
+      query: url || title,
+      url: url || undefined,
+      webpage_url: url || undefined,
+      title: title || undefined,
+      artist: sug.artist || sug.uploader || sug.channel || undefined,
+      duration: sug.duration ?? undefined,
+      thumb: sug.thumb || sug.thumbnail || undefined,
+      thumbnail: sug.thumb || sug.thumbnail || undefined,
+      source: sug.source || sug.provider || 'yt',
+      provider: sug.provider || sug.source || undefined,
+    });
+  };
+
+  const submitRaw = () => {
+    if (!query.trim()) return;
+    if (sugIdx >= 0 && suggestions[sugIdx]) {
+      submitFromSuggestion(suggestions[sugIdx]);
+    } else {
+      submit({ query: query.trim() });
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSugs) {
+      if (e.key === 'Enter') { e.preventDefault(); submitRaw(); }
+      return;
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSugIdx((i) => Math.min(suggestions.length - 1, i + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setSugIdx((i) => Math.max(-1, i - 1)); }
+    else if (e.key === 'Enter') { e.preventDefault(); submitRaw(); }
+    else if (e.key === 'Escape') { setShowSugs(false); }
   };
 
   return (
-    <div className="relative flex-1 max-w-xl">
-      <div className="flex gap-2">
+    <div className="relative flex-1 min-w-0" style={{ minWidth: '280px' }}>
+      <div className="card-greg flex items-center gap-2.5 px-3 py-2.5">
+        <Icon icon="search" />
         <input
           value={query}
           onChange={(e) => handleInput(e.target.value)}
-          onFocus={() => setShowSuggestions(true)}
-          onKeyDown={(e) => e.key === 'Enter' && query && submit(query)}
-          placeholder="Rechercher une complainte…"
-          className="flex-1 bg-parchment-800/60 border border-gold/20 rounded-medieval px-4 py-2 text-parchment-200 placeholder:text-parchment-500 focus:outline-none focus:border-gold/50 text-sm"
+          onFocus={() => { if (suggestions.length) setShowSugs(true); }}
+          onBlur={() => setTimeout(() => setShowSugs(false), 150)}
+          onKeyDown={handleKeyDown}
+          placeholder="Rechercher YouTube…"
+          className="flex-1 bg-transparent border-none outline-none text-txt text-sm placeholder:text-muted min-w-0"
         />
-        <button onClick={() => query && submit(query)} className="btn-primary text-sm">
+        <button
+          onClick={submitRaw}
+          disabled={loading || !query.trim()}
+          className={`btn-primary text-sm ${loading ? 'btn-loading' : ''}`}
+        >
           Ajouter
         </button>
       </div>
-      {showSuggestions && suggestions.length > 0 && (
-        <div className="absolute top-full left-0 right-0 mt-1 card-medieval z-50 max-h-64 overflow-y-auto">
-          {suggestions.map((s, i) => (
-            <button
+
+      {showSugs && suggestions.length > 0 && (
+        <div className="suggestion-dropdown animate-fade-in">
+          {suggestions.map((sug, i) => (
+            <div
               key={i}
-              onClick={() => submit(s.url, { title: s.title, thumb: s.thumb, duration: s.duration, artist: s.artist })}
-              className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gold/10 transition-colors text-left"
+              className={`suggestion-item ${i === sugIdx ? 'active' : ''}`}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => submitFromSuggestion(sug)}
+              onMouseEnter={() => setSugIdx(i)}
             >
-              {s.thumb && (
-                <img src={s.thumb} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />
+              {(sug.thumb || sug.thumbnail) && (
+                <div
+                  className="queue-thumb"
+                  style={{
+                    width: 42, height: 42,
+                    backgroundImage: `url("${sug.thumb || sug.thumbnail}")`,
+                  }}
+                />
               )}
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-parchment-200 truncate">{s.title}</div>
-                <div className="text-xs text-parchment-500">{s.artist} · {formatTime(s.duration)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-txt truncate">{sug.title}</div>
+                <div className="text-xs text-muted truncate">
+                  {sug.artist || sug.uploader || sug.channel || ''}
+                </div>
               </div>
-            </button>
+              {sug.duration != null && (
+                <span className="text-xs text-muted flex-shrink-0">{formatTime(sug.duration)}</span>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -77,212 +181,568 @@ function SearchBar({ onAdd }: { onAdd: (q: string, meta?: any) => void }) {
   );
 }
 
-// ─── Now Playing ───
-function NowPlaying({ state, onPause, onSkip, onStop, onRepeat }: any) {
-  const cur = state.current;
-  if (!cur) {
-    return (
-      <div className="card-medieval p-6 text-center text-parchment-500">
-        <div className="greg-title text-xl mb-2">Silence…</div>
-        <p className="text-sm">La file est vide. Ajoutez un morceau pour réveiller Greg.</p>
-      </div>
-    );
-  }
+// ═══════════════════════════════════════════
+// Now Playing
+// ═══════════════════════════════════════════
+function NowPlaying() {
+  const { player, togglePause, skip, stop, toggleRepeat, restartTrack } = usePlayer();
+  const cur = player.current;
 
-  const thumb = cur.thumb || cur.thumbnail || state.thumbnail;
-  const pct = state.duration ? Math.min(100, (state.position / state.duration) * 100) : 0;
+  const dur = player.duration || cur?.duration || 0;
+  const pct = dur > 0 ? Math.min(100, (player.position / dur) * 100) : 0;
 
   return (
-    <div className="card-medieval p-5">
-      <div className="text-xs text-gold/60 uppercase tracking-wider mb-3 font-semibold">En cours</div>
-      <div className="flex gap-4">
-        {thumb && (
-          <img src={thumb} alt="" className="w-20 h-20 rounded-medieval object-cover shadow-lg flex-shrink-0" />
-        )}
-        <div className="flex-1 min-w-0">
-          <div className="text-lg font-semibold text-parchment-100 truncate">{cur.title}</div>
-          {cur.artist && <div className="text-sm text-parchment-400 truncate">{cur.artist}</div>}
-          {state.requested_by_user && (
-            <div className="text-xs text-parchment-500 mt-1">
-              Demandé par {state.requested_by_user.display_name}
-            </div>
-          )}
+    <div className="card-greg p-[18px] flex flex-col gap-3.5 h-full min-h-0 overflow-hidden">
+      {/* Artwork */}
+      <div className="self-center flex-shrink-0">
+        <div
+          className="rounded-[18px] border border-stroke shadow-greg"
+          style={{
+            width: 'clamp(140px, 14vw, 220px)',
+            height: 'clamp(140px, 14vw, 220px)',
+            background: cur?.thumb
+              ? `url("${cur.thumb}") center/cover no-repeat`
+              : 'rgba(15, 23, 42, 0.7)',
+            boxShadow: cur?.thumb ? '0 16px 48px rgba(0,0,0,0.5)' : undefined,
+          }}
+        />
+      </div>
+
+      {/* Meta */}
+      <div className="min-w-0 w-full text-center">
+        <div className="font-black text-xl text-txt truncate">
+          {cur?.title || 'Rien en cours'}
         </div>
+        <div className="text-sm text-muted mt-1 truncate">
+          {cur?.artist || '—'}
+        </div>
+        {cur?.addedBy?.name && (
+          <div className="text-xs text-muted/70 mt-1">
+            Demandé par {cur.addedBy.name}
+          </div>
+        )}
       </div>
 
       {/* Progress */}
-      <div className="mt-4">
-        <div className="progress-bar-track">
-          <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
+      <div className="w-full mt-1">
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${pct}%` }} />
         </div>
-        <div className="flex justify-between text-xs text-parchment-500 mt-1">
-          <span>{formatTime(state.position)}</span>
-          <span>{formatTime(state.duration)}</span>
+        <div className="flex justify-between mt-1.5 text-xs text-muted">
+          <span>{formatTime(player.position)}</span>
+          <span>{formatTime(dur)}</span>
         </div>
       </div>
 
       {/* Controls */}
-      <div className="flex items-center justify-center gap-3 mt-4">
-        <button onClick={onPause} className="btn-medieval w-10 h-10 flex items-center justify-center text-lg" title={state.paused ? 'Reprendre' : 'Pause'}>
-          {state.paused ? '▶' : '⏸'}
+      <div className="flex items-center justify-center gap-2.5 mt-auto pt-2">
+        <button onClick={stop} className="control-btn" title="Stop">
+          <Icon icon="stop" size={22} />
         </button>
-        <button onClick={onSkip} className="btn-medieval w-10 h-10 flex items-center justify-center text-lg" title="Skip">
-          ⏭
+        <button onClick={restartTrack} className="control-btn" title="Restart">
+          <Icon icon="prev" size={22} />
         </button>
-        <button onClick={onStop} className="btn-medieval w-10 h-10 flex items-center justify-center text-lg" title="Stop">
-          ⏹
+        <button onClick={togglePause} className="control-btn-primary" title="Play / Pause">
+          <Icon icon={player.paused ? 'play' : 'pause'} size={28} />
+        </button>
+        <button onClick={skip} className="control-btn" title="Skip">
+          <Icon icon="skip" size={22} />
         </button>
         <button
-          onClick={onRepeat}
-          className={`btn-medieval w-10 h-10 flex items-center justify-center text-lg ${state.repeat_all ? 'bg-gold/30 border-gold/50' : ''}`}
+          onClick={toggleRepeat}
+          className={`control-btn ${player.repeat ? 'control-btn-active' : ''}`}
           title="Repeat"
         >
-          🔁
+          <Icon icon="repeat" size={22} />
         </button>
       </div>
     </div>
   );
 }
 
-// ─── Queue ───
-function Queue({ queue, onRemove }: { queue: any[]; onRemove: (i: number) => void }) {
-  if (!queue.length) return null;
-
-  // Chiffres romains pour le style
-  const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X',
-    'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX'];
+// ═══════════════════════════════════════════
+// Queue
+// ═══════════════════════════════════════════
+function Queue() {
+  const { player, removeFromQueue, playAt } = usePlayer();
+  const q = player.queue;
 
   return (
-    <div className="card-medieval p-4">
-      <div className="text-xs text-gold/60 uppercase tracking-wider mb-3 font-semibold">
-        📜 File d'attente ({queue.length} complainte{queue.length > 1 ? 's' : ''})
+    <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-2.5 flex-shrink-0">
+        <div className="font-black text-sm">File d&#39;attente</div>
+        <div className="text-xs text-muted">{q.length} titre{q.length > 1 ? 's' : ''}</div>
       </div>
-      <div className="space-y-1 max-h-[40vh] overflow-y-auto">
-        {queue.map((item, i) => (
-          <div key={i} className="flex items-center gap-3 px-3 py-2 rounded hover:bg-gold/5 transition-colors group">
-            <span className="text-xs text-gold/40 font-medieval w-6 text-right flex-shrink-0">
-              {roman[i] || i + 1}
-            </span>
-            {(item.thumb || item.thumbnail) && (
-              <img src={item.thumb || item.thumbnail} alt="" className="w-8 h-8 rounded object-cover flex-shrink-0" />
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-parchment-200 truncate">{item.title}</div>
-              <div className="text-xs text-parchment-500">{item.artist || ''} · {formatTime(item.duration)}</div>
-            </div>
-            <button
-              onClick={() => onRemove(i)}
-              className="opacity-0 group-hover:opacity-100 text-crimson-light hover:text-crimson text-sm transition-opacity"
-              title="Supprimer"
+
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 max-[1100px]:max-h-[50vh] max-[1100px]:flex-none">
+        {q.length === 0 ? (
+          <div className="queue-empty text-sm">File d&#39;attente vide</div>
+        ) : (
+          q.map((item, i) => (
+            <div
+              key={`${item.url}-${i}`}
+              className="queue-item group"
+              onClick={() => playAt(i)}
             >
-              🗑
-            </button>
-          </div>
-        ))}
+              {item.thumb && (
+                <div
+                  className="queue-thumb"
+                  style={{ backgroundImage: `url("${item.thumb}")` }}
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-txt truncate">{item.title || 'Titre inconnu'}</div>
+                <div className="text-xs text-muted truncate">
+                  {[item.artist, item.duration != null ? formatTime(item.duration) : '', item.addedBy?.name ? `par ${item.addedBy.name}` : ''].filter(Boolean).join(' • ')}
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeFromQueue(i); }}
+                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[38px] h-[38px] rounded-[14px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
+                title="Retirer"
+              >
+                <Icon icon="trash" size={16} />
+              </button>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Main Page ───
-export default function Home() {
+// ═══════════════════════════════════════════
+// Spotify Panel
+// ═══════════════════════════════════════════
+function SpotifyPanel() {
   const {
-    state, guildId, userId, connected,
-    setGuild, setUser, enqueue, skip, stop, togglePause, repeat, remove,
+    me, spotifyLinked, spotifyProfile,
+    spotifyPlaylists, spotifyTracks, spotifyCurrentPlaylistId,
+    spotifyLogin, spotifyLogout, refreshSpotifyPlaylists,
+    selectSpotifyPlaylist, spotifyQuickplay, spotifyDeletePlaylist,
+    spotifyRemoveTrack, spotifyCreatePlaylist,
+    spotifyAddCurrent, spotifyAddQueue,
+    guildId, player,
   } = usePlayer();
 
-  const [guilds, setGuilds] = useState<GuildInfo[]>([]);
-  const [user, setUserData] = useState<any>(null);
-  const [quote] = useState(randomQuote);
+  const [createName, setCreateName] = useState('');
+  const [createPublic, setCreatePublic] = useState(true);
+  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
 
-  // Load user & guilds on mount
-  useEffect(() => {
-    api.getMe().then((res) => {
-      if (res.ok && res.user) {
-        setUserData(res.user);
-        setUser(res.user.id);
-      }
-    });
-    api.getGuilds().then((res) => {
-      if (res.ok && res.guilds) setGuilds(res.guilds);
-    });
+  const targetPlaylist = useMemo(() => {
+    if (!spotifyCurrentPlaylistId) return null;
+    return spotifyPlaylists.find((p) => String(p.id) === String(spotifyCurrentPlaylistId)) || { id: spotifyCurrentPlaylistId, name: 'Playlist' };
+  }, [spotifyPlaylists, spotifyCurrentPlaylistId]);
 
-    // Restore guild from localStorage
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('greg.guild_id') : null;
-    if (saved) setGuild(saved);
-  }, []);
+  const canAddTarget = !!(me && spotifyLinked && guildId && targetPlaylist?.id);
 
-  const handleGuildChange = (id: string) => {
-    setGuild(id);
-    if (typeof window !== 'undefined') localStorage.setItem('greg.guild_id', id);
+  const handleLoadPlaylists = async () => {
+    setLoadingPlaylists(true);
+    try { await refreshSpotifyPlaylists(); } finally { setLoadingPlaylists(false); }
   };
 
+  const handleCreate = async () => {
+    const name = createName.trim() || 'Greg Playlist';
+    await spotifyCreatePlaylist(name, createPublic);
+    setCreateName('');
+  };
+
+  const handleQuickplay = (track: SpotifyTrack, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const artistsStr = Array.isArray(track.artists)
+      ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
+      : String(track.artists || track.artist || '');
+    spotifyQuickplay({
+      name: track.name || track.title || '',
+      artists: artistsStr,
+      duration_ms: track.duration_ms ?? null,
+      image: track.image || track.album?.images?.[0]?.url || null,
+      uri: track.uri || null,
+    });
+  };
+
+  const handleRemoveTrack = (track: SpotifyTrack, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const uri = track.uri || (track.id ? `spotify:track:${track.id}` : '');
+    if (!uri || !spotifyCurrentPlaylistId) return;
+    if (!window.confirm(`Retirer "${track.name || track.title}" de la playlist ?`)) return;
+    spotifyRemoveTrack(spotifyCurrentPlaylistId, uri);
+  };
+
+  const handleDeletePlaylist = (pl: SpotifyPlaylist, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Supprimer / unfollow "${pl.name}" ?`)) return;
+    spotifyDeletePlaylist(pl.id);
+  };
+
+  // Not logged in to Discord
+  if (!me) {
+    return (
+      <div className="card-greg p-3.5 h-full">
+        <div className="text-sm text-muted">Connecte-toi à Discord pour lier Spotify</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen">
-      {/* Header */}
-      <header className="flex items-center gap-4 px-6 py-3 border-b border-gold/10 bg-parchment-900/80 backdrop-blur-sm flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gold/20 flex items-center justify-center text-lg">👑</div>
+    <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-2.5 flex-shrink-0 flex-wrap">
+        <div>
+          <div className="text-sm text-muted">
+            {spotifyLinked
+              ? `Spotify lié : ${spotifyProfile?.display_name || spotifyProfile?.id || '—'}`
+              : 'Spotify non lié'}
+          </div>
+          {spotifyLinked && spotifyProfile?.id && (
+            <div className="text-xs text-muted/70 mt-0.5">@{spotifyProfile.id}</div>
+          )}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {!spotifyLinked ? (
+            <button onClick={spotifyLogin} className="btn-ghost text-sm">Lier Spotify</button>
+          ) : (
+            <>
+              <button onClick={spotifyLogout} className="btn-ghost text-sm">Délier</button>
+              <button
+                onClick={handleLoadPlaylists}
+                className={`btn-ghost text-sm ${loadingPlaylists ? 'btn-loading' : ''}`}
+                disabled={loadingPlaylists}
+              >
+                Charger playlists
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Panel (only when linked) */}
+      {spotifyLinked && (
+        <>
+          {/* Toolbar: target + add buttons */}
+          <div className="flex items-center justify-between gap-2.5 mt-3 flex-wrap flex-shrink-0">
+            <div className="flex items-center gap-1.5 px-3 py-2.5 rounded-[14px] border border-stroke bg-greg-dark min-w-[200px]">
+              <span className="text-sm text-muted">Cible</span>
+              <span className="font-black text-sm text-txt truncate">
+                {targetPlaylist?.name || '—'}
+              </span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => targetPlaylist?.id && spotifyAddCurrent(targetPlaylist.id)}
+                disabled={!canAddTarget}
+                className="btn-ghost text-xs"
+              >
+                + Titre en cours
+              </button>
+              <button
+                onClick={() => {
+                  if (!targetPlaylist?.id) return;
+                  const n = Math.min(player.queue.length, 20);
+                  if (!n) return;
+                  if (!window.confirm(`Ajouter ${n} titre${n > 1 ? 's' : ''} à "${targetPlaylist.name}" ?`)) return;
+                  spotifyAddQueue(targetPlaylist.id);
+                }}
+                disabled={!canAddTarget || !player.queue.length}
+                className="btn-ghost text-xs"
+              >
+                + File
+              </button>
+            </div>
+          </div>
+
+          {/* Grid: playlists + tracks */}
+          <div className="spotify-grid gap-3 mt-3 flex-1 min-h-0">
+            {/* Playlists column */}
+            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
+              <div className="font-black text-sm mb-2 flex-shrink-0">Playlists</div>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
+                {spotifyPlaylists.length === 0 ? (
+                  <div className="queue-empty text-xs">Aucune playlist chargée</div>
+                ) : spotifyPlaylists.map((pl) => {
+                  const isActive = String(pl.id) === String(spotifyCurrentPlaylistId);
+                  const img = pl.images?.[0]?.url || pl.image || pl.cover || '';
+                  const owner = typeof pl.owner === 'string' ? pl.owner : pl.owner?.display_name || pl.owner?.id || '';
+                  const total = pl.tracks?.total ?? pl.tracks_total ?? pl.tracksCount ?? '';
+                  return (
+                    <div
+                      key={pl.id}
+                      className={`queue-item group ${isActive ? 'spotify-active' : ''}`}
+                      onClick={() => selectSpotifyPlaylist(pl.id)}
+                    >
+                      {img && (
+                        <div className="queue-thumb" style={{ backgroundImage: `url("${img}")` }} />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold text-txt truncate">{pl.name}</div>
+                        <div className="text-xs text-muted truncate">
+                          {[owner, total ? `${total} tracks` : ''].filter(Boolean).join(' • ')}
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => handleDeletePlaylist(pl, e)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
+                        title="Supprimer"
+                      >
+                        <Icon icon="trash" size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Tracks column */}
+            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
+              <div className="font-black text-sm mb-2 flex-shrink-0">Titres</div>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
+                {spotifyTracks.length === 0 ? (
+                  <div className="queue-empty text-xs">Aucun titre chargé</div>
+                ) : spotifyTracks.map((track, idx) => {
+                  const name = track.name || track.title || 'Track';
+                  const artist = Array.isArray(track.artists)
+                    ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
+                    : String(track.artists || track.artist || '');
+                  const img = track.album?.images?.[0]?.url || track.image || '';
+                  return (
+                    <div key={`${track.id || idx}`} className="queue-item group">
+                      {img && (
+                        <div className="queue-thumb" style={{ backgroundImage: `url("${img}")` }} />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold text-txt truncate">{name}</div>
+                        <div className="text-xs text-muted truncate">{artist}</div>
+                      </div>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button
+                          onClick={(e) => handleQuickplay(track, e)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-stroke hover:border-primary/40 bg-white/5 hover:bg-primary/10 flex items-center justify-center text-txt"
+                          title="Lire"
+                        >
+                          <Icon icon="play" size={14} />
+                        </button>
+                        <button
+                          onClick={(e) => handleRemoveTrack(track, e)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
+                          title="Retirer"
+                        >
+                          <Icon icon="trash" size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Create playlist */}
+          <div className="flex gap-2.5 items-center flex-wrap mt-3 flex-shrink-0">
+            <input
+              value={createName}
+              onChange={(e) => setCreateName(e.target.value)}
+              placeholder="Nom de playlist (ex: Greg Bangers)"
+              className="flex-1 min-w-[200px] px-3 py-2.5 rounded-[12px] border border-stroke bg-[rgba(17,24,39,0.65)] text-txt outline-none text-sm"
+            />
+            <label className="flex items-center gap-2 text-xs text-muted select-none cursor-pointer">
+              <input
+                type="checkbox"
+                checked={createPublic}
+                onChange={(e) => setCreatePublic(e.target.checked)}
+                className="accent-primary"
+              />
+              Publique
+            </label>
+            <button onClick={handleCreate} className="btn-primary text-sm">Créer playlist</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// Main Page
+// ═══════════════════════════════════════════
+export default function Home() {
+  const {
+    me, guilds, guildId, socketReady, status,
+    boot, setGuild, refreshMe,
+  } = usePlayer();
+
+  const [booted, setBooted] = useState(false);
+
+  // Boot on mount
+  useEffect(() => {
+    boot().then(() => setBooted(true)).catch(() => setBooted(true));
+  }, [boot]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const { togglePause, skip, restartTrack, toggleRepeat } = useStore.getState() as any;
+    // We get actions from the hook level, but for keyboard we need the module-level approach
+    const handler = async (ev: KeyboardEvent) => {
+      const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || (ev.target as HTMLElement)?.isContentEditable) return;
+
+      if (ev.code === 'Space') {
+        ev.preventDefault();
+        // Get fresh state actions
+        const s = useStore.getState();
+        if (s.me && s.guildId) {
+          try { await api.togglePause(s.guildId, s.me.id); } catch {}
+        }
+      } else if (ev.key?.toLowerCase() === 'n') {
+        const s = useStore.getState();
+        if (s.me && s.guildId) {
+          try { await api.queueSkip(s.guildId, s.me.id); } catch {}
+        }
+      } else if (ev.key?.toLowerCase() === 'p') {
+        const s = useStore.getState();
+        if (s.me && s.guildId) {
+          try { await api.restart(s.guildId, s.me.id); } catch {}
+        }
+      } else if (ev.key?.toLowerCase() === 'r') {
+        const s = useStore.getState();
+        if (s.me && s.guildId) {
+          try { await api.repeat(s.guildId, s.me.id); } catch {}
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  // Refresh on focus
+  useEffect(() => {
+    const handler = () => { refreshMe().catch(() => {}); };
+    window.addEventListener('focus', handler);
+    return () => window.removeEventListener('focus', handler);
+  }, [refreshMe]);
+
+  const avatarUrl = discordAvatarUrl(me, 128);
+  const userName = me?.global_name || me?.display_name || me?.username || '';
+
+  return (
+    <div
+      className="flex flex-col h-[100dvh]"
+      style={{
+        padding: `calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))`,
+        gap: '14px',
+      }}
+    >
+      {/* ═══ Topbar ═══ */}
+      <header className="flex items-start justify-between gap-3.5 flex-shrink-0 flex-wrap min-[1100px]:flex-nowrap">
+        {/* Brand */}
+        <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-3 min-w-[240px]">
+          <img
+            src="/images/icon.png"
+            alt="Greg"
+            className="w-9 h-9 rounded-[10px] object-cover border border-stroke bg-[#111827]"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
           <div>
-            <div className="greg-title text-lg leading-tight">Greg le Consanguin</div>
-            <div className="text-xs text-parchment-500">Web Player</div>
+            <div className="font-black tracking-wide text-sm">Greg le Consanguin</div>
+            <div className="text-xs text-muted mt-0.5">Web Player</div>
           </div>
         </div>
 
-        <SearchBar onAdd={(q, meta) => enqueue(q, meta)} />
+        {/* Search */}
+        <SearchBar />
 
-        <div className="flex items-center gap-3 ml-auto">
-          <select
-            value={guildId}
-            onChange={(e) => handleGuildChange(e.target.value)}
-            className="bg-parchment-800/60 border border-gold/20 rounded-medieval px-3 py-1.5 text-sm text-parchment-300 focus:outline-none focus:border-gold/50"
-          >
-            <option value="">Serveur…</option>
-            {guilds.map((g) => (
-              <option key={g.id} value={g.id}>{g.name}</option>
-            ))}
-          </select>
-
-          {user ? (
-            <div className="flex items-center gap-2">
-              {user.avatar && (
-                <img
-                  src={`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=32`}
-                  alt="" className="w-7 h-7 rounded-full"
-                />
-              )}
-              <span className="text-sm text-parchment-300">{user.global_name || user.username}</span>
+        {/* Auth + Guild */}
+        <div className="flex gap-2.5 flex-wrap min-[1100px]:flex-nowrap min-w-[260px]">
+          {/* Auth card */}
+          <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-2.5 min-w-0">
+            <div
+              className="w-[34px] h-[34px] rounded-[12px] flex items-center justify-center font-black flex-shrink-0"
+              style={{
+                background: avatarUrl ? `url("${avatarUrl}") center/contain no-repeat rgba(15,23,42,0.65)` : 'rgba(99,102,241,0.18)',
+                border: '1px solid rgba(99,102,241,0.25)',
+                color: avatarUrl ? 'transparent' : undefined,
+              }}
+            >
+              {!avatarUrl && (userName?.[0]?.toUpperCase() || '?')}
             </div>
-          ) : (
-            <a href="/api/v1/auth/login" className="btn-medieval text-xs">Se connecter</a>
-          )}
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-sm truncate">{userName || 'Non connecté'}</div>
+              <div className="text-xs text-muted mt-0.5">{me ? 'Connecté' : 'Discord'}</div>
+            </div>
+            {me ? (
+              <button
+                onClick={async () => {
+                  try {
+                    await api.logout();
+                    useStore.getState().setMe(null);
+                    useStore.getState().setGuilds([]);
+                    useStore.getState().setGuildId('');
+                    useStore.getState().setSpotifyLinked(false);
+                    useStore.getState().setSpotifyProfile(null);
+                    useStore.getState().setSpotifyPlaylists([]);
+                    useStore.getState().setSpotifyTracks([]);
+                    localStorage.removeItem('greg.webplayer.guild_id');
+                    localStorage.removeItem('greg.spotify.last_playlist_id');
+                    window.location.reload();
+                  } catch {}
+                }}
+                className="btn-ghost text-xs flex-shrink-0"
+              >
+                Déco
+              </button>
+            ) : (
+              <a href={api.getLoginUrl()} className="btn-ghost text-xs flex-shrink-0">
+                Se connecter
+              </a>
+            )}
+          </div>
 
-          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald' : 'bg-crimson'}`} title={connected ? 'Connecté' : 'Déconnecté'} />
+          {/* Guild select */}
+          <div className="card-greg-light flex items-center gap-2.5 px-3 py-2.5 min-w-0">
+            <label className="text-xs text-muted flex-shrink-0">Serveur</label>
+            <select
+              value={guildId}
+              onChange={(e) => setGuild(e.target.value)}
+              className="flex-1 px-2.5 py-2 rounded-[10px] border border-stroke bg-[rgba(17,24,39,0.65)] text-txt outline-none text-sm min-w-0"
+            >
+              <option value="">— Choisir —</option>
+              {guilds.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </header>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-hidden px-6 py-4">
-        <div className="max-w-2xl mx-auto space-y-4 h-full flex flex-col">
-          <NowPlaying
-            state={state}
-            onPause={togglePause}
-            onSkip={skip}
-            onStop={stop}
-            onRepeat={repeat}
-          />
-
-          <div className="flex-1 overflow-hidden">
-            <Queue queue={state.queue} onRemove={remove} />
-          </div>
+      {/* ═══ Main Grid ═══ */}
+      <main className="flex-1 min-h-0 main-grid gap-3.5"
+      >
+        <div className="min-h-0 max-[1100px]:order-1 max-[1100px]:h-auto">
+          <Queue />
+        </div>
+        <div className="min-h-0 max-[1100px]:order-0 max-[1100px]:h-auto">
+          <NowPlaying />
+        </div>
+        <div className="min-h-0 max-[1100px]:order-2 max-[1100px]:h-auto">
+          <SpotifyPanel />
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="px-6 py-2 border-t border-gold/10 bg-parchment-900/60 text-center flex-shrink-0">
-        <p className="text-xs text-parchment-500 italic">
-          💬 "{quote}" — Greg le Consanguin
-        </p>
+      {/* ═══ Status Bar ═══ */}
+      <footer className="flex-shrink-0">
+        <div
+          className={`rounded-greg px-3.5 py-3 shadow-greg text-[13px] transition-all duration-300 ${
+            status.kind === 'ok' ? 'status-ok' :
+            status.kind === 'err' ? 'status-err' :
+            'border border-stroke bg-greg-darker'
+          }`}
+          style={{ color: status.kind === 'err' ? 'rgba(254,226,226,0.95)' : 'rgba(226,232,240,0.95)' }}
+        >
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'}`} />
+            <span>{status.text}</span>
+          </div>
+        </div>
       </footer>
     </div>
   );

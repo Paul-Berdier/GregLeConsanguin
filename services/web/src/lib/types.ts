@@ -2,47 +2,33 @@ export interface Track {
   url: string;
   title: string;
   artist?: string;
-  duration?: number;
-  thumb?: string;
-  thumbnail?: string;
-  provider?: string;
-  added_by?: string;
-  priority?: number;
-  requested_by?: string;
+  duration?: number | null;
+  thumb?: string | null;
+  thumbnail?: string | null;
+  provider?: string | null;
+  addedBy?: { id: string; name: string } | null;
+  raw?: any;
 }
 
 export interface UserInfo {
   id: string;
   username: string;
-  display_name: string;
+  display_name?: string;
   global_name?: string;
   avatar?: string;
   avatar_url?: string;
   weight?: number;
-  weight_key?: string;
   is_admin?: boolean;
   is_owner?: boolean;
 }
 
-export interface Progress {
-  elapsed: number;
-  duration?: number;
-}
-
 export interface PlayerState {
-  guild_id?: number;
-  current?: Track | null;
+  current: Track | null;
   queue: Track[];
   paused: boolean;
-  is_paused?: boolean;
+  repeat: boolean;
   position: number;
-  duration?: number;
-  progress?: Progress;
-  thumbnail?: string;
-  repeat_all: boolean;
-  requested_by_user?: UserInfo | null;
-  queue_users?: Record<string, UserInfo>;
-  only_elapsed?: boolean;
+  duration: number;
 }
 
 export interface GuildInfo {
@@ -54,27 +40,46 @@ export interface GuildInfo {
 export interface SearchResult {
   title: string;
   url: string;
-  artist: string;
-  duration?: number;
-  thumb: string;
-  thumbnail: string;
-  source: string;
+  webpage_url?: string;
+  artist?: string;
+  uploader?: string;
+  channel?: string;
+  duration?: number | null;
+  thumb?: string | null;
+  thumbnail?: string | null;
+  source?: string;
+  provider?: string;
 }
 
-export interface ApiResponse<T = any> {
-  ok: boolean;
-  error?: string;
-  // Generic fields returned by various endpoints
-  data?: T;
-  state?: PlayerState;
-  results?: T[];
-  // Auth
-  user?: UserInfo & Record<string, any>;
-  // Guilds
-  guilds?: GuildInfo[];
-  // Player
-  result?: any;
-  repeat_all?: boolean;
-  action?: string;
-  [key: string]: any;  // Allow extra fields
+export interface SpotifyProfile {
+  id: string;
+  display_name?: string;
+  email?: string;
+  images?: { url: string }[];
 }
+
+export interface SpotifyPlaylist {
+  id: string;
+  name: string;
+  owner?: { display_name?: string; id?: string } | string;
+  tracks?: { total?: number };
+  tracks_total?: number;
+  tracksCount?: number;
+  images?: { url: string }[];
+  image?: string;
+  cover?: string;
+}
+
+export interface SpotifyTrack {
+  id: string;
+  name?: string;
+  title?: string;
+  uri?: string;
+  artists?: { name: string }[] | string;
+  artist?: string;
+  duration_ms?: number;
+  album?: { images?: { url: string }[] };
+  image?: string;
+}
+
+export type StatusKind = 'info' | 'ok' | 'err' | 'warn';
