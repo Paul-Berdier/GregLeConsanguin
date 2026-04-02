@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // output: 'standalone',
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'i.ytimg.com' },
@@ -9,7 +8,7 @@ const nextConfig = {
     ],
   },
   async rewrites() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://api.railway.internal:3000';
+    const apiUrl = process.env.API_URL || 'http://api.railway.internal:3000';
     return [
       {
         source: '/api/:path*',
