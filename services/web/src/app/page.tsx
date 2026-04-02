@@ -138,7 +138,10 @@ function SearchBar() {
     setQuery('');
 
     try {
-      await enqueue(rawQuery, meta);
+      await enqueue({
+        query: rawQuery,
+        ...meta,
+      });
     } finally {
       setLoading(false);
     }
