@@ -1,7 +1,20 @@
 FROM node:20-alpine
+
 WORKDIR /app
+
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ARG API_URL
+
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
+ENV API_URL=$API_URL
+
 COPY services/web/package.json ./
 RUN npm install
+
 COPY services/web/ .
+
 RUN npm run build
+
 CMD ["npm", "start"]
