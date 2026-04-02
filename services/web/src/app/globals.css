@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
+
+:root {
+  --bg: #0f0c08;
+  --bg-card: rgba(45, 36, 24, 0.82);
+  --bg-card-hover: rgba(45, 36, 24, 0.95);
+  --gold: #c9a84c;
+  --gold-light: #e6c45c;
+  --text: #d4c5a9;
+  --text-muted: #8b7d6b;
+  --crimson: #8b2e2e;
+  --emerald: #2e6b4f;
+  --border: rgba(201, 168, 76, 0.15);
+}
+
+body {
+  font-family: 'Crimson Text', Georgia, serif;
+  color: var(--text);
+  background:
+    radial-gradient(900px 500px at 20% -10%, rgba(201, 168, 76, 0.08), transparent 60%),
+    radial-gradient(700px 400px at 80% 100%, rgba(139, 46, 46, 0.06), transparent 55%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+/* Scrollbar médiévale */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: rgba(26, 20, 16, 0.5); }
+::-webkit-scrollbar-thumb {
+  background: rgba(201, 168, 76, 0.3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(201, 168, 76, 0.5); }
+
+/* Card médiévale */
+@layer components {
+  .card-medieval {
+    @apply rounded-medieval border border-gold/15 shadow-medieval;
+    background: var(--bg-card);
+    backdrop-filter: blur(12px);
+    transition: all 0.2s ease;
+  }
+  .card-medieval:hover {
+    @apply shadow-medieval-hover;
+    border-color: rgba(201, 168, 76, 0.25);
+  }
+
+  .btn-medieval {
+    @apply px-4 py-2 rounded-medieval font-semibold text-sm transition-all duration-200;
+    @apply bg-gold/20 text-gold border border-gold/30;
+  }
+  .btn-medieval:hover {
+    @apply bg-gold/30 border-gold/50 shadow-lg;
+  }
+  .btn-medieval:active {
+    @apply scale-95;
+  }
+
+  .btn-primary {
+    @apply btn-medieval bg-gold text-parchment-950 border-gold;
+  }
+  .btn-primary:hover {
+    @apply bg-gold-light;
+  }
+
+  .btn-danger {
+    @apply btn-medieval bg-crimson/20 text-crimson-light border-crimson/30;
+  }
+  .btn-danger:hover {
+    @apply bg-crimson/40 border-crimson/50;
+  }
+
+  .greg-title {
+    font-family: 'MedievalSharp', Georgia, serif;
+    color: var(--gold);
+    text-shadow: 0 2px 12px rgba(201, 168, 76, 0.3);
+  }
+
+  .progress-bar-track {
+    @apply h-1.5 rounded-full;
+    background: rgba(201, 168, 76, 0.15);
+  }
+  .progress-bar-fill {
+    @apply h-full rounded-full transition-all duration-1000 ease-linear;
+    background: linear-gradient(90deg, var(--gold), var(--gold-light));
+    box-shadow: 0 0 8px rgba(201, 168, 76, 0.4);
+  }
+}

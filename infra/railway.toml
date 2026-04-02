@@ -1,0 +1,20 @@
+# Railway multi-service configuration
+# Chaque service a son propre Dockerfile et contexte de build
+
+# Note: Railway détecte automatiquement les services via docker-compose.yml
+# ou via l'interface Railway. Ce fichier sert de documentation.
+
+# Services:
+# 1. bot     — Discord bot + player audio (services/bot/)
+# 2. api     — REST API + WebSocket (services/api/)
+# 3. web     — Frontend Next.js (services/web/)
+# 4. redis   — Redis plugin (ajouter via l'interface Railway)
+
+# Variables d'env partagées (à configurer dans Railway):
+# - REDIS_URL (auto-rempli par le plugin Redis)
+# - DISCORD_TOKEN
+# - DISCORD_CLIENT_ID
+# - DISCORD_CLIENT_SECRET
+# - GREG_OWNER_ID
+# - FLASK_SECRET_KEY
+# etc. (voir .env.example)

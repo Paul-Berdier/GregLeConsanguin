@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  # ─── Redis (bus de messages entre services) ───
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─── Bot Discord ───
+  bot:
+    build:
+      context: .
+      dockerfile: services/bot/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - playlist-data:/app/playlists
+      - ./services/bot/assets:/app/assets:ro
+    restart: unless-stopped
+
+  # ─── API REST + WebSocket ───
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PORT=3000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Frontend Next.js ───
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:3000
+      - NEXT_PUBLIC_WS_URL=http://api:3000
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  playlist-data:

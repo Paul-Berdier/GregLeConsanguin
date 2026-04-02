@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "greg-shared"
+version = "2.0.0"
+description = "Greg le Consanguin — Shared code (models, config, extractors, priority)"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.8",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["greg_shared*"]

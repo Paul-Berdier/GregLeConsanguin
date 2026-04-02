@@ -1,0 +1,19 @@
+# Web
+Flask>=3.0.0
+flask-cors>=4.0.0
+flask-socketio>=5.3.6
+flask-compress>=1.15
+python-socketio[client]>=5.11.3
+eventlet>=0.35.2
+gunicorn>=22.0
+
+# Redis
+redis>=5.0
+
+# Data
+pydantic>=2.8
+requests==2.32.3
+python-dotenv>=1.0.1
+
+# Utils
+simple-websocket>=1.0.0
