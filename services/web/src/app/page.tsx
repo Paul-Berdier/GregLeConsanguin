@@ -94,18 +94,18 @@ function SearchBar() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchSuggestions = useCallback(async (q: string) => {
-    if (q.trim().length < 2) {
+    if (q.length < 2) {
       setSuggestions([]);
       setShowSugs(false);
       return;
     }
 
     try {
-      const res = await api.autocomplete(q, 8);
+      const rows = await api.autocomplete(q, 8);
 
-      if (res.ok && Array.isArray(res.results)) {
-        setSuggestions(res.results);
-        setShowSugs(res.results.length > 0);
+      if (Array.isArray(rows)) {
+        setSuggestions(rows);
+        setShowSugs(rows.length > 0);
         setSugIdx(-1);
       } else {
         setSuggestions([]);
