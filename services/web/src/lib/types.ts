@@ -15,6 +15,8 @@ export interface UserInfo {
   id: string;
   username: string;
   display_name: string;
+  global_name?: string;
+  avatar?: string;
   avatar_url?: string;
   weight?: number;
   weight_key?: string;
@@ -49,14 +51,6 @@ export interface GuildInfo {
   icon?: string;
 }
 
-export interface ApiResponse<T = any> {
-  ok: boolean;
-  error?: string;
-  data?: T;
-  state?: PlayerState;
-  results?: T[];
-}
-
 export interface SearchResult {
   title: string;
   url: string;
@@ -65,4 +59,22 @@ export interface SearchResult {
   thumb: string;
   thumbnail: string;
   source: string;
+}
+
+export interface ApiResponse<T = any> {
+  ok: boolean;
+  error?: string;
+  // Generic fields returned by various endpoints
+  data?: T;
+  state?: PlayerState;
+  results?: T[];
+  // Auth
+  user?: UserInfo & Record<string, any>;
+  // Guilds
+  guilds?: GuildInfo[];
+  // Player
+  result?: any;
+  repeat_all?: boolean;
+  action?: string;
+  [key: string]: any;  // Allow extra fields
 }
