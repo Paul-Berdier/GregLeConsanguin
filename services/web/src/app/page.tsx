@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { usePlayer, useStore } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
 import { randomQuote } from '@/theme/greg-quotes';
-import type { SearchResult, SpotifyPlaylist, SpotifyTrack, Track } from '@/lib/types';
+import type { SearchResult, SpotifyPlaylist, SpotifyTrack } from '@/lib/types';
 
 // ── Helpers ──
 function formatTime(sec?: number | null): string {
@@ -15,15 +15,34 @@ function formatTime(sec?: number | null): string {
   return `${m}:${String(r).padStart(2, '0')}`;
 }
 
+function defaultDiscordAvatarIndex(id: unknown): number {
+  const digits = String(id ?? '').replace(/\D/g, '');
+  if (!digits) return 0;
+
+  let acc = 0;
+  for (let i = 0; i < digits.length; i += 1) {
+    acc = (acc * 31 + Number(digits[i])) % 6;
+  }
+  return acc;
+}
+
 function discordAvatarUrl(me: any, size = 96): string | null {
   if (!me?.id) return null;
-  if (me.avatar_url && typeof me.avatar_url === 'string' && me.avatar_url.startsWith('http')) return me.avatar_url;
-  if (me.avatar) return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
-  try {
-    const id = BigInt(String(me.id || '0'));
-    const idx = Number((id >> 22n) % 6n);
-    return `https://cdn.discordapp.com/embed/avatars/${isFinite(idx) ? idx : 0}.png`;
-  } catch { return null; }
+
+  if (
+    me.avatar_url &&
+    typeof me.avatar_url === 'string' &&
+    me.avatar_url.startsWith('http')
+  ) {
+    return me.avatar_url;
+  }
+
+  if (me.avatar) {
+    return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
+  }
+
+  const idx = defaultDiscordAvatarIndex(me.id);
+  return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
 }
 
 // ── Icons (SVG inline) ──
@@ -33,10 +52,25 @@ const Icons = {
   skip: <path fill="currentColor" d="M7 6v12l8.5-6zM17 6h2v12h-2z" />,
   prev: <path fill="currentColor" d="M7 6h2v12H7zm3 6l10 6V6z" />,
   stop: <path fill="currentColor" d="M6 6h12v12H6z" />,
-  repeat: <path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z" />,
+  repeat: (
+    <path
+      fill="currentColor"
+      d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"
+    />
+  ),
   trash: <path fill="currentColor" d="M9 3h6l1 2h5v2H3V5h5zm1 6h2v10h-2zm4 0h2v10h-2z" />,
-  search: <path fill="currentColor" d="M10 4a6 6 0 1 0 3.6 10.8l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" />,
-  user: <path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z" />,
+  search: (
+    <path
+      fill="currentColor"
+      d="M10 4a6 6 0 1 0 3.6 10.8l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"
+    />
+  ),
+  user: (
+    <path
+      fill="currentColor"
+      d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"
+    />
+  ),
 };
 
 function Icon({ icon, size = 18 }: { icon: keyof typeof Icons; size?: number }) {
@@ -57,24 +91,33 @@ function SearchBar() {
   const [showSugs, setShowSugs] = useState(false);
   const [sugIdx, setSugIdx] = useState(-1);
   const [loading, setLoading] = useState(false);
-  const debounceRef = useRef<any>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchSuggestions = useCallback(async (q: string) => {
-    if (q.length < 2) { setSuggestions([]); setShowSugs(false); return; }
+    if (q.length < 2) {
+      setSuggestions([]);
+      setShowSugs(false);
+      return;
+    }
+
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
+
     try {
       const rows = await api.autocomplete(q, 8);
-      setSuggestions(rows);
-      setShowSugs(rows.length > 0);
+      setSuggestions(Array.isArray(rows) ? rows : []);
+      setShowSugs(Array.isArray(rows) && rows.length > 0);
       setSugIdx(-1);
-    } catch {}
+    } catch {
+      setSuggestions([]);
+      setShowSugs(false);
+    }
   }, []);
 
   const handleInput = (val: string) => {
     setQuery(val);
-    clearTimeout(debounceRef.current);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => fetchSuggestions(val), 180);
   };
 
@@ -83,12 +126,17 @@ function SearchBar() {
     setShowSugs(false);
     setSuggestions([]);
     setQuery('');
-    try { await enqueue(payload); } finally { setLoading(false); }
+    try {
+      await enqueue(payload);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const submitFromSuggestion = (sug: SearchResult) => {
     const url = sug.webpage_url || sug.url || '';
     const title = sug.title || '';
+
     submit({
       query: url || title,
       url: url || undefined,
@@ -105,6 +153,7 @@ function SearchBar() {
 
   const submitRaw = () => {
     if (!query.trim()) return;
+
     if (sugIdx >= 0 && suggestions[sugIdx]) {
       submitFromSuggestion(suggestions[sugIdx]);
     } else {
@@ -114,13 +163,25 @@ function SearchBar() {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!showSugs) {
-      if (e.key === 'Enter') { e.preventDefault(); submitRaw(); }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitRaw();
+      }
       return;
     }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSugIdx((i) => Math.min(suggestions.length - 1, i + 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setSugIdx((i) => Math.max(-1, i - 1)); }
-    else if (e.key === 'Enter') { e.preventDefault(); submitRaw(); }
-    else if (e.key === 'Escape') { setShowSugs(false); }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSugIdx((i) => Math.min(suggestions.length - 1, i + 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSugIdx((i) => Math.max(-1, i - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      submitRaw();
+    } else if (e.key === 'Escape') {
+      setShowSugs(false);
+    }
   };
 
   return (
@@ -130,10 +191,12 @@ function SearchBar() {
         <input
           value={query}
           onChange={(e) => handleInput(e.target.value)}
-          onFocus={() => { if (suggestions.length) setShowSugs(true); }}
+          onFocus={() => {
+            if (suggestions.length) setShowSugs(true);
+          }}
           onBlur={() => setTimeout(() => setShowSugs(false), 150)}
           onKeyDown={handleKeyDown}
-          placeholder="Rechercher YouTube…"
+          placeholder="Rechercher YouTube..."
           className="flex-1 bg-transparent border-none outline-none text-txt text-sm placeholder:text-muted min-w-0"
         />
         <button
@@ -149,7 +212,7 @@ function SearchBar() {
         <div className="suggestion-dropdown animate-fade-in">
           {suggestions.map((sug, i) => (
             <div
-              key={i}
+              key={`${sug.url}-${i}`}
               className={`suggestion-item ${i === sugIdx ? 'active' : ''}`}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => submitFromSuggestion(sug)}
@@ -159,7 +222,8 @@ function SearchBar() {
                 <div
                   className="queue-thumb"
                   style={{
-                    width: 42, height: 42,
+                    width: 42,
+                    height: 42,
                     backgroundImage: `url("${sug.thumb || sug.thumbnail}")`,
                   }}
                 />
@@ -171,7 +235,9 @@ function SearchBar() {
                 </div>
               </div>
               {sug.duration != null && (
-                <span className="text-xs text-muted flex-shrink-0">{formatTime(sug.duration)}</span>
+                <span className="text-xs text-muted flex-shrink-0">
+                  {formatTime(sug.duration)}
+                </span>
               )}
             </div>
           ))}
@@ -193,7 +259,6 @@ function NowPlaying() {
 
   return (
     <div className="card-greg p-[18px] flex flex-col gap-3.5 h-full min-h-0 overflow-hidden">
-      {/* Artwork */}
       <div className="self-center flex-shrink-0">
         <div
           className="rounded-[18px] border border-stroke shadow-greg"
@@ -208,22 +273,16 @@ function NowPlaying() {
         />
       </div>
 
-      {/* Meta */}
       <div className="min-w-0 w-full text-center">
         <div className="font-black text-xl text-txt truncate">
           {cur?.title || 'Rien en cours'}
         </div>
-        <div className="text-sm text-muted mt-1 truncate">
-          {cur?.artist || '—'}
-        </div>
+        <div className="text-sm text-muted mt-1 truncate">{cur?.artist || '-'}</div>
         {cur?.addedBy?.name && (
-          <div className="text-xs text-muted/70 mt-1">
-            Demandé par {cur.addedBy.name}
-          </div>
+          <div className="text-xs text-muted/70 mt-1">Demande par {cur.addedBy.name}</div>
         )}
       </div>
 
-      {/* Progress */}
       <div className="w-full mt-1">
         <div className="progress-track">
           <div className="progress-fill" style={{ width: `${pct}%` }} />
@@ -234,7 +293,6 @@ function NowPlaying() {
         </div>
       </div>
 
-      {/* Controls */}
       <div className="flex items-center justify-center gap-2.5 mt-auto pt-2">
         <button onClick={stop} className="control-btn" title="Stop">
           <Icon icon="stop" size={22} />
@@ -270,17 +328,19 @@ function Queue() {
   return (
     <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
       <div className="flex items-center justify-between mb-2.5 flex-shrink-0">
-        <div className="font-black text-sm">File d&#39;attente</div>
-        <div className="text-xs text-muted">{q.length} titre{q.length > 1 ? 's' : ''}</div>
+        <div className="font-black text-sm">File d&apos;attente</div>
+        <div className="text-xs text-muted">
+          {q.length} titre{q.length > 1 ? 's' : ''}
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 max-[1100px]:max-h-[50vh] max-[1100px]:flex-none">
         {q.length === 0 ? (
-          <div className="queue-empty text-sm">File d&#39;attente vide</div>
+          <div className="queue-empty text-sm">File d&apos;attente vide</div>
         ) : (
           q.map((item, i) => (
             <div
-              key={`${item.url}-${i}`}
+              key={`${item.url || item.title || 'track'}-${i}`}
               className="queue-item group"
               onClick={() => playAt(i)}
             >
@@ -291,13 +351,20 @@ function Queue() {
                 />
               )}
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-txt truncate">{item.title || 'Titre inconnu'}</div>
+                <div className="text-sm font-bold text-txt truncate">
+                  {item.title || 'Titre inconnu'}
+                </div>
                 <div className="text-xs text-muted truncate">
-                  {[item.artist, item.duration != null ? formatTime(item.duration) : '', item.addedBy?.name ? `par ${item.addedBy.name}` : ''].filter(Boolean).join(' • ')}
+                  {[item.artist, item.duration != null ? formatTime(item.duration) : '', item.addedBy?.name ? `par ${item.addedBy.name}` : '']
+                    .filter(Boolean)
+                    .join(' • ')}
                 </div>
               </div>
               <button
-                onClick={(e) => { e.stopPropagation(); removeFromQueue(i); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeFromQueue(i);
+                }}
                 className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[38px] h-[38px] rounded-[14px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
                 title="Retirer"
               >
@@ -316,13 +383,24 @@ function Queue() {
 // ═══════════════════════════════════════════
 function SpotifyPanel() {
   const {
-    me, spotifyLinked, spotifyProfile,
-    spotifyPlaylists, spotifyTracks, spotifyCurrentPlaylistId,
-    spotifyLogin, spotifyLogout, refreshSpotifyPlaylists,
-    selectSpotifyPlaylist, spotifyQuickplay, spotifyDeletePlaylist,
-    spotifyRemoveTrack, spotifyCreatePlaylist,
-    spotifyAddCurrent, spotifyAddQueue,
-    guildId, player,
+    me,
+    spotifyLinked,
+    spotifyProfile,
+    spotifyPlaylists,
+    spotifyTracks,
+    spotifyCurrentPlaylistId,
+    spotifyLogin,
+    spotifyLogout,
+    refreshSpotifyPlaylists,
+    selectSpotifyPlaylist,
+    spotifyQuickplay,
+    spotifyDeletePlaylist,
+    spotifyRemoveTrack,
+    spotifyCreatePlaylist,
+    spotifyAddCurrent,
+    spotifyAddQueue,
+    guildId,
+    player,
   } = usePlayer();
 
   const [createName, setCreateName] = useState('');
@@ -331,14 +409,23 @@ function SpotifyPanel() {
 
   const targetPlaylist = useMemo(() => {
     if (!spotifyCurrentPlaylistId) return null;
-    return spotifyPlaylists.find((p) => String(p.id) === String(spotifyCurrentPlaylistId)) || { id: spotifyCurrentPlaylistId, name: 'Playlist' };
+    return (
+      spotifyPlaylists.find((p: SpotifyPlaylist) => String(p.id) === String(spotifyCurrentPlaylistId)) || {
+        id: spotifyCurrentPlaylistId,
+        name: 'Playlist',
+      }
+    );
   }, [spotifyPlaylists, spotifyCurrentPlaylistId]);
 
   const canAddTarget = !!(me && spotifyLinked && guildId && targetPlaylist?.id);
 
   const handleLoadPlaylists = async () => {
     setLoadingPlaylists(true);
-    try { await refreshSpotifyPlaylists(); } finally { setLoadingPlaylists(false); }
+    try {
+      await refreshSpotifyPlaylists();
+    } finally {
+      setLoadingPlaylists(false);
+    }
   };
 
   const handleCreate = async () => {
@@ -349,9 +436,11 @@ function SpotifyPanel() {
 
   const handleQuickplay = (track: SpotifyTrack, e: React.MouseEvent) => {
     e.stopPropagation();
+
     const artistsStr = Array.isArray(track.artists)
       ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
       : String(track.artists || track.artist || '');
+
     spotifyQuickplay({
       name: track.name || track.title || '',
       artists: artistsStr,
@@ -363,9 +452,11 @@ function SpotifyPanel() {
 
   const handleRemoveTrack = (track: SpotifyTrack, e: React.MouseEvent) => {
     e.stopPropagation();
+
     const uri = track.uri || (track.id ? `spotify:track:${track.id}` : '');
     if (!uri || !spotifyCurrentPlaylistId) return;
     if (!window.confirm(`Retirer "${track.name || track.title}" de la playlist ?`)) return;
+
     spotifyRemoveTrack(spotifyCurrentPlaylistId, uri);
   };
 
@@ -375,24 +466,22 @@ function SpotifyPanel() {
     spotifyDeletePlaylist(pl.id);
   };
 
-  // Not logged in to Discord
   if (!me) {
     return (
       <div className="card-greg p-3.5 h-full">
-        <div className="text-sm text-muted">Connecte-toi à Discord pour lier Spotify</div>
+        <div className="text-sm text-muted">Connecte-toi a Discord pour lier Spotify</div>
       </div>
     );
   }
 
   return (
     <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Header row */}
       <div className="flex items-center justify-between gap-2.5 flex-shrink-0 flex-wrap">
         <div>
           <div className="text-sm text-muted">
             {spotifyLinked
-              ? `Spotify lié : ${spotifyProfile?.display_name || spotifyProfile?.id || '—'}`
-              : 'Spotify non lié'}
+              ? `Spotify lie : ${spotifyProfile?.display_name || spotifyProfile?.id || '-'}`
+              : 'Spotify non lie'}
           </div>
           {spotifyLinked && spotifyProfile?.id && (
             <div className="text-xs text-muted/70 mt-0.5">@{spotifyProfile.id}</div>
@@ -400,10 +489,14 @@ function SpotifyPanel() {
         </div>
         <div className="flex gap-2 flex-wrap">
           {!spotifyLinked ? (
-            <button onClick={spotifyLogin} className="btn-ghost text-sm">Lier Spotify</button>
+            <button onClick={spotifyLogin} className="btn-ghost text-sm">
+              Lier Spotify
+            </button>
           ) : (
             <>
-              <button onClick={spotifyLogout} className="btn-ghost text-sm">Délier</button>
+              <button onClick={spotifyLogout} className="btn-ghost text-sm">
+                Delier
+              </button>
               <button
                 onClick={handleLoadPlaylists}
                 className={`btn-ghost text-sm ${loadingPlaylists ? 'btn-loading' : ''}`}
@@ -416,15 +509,13 @@ function SpotifyPanel() {
         </div>
       </div>
 
-      {/* Panel (only when linked) */}
       {spotifyLinked && (
         <>
-          {/* Toolbar: target + add buttons */}
           <div className="flex items-center justify-between gap-2.5 mt-3 flex-wrap flex-shrink-0">
             <div className="flex items-center gap-1.5 px-3 py-2.5 rounded-[14px] border border-stroke bg-greg-dark min-w-[200px]">
               <span className="text-sm text-muted">Cible</span>
               <span className="font-black text-sm text-txt truncate">
-                {targetPlaylist?.name || '—'}
+                {targetPlaylist?.name || '-'}
               </span>
             </div>
             <div className="flex gap-2 flex-wrap">
@@ -440,7 +531,9 @@ function SpotifyPanel() {
                   if (!targetPlaylist?.id) return;
                   const n = Math.min(player.queue.length, 20);
                   if (!n) return;
-                  if (!window.confirm(`Ajouter ${n} titre${n > 1 ? 's' : ''} à "${targetPlaylist.name}" ?`)) return;
+                  if (!window.confirm(`Ajouter ${n} titre${n > 1 ? 's' : ''} a "${targetPlaylist.name}" ?`)) {
+                    return;
+                  }
                   spotifyAddQueue(targetPlaylist.id);
                 }}
                 disabled={!canAddTarget || !player.queue.length}
@@ -451,92 +544,103 @@ function SpotifyPanel() {
             </div>
           </div>
 
-          {/* Grid: playlists + tracks */}
           <div className="spotify-grid gap-3 mt-3 flex-1 min-h-0">
-            {/* Playlists column */}
             <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
               <div className="font-black text-sm mb-2 flex-shrink-0">Playlists</div>
               <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
                 {spotifyPlaylists.length === 0 ? (
-                  <div className="queue-empty text-xs">Aucune playlist chargée</div>
-                ) : spotifyPlaylists.map((pl) => {
-                  const isActive = String(pl.id) === String(spotifyCurrentPlaylistId);
-                  const img = pl.images?.[0]?.url || pl.image || pl.cover || '';
-                  const owner = typeof pl.owner === 'string' ? pl.owner : pl.owner?.display_name || pl.owner?.id || '';
-                  const total = pl.tracks?.total ?? pl.tracks_total ?? pl.tracksCount ?? '';
-                  return (
-                    <div
-                      key={pl.id}
-                      className={`queue-item group ${isActive ? 'spotify-active' : ''}`}
-                      onClick={() => selectSpotifyPlaylist(pl.id)}
-                    >
-                      {img && (
-                        <div className="queue-thumb" style={{ backgroundImage: `url("${img}")` }} />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold text-txt truncate">{pl.name}</div>
-                        <div className="text-xs text-muted truncate">
-                          {[owner, total ? `${total} tracks` : ''].filter(Boolean).join(' • ')}
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => handleDeletePlaylist(pl, e)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
-                        title="Supprimer"
-                      >
-                        <Icon icon="trash" size={14} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+                  <div className="queue-empty text-xs">Aucune playlist chargee</div>
+                ) : (
+                  spotifyPlaylists.map((pl: SpotifyPlaylist) => {
+                    const isActive = String(pl.id) === String(spotifyCurrentPlaylistId);
+                    const img = pl.images?.[0]?.url || pl.image || pl.cover || '';
+                    const owner =
+                      typeof pl.owner === 'string'
+                        ? pl.owner
+                        : pl.owner?.display_name || pl.owner?.id || '';
+                    const total = pl.tracks?.total ?? pl.tracks_total ?? pl.tracksCount ?? '';
 
-            {/* Tracks column */}
-            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
-              <div className="font-black text-sm mb-2 flex-shrink-0">Titres</div>
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
-                {spotifyTracks.length === 0 ? (
-                  <div className="queue-empty text-xs">Aucun titre chargé</div>
-                ) : spotifyTracks.map((track, idx) => {
-                  const name = track.name || track.title || 'Track';
-                  const artist = Array.isArray(track.artists)
-                    ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
-                    : String(track.artists || track.artist || '');
-                  const img = track.album?.images?.[0]?.url || track.image || '';
-                  return (
-                    <div key={`${track.id || idx}`} className="queue-item group">
-                      {img && (
-                        <div className="queue-thumb" style={{ backgroundImage: `url("${img}")` }} />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold text-txt truncate">{name}</div>
-                        <div className="text-xs text-muted truncate">{artist}</div>
-                      </div>
-                      <div className="flex gap-1 flex-shrink-0">
+                    return (
+                      <div
+                        key={pl.id}
+                        className={`queue-item group ${isActive ? 'spotify-active' : ''}`}
+                        onClick={() => selectSpotifyPlaylist(pl.id)}
+                      >
+                        {img && (
+                          <div
+                            className="queue-thumb"
+                            style={{ backgroundImage: `url("${img}")` }}
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-bold text-txt truncate">{pl.name}</div>
+                          <div className="text-xs text-muted truncate">
+                            {[owner, total ? `${total} tracks` : ''].filter(Boolean).join(' • ')}
+                          </div>
+                        </div>
                         <button
-                          onClick={(e) => handleQuickplay(track, e)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-stroke hover:border-primary/40 bg-white/5 hover:bg-primary/10 flex items-center justify-center text-txt"
-                          title="Lire"
-                        >
-                          <Icon icon="play" size={14} />
-                        </button>
-                        <button
-                          onClick={(e) => handleRemoveTrack(track, e)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
-                          title="Retirer"
+                          onClick={(e) => handleDeletePlaylist(pl, e)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
+                          title="Supprimer"
                         >
                           <Icon icon="trash" size={14} />
                         </button>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
+              <div className="font-black text-sm mb-2 flex-shrink-0">Titres</div>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
+                {spotifyTracks.length === 0 ? (
+                  <div className="queue-empty text-xs">Aucun titre charge</div>
+                ) : (
+                  spotifyTracks.map((track: SpotifyTrack, idx: number) => {
+                    const name = track.name || track.title || 'Track';
+                    const artist = Array.isArray(track.artists)
+                      ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
+                      : String(track.artists || track.artist || '');
+                    const img = track.album?.images?.[0]?.url || track.image || '';
+
+                    return (
+                      <div key={`${track.id || idx}`} className="queue-item group">
+                        {img && (
+                          <div
+                            className="queue-thumb"
+                            style={{ backgroundImage: `url("${img}")` }}
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-bold text-txt truncate">{name}</div>
+                          <div className="text-xs text-muted truncate">{artist}</div>
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                          <button
+                            onClick={(e) => handleQuickplay(track, e)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-stroke hover:border-primary/40 bg-white/5 hover:bg-primary/10 flex items-center justify-center text-txt"
+                            title="Lire"
+                          >
+                            <Icon icon="play" size={14} />
+                          </button>
+                          <button
+                            onClick={(e) => handleRemoveTrack(track, e)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
+                            title="Retirer"
+                          >
+                            <Icon icon="trash" size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
 
-          {/* Create playlist */}
           <div className="flex gap-2.5 items-center flex-wrap mt-3 flex-shrink-0">
             <input
               value={createName}
@@ -553,7 +657,9 @@ function SpotifyPanel() {
               />
               Publique
             </label>
-            <button onClick={handleCreate} className="btn-primary text-sm">Créer playlist</button>
+            <button onClick={handleCreate} className="btn-primary text-sm">
+              Creer playlist
+            </button>
           </div>
         </>
       )}
@@ -565,48 +671,52 @@ function SpotifyPanel() {
 // Main Page
 // ═══════════════════════════════════════════
 export default function Home() {
-  const {
-    me, guilds, guildId, socketReady, status,
-    boot, setGuild, refreshMe,
-  } = usePlayer();
+  const { me, guilds, guildId, socketReady, status, boot, setGuild, refreshMe } = usePlayer();
 
   const [booted, setBooted] = useState(false);
+  const [quote, setQuote] = useState('Greg t observe avec un profond mepris.');
 
-  // Boot on mount
   useEffect(() => {
-    boot().then(() => setBooted(true)).catch(() => setBooted(true));
+    setQuote(randomQuote());
+  }, []);
+
+  useEffect(() => {
+    boot()
+      .then(() => setBooted(true))
+      .catch(() => setBooted(true));
   }, [boot]);
 
-  // Keyboard shortcuts
   useEffect(() => {
-    const { togglePause, skip, restartTrack, toggleRepeat } = useStore.getState() as any;
-    // We get actions from the hook level, but for keyboard we need the module-level approach
     const handler = async (ev: KeyboardEvent) => {
       const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || (ev.target as HTMLElement)?.isContentEditable) return;
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        (ev.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+
+      const s = useStore.getState() as any;
+      if (!s.me || !s.guildId) return;
 
       if (ev.code === 'Space') {
         ev.preventDefault();
-        // Get fresh state actions
-        const s = useStore.getState();
-        if (s.me && s.guildId) {
-          try { await api.togglePause(s.guildId, s.me.id); } catch {}
-        }
+        try {
+          await api.togglePause(s.guildId, s.me.id);
+        } catch {}
       } else if (ev.key?.toLowerCase() === 'n') {
-        const s = useStore.getState();
-        if (s.me && s.guildId) {
-          try { await api.queueSkip(s.guildId, s.me.id); } catch {}
-        }
+        try {
+          await api.queueSkip(s.guildId, s.me.id);
+        } catch {}
       } else if (ev.key?.toLowerCase() === 'p') {
-        const s = useStore.getState();
-        if (s.me && s.guildId) {
-          try { await api.restart(s.guildId, s.me.id); } catch {}
-        }
+        try {
+          await api.restart(s.guildId, s.me.id);
+        } catch {}
       } else if (ev.key?.toLowerCase() === 'r') {
-        const s = useStore.getState();
-        if (s.me && s.guildId) {
-          try { await api.repeat(s.guildId, s.me.id); } catch {}
-        }
+        try {
+          await api.repeat(s.guildId, s.me.id);
+        } catch {}
       }
     };
 
@@ -614,9 +724,11 @@ export default function Home() {
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
-  // Refresh on focus
   useEffect(() => {
-    const handler = () => { refreshMe().catch(() => {}); };
+    const handler = () => {
+      refreshMe().catch(() => {});
+    };
+
     window.addEventListener('focus', handler);
     return () => window.removeEventListener('focus', handler);
   }, [refreshMe]);
@@ -632,15 +744,15 @@ export default function Home() {
         gap: '14px',
       }}
     >
-      {/* ═══ Topbar ═══ */}
       <header className="flex items-start justify-between gap-3.5 flex-shrink-0 flex-wrap min-[1100px]:flex-nowrap">
-        {/* Brand */}
         <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-3 min-w-[240px]">
           <img
             src="/images/icon.png"
             alt="Greg"
             className="w-9 h-9 rounded-[10px] object-cover border border-stroke bg-[#111827]"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
           />
           <div>
             <div className="font-black tracking-wide text-sm">Greg le Consanguin</div>
@@ -648,17 +760,16 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Search */}
         <SearchBar />
 
-        {/* Auth + Guild */}
         <div className="flex gap-2.5 flex-wrap min-[1100px]:flex-nowrap min-w-[260px]">
-          {/* Auth card */}
           <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-2.5 min-w-0">
             <div
               className="w-[34px] h-[34px] rounded-[12px] flex items-center justify-center font-black flex-shrink-0"
               style={{
-                background: avatarUrl ? `url("${avatarUrl}") center/contain no-repeat rgba(15,23,42,0.65)` : 'rgba(99,102,241,0.18)',
+                background: avatarUrl
+                  ? `url("${avatarUrl}") center/contain no-repeat rgba(15,23,42,0.65)`
+                  : 'rgba(99,102,241,0.18)',
                 border: '1px solid rgba(99,102,241,0.25)',
                 color: avatarUrl ? 'transparent' : undefined,
               }}
@@ -666,8 +777,8 @@ export default function Home() {
               {!avatarUrl && (userName?.[0]?.toUpperCase() || '?')}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="font-bold text-sm truncate">{userName || 'Non connecté'}</div>
-              <div className="text-xs text-muted mt-0.5">{me ? 'Connecté' : 'Discord'}</div>
+              <div className="font-bold text-sm truncate">{userName || 'Non connecte'}</div>
+              <div className="text-xs text-muted mt-0.5">{me ? 'Connecte' : 'Discord'}</div>
             </div>
             {me ? (
               <button
@@ -688,7 +799,7 @@ export default function Home() {
                 }}
                 className="btn-ghost text-xs flex-shrink-0"
               >
-                Déco
+                Deco
               </button>
             ) : (
               <a href={api.getLoginUrl()} className="btn-ghost text-xs flex-shrink-0">
@@ -697,7 +808,6 @@ export default function Home() {
             )}
           </div>
 
-          {/* Guild select */}
           <div className="card-greg-light flex items-center gap-2.5 px-3 py-2.5 min-w-0">
             <label className="text-xs text-muted flex-shrink-0">Serveur</label>
             <select
@@ -705,18 +815,18 @@ export default function Home() {
               onChange={(e) => setGuild(e.target.value)}
               className="flex-1 px-2.5 py-2 rounded-[10px] border border-stroke bg-[rgba(17,24,39,0.65)] text-txt outline-none text-sm min-w-0"
             >
-              <option value="">— Choisir —</option>
-              {guilds.map((g) => (
-                <option key={g.id} value={g.id}>{g.name}</option>
+              <option value="">- Choisir -</option>
+              {guilds.map((g: any) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
               ))}
             </select>
           </div>
         </div>
       </header>
 
-      {/* ═══ Main Grid ═══ */}
-      <main className="flex-1 min-h-0 main-grid gap-3.5"
-      >
+      <main className="flex-1 min-h-0 main-grid gap-3.5">
         <div className="min-h-0 max-[1100px]:order-1 max-[1100px]:h-auto">
           <Queue />
         </div>
@@ -728,19 +838,30 @@ export default function Home() {
         </div>
       </main>
 
-      {/* ═══ Status Bar ═══ */}
       <footer className="flex-shrink-0">
         <div
           className={`rounded-greg px-3.5 py-3 shadow-greg text-[13px] transition-all duration-300 ${
-            status.kind === 'ok' ? 'status-ok' :
-            status.kind === 'err' ? 'status-err' :
-            'border border-stroke bg-greg-darker'
+            status.kind === 'ok'
+              ? 'status-ok'
+              : status.kind === 'err'
+                ? 'status-err'
+                : 'border border-stroke bg-greg-darker'
           }`}
-          style={{ color: status.kind === 'err' ? 'rgba(254,226,226,0.95)' : 'rgba(226,232,240,0.95)' }}
+          style={{
+            color:
+              status.kind === 'err'
+                ? 'rgba(254,226,226,0.95)'
+                : 'rgba(226,232,240,0.95)',
+          }}
         >
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'}`} />
+            <div
+              className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'
+              }`}
+            />
             <span>{status.text}</span>
+            {!booted && <span className="text-xs text-muted">(initialisation)</span>}
           </div>
         </div>
       </footer>
