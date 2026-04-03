@@ -4,277 +4,130 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
 import { useProgress } from '@/hooks/useProgress';
 import { api } from '@/lib/api';
-import { randomQuote } from '@/theme/greg-quotes';
 import type { SearchResult, SpotifyPlaylist, SpotifyTrack } from '@/lib/types';
 
 // ── Helpers ──
-function formatTime(sec?: number | null): string {
+function fmt(sec?: number | null): string {
   if (sec == null || !isFinite(sec) || sec < 0) return '--:--';
   const s = Math.max(0, Math.floor(sec));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${String(r).padStart(2, '0')}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function defaultDiscordAvatarIndex(id: unknown): number {
-  const digits = String(id ?? '').replace(/\D/g, '');
-  if (!digits) return 0;
-
-  let acc = 0;
-  for (let i = 0; i < digits.length; i += 1) {
-    acc = (acc * 31 + Number(digits[i])) % 6;
-  }
-  return acc;
+function extractVideoId(url?: string | null): string | null {
+  if (!url) return null;
+  const m = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([A-Za-z0-9_\-]{11})/);
+  return m ? m[1] : null;
 }
 
-function discordAvatarUrl(me: any, size = 96): string | null {
+function discordAvatar(me: any, size = 96): string | null {
   if (!me?.id) return null;
-
-  if (
-    me.avatar_url &&
-    typeof me.avatar_url === 'string' &&
-    me.avatar_url.startsWith('http')
-  ) {
-    return me.avatar_url;
-  }
-
-  if (me.avatar) {
-    return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
-  }
-
-  const idx = defaultDiscordAvatarIndex(me.id);
-  return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
+  if (me.avatar_url?.startsWith('http')) return me.avatar_url;
+  if (me.avatar) return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
+  return `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(me.id) >> 22n) % 6}.png`;
 }
 
-// ── Icons (SVG inline) ──
-const Icons = {
-  play: <path fill="currentColor" d="M8 5v14l11-7z" />,
-  pause: <path fill="currentColor" d="M6 5h4v14H6zm8 0h4v14h-4z" />,
-  skip: <path fill="currentColor" d="M7 6v12l8.5-6zM17 6h2v12h-2z" />,
-  prev: <path fill="currentColor" d="M7 6h2v12H7zm3 6l10 6V6z" />,
-  stop: <path fill="currentColor" d="M6 6h12v12H6z" />,
-  repeat: (
-    <path
-      fill="currentColor"
-      d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"
-    />
-  ),
-  trash: <path fill="currentColor" d="M9 3h6l1 2h5v2H3V5h5zm1 6h2v10h-2zm4 0h2v10h-2z" />,
-  search: (
-    <path
-      fill="currentColor"
-      d="M10 4a6 6 0 1 0 3.6 10.8l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"
-    />
-  ),
-  user: (
-    <path
-      fill="currentColor"
-      d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5z"
-    />
-  ),
+// ── SVG Icons ──
+const I = {
+  play:   <path fill="currentColor" d="M8 5v14l11-7z"/>,
+  pause:  <path fill="currentColor" d="M6 5h4v14H6zm8 0h4v14h-4z"/>,
+  skip:   <path fill="currentColor" d="M7 6v12l8.5-6zM17 6h2v12h-2z"/>,
+  prev:   <path fill="currentColor" d="M7 6h2v12H7zm3 6l10 6V6z"/>,
+  stop:   <path fill="currentColor" d="M6 6h12v12H6z"/>,
+  repeat: <path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z"/>,
+  trash:  <path fill="currentColor" d="M9 3h6l1 2h5v2H3V5h5zm1 6h2v10h-2zm4 0h2v10h-2z"/>,
+  search: <path fill="currentColor" d="M10 4a6 6 0 1 0 3.6 10.8l4.8 4.8 1.4-1.4-4.8-4.8A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/>,
+  music:  <path fill="currentColor" d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/>,
+  video:  <path fill="currentColor" d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>,
 };
-
-function Icon({ icon, size = 18 }: { icon: keyof typeof Icons; size?: number }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} className="flex-shrink-0">
-      {Icons[icon]}
-    </svg>
-  );
+function Ic({ icon, size = 20 }: { icon: keyof typeof I; size?: number }) {
+  return <svg viewBox="0 0 24 24" width={size} height={size} className="flex-shrink-0">{I[icon]}</svg>;
 }
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
 // Search Bar
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
 function SearchBar() {
   const { enqueue } = usePlayer();
-  const [query, setQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
-  const [showSugs, setShowSugs] = useState(false);
-  const [sugIdx, setSugIdx] = useState(-1);
-  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState('');
+  const [sugs, setSugs] = useState<SearchResult[]>([]);
+  const [open, setOpen] = useState(false);
+  const [idx, setIdx] = useState(-1);
+  const [busy, setBusy] = useState(false);
   const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const queryRef = useRef('');
+  const timer = useRef<any>(null);
+  const qRef = useRef('');
 
-  const fetchSuggestions = useCallback(async (q: string) => {
-    if (q.length < 2) {
-      setSuggestions([]);
-      setShowSugs(false);
-      setSearching(false);
-      return;
-    }
-
-    // Cancel previous request
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-
+  const doSearch = useCallback(async (query: string) => {
+    if (query.length < 2) { setSugs([]); setOpen(false); setSearching(false); return; }
     setSearching(true);
     try {
-      const rows = await api.autocomplete(q, 6);
-
-      // Only apply if query hasn't changed since request started
-      if (queryRef.current.trim() === q.trim()) {
-        if (Array.isArray(rows) && rows.length > 0) {
-          setSuggestions(rows);
-          setShowSugs(true);
-          setSugIdx(-1);
-        } else {
-          setSuggestions([]);
-          setShowSugs(false);
-        }
-      }
-    } catch {
-      // Don't clear on abort
-    } finally {
-      setSearching(false);
-    }
+      const rows = await api.autocomplete(query, 6);
+      if (qRef.current.trim() === query.trim() && Array.isArray(rows) && rows.length) {
+        setSugs(rows); setOpen(true); setIdx(-1);
+      } else if (qRef.current.trim() === query.trim()) { setSugs([]); setOpen(false); }
+    } catch {} finally { setSearching(false); }
   }, []);
 
-  const handleInput = (val: string) => {
-    setQuery(val);
-    queryRef.current = val;
-
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-
-    if (val.trim().length < 2) {
-      setSuggestions([]);
-      setShowSugs(false);
-      setSearching(false);
-      return;
-    }
-
+  const onInput = (v: string) => {
+    setQ(v); qRef.current = v;
+    clearTimeout(timer.current);
+    if (v.trim().length < 2) { setSugs([]); setOpen(false); return; }
     setSearching(true);
-    debounceRef.current = setTimeout(() => {
-      fetchSuggestions(val.trim());
-    }, 250);
+    timer.current = setTimeout(() => doSearch(v.trim()), 280);
   };
 
-  const submit = async (rawQuery: string, meta?: Record<string, any>) => {
-    if (!rawQuery.trim()) return;
-
-    setLoading(true);
-    setShowSugs(false);
-    setSuggestions([]);
-    setQuery('');
-
-    try {
-      await enqueue({
-        query: rawQuery,
-        ...meta,
-      });
-    } finally {
-      setLoading(false);
-    }
+  const submit = async (payload: Record<string, any>) => {
+    setBusy(true); setOpen(false); setSugs([]); setQ('');
+    try { await enqueue(payload); } finally { setBusy(false); }
   };
 
-  const submitFromSuggestion = (sug: SearchResult) => {
+  const pick = (sug: SearchResult) => {
     const url = sug.webpage_url || sug.url || '';
-    const title = sug.title || '';
-
-    submit(url || title, {
-      title: title || undefined,
-      artist: sug.artist || sug.uploader || sug.channel || undefined,
-      duration: sug.duration ?? undefined,
-      thumb: sug.thumb || sug.thumbnail || undefined,
-      thumbnail: sug.thumb || sug.thumbnail || undefined,
-      source: sug.source || sug.provider || 'yt',
-      provider: sug.provider || sug.source || undefined,
-      webpage_url: url || undefined,
-      url: url || undefined,
-    });
+    submit({ query: url || sug.title, url, webpage_url: url, title: sug.title,
+      artist: sug.artist || sug.uploader || sug.channel, duration: sug.duration,
+      thumb: sug.thumb || sug.thumbnail, thumbnail: sug.thumb || sug.thumbnail,
+      source: sug.source || 'yt', provider: sug.provider || sug.source });
   };
 
-  const submitRaw = () => {
-    if (!query.trim()) return;
-
-    if (sugIdx >= 0 && suggestions[sugIdx]) {
-      submitFromSuggestion(suggestions[sugIdx]);
-    } else {
-      submit(query.trim());
-    }
+  const go = () => {
+    if (!q.trim()) return;
+    idx >= 0 && sugs[idx] ? pick(sugs[idx]) : submit({ query: q.trim() });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!showSugs) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        submitRaw();
-      }
-      return;
-    }
-
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setSugIdx((i) => Math.min(suggestions.length - 1, i + 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setSugIdx((i) => Math.max(-1, i - 1));
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      submitRaw();
-    } else if (e.key === 'Escape') {
-      setShowSugs(false);
-    }
+  const onKey = (e: React.KeyboardEvent) => {
+    if (!open) { if (e.key === 'Enter') { e.preventDefault(); go(); } return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(sugs.length - 1, i + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(-1, i - 1)); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(); }
+    else if (e.key === 'Escape') setOpen(false);
   };
 
   return (
-    <div className="relative flex-1 min-w-0" style={{ minWidth: '280px' }}>
-      <div className="card-greg flex items-center gap-2.5 px-3 py-2.5">
-        <div className={`flex-shrink-0 ${searching ? 'animate-spin' : ''}`}>
-          <Icon icon="search" />
-        </div>
-        <input
-          value={query}
-          onChange={(e) => handleInput(e.target.value)}
-          onFocus={() => {
-            if (suggestions.length) setShowSugs(true);
-          }}
-          onBlur={() => setTimeout(() => setShowSugs(false), 200)}
-          onKeyDown={handleKeyDown}
-          placeholder="Rechercher YouTube…"
-          className="flex-1 bg-transparent border-none outline-none text-txt text-sm placeholder:text-muted min-w-0"
-        />
-        <button
-          onClick={submitRaw}
-          disabled={loading || !query.trim()}
-          className={`btn-primary text-sm ${loading ? 'btn-loading' : ''}`}
-        >
+    <div className="relative flex-1 min-w-0">
+      <div className="glass-subtle flex items-center gap-2 px-3 py-2">
+        <div className={searching ? 'animate-spin opacity-50' : 'opacity-40'}><Ic icon="search" size={16}/></div>
+        <input value={q} onChange={e => onInput(e.target.value)}
+          onFocus={() => sugs.length && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 200)}
+          onKeyDown={onKey}
+          placeholder="Rechercher un titre…"
+          className="flex-1 bg-transparent border-none outline-none text-sm text-txt placeholder:text-txt-muted min-w-0 font-body"/>
+        <button onClick={go} disabled={busy || !q.trim()}
+          className={`btn-accent text-xs py-1.5 px-3 ${busy ? 'loading-spin opacity-60' : ''}`}>
           Ajouter
         </button>
       </div>
-
-      {showSugs && suggestions.length > 0 && (
-        <div className="suggestion-dropdown animate-fade-in">
-          {suggestions.map((sug, i) => (
-            <div
-              key={`${sug.url || sug.title || 'sug'}-${i}`}
-              className={`suggestion-item ${i === sugIdx ? 'active' : ''}`}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => submitFromSuggestion(sug)}
-              onMouseEnter={() => setSugIdx(i)}
-            >
-              {(sug.thumb || sug.thumbnail) && (
-                <div
-                  className="queue-thumb"
-                  style={{
-                    width: 42,
-                    height: 42,
-                    backgroundImage: `url("${sug.thumb || sug.thumbnail}")`,
-                  }}
-                />
-              )}
+      {open && sugs.length > 0 && (
+        <div className="sug-drop animate-fade-up">
+          {sugs.map((s, i) => (
+            <div key={`${s.url}-${i}`} className={`sug-item ${i === idx ? 'active' : ''}`}
+              onMouseDown={e => e.preventDefault()} onClick={() => pick(s)} onMouseEnter={() => setIdx(i)}>
+              {(s.thumb || s.thumbnail) && <div className="q-thumb" style={{ width: 40, height: 40, backgroundImage: `url("${s.thumb || s.thumbnail}")` }}/>}
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-txt truncate">{sug.title}</div>
-                <div className="text-xs text-muted truncate">
-                  {sug.artist || sug.uploader || sug.channel || ''}
-                </div>
+                <div className="text-sm font-semibold truncate">{s.title}</div>
+                <div className="text-xs text-txt-muted truncate">{s.artist || s.uploader || s.channel || ''}</div>
               </div>
-              {sug.duration != null && (
-                <span className="text-xs text-muted flex-shrink-0">
-                  {formatTime(sug.duration)}
-                </span>
-              )}
+              {s.duration != null && <span className="text-xs text-txt-muted font-mono">{fmt(s.duration)}</span>}
             </div>
           ))}
         </div>
@@ -283,640 +136,352 @@ function SearchBar() {
   );
 }
 
-// ═══════════════════════════════════════════
-// Now Playing
-// ═══════════════════════════════════════════
-function NowPlaying() {
+// ═══════════════════════════════
+// Video Player (YouTube embed)
+// ═══════════════════════════════
+function VideoPlayer() {
   const { player, togglePause, skip, stop, toggleRepeat, restartTrack } = usePlayer();
   const { progressRef, currentRef, totalRef } = useProgress();
   const cur = player.current;
+  const videoId = extractVideoId(cur?.url);
 
   return (
-    <div className="card-greg p-[18px] flex flex-col gap-3.5 h-full min-h-0 overflow-hidden">
-      <div className="self-center flex-shrink-0">
-        <div
-          className="rounded-[18px] border border-stroke shadow-greg transition-all duration-500"
-          style={{
-            width: 'clamp(140px, 14vw, 220px)',
-            height: 'clamp(140px, 14vw, 220px)',
-            background: cur?.thumb
-              ? `url("${cur.thumb}") center/cover no-repeat`
-              : 'rgba(15, 23, 42, 0.7)',
-            boxShadow: cur?.thumb
-              ? '0 16px 48px rgba(0,0,0,0.5), 0 0 60px rgba(99,102,241,0.08)'
-              : undefined,
-          }}
-        />
-      </div>
+    <div className="flex flex-col gap-4 min-h-0 flex-1">
+      {/* Video / Artwork area */}
+      <div className="video-frame">
+        {videoId ? (
+          <iframe
+            key={videoId}
+            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1`}
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+            title="YouTube video"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center z-[1]">
+            {cur?.thumb ? (
+              <>
+                <div className="artwork-hero" style={{ backgroundImage: `url("${cur.thumb}")` }}/>
+                <div className="artwork-center" style={{ backgroundImage: `url("${cur.thumb}")` }}/>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-3 opacity-30">
+                <Ic icon="music" size={64}/>
+                <span className="font-display text-lg">Rien en lecture</span>
+              </div>
+            )}
+          </div>
+        )}
 
-      <div className="min-w-0 w-full text-center">
-        <div className="font-black text-xl text-txt truncate">
-          {cur?.title || 'Rien en cours'}
-        </div>
-        <div className="text-sm text-muted mt-1 truncate">{cur?.artist || '—'}</div>
-        {cur?.addedBy?.name && (
-          <div className="text-xs text-muted/70 mt-1">Demandé par {cur.addedBy.name}</div>
+        {/* Overlay: track info at bottom */}
+        {cur && (
+          <div className="absolute bottom-0 left-0 right-0 z-10 p-4 pb-3">
+            <div className="flex items-end gap-3">
+              <div className="flex-1 min-w-0">
+                {!player.paused && (
+                  <div className={`wave-bars mb-2 ${player.paused ? 'paused' : ''}`}>
+                    <div className="wave-bar"/><div className="wave-bar"/><div className="wave-bar"/>
+                    <div className="wave-bar"/><div className="wave-bar"/>
+                  </div>
+                )}
+                <div className="font-display font-bold text-lg text-white truncate drop-shadow-lg">
+                  {cur.title}
+                </div>
+                <div className="text-sm text-white/60 truncate">{cur.artist || '—'}</div>
+                {cur.addedBy?.name && (
+                  <div className="text-xs text-white/40 mt-0.5">par {cur.addedBy.name}</div>
+                )}
+              </div>
+              {videoId && (
+                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 backdrop-blur-sm text-xs text-white/70">
+                  <Ic icon="video" size={14}/> Vidéo
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
-      {/* Progress — refs updated by RAF, zero re-renders */}
-      <div className="w-full mt-1">
+      {/* Progress */}
+      <div className="px-1">
         <div className="progress-track">
-          <div ref={progressRef} className="progress-fill" style={{ width: '0%' }} />
+          <div ref={progressRef} className="progress-fill" style={{ width: '0%' }}/>
         </div>
-        <div className="flex justify-between mt-1.5 text-xs text-muted">
+        <div className="flex justify-between mt-1 text-xs text-txt-muted font-mono">
           <span ref={currentRef}>0:00</span>
           <span ref={totalRef}>--:--</span>
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2.5 mt-auto pt-2">
-        <button onClick={stop} className="control-btn" title="Stop">
-          <Icon icon="stop" size={22} />
+      {/* Controls */}
+      <div className="flex items-center justify-center gap-3">
+        <button onClick={stop} className="ctrl" title="Stop"><Ic icon="stop" size={20}/></button>
+        <button onClick={restartTrack} className="ctrl" title="Restart"><Ic icon="prev" size={20}/></button>
+        <button onClick={togglePause} className="ctrl-main" title="Play/Pause">
+          <Ic icon={player.paused ? 'play' : 'pause'} size={28}/>
         </button>
-        <button onClick={restartTrack} className="control-btn" title="Restart">
-          <Icon icon="prev" size={22} />
-        </button>
-        <button onClick={togglePause} className="control-btn-primary" title="Play / Pause">
-          <Icon icon={player.paused ? 'play' : 'pause'} size={28} />
-        </button>
-        <button onClick={skip} className="control-btn" title="Skip">
-          <Icon icon="skip" size={22} />
-        </button>
-        <button
-          onClick={toggleRepeat}
-          className={`control-btn ${player.repeat ? 'control-btn-active' : ''}`}
-          title="Repeat"
-        >
-          <Icon icon="repeat" size={22} />
+        <button onClick={skip} className="ctrl" title="Skip"><Ic icon="skip" size={20}/></button>
+        <button onClick={toggleRepeat} className={`ctrl ${player.repeat ? 'ctrl-active' : ''}`} title="Repeat">
+          <Ic icon="repeat" size={20}/>
         </button>
       </div>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════
-// Queue
-// ═══════════════════════════════════════════
-function Queue() {
+// ═══════════════════════════════
+// Queue Panel
+// ═══════════════════════════════
+function QueuePanel() {
   const { player, removeFromQueue, playAt } = usePlayer();
   const q = player.queue;
 
   return (
-    <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
-      <div className="flex items-center justify-between mb-2.5 flex-shrink-0">
-        <div className="font-black text-sm">File d&apos;attente</div>
-        <div className="text-xs text-muted">
-          {q.length} titre{q.length > 1 ? 's' : ''}
-        </div>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
+        <span className="font-display font-bold text-sm">File d&apos;attente</span>
+        <span className="text-xs text-txt-muted font-mono">{q.length} titre{q.length !== 1 ? 's' : ''}</span>
       </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 max-[1100px]:max-h-[50vh] max-[1100px]:flex-none">
-        {q.length === 0 ? (
-          <div className="queue-empty text-sm">File d&apos;attente vide</div>
-        ) : (
-          q.map((item, i) => (
-            <div
-              key={`${item.url || item.title || 'track'}-${i}`}
-              className="queue-item group"
-              onClick={() => playAt(i)}
-            >
-              {item.thumb && (
-                <div
-                  className="queue-thumb"
-                  style={{ backgroundImage: `url("${item.thumb}")` }}
-                />
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-txt truncate">
-                  {item.title || 'Titre inconnu'}
-                </div>
-                <div className="text-xs text-muted truncate">
-                  {[item.artist, item.duration != null ? formatTime(item.duration) : '', item.addedBy?.name ? `par ${item.addedBy.name}` : '']
-                    .filter(Boolean)
-                    .join(' • ')}
-                </div>
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[40vh]">
+        {!q.length ? (
+          <div className="text-center text-txt-muted text-sm py-8 opacity-50">
+            <Ic icon="music" size={32}/><br/>File vide
+          </div>
+        ) : q.map((item, i) => (
+          <div key={`${item.url}-${i}`} className="q-item group" onClick={() => playAt(i)}>
+            {item.thumb && <div className="q-thumb" style={{ backgroundImage: `url("${item.thumb}")` }}/>}
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold truncate">{item.title || 'Titre inconnu'}</div>
+              <div className="text-xs text-txt-muted truncate">
+                {[item.artist, item.duration != null ? fmt(item.duration) : '', item.addedBy?.name ? `par ${item.addedBy.name}` : ''].filter(Boolean).join(' · ')}
               </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeFromQueue(i);
-                }}
-                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[38px] h-[38px] rounded-[14px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
-                title="Retirer"
-              >
-                <Icon icon="trash" size={16} />
-              </button>
             </div>
-          ))
-        )}
+            <button onClick={e => { e.stopPropagation(); removeFromQueue(i); }}
+              className="opacity-0 group-hover:opacity-100 transition-opacity w-8 h-8 rounded-lg flex items-center justify-center bg-rose-dim hover:bg-rose/20 text-rose"
+              title="Retirer"><Ic icon="trash" size={14}/></button>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
 // Spotify Panel
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
 function SpotifyPanel() {
   const {
-    me,
-    spotifyLinked,
-    spotifyProfile,
-    spotifyPlaylists,
-    spotifyTracks,
-    spotifyCurrentPlaylistId,
-    spotifyLogin,
-    spotifyLogout,
-    refreshSpotifyPlaylists,
-    selectSpotifyPlaylist,
-    spotifyQuickplay,
-    spotifyDeletePlaylist,
-    spotifyRemoveTrack,
-    spotifyCreatePlaylist,
-    spotifyAddCurrent,
-    spotifyAddQueue,
-    guildId,
-    player,
+    me, spotifyLinked, spotifyProfile, spotifyPlaylists, spotifyTracks, spotifyCurrentPlaylistId,
+    spotifyLogin, spotifyLogout, refreshSpotifyPlaylists, selectSpotifyPlaylist,
+    spotifyQuickplay, spotifyDeletePlaylist, spotifyRemoveTrack, spotifyCreatePlaylist,
+    spotifyAddCurrent, spotifyAddQueue, guildId, player,
   } = usePlayer();
-
   const [createName, setCreateName] = useState('');
-  const [createPublic, setCreatePublic] = useState(true);
-  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
+  const [loadingPl, setLoadingPl] = useState(false);
 
-  const targetPlaylist = useMemo(() => {
-    if (!spotifyCurrentPlaylistId) return null;
-    return (
-      spotifyPlaylists.find((p: SpotifyPlaylist) => String(p.id) === String(spotifyCurrentPlaylistId)) || {
-        id: spotifyCurrentPlaylistId,
-        name: 'Playlist',
-      }
-    );
-  }, [spotifyPlaylists, spotifyCurrentPlaylistId]);
+  const target = useMemo(() => spotifyPlaylists.find(p => p.id === spotifyCurrentPlaylistId), [spotifyPlaylists, spotifyCurrentPlaylistId]);
 
-  const canAddTarget = !!(me && spotifyLinked && guildId && targetPlaylist?.id);
-
-  const handleLoadPlaylists = async () => {
-    setLoadingPlaylists(true);
-    try {
-      await refreshSpotifyPlaylists();
-    } finally {
-      setLoadingPlaylists(false);
-    }
-  };
-
-  const handleCreate = async () => {
-    const name = createName.trim() || 'Greg Playlist';
-    await spotifyCreatePlaylist(name, createPublic);
-    setCreateName('');
-  };
-
-  const handleQuickplay = (track: SpotifyTrack, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const artistsStr = Array.isArray(track.artists)
-      ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
-      : String(track.artists || track.artist || '');
-
-    spotifyQuickplay({
-      name: track.name || track.title || '',
-      artists: artistsStr,
-      duration_ms: track.duration_ms ?? null,
-      image: track.image || track.album?.images?.[0]?.url || null,
-      uri: track.uri || null,
-    });
-  };
-
-  const handleRemoveTrack = (track: SpotifyTrack, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const uri = track.uri || (track.id ? `spotify:track:${track.id}` : '');
-    if (!uri || !spotifyCurrentPlaylistId) return;
-    if (!window.confirm(`Retirer "${track.name || track.title}" de la playlist ?`)) return;
-
-    spotifyRemoveTrack(spotifyCurrentPlaylistId, uri);
-  };
-
-  const handleDeletePlaylist = (pl: SpotifyPlaylist, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!window.confirm(`Supprimer / unfollow "${pl.name}" ?`)) return;
-    spotifyDeletePlaylist(pl.id);
-  };
-
-  if (!me) {
-    return (
-      <div className="card-greg p-3.5 h-full">
-        <div className="text-sm text-muted">Connecte-toi a Discord pour lier Spotify</div>
-      </div>
-    );
-  }
+  if (!me) return <div className="text-sm text-txt-muted py-6 text-center opacity-50">Connecte-toi pour Spotify</div>;
 
   return (
-    <div className="card-greg p-3.5 flex flex-col h-full min-h-0 overflow-hidden">
-      <div className="flex items-center justify-between gap-2.5 flex-shrink-0 flex-wrap">
-        <div>
-          <div className="text-sm text-muted">
-            {spotifyLinked
-              ? `Spotify lie : ${spotifyProfile?.display_name || spotifyProfile?.id || '-'}`
-              : 'Spotify non lie'}
-          </div>
-          {spotifyLinked && spotifyProfile?.id && (
-            <div className="text-xs text-muted/70 mt-0.5">@{spotifyProfile.id}</div>
-          )}
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          {!spotifyLinked ? (
-            <button onClick={spotifyLogin} className="btn-ghost text-sm">
-              Lier Spotify
-            </button>
-          ) : (
-            <>
-              <button onClick={spotifyLogout} className="btn-ghost text-sm">
-                Delier
-              </button>
-              <button
-                onClick={handleLoadPlaylists}
-                className={`btn-ghost text-sm ${loadingPlaylists ? 'btn-loading' : ''}`}
-                disabled={loadingPlaylists}
-              >
-                Charger playlists
-              </button>
-            </>
-          )}
-        </div>
+    <div className="flex flex-col h-full min-h-0">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3 flex-shrink-0 flex-wrap gap-2">
+        <span className="text-xs text-txt-muted">
+          {spotifyLinked ? `Lié : ${spotifyProfile?.display_name || '—'}` : 'Non lié'}
+        </span>
+        {!spotifyLinked
+          ? <button onClick={spotifyLogin} className="btn text-xs">Lier Spotify</button>
+          : <div className="flex gap-1.5">
+              <button onClick={spotifyLogout} className="btn text-xs">Délier</button>
+              <button onClick={async () => { setLoadingPl(true); try { await refreshSpotifyPlaylists(); } finally { setLoadingPl(false); } }}
+                disabled={loadingPl} className={`btn text-xs ${loadingPl ? 'loading-spin' : ''}`}>Playlists</button>
+            </div>}
       </div>
 
       {spotifyLinked && (
-        <>
-          <div className="flex items-center justify-between gap-2.5 mt-3 flex-wrap flex-shrink-0">
-            <div className="flex items-center gap-1.5 px-3 py-2.5 rounded-[14px] border border-stroke bg-greg-dark min-w-[200px]">
-              <span className="text-sm text-muted">Cible</span>
-              <span className="font-black text-sm text-txt truncate">
-                {targetPlaylist?.name || '-'}
-              </span>
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => targetPlaylist?.id && spotifyAddCurrent(targetPlaylist.id)}
-                disabled={!canAddTarget}
-                className="btn-ghost text-xs"
-              >
-                + Titre en cours
-              </button>
-              <button
-                onClick={() => {
-                  if (!targetPlaylist?.id) return;
-                  const n = Math.min(player.queue.length, 20);
-                  if (!n) return;
-                  if (!window.confirm(`Ajouter ${n} titre${n > 1 ? 's' : ''} a "${targetPlaylist.name}" ?`)) {
-                    return;
-                  }
-                  spotifyAddQueue(targetPlaylist.id);
-                }}
-                disabled={!canAddTarget || !player.queue.length}
-                className="btn-ghost text-xs"
-              >
-                + File
-              </button>
-            </div>
-          </div>
-
-          <div className="spotify-grid gap-3 mt-3 flex-1 min-h-0">
-            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
-              <div className="font-black text-sm mb-2 flex-shrink-0">Playlists</div>
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
-                {spotifyPlaylists.length === 0 ? (
-                  <div className="queue-empty text-xs">Aucune playlist chargee</div>
-                ) : (
-                  spotifyPlaylists.map((pl: SpotifyPlaylist) => {
-                    const isActive = String(pl.id) === String(spotifyCurrentPlaylistId);
-                    const img = pl.images?.[0]?.url || pl.image || pl.cover || '';
-                    const owner =
-                      typeof pl.owner === 'string'
-                        ? pl.owner
-                        : pl.owner?.display_name || pl.owner?.id || '';
-                    const total = pl.tracks?.total ?? pl.tracks_total ?? pl.tracksCount ?? '';
-
-                    return (
-                      <div
-                        key={pl.id}
-                        className={`queue-item group ${isActive ? 'spotify-active' : ''}`}
-                        onClick={() => selectSpotifyPlaylist(pl.id)}
-                      >
-                        {img && (
-                          <div
-                            className="queue-thumb"
-                            style={{ backgroundImage: `url("${img}")` }}
-                          />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold text-txt truncate">{pl.name}</div>
-                          <div className="text-xs text-muted truncate">
-                            {[owner, total ? `${total} tracks` : ''].filter(Boolean).join(' • ')}
-                          </div>
-                        </div>
-                        <button
-                          onClick={(e) => handleDeletePlaylist(pl, e)}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
-                          title="Supprimer"
-                        >
-                          <Icon icon="trash" size={14} />
-                        </button>
-                      </div>
-                    );
-                  })
-                )}
+        <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
+          {/* Target bar */}
+          {target && (
+            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-accent-dim border border-accent/15 flex-shrink-0">
+              <span className="text-xs font-semibold truncate">{target.name}</span>
+              <div className="flex gap-1.5">
+                <button onClick={() => spotifyAddCurrent(target.id)} disabled={!guildId} className="btn text-[11px] py-1 px-2">+ Titre</button>
+                <button onClick={() => { if (player.queue.length && window.confirm(`Ajouter ${Math.min(player.queue.length, 20)} titres ?`)) spotifyAddQueue(target.id); }}
+                  disabled={!guildId || !player.queue.length} className="btn text-[11px] py-1 px-2">+ File</button>
               </div>
             </div>
+          )}
 
-            <div className="rounded-[14px] border border-stroke/80 bg-greg-dark p-2.5 min-h-0 overflow-hidden flex flex-col">
-              <div className="font-black text-sm mb-2 flex-shrink-0">Titres</div>
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 max-h-[44vh]">
-                {spotifyTracks.length === 0 ? (
-                  <div className="queue-empty text-xs">Aucun titre charge</div>
-                ) : (
-                  spotifyTracks.map((track: SpotifyTrack, idx: number) => {
-                    const name = track.name || track.title || 'Track';
-                    const artist = Array.isArray(track.artists)
-                      ? track.artists.map((a: any) => a?.name).filter(Boolean).join(', ')
-                      : String(track.artists || track.artist || '');
-                    const img = track.album?.images?.[0]?.url || track.image || '';
-
-                    return (
-                      <div key={`${track.id || idx}`} className="queue-item group">
-                        {img && (
-                          <div
-                            className="queue-thumb"
-                            style={{ backgroundImage: `url("${img}")` }}
-                          />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold text-txt truncate">{name}</div>
-                          <div className="text-xs text-muted truncate">{artist}</div>
-                        </div>
-                        <div className="flex gap-1 flex-shrink-0">
-                          <button
-                            onClick={(e) => handleQuickplay(track, e)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-stroke hover:border-primary/40 bg-white/5 hover:bg-primary/10 flex items-center justify-center text-txt"
-                            title="Lire"
-                          >
-                            <Icon icon="play" size={14} />
-                          </button>
-                          <button
-                            onClick={(e) => handleRemoveTrack(track, e)}
-                            className="opacity-0 group-hover:opacity-100 transition-opacity w-[34px] h-[34px] rounded-[12px] border border-danger/30 bg-danger/10 hover:bg-danger/20 flex items-center justify-center text-txt"
-                            title="Retirer"
-                          >
-                            <Icon icon="trash" size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+          {/* Lists */}
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[30vh]">
+            {spotifyPlaylists.length === 0 && spotifyTracks.length === 0 && (
+              <div className="text-center text-txt-muted text-xs py-4 opacity-40">Charge tes playlists</div>
+            )}
+            {spotifyPlaylists.length > 0 && !spotifyCurrentPlaylistId && (
+              spotifyPlaylists.map(pl => (
+                <div key={pl.id} className="q-item group" onClick={() => selectSpotifyPlaylist(pl.id)}>
+                  {(pl.images?.[0]?.url || pl.image || pl.cover) && <div className="q-thumb" style={{ backgroundImage: `url("${pl.images?.[0]?.url || pl.image || pl.cover}")` }}/>}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold truncate">{pl.name}</div>
+                    <div className="text-xs text-txt-muted">{pl.tracks?.total ?? ''} tracks</div>
+                  </div>
+                </div>
+              ))
+            )}
+            {spotifyCurrentPlaylistId && spotifyTracks.map((t, i) => {
+              const name = t.name || t.title || 'Track';
+              const artist = Array.isArray(t.artists) ? t.artists.map((a: any) => a?.name).filter(Boolean).join(', ') : String(t.artists || t.artist || '');
+              const img = t.album?.images?.[0]?.url || t.image || '';
+              return (
+                <div key={t.id || i} className="q-item group">
+                  {img && <div className="q-thumb" style={{ backgroundImage: `url("${img}")` }}/>}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold truncate">{name}</div>
+                    <div className="text-xs text-txt-muted truncate">{artist}</div>
+                  </div>
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => { const a = Array.isArray(t.artists) ? t.artists.map((x: any) => x?.name).filter(Boolean).join(', ') : ''; spotifyQuickplay({ name: t.name, artists: a, duration_ms: t.duration_ms, image: t.album?.images?.[0]?.url, uri: t.uri }); }}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center bg-accent-dim hover:bg-accent/20 text-accent"><Ic icon="play" size={12}/></button>
+                    <button onClick={() => { const uri = t.uri || (t.id ? `spotify:track:${t.id}` : ''); if (uri && spotifyCurrentPlaylistId && window.confirm(`Retirer "${name}" ?`)) spotifyRemoveTrack(spotifyCurrentPlaylistId, uri); }}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center bg-rose-dim hover:bg-rose/20 text-rose"><Ic icon="trash" size={12}/></button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          <div className="flex gap-2.5 items-center flex-wrap mt-3 flex-shrink-0">
-            <input
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-              placeholder="Nom de playlist (ex: Greg Bangers)"
-              className="flex-1 min-w-[200px] px-3 py-2.5 rounded-[12px] border border-stroke bg-[rgba(17,24,39,0.65)] text-txt outline-none text-sm"
-            />
-            <label className="flex items-center gap-2 text-xs text-muted select-none cursor-pointer">
-              <input
-                type="checkbox"
-                checked={createPublic}
-                onChange={(e) => setCreatePublic(e.target.checked)}
-                className="accent-primary"
-              />
-              Publique
-            </label>
-            <button onClick={handleCreate} className="btn-primary text-sm">
-              Creer playlist
-            </button>
+          {/* Back + create */}
+          <div className="flex-shrink-0 flex gap-2 items-center flex-wrap">
+            {spotifyCurrentPlaylistId && (
+              <button onClick={() => { useStore.getState().setSpotifyCurrentPlaylistId(''); useStore.getState().setSpotifyTracks([]); }}
+                className="btn text-xs">← Playlists</button>
+            )}
+            <input value={createName} onChange={e => setCreateName(e.target.value)}
+              placeholder="Nouvelle playlist…"
+              className="flex-1 min-w-[120px] px-3 py-1.5 rounded-lg bg-surface-3 border border-border text-sm outline-none"/>
+            <button onClick={() => { spotifyCreatePlaylist(createName.trim() || 'Greg Playlist', true); setCreateName(''); }}
+              className="btn-accent text-xs py-1.5">Créer</button>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
 }
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
+// Right Sidebar (tabs)
+// ═══════════════════════════════
+function Sidebar() {
+  const [tab, setTab] = useState<'queue' | 'spotify'>('queue');
+
+  return (
+    <div className="glass flex flex-col h-full min-h-0 p-4 max-[1100px]:h-auto">
+      {/* Tab bar */}
+      <div className="flex gap-1 mb-4 p-1 rounded-xl bg-surface-3 flex-shrink-0">
+        <button onClick={() => setTab('queue')} className={`tab flex-1 text-center ${tab === 'queue' ? 'tab-active' : ''}`}>
+          File d&apos;attente
+        </button>
+        <button onClick={() => setTab('spotify')} className={`tab flex-1 text-center ${tab === 'spotify' ? 'tab-active' : ''}`}>
+          Spotify
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {tab === 'queue' ? <QueuePanel/> : <SpotifyPanel/>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════
 // Main Page
-// ═══════════════════════════════════════════
+// ═══════════════════════════════
 export default function Home() {
-  // Initialize socket, intervals, guild subscription — ONCE
   usePlayerInit();
-
   const { me, guilds, guildId, socketReady, status, boot, setGuild, refreshMe } = usePlayer();
-
   const [booted, setBooted] = useState(false);
-  const [quote, setQuote] = useState('Greg t observe avec un profond mepris.');
 
-  useEffect(() => {
-    setQuote(randomQuote());
-  }, []);
+  useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
 
-  useEffect(() => {
-    boot()
-      .then(() => setBooted(true))
-      .catch(() => setBooted(true));
-  }, [boot]);
-
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = async (ev: KeyboardEvent) => {
       const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase();
-      if (
-        tag === 'input' ||
-        tag === 'textarea' ||
-        (ev.target as HTMLElement)?.isContentEditable
-      ) {
-        return;
-      }
-
-      const s = useStore.getState() as any;
+      if (tag === 'input' || tag === 'textarea' || (ev.target as HTMLElement)?.isContentEditable) return;
+      const s = useStore.getState();
       if (!s.me || !s.guildId) return;
-
-      if (ev.code === 'Space') {
-        ev.preventDefault();
-        s.setStatus('Lecture/Pause…', 'info');
-        try {
-          await api.togglePause(s.guildId, s.me.id);
-          s.setStatus('Lecture/Pause ✅', 'ok');
-        } catch { s.setStatus('Erreur pause', 'err'); }
-      } else if (ev.key?.toLowerCase() === 'n') {
-        s.setStatus('Skip…', 'info');
-        try {
-          await api.queueSkip(s.guildId, s.me.id);
-          s.setStatus('Skip ✅', 'ok');
-        } catch { s.setStatus('Erreur skip', 'err'); }
-      } else if (ev.key?.toLowerCase() === 'p') {
-        s.setStatus('Restart…', 'info');
-        try {
-          await api.restart(s.guildId, s.me.id);
-          s.setStatus('Restart ✅', 'ok');
-        } catch { s.setStatus('Erreur restart', 'err'); }
-      } else if (ev.key?.toLowerCase() === 'r') {
-        s.setStatus('Repeat toggle…', 'info');
-        try {
-          await api.repeat(s.guildId, s.me.id);
-          s.setStatus('Repeat togglé ✅', 'ok');
-        } catch { s.setStatus('Erreur repeat', 'err'); }
-      }
+      if (ev.code === 'Space') { ev.preventDefault(); s.setStatus('Pause…', 'info'); try { await api.togglePause(s.guildId, s.me.id); s.setStatus('OK ✅', 'ok'); } catch { s.setStatus('Erreur', 'err'); } }
+      else if (ev.key === 'n') { try { await api.queueSkip(s.guildId, s.me.id); s.setStatus('Skip ✅', 'ok'); } catch {} }
+      else if (ev.key === 'p') { try { await api.restart(s.guildId, s.me.id); } catch {} }
+      else if (ev.key === 'r') { try { await api.repeat(s.guildId, s.me.id); } catch {} }
     };
-
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
-  useEffect(() => {
-    const handler = () => {
-      refreshMe().catch(() => {});
-    };
+  useEffect(() => { const h = () => refreshMe().catch(() => {}); window.addEventListener('focus', h); return () => window.removeEventListener('focus', h); }, [refreshMe]);
 
-    window.addEventListener('focus', handler);
-    return () => window.removeEventListener('focus', handler);
-  }, [refreshMe]);
-
-  const avatarUrl = discordAvatarUrl(me, 128);
-  const userName = me?.global_name || me?.display_name || me?.username || '';
+  const avatar = discordAvatar(me, 96);
+  const name = me?.global_name || me?.display_name || me?.username || '';
 
   return (
-    <div
-      className="flex flex-col h-[100dvh]"
-      style={{
-        padding: `calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))`,
-        gap: '14px',
-      }}
-    >
-      <header className="flex items-start justify-between gap-3.5 flex-shrink-0 flex-wrap min-[1100px]:flex-nowrap">
-        <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-3 min-w-[240px]">
-          <img
-            src="/images/icon.png"
-            alt="Greg"
-            className="w-9 h-9 rounded-[10px] object-cover border border-stroke bg-[#111827]"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-            }}
-          />
-          <div>
-            <div className="font-black tracking-wide text-sm">Greg le Consanguin</div>
-            <div className="text-xs text-muted mt-0.5">Web Player</div>
-          </div>
+    <div className="relative z-10 flex flex-col h-[100dvh]" style={{ padding: 'calc(12px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px))', gap: '12px' }}>
+
+      {/* ═══ Header ═══ */}
+      <header className="flex items-center gap-3 flex-shrink-0 flex-wrap">
+        <div className="flex items-center gap-2.5 mr-2">
+          <img src="/images/icon.png" alt="" className="w-8 h-8 rounded-xl border border-border object-cover"
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>
+          <span className="font-display font-bold text-sm tracking-tight hidden sm:inline">Greg le Consanguin</span>
         </div>
 
-        <SearchBar />
+        <SearchBar/>
 
-        <div className="flex gap-2.5 flex-wrap min-[1100px]:flex-nowrap min-w-[260px]">
-          <div className="card-greg-light flex items-center gap-2.5 px-3.5 py-2.5 min-w-0">
-            <div
-              className="w-[34px] h-[34px] rounded-[12px] flex items-center justify-center font-black flex-shrink-0"
-              style={{
-                background: avatarUrl
-                  ? `url("${avatarUrl}") center/contain no-repeat rgba(15,23,42,0.65)`
-                  : 'rgba(99,102,241,0.18)',
-                border: '1px solid rgba(99,102,241,0.25)',
-                color: avatarUrl ? 'transparent' : undefined,
-              }}
-            >
-              {!avatarUrl && (userName?.[0]?.toUpperCase() || '?')}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold text-sm truncate">{userName || 'Non connecte'}</div>
-              <div className="text-xs text-muted mt-0.5">{me ? 'Connecte' : 'Discord'}</div>
-            </div>
-            {me ? (
-              <button
-                onClick={async () => {
-                  try {
-                    await api.logout();
-                    useStore.getState().setMe(null);
-                    useStore.getState().setGuilds([]);
-                    useStore.getState().setGuildId('');
-                    useStore.getState().setSpotifyLinked(false);
-                    useStore.getState().setSpotifyProfile(null);
-                    useStore.getState().setSpotifyPlaylists([]);
-                    useStore.getState().setSpotifyTracks([]);
-                    localStorage.removeItem('greg.webplayer.guild_id');
-                    localStorage.removeItem('greg.spotify.last_playlist_id');
-                    window.location.reload();
-                  } catch {}
-                }}
-                className="btn-ghost text-xs flex-shrink-0"
-              >
-                Deco
-              </button>
-            ) : (
-              <a href={api.getLoginUrl()} className="btn-ghost text-xs flex-shrink-0">
-                Se connecter
-              </a>
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          <select value={guildId} onChange={e => setGuild(e.target.value)}
+            className="glass-subtle px-3 py-1.5 text-xs outline-none min-w-0 font-body">
+            <option value="">Serveur…</option>
+            {guilds.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
 
-          <div className="card-greg-light flex items-center gap-2.5 px-3 py-2.5 min-w-0">
-            <label className="text-xs text-muted flex-shrink-0">Serveur</label>
-            <select
-              value={guildId}
-              onChange={(e) => setGuild(e.target.value)}
-              className="flex-1 px-2.5 py-2 rounded-[10px] border border-stroke bg-[rgba(17,24,39,0.65)] text-txt outline-none text-sm min-w-0"
-            >
-              <option value="">- Choisir -</option>
-              {guilds.map((g: any) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {me ? (
+            <div className="flex items-center gap-2">
+              {avatar && <img src={avatar} alt="" className="w-7 h-7 rounded-full border border-border"/>}
+              <span className="text-xs text-txt-muted hidden md:inline">{name}</span>
+              <button onClick={async () => {
+                try { await api.logout(); window.location.reload(); } catch {} }}
+                className="btn text-[11px] py-1">Déco</button>
+            </div>
+          ) : (
+            <a href={api.getLoginUrl()} className="btn-accent text-xs">Connexion</a>
+          )}
+
+          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${socketReady ? 'bg-teal animate-pulse-ring' : 'bg-rose'}`}/>
         </div>
       </header>
 
-      <main className="flex-1 min-h-0 main-grid gap-3.5">
-        <div className="min-h-0 max-[1100px]:order-1 max-[1100px]:h-auto">
-          <Queue />
+      {/* ═══ Main ═══ */}
+      <main className="flex-1 min-h-0 main-layout">
+        {/* Left: Player */}
+        <div className="glass p-4 flex flex-col min-h-0">
+          <VideoPlayer/>
         </div>
-        <div className="min-h-0 max-[1100px]:order-0 max-[1100px]:h-auto">
-          <NowPlaying />
-        </div>
-        <div className="min-h-0 max-[1100px]:order-2 max-[1100px]:h-auto">
-          <SpotifyPanel />
-        </div>
+
+        {/* Right: Sidebar */}
+        <Sidebar/>
       </main>
 
+      {/* ═══ Status ═══ */}
       <footer className="flex-shrink-0">
-        <div
-          className={`rounded-greg px-3.5 py-3 shadow-greg text-[13px] transition-all duration-300 ${
-            status.kind === 'ok'
-              ? 'status-ok'
-              : status.kind === 'err'
-                ? 'status-err'
-                : 'border border-stroke bg-greg-darker'
-          }`}
-          style={{
-            color:
-              status.kind === 'err'
-                ? 'rgba(254,226,226,0.95)'
-                : 'rgba(226,232,240,0.95)',
-          }}
-        >
+        <div className={`glass-subtle px-3 py-2 text-xs transition-all duration-300 ${
+          status.kind === 'ok' ? 'status-ok' : status.kind === 'err' ? 'status-err' : ''}`}>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'
-                }`}
-              />
-              <span>{status.text}</span>
-              {!booted && <span className="text-xs text-muted">(initialisation)</span>}
-            </div>
-            <div className="hidden min-[1100px]:flex items-center gap-3 text-[11px] text-muted/50">
-              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">Space</kbd> Pause</span>
-              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">N</kbd> Skip</span>
-              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">P</kbd> Restart</span>
-              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">R</kbd> Repeat</span>
+            <span className="text-txt-muted">{status.text}</span>
+            <div className="hidden md:flex items-center gap-3 text-txt-dim text-[10px]">
+              <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">Space</kbd> Pause</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">N</kbd> Skip</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">P</kbd> Restart</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">R</kbd> Repeat</span>
             </div>
           </div>
         </div>

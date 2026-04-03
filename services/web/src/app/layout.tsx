@@ -3,16 +3,14 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'Greg le Consanguin — Web Player',
-  description: 'Le gueux musical au service de votre vocal Discord.',
+  description: 'Lecteur musical Discord — stream, queue, Spotify, vidéo.',
   icons: { icon: '/images/icon.png' },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="fr">
-      <body className="antialiased">
-        {children}
-      </body>
+      <body className="antialiased font-body">{children}</body>
     </html>
   );
 }
