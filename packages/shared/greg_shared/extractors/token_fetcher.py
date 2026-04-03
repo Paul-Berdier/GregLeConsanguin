@@ -150,6 +150,43 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
         out["why"] = "playwright_not_installed"
         return
 
+    # Fast-fail: vérifie si les binaires Playwright sont installés
+    # avant de tenter 3 lancements qui échouent tous
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["playwright", "install", "--dry-run"],
+            capture_output=True, timeout=3,
+        )
+        # Si la commande n'existe pas ou échoue, on vérifie autrement
+    except Exception:
+        pass
+
+    # Vérification directe du binaire chromium
+    _chromium_paths = [
+        os.path.expanduser("~/.cache/ms-playwright"),
+        "/root/.cache/ms-playwright",
+    ]
+    _has_browser = False
+    for base in _chromium_paths:
+        if os.path.isdir(base):
+            # Cherche n'importe quel chrome/chromium exécutable
+            for root, dirs, files in os.walk(base):
+                for f in files:
+                    if "chrome" in f.lower() and os.access(os.path.join(root, f), os.X_OK):
+                        _has_browser = True
+                        break
+                if _has_browser:
+                    break
+        if _has_browser:
+            break
+
+    if not _has_browser:
+        _dbg("Playwright browsers not installed — skipping PO token fetch")
+        out["token"] = None
+        out["why"] = "playwright_browsers_missing"
+        return
+
     headless_env = os.getenv("PLAYWRIGHT_HEADLESS", "1").strip().lower()
     headless = headless_env not in ("0", "false", "no")
 
