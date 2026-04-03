@@ -553,12 +553,15 @@ class PlayerService:
         gid = int(guild_id)
         if requester_id is not None:
             await self._ensure_can_control(gid, requester_id)
+
         cur = self.current_song.get(gid)
         if not cur:
             return False
+
         # Réinsère le morceau en tête de queue
         pm = self._get_pm(gid)
         pm.insert_at(0, dict(cur))
+
         # Skip pour relancer
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
@@ -566,9 +569,9 @@ class PlayerService:
             vc.stop()
         elif g:
             await self.play_next(g)
+
+        self._emit(gid)
         return True
-            self._emit(gid)
-        return ok
 
     async def toggle_repeat(self, guild_id: int, mode: str = None) -> bool:
         gid = int(guild_id)
