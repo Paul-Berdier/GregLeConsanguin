@@ -30,37 +30,58 @@ class RedisBridge:
     def __init__(self, bot):
         self.bot = bot
         self._redis: Optional[aioredis.Redis] = None
+        self._redis_sub: Optional[aioredis.Redis] = None
         self._pubsub = None
 
     async def _get_redis(self) -> aioredis.Redis:
+        """Redis pour publish/commandes (avec timeout)."""
         if self._redis is None:
             self._redis = aioredis.from_url(
                 settings.redis_url,
                 decode_responses=True,
-                socket_timeout=5,
+                socket_timeout=10,
+                socket_connect_timeout=10,
             )
         return self._redis
 
+    async def _get_redis_sub(self) -> aioredis.Redis:
+        """Redis dédié au pubsub (SANS socket_timeout pour éviter la boucle de timeout)."""
+        if self._redis_sub is None:
+            self._redis_sub = aioredis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=10,
+                health_check_interval=30,
+                # PAS de socket_timeout — pubsub doit bloquer indéfiniment
+            )
+        return self._redis_sub
+
     async def start_listening(self):
         """Écoute les commandes de l'API sur Redis."""
-        try:
-            r = await self._get_redis()
-            self._pubsub = r.pubsub()
-            await self._pubsub.subscribe(CHANNEL_COMMANDS)
-            logger.info("Redis: écoute sur %s", CHANNEL_COMMANDS)
+        while True:
+            try:
+                r = await self._get_redis_sub()
+                self._pubsub = r.pubsub()
+                await self._pubsub.subscribe(CHANNEL_COMMANDS)
+                logger.info("Redis: écoute sur %s", CHANNEL_COMMANDS)
 
-            async for message in self._pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                try:
-                    data = json.loads(message["data"])
-                    await self._handle_command(data)
-                except Exception as e:
-                    logger.error("Redis: erreur traitement commande: %s", e)
-        except Exception as e:
-            logger.error("Redis: connexion perdue: %s — retry dans 5s", e)
-            await asyncio.sleep(5)
-            asyncio.create_task(self.start_listening())
+                async for message in self._pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                        await self._handle_command(data)
+                    except Exception as e:
+                        logger.error("Redis: erreur traitement commande: %s", e)
+            except asyncio.CancelledError:
+                logger.info("Redis listener cancelled")
+                break
+            except Exception as e:
+                logger.error("Redis: connexion perdue: %s — retry dans 5s", e)
+                # Reset sub connection so it reconnects fresh
+                self._redis_sub = None
+                self._pubsub = None
+                await asyncio.sleep(5)
 
     async def _handle_command(self, data: Dict[str, Any]):
         """Traite une commande reçue de l'API."""
@@ -131,6 +152,15 @@ class RedisBridge:
             elif action == "get_state":
                 state = svc.get_state(guild_id)
                 result = {"ok": True, "state": state}
+
+            elif action == "play_at":
+                index = int(cmd_data.get("index", 0))
+                ok = await svc.play_at(guild_id, user_id, index)
+                result = {"ok": ok}
+
+            elif action == "restart":
+                ok = await svc.restart(guild_id, requester_id=user_id)
+                result = {"ok": ok}
 
             elif action == "join":
                 g = self.bot.get_guild(guild_id)
