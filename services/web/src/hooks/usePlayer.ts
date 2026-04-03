@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import { create } from 'zustand';
 import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, getSocketId } from '@/lib/socket';
 import { api } from '@/lib/api';
@@ -207,15 +207,18 @@ const RESYNC_MS = 5000;
 const POLL_FALLBACK_MS = 3000;
 const VOICE_JOIN_COOLDOWN_MS = 8000;
 
-export function usePlayer() {
-  const store = useStore();
-  const voiceJoinLastAt = useRef(0);
-  const resyncLastAt = useRef(0);
+let _voiceJoinLastAt = 0;
 
-  // Socket setup
+/**
+ * usePlayerInit — MUST be called exactly ONCE in the root component.
+ * Sets up socket listeners, intervals, guild subscription.
+ */
+export function usePlayerInit() {
+  const guildId = useStore((s) => s.guildId);
+
+  // Socket setup (once)
   useEffect(() => {
     const socket = getSocket();
-    const { setSocketReady, applyPlaylistPayload, setStatus, setSpotifyLinked, setSpotifyProfile } = useStore.getState();
 
     const onConnect = () => {
       useStore.getState().setSocketReady(true);
@@ -257,44 +260,23 @@ export function usePlayer() {
 
   // Guild subscription
   useEffect(() => {
-    const gid = store.guildId;
-    if (!gid) return;
-    subscribeGuild(gid);
-    return () => { unsubscribeGuild(gid); };
-  }, [store.guildId]);
+    if (!guildId) return;
+    subscribeGuild(guildId);
+    return () => { unsubscribeGuild(guildId); };
+  }, [guildId]);
 
-  // Progress ticker (RAF)
+  // Server resync
   useEffect(() => {
-    let rafId: number;
-
-    const tick = () => {
+    const interval = setInterval(async () => {
       const s = useStore.getState();
-      if (s.player.current && !s.player.paused) {
-        const now = performance.now();
-        const elapsed = (now - s.tickBase.at) / 1000;
-        const pos = s.tickBase.pos + elapsed;
-        const dur = s.tickBase.dur || s.player.duration || s.player.current.duration || 0;
-        const clamped = dur > 0 ? clamp(pos, 0, dur) : Math.max(0, pos);
-
-        // Only update the player position, not the full state, to avoid re-renders
-        useStore.setState((prev) => ({
-          player: { ...prev.player, position: clamped },
-        }));
-
-        // Resync from server periodically
-        if (s.me && s.guildId && Date.now() - resyncLastAt.current > RESYNC_MS) {
-          resyncLastAt.current = Date.now();
-          refreshPlaylist().catch(() => {});
-        }
+      if (s.player.current && !s.player.paused && s.me && s.guildId) {
+        await refreshPlaylist().catch(() => {});
       }
-      rafId = requestAnimationFrame(tick);
-    };
-
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
+    }, RESYNC_MS);
+    return () => clearInterval(interval);
   }, []);
 
-  // Polling fallback when socket disconnected
+  // Polling fallback
   useEffect(() => {
     const interval = setInterval(async () => {
       const s = useStore.getState();
@@ -302,9 +284,16 @@ export function usePlayer() {
       if (!s.me || !s.guildId) return;
       await refreshPlaylist().catch(() => {});
     }, POLL_FALLBACK_MS);
-
     return () => clearInterval(interval);
   }, []);
+}
+
+/**
+ * usePlayer — returns store state + action callbacks.
+ * Can be called from ANY component, NO side effects.
+ */
+export function usePlayer() {
+  const store = useStore();
 
   // ── Refresh functions ──
   const refreshMe = useCallback(async () => {
@@ -413,8 +402,8 @@ export function usePlayer() {
 
   const bestEffortVoiceJoin = useCallback(async (reason: string) => {
     const now = Date.now();
-    if (now - voiceJoinLastAt.current < VOICE_JOIN_COOLDOWN_MS) return;
-    voiceJoinLastAt.current = now;
+    if (now - _voiceJoinLastAt < VOICE_JOIN_COOLDOWN_MS) return;
+    _voiceJoinLastAt = now;
     const s = useStore.getState();
     if (!s.me || !s.guildId) return;
     try {

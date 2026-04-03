@@ -43,12 +43,14 @@ def create_app() -> Flask:
     from api.routes.search import bp as search_bp
     from api.routes.auth import bp as auth_bp
     from api.routes.guilds import bp as guilds_bp
+    from api.routes.spotify import bp as spotify_bp
 
     app.register_blueprint(health_bp, url_prefix=API_PREFIX)
     app.register_blueprint(player_bp, url_prefix=API_PREFIX)
     app.register_blueprint(search_bp, url_prefix=API_PREFIX)
     app.register_blueprint(auth_bp, url_prefix=API_PREFIX)
     app.register_blueprint(guilds_bp, url_prefix=API_PREFIX)
+    app.register_blueprint(spotify_bp, url_prefix=API_PREFIX)
 
     # Register WebSocket handlers
     from api.websocket import events  # noqa: F401

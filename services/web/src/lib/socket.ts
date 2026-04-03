@@ -1,14 +1,28 @@
 import { io, Socket } from 'socket.io-client';
+import { getApiOrigin } from './api';
 
-const WS_URL =
-  (process.env.NEXT_PUBLIC_WS_URL || '').trim()
+// Socket connects to the API service, not the Next.js frontend.
+// On Railway, they're separate services so we need the API origin.
+function getWsUrl(): string {
+  const env = (typeof window !== 'undefined'
+    ? (process.env.NEXT_PUBLIC_WS_URL || '').trim()
+    : '');
+  if (env) return env;
+
+  // Fallback: connect to API origin (same as API base)
+  if (typeof window !== 'undefined') {
+    return getApiOrigin() || '';
+  }
+  return '';
+}
 
 let socket: Socket | null = null;
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(WS_URL, {
+    const url = getWsUrl();
+    socket = io(url || undefined, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
       withCredentials: true,

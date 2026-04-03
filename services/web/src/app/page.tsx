@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { usePlayer, useStore } from '@/hooks/usePlayer';
+import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
+import { useProgress } from '@/hooks/useProgress';
 import { api } from '@/lib/api';
 import { randomQuote } from '@/theme/greg-quotes';
 import type { SearchResult, SpotifyPlaylist, SpotifyTrack } from '@/lib/types';
@@ -91,42 +92,62 @@ function SearchBar() {
   const [showSugs, setShowSugs] = useState(false);
   const [sugIdx, setSugIdx] = useState(-1);
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const queryRef = useRef('');
 
   const fetchSuggestions = useCallback(async (q: string) => {
     if (q.length < 2) {
       setSuggestions([]);
       setShowSugs(false);
+      setSearching(false);
       return;
     }
 
-    try {
-      const rows = await api.autocomplete(q, 8);
+    // Cancel previous request
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
 
-      if (Array.isArray(rows)) {
-        setSuggestions(rows);
-        setShowSugs(rows.length > 0);
-        setSugIdx(-1);
-      } else {
-        setSuggestions([]);
-        setShowSugs(false);
+    setSearching(true);
+    try {
+      const rows = await api.autocomplete(q, 6);
+
+      // Only apply if query hasn't changed since request started
+      if (queryRef.current.trim() === q.trim()) {
+        if (Array.isArray(rows) && rows.length > 0) {
+          setSuggestions(rows);
+          setShowSugs(true);
+          setSugIdx(-1);
+        } else {
+          setSuggestions([]);
+          setShowSugs(false);
+        }
       }
     } catch {
-      setSuggestions([]);
-      setShowSugs(false);
+      // Don't clear on abort
+    } finally {
+      setSearching(false);
     }
   }, []);
 
   const handleInput = (val: string) => {
     setQuery(val);
+    queryRef.current = val;
 
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (val.trim().length < 2) {
+      setSuggestions([]);
+      setShowSugs(false);
+      setSearching(false);
+      return;
     }
 
+    setSearching(true);
     debounceRef.current = setTimeout(() => {
-      fetchSuggestions(val);
-    }, 180);
+      fetchSuggestions(val.trim());
+    }, 250);
   };
 
   const submit = async (rawQuery: string, meta?: Record<string, any>) => {
@@ -200,16 +221,18 @@ function SearchBar() {
   return (
     <div className="relative flex-1 min-w-0" style={{ minWidth: '280px' }}>
       <div className="card-greg flex items-center gap-2.5 px-3 py-2.5">
-        <Icon icon="search" />
+        <div className={`flex-shrink-0 ${searching ? 'animate-spin' : ''}`}>
+          <Icon icon="search" />
+        </div>
         <input
           value={query}
           onChange={(e) => handleInput(e.target.value)}
           onFocus={() => {
             if (suggestions.length) setShowSugs(true);
           }}
-          onBlur={() => setTimeout(() => setShowSugs(false), 150)}
+          onBlur={() => setTimeout(() => setShowSugs(false), 200)}
           onKeyDown={handleKeyDown}
-          placeholder="Rechercher YouTube..."
+          placeholder="Rechercher YouTube…"
           className="flex-1 bg-transparent border-none outline-none text-txt text-sm placeholder:text-muted min-w-0"
         />
         <button
@@ -265,23 +288,23 @@ function SearchBar() {
 // ═══════════════════════════════════════════
 function NowPlaying() {
   const { player, togglePause, skip, stop, toggleRepeat, restartTrack } = usePlayer();
+  const { progressRef, currentRef, totalRef } = useProgress();
   const cur = player.current;
-
-  const dur = player.duration || cur?.duration || 0;
-  const pct = dur > 0 ? Math.min(100, (player.position / dur) * 100) : 0;
 
   return (
     <div className="card-greg p-[18px] flex flex-col gap-3.5 h-full min-h-0 overflow-hidden">
       <div className="self-center flex-shrink-0">
         <div
-          className="rounded-[18px] border border-stroke shadow-greg"
+          className="rounded-[18px] border border-stroke shadow-greg transition-all duration-500"
           style={{
             width: 'clamp(140px, 14vw, 220px)',
             height: 'clamp(140px, 14vw, 220px)',
             background: cur?.thumb
               ? `url("${cur.thumb}") center/cover no-repeat`
               : 'rgba(15, 23, 42, 0.7)',
-            boxShadow: cur?.thumb ? '0 16px 48px rgba(0,0,0,0.5)' : undefined,
+            boxShadow: cur?.thumb
+              ? '0 16px 48px rgba(0,0,0,0.5), 0 0 60px rgba(99,102,241,0.08)'
+              : undefined,
           }}
         />
       </div>
@@ -290,19 +313,20 @@ function NowPlaying() {
         <div className="font-black text-xl text-txt truncate">
           {cur?.title || 'Rien en cours'}
         </div>
-        <div className="text-sm text-muted mt-1 truncate">{cur?.artist || '-'}</div>
+        <div className="text-sm text-muted mt-1 truncate">{cur?.artist || '—'}</div>
         {cur?.addedBy?.name && (
-          <div className="text-xs text-muted/70 mt-1">Demande par {cur.addedBy.name}</div>
+          <div className="text-xs text-muted/70 mt-1">Demandé par {cur.addedBy.name}</div>
         )}
       </div>
 
+      {/* Progress — refs updated by RAF, zero re-renders */}
       <div className="w-full mt-1">
         <div className="progress-track">
-          <div className="progress-fill" style={{ width: `${pct}%` }} />
+          <div ref={progressRef} className="progress-fill" style={{ width: '0%' }} />
         </div>
         <div className="flex justify-between mt-1.5 text-xs text-muted">
-          <span>{formatTime(player.position)}</span>
-          <span>{formatTime(dur)}</span>
+          <span ref={currentRef}>0:00</span>
+          <span ref={totalRef}>--:--</span>
         </div>
       </div>
 
@@ -684,6 +708,9 @@ function SpotifyPanel() {
 // Main Page
 // ═══════════════════════════════════════════
 export default function Home() {
+  // Initialize socket, intervals, guild subscription — ONCE
+  usePlayerInit();
+
   const { me, guilds, guildId, socketReady, status, boot, setGuild, refreshMe } = usePlayer();
 
   const [booted, setBooted] = useState(false);
@@ -715,21 +742,29 @@ export default function Home() {
 
       if (ev.code === 'Space') {
         ev.preventDefault();
+        s.setStatus('Lecture/Pause…', 'info');
         try {
           await api.togglePause(s.guildId, s.me.id);
-        } catch {}
+          s.setStatus('Lecture/Pause ✅', 'ok');
+        } catch { s.setStatus('Erreur pause', 'err'); }
       } else if (ev.key?.toLowerCase() === 'n') {
+        s.setStatus('Skip…', 'info');
         try {
           await api.queueSkip(s.guildId, s.me.id);
-        } catch {}
+          s.setStatus('Skip ✅', 'ok');
+        } catch { s.setStatus('Erreur skip', 'err'); }
       } else if (ev.key?.toLowerCase() === 'p') {
+        s.setStatus('Restart…', 'info');
         try {
           await api.restart(s.guildId, s.me.id);
-        } catch {}
+          s.setStatus('Restart ✅', 'ok');
+        } catch { s.setStatus('Erreur restart', 'err'); }
       } else if (ev.key?.toLowerCase() === 'r') {
+        s.setStatus('Repeat toggle…', 'info');
         try {
           await api.repeat(s.guildId, s.me.id);
-        } catch {}
+          s.setStatus('Repeat togglé ✅', 'ok');
+        } catch { s.setStatus('Erreur repeat', 'err'); }
       }
     };
 
@@ -867,14 +902,22 @@ export default function Home() {
                 : 'rgba(226,232,240,0.95)',
           }}
         >
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'
-              }`}
-            />
-            <span>{status.text}</span>
-            {!booted && <span className="text-xs text-muted">(initialisation)</span>}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  socketReady ? 'bg-ok animate-pulse-glow' : 'bg-danger'
+                }`}
+              />
+              <span>{status.text}</span>
+              {!booted && <span className="text-xs text-muted">(initialisation)</span>}
+            </div>
+            <div className="hidden min-[1100px]:flex items-center gap-3 text-[11px] text-muted/50">
+              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">Space</kbd> Pause</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">N</kbd> Skip</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">P</kbd> Restart</span>
+              <span><kbd className="px-1 py-0.5 rounded border border-stroke/50 text-[10px]">R</kbd> Repeat</span>
+            </div>
           </div>
         </div>
       </footer>

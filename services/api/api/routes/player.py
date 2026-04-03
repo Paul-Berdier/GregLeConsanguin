@@ -149,7 +149,7 @@ def remove_at(index: int):
     return jsonify(res), code
 
 
-# ── Compat routes (ancien front) ──
+# ── Compat routes (ancien front player.js) ──
 
 @bp.post("/queue/add")
 def queue_add_compat():
@@ -170,7 +170,6 @@ def queue_stop_compat():
 def queue_remove_compat():
     data = request.get_json(silent=True) or {}
     idx = data.get("index", 0)
-    data["guild_id"] = data.get("guild_id") or request.args.get("guild_id")
     return remove_at(int(idx))
 
 
@@ -187,6 +186,33 @@ def playlist_pause_compat():
 @bp.post("/playlist/repeat")
 def playlist_repeat_compat():
     return repeat()
+
+
+@bp.post("/playlist/play_at")
+def playlist_play_at():
+    """Joue le morceau à l'index donné dans la queue."""
+    data = request.get_json(silent=True) or {}
+    gid = _gid(request, data)
+    uid = _uid(request, data)
+    index = data.get("index", 0)
+    if not gid or not uid:
+        return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+    res = send_command("play_at", gid, uid, data={"index": int(index)}, timeout=8)
+    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 409)
+    return jsonify(res), code
+
+
+@bp.post("/playlist/restart")
+def playlist_restart():
+    """Redémarre le morceau en cours."""
+    data = request.get_json(silent=True) or {}
+    gid = _gid(request, data)
+    uid = _uid(request, data)
+    if not gid or not uid:
+        return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+    res = send_command("restart", gid, uid, timeout=8)
+    code = 200 if res.get("ok") else 409
+    return jsonify(res), code
 
 
 @bp.post("/voice/join")
