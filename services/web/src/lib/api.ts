@@ -200,6 +200,13 @@ export const api = {
 
   spotifyAddQueueToPlaylist: (playlistId: string, guildId: string, maxItems = 20) =>
     post('/spotify/add_queue_to_playlist', { playlist_id: playlistId, guild_id: guildId, max_items: maxItems }),
+
+  // History
+  getHistory: (guildId: string, mode = 'top', limit = 20) =>
+    get('/history', { guild_id: guildId, mode, limit: String(limit) }),
+
+  getHistoryRecent: (guildId: string, limit = 20) =>
+    get('/history/recent', { guild_id: guildId, limit: String(limit) }),
 };
 
 type SearchResult = import('./types').SearchResult;

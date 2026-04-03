@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
 import { useProgress } from '@/hooks/useProgress';
 import { api } from '@/lib/api';
-import type { SearchResult, SpotifyPlaylist, SpotifyTrack } from '@/lib/types';
+import type { SearchResult } from '@/lib/types';
 
 // ── Helpers ──
 function fmt(sec?: number | null): string {
@@ -23,7 +23,10 @@ function discordAvatar(me: any, size = 96): string | null {
   if (!me?.id) return null;
   if (me.avatar_url?.startsWith('http')) return me.avatar_url;
   if (me.avatar) return `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png?size=${size}`;
-  return `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(me.id) >> 22n) % 6}.png`;
+  // Default avatar index: (user_id >> 22) % 6
+  let idx = 0;
+  try { idx = Number((BigInt(me.id) >> 22n) % 6n); } catch { idx = parseInt(String(me.id).slice(-2), 10) % 6 || 0; }
+  return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
 }
 
 // ── SVG Icons ──
@@ -267,104 +270,90 @@ function QueuePanel() {
 }
 
 // ═══════════════════════════════
-// Spotify Panel
+// History / Top Panel
 // ═══════════════════════════════
-function SpotifyPanel() {
-  const {
-    me, spotifyLinked, spotifyProfile, spotifyPlaylists, spotifyTracks, spotifyCurrentPlaylistId,
-    spotifyLogin, spotifyLogout, refreshSpotifyPlaylists, selectSpotifyPlaylist,
-    spotifyQuickplay, spotifyDeletePlaylist, spotifyRemoveTrack, spotifyCreatePlaylist,
-    spotifyAddCurrent, spotifyAddQueue, guildId, player,
-  } = usePlayer();
-  const [createName, setCreateName] = useState('');
-  const [loadingPl, setLoadingPl] = useState(false);
+function HistoryPanel() {
+  const { historyItems, enqueue, refreshHistory, guildId } = usePlayer();
+  const [mode, setMode] = useState<'top' | 'recent'>('top');
+  const [loading, setLoading] = useState(false);
 
-  const target = useMemo(() => spotifyPlaylists.find(p => p.id === spotifyCurrentPlaylistId), [spotifyPlaylists, spotifyCurrentPlaylistId]);
+  const reload = async (m: 'top' | 'recent') => {
+    setMode(m);
+    setLoading(true);
+    try {
+      const s = useStore.getState();
+      if (!s.guildId) return;
+      const data = await api.getHistory(s.guildId, m, 30);
+      useStore.getState().setHistoryItems(data?.items || []);
+    } catch {} finally { setLoading(false); }
+  };
 
-  if (!me) return <div className="text-sm text-txt-muted py-6 text-center opacity-50">Connecte-toi pour Spotify</div>;
+  const quickAdd = (item: any) => {
+    enqueue({
+      query: item.url || item.title,
+      url: item.url, title: item.title,
+      artist: item.artist, thumb: item.thumb,
+      duration: item.duration, provider: item.provider || 'youtube',
+    });
+  };
+
+  if (!guildId) return <div className="text-sm text-txt-muted py-6 text-center opacity-50">Choisis un serveur</div>;
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3 flex-shrink-0 flex-wrap gap-2">
-        <span className="text-xs text-txt-muted">
-          {spotifyLinked ? `Lié : ${spotifyProfile?.display_name || '—'}` : 'Non lié'}
-        </span>
-        {!spotifyLinked
-          ? <button onClick={spotifyLogin} className="btn text-xs">Lier Spotify</button>
-          : <div className="flex gap-1.5">
-              <button onClick={spotifyLogout} className="btn text-xs">Délier</button>
-              <button onClick={async () => { setLoadingPl(true); try { await refreshSpotifyPlaylists(); } finally { setLoadingPl(false); } }}
-                disabled={loadingPl} className={`btn text-xs ${loadingPl ? 'loading-spin' : ''}`}>Playlists</button>
-            </div>}
+      {/* Mode toggle */}
+      <div className="flex gap-1 mb-3 p-1 rounded-xl bg-surface-3 flex-shrink-0">
+        <button onClick={() => reload('top')} className={`tab flex-1 text-center text-xs ${mode === 'top' ? 'tab-active' : ''}`}>
+          Top joués
+        </button>
+        <button onClick={() => reload('recent')} className={`tab flex-1 text-center text-xs ${mode === 'recent' ? 'tab-active' : ''}`}>
+          Récents
+        </button>
+        <button onClick={() => reload(mode)} disabled={loading}
+          className={`tab text-xs px-2 ${loading ? 'loading-spin opacity-50' : ''}`}>
+          ↻
+        </button>
       </div>
 
-      {spotifyLinked && (
-        <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-          {/* Target bar */}
-          {target && (
-            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-accent-dim border border-accent/15 flex-shrink-0">
-              <span className="text-xs font-semibold truncate">{target.name}</span>
-              <div className="flex gap-1.5">
-                <button onClick={() => spotifyAddCurrent(target.id)} disabled={!guildId} className="btn text-[11px] py-1 px-2">+ Titre</button>
-                <button onClick={() => { if (player.queue.length && window.confirm(`Ajouter ${Math.min(player.queue.length, 20)} titres ?`)) spotifyAddQueue(target.id); }}
-                  disabled={!guildId || !player.queue.length} className="btn text-[11px] py-1 px-2">+ File</button>
+      {/* Items */}
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[40vh]">
+        {!historyItems.length ? (
+          <div className="text-center text-txt-muted text-sm py-8 opacity-40">
+            <Ic icon="music" size={28}/><br/>
+            <span className="mt-2 block">Aucun historique encore</span>
+            <span className="text-xs block mt-1">Joue des morceaux pour les voir ici</span>
+          </div>
+        ) : historyItems.map((item, i) => (
+          <div key={`${item.url}-${i}`} className="q-item group" onClick={() => quickAdd(item)}>
+            <div className="relative">
+              {item.thumb
+                ? <div className="q-thumb" style={{ backgroundImage: `url("${item.thumb}")` }}/>
+                : <div className="q-thumb flex items-center justify-center"><Ic icon="music" size={18}/></div>}
+              {/* Play count badge */}
+              {mode === 'top' && item.play_count > 1 && (
+                <div className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-accent text-[10px] font-bold text-white flex items-center justify-center px-1">
+                  {item.play_count}
+                </div>
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold truncate">{item.title || 'Titre inconnu'}</div>
+              <div className="text-xs text-txt-muted truncate">
+                {[
+                  item.artist || '',
+                  item.duration ? fmt(item.duration) : '',
+                  item.last_played_by ? `par ${item.last_played_by}` : '',
+                ].filter(Boolean).join(' · ')}
               </div>
             </div>
-          )}
-
-          {/* Lists */}
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[30vh]">
-            {spotifyPlaylists.length === 0 && spotifyTracks.length === 0 && (
-              <div className="text-center text-txt-muted text-xs py-4 opacity-40">Charge tes playlists</div>
-            )}
-            {spotifyPlaylists.length > 0 && !spotifyCurrentPlaylistId && (
-              spotifyPlaylists.map(pl => (
-                <div key={pl.id} className="q-item group" onClick={() => selectSpotifyPlaylist(pl.id)}>
-                  {(pl.images?.[0]?.url || pl.image || pl.cover) && <div className="q-thumb" style={{ backgroundImage: `url("${pl.images?.[0]?.url || pl.image || pl.cover}")` }}/>}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{pl.name}</div>
-                    <div className="text-xs text-txt-muted">{pl.tracks?.total ?? ''} tracks</div>
-                  </div>
-                </div>
-              ))
-            )}
-            {spotifyCurrentPlaylistId && spotifyTracks.map((t, i) => {
-              const name = t.name || t.title || 'Track';
-              const artist = Array.isArray(t.artists) ? t.artists.map((a: any) => a?.name).filter(Boolean).join(', ') : String(t.artists || t.artist || '');
-              const img = t.album?.images?.[0]?.url || t.image || '';
-              return (
-                <div key={t.id || i} className="q-item group">
-                  {img && <div className="q-thumb" style={{ backgroundImage: `url("${img}")` }}/>}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{name}</div>
-                    <div className="text-xs text-txt-muted truncate">{artist}</div>
-                  </div>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => { const a = Array.isArray(t.artists) ? t.artists.map((x: any) => x?.name).filter(Boolean).join(', ') : ''; spotifyQuickplay({ name: t.name, artists: a, duration_ms: t.duration_ms, image: t.album?.images?.[0]?.url, uri: t.uri }); }}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center bg-accent-dim hover:bg-accent/20 text-accent"><Ic icon="play" size={12}/></button>
-                    <button onClick={() => { const uri = t.uri || (t.id ? `spotify:track:${t.id}` : ''); if (uri && spotifyCurrentPlaylistId && window.confirm(`Retirer "${name}" ?`)) spotifyRemoveTrack(spotifyCurrentPlaylistId, uri); }}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center bg-rose-dim hover:bg-rose/20 text-rose"><Ic icon="trash" size={12}/></button>
-                  </div>
-                </div>
-              );
-            })}
+            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent-dim hover:bg-accent/20 text-accent">
+                <Ic icon="play" size={14}/>
+              </div>
+            </div>
           </div>
-
-          {/* Back + create */}
-          <div className="flex-shrink-0 flex gap-2 items-center flex-wrap">
-            {spotifyCurrentPlaylistId && (
-              <button onClick={() => { useStore.getState().setSpotifyCurrentPlaylistId(''); useStore.getState().setSpotifyTracks([]); }}
-                className="btn text-xs">← Playlists</button>
-            )}
-            <input value={createName} onChange={e => setCreateName(e.target.value)}
-              placeholder="Nouvelle playlist…"
-              className="flex-1 min-w-[120px] px-3 py-1.5 rounded-lg bg-surface-3 border border-border text-sm outline-none"/>
-            <button onClick={() => { spotifyCreatePlaylist(createName.trim() || 'Greg Playlist', true); setCreateName(''); }}
-              className="btn-accent text-xs py-1.5">Créer</button>
-          </div>
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
@@ -373,7 +362,7 @@ function SpotifyPanel() {
 // Right Sidebar (tabs)
 // ═══════════════════════════════
 function Sidebar() {
-  const [tab, setTab] = useState<'queue' | 'spotify'>('queue');
+  const [tab, setTab] = useState<'queue' | 'history'>('queue');
 
   return (
     <div className="glass flex flex-col h-full min-h-0 p-4 max-[1100px]:h-auto">
@@ -382,12 +371,12 @@ function Sidebar() {
         <button onClick={() => setTab('queue')} className={`tab flex-1 text-center ${tab === 'queue' ? 'tab-active' : ''}`}>
           File d&apos;attente
         </button>
-        <button onClick={() => setTab('spotify')} className={`tab flex-1 text-center ${tab === 'spotify' ? 'tab-active' : ''}`}>
-          Spotify
+        <button onClick={() => setTab('history')} className={`tab flex-1 text-center ${tab === 'history' ? 'tab-active' : ''}`}>
+          Historique
         </button>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
-        {tab === 'queue' ? <QueuePanel/> : <SpotifyPanel/>}
+        {tab === 'queue' ? <QueuePanel/> : <HistoryPanel/>}
       </div>
     </div>
   );

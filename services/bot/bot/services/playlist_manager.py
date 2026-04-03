@@ -217,6 +217,15 @@ class PlaylistManager:
             print(f"[PlaylistManager {self.guild_id}] ➕➕ Ajouté {count} éléments.")
             return count
 
+    def insert_at(self, index: int, item: Dict[str, Any] | str) -> Dict[str, Any]:
+        """Insère un item à une position spécifique."""
+        with self.lock:
+            obj = self._coerce_item(item) if isinstance(item, str) else dict(item)
+            idx = max(0, min(index, len(self.queue)))
+            self.queue.insert(idx, obj)
+            self.save()
+            return obj
+
     def pop_next(self) -> Optional[Dict[str, Any]]:
         """Retire et renvoie le prochain item (tête de file) et définit now_playing."""
         with self.lock:

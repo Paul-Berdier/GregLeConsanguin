@@ -90,6 +90,9 @@ interface GregStore {
   spotifyTracks: SpotifyTrack[];
   spotifyCurrentPlaylistId: string;
 
+  // History
+  historyItems: any[];
+
   // Status
   status: { text: string; kind: StatusKind };
 
@@ -108,6 +111,7 @@ interface GregStore {
   setSpotifyPlaylists: (p: SpotifyPlaylist[]) => void;
   setSpotifyTracks: (t: SpotifyTrack[]) => void;
   setSpotifyCurrentPlaylistId: (id: string) => void;
+  setHistoryItems: (items: any[]) => void;
 }
 
 export const useStore = create<GregStore>((set, get) => ({
@@ -132,6 +136,8 @@ export const useStore = create<GregStore>((set, get) => ({
   spotifyTracks: [],
   spotifyCurrentPlaylistId: '',
 
+  historyItems: [],
+
   status: { text: 'Initialisation…', kind: 'info' },
 
   setMe: (me) => set({ me }),
@@ -147,6 +153,7 @@ export const useStore = create<GregStore>((set, get) => ({
   setSpotifyPlaylists: (spotifyPlaylists) => set({ spotifyPlaylists }),
   setSpotifyTracks: (spotifyTracks) => set({ spotifyTracks }),
   setSpotifyCurrentPlaylistId: (spotifyCurrentPlaylistId) => set({ spotifyCurrentPlaylistId }),
+  setHistoryItems: (historyItems) => set({ historyItems }),
 
   applyPlaylistPayload: (payload: any) => {
     const root = payload && typeof payload === 'object' ? payload : {};
@@ -387,6 +394,17 @@ export function usePlayer() {
   }, []);
 
   // ── Actions ──
+  const refreshHistory = useCallback(async () => {
+    const s = useStore.getState();
+    if (!s.guildId) { useStore.getState().setHistoryItems([]); return; }
+    try {
+      const data = await api.getHistory(s.guildId, 'top', 30);
+      useStore.getState().setHistoryItems(data?.items || []);
+    } catch {
+      useStore.getState().setHistoryItems([]);
+    }
+  }, []);
+
   const setGuild = useCallback(async (id: string) => {
     const oldGid = useStore.getState().guildId;
     if (oldGid) unsubscribeGuild(oldGid);
@@ -613,8 +631,9 @@ export function usePlayer() {
     }
 
     await refreshPlaylist().catch(() => {});
+    await refreshHistory().catch(() => {});
     useStore.getState().setStatus('Prêt ✅', 'ok');
-  }, [refreshMe, refreshGuilds, refreshSpotify, refreshSpotifyPlaylists]);
+  }, [refreshMe, refreshGuilds, refreshSpotify, refreshSpotifyPlaylists, refreshHistory]);
 
   return {
     ...store,
@@ -624,6 +643,7 @@ export function usePlayer() {
     refreshGuilds,
     refreshSpotify,
     refreshSpotifyPlaylists,
+    refreshHistory,
     loadSpotifyTracks,
     enqueue,
     skip,

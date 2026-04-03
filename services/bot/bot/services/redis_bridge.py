@@ -162,6 +162,11 @@ class RedisBridge:
                 ok = await svc.restart(guild_id, requester_id=user_id)
                 result = {"ok": ok}
 
+            elif action == "get_history":
+                mode = cmd_data.get("mode", "top")
+                limit = int(cmd_data.get("limit", 20))
+                result = svc.get_history(guild_id, mode=mode, limit=limit)
+
             elif action == "join":
                 g = self.bot.get_guild(guild_id)
                 if not g:

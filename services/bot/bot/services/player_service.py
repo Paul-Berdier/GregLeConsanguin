@@ -33,6 +33,7 @@ from greg_shared.priority import (
 
 from bot.services.ffmpeg import detect_ffmpeg
 from bot.services.playlist_manager import PlaylistManager
+from bot.services.history_manager import HistoryManager
 
 logger = logging.getLogger("greg.player")
 
@@ -49,6 +50,7 @@ class PlayerService:
         self.bot = bot
         self.intro_playing: Dict[int, bool] = {}
         self.pm_map: Dict[int, PlaylistManager] = {}
+        self.hm_map: Dict[int, HistoryManager] = {}
         self.ffmpeg_path = detect_ffmpeg()
 
         self.is_playing: Dict[int, bool] = {}
@@ -80,6 +82,21 @@ class PlayerService:
         if gid not in self.pm_map:
             self.pm_map[gid] = PlaylistManager(gid)
         return self.pm_map[gid]
+
+    def _get_hm(self, guild_id: int) -> HistoryManager:
+        gid = int(guild_id)
+        if gid not in self.hm_map:
+            self.hm_map[gid] = HistoryManager(gid)
+        return self.hm_map[gid]
+
+    def get_history(self, guild_id: int, mode: str = "top", limit: int = 20) -> dict:
+        """Retourne l'historique pour une guild."""
+        hm = self._get_hm(guild_id)
+        if mode == "recent":
+            items = hm.get_recent(limit)
+        else:
+            items = hm.get_top(limit)
+        return {"ok": True, "items": items, "mode": mode}
 
     def _afilter_for(self, gid: int) -> Optional[str]:
         return AUDIO_EQ_PRESETS.get(self.audio_mode.get(gid, "music"))
@@ -406,6 +423,14 @@ class PlayerService:
         self._ensure_ticker(gid)
         self._emit(gid)
 
+        # Record in history
+        try:
+            cur = self.current_song.get(gid, {})
+            added_by = cur.get("added_by") or cur.get("requested_by")
+            self._get_hm(gid).record_play(cur, played_by=added_by)
+        except Exception as e:
+            logger.debug("history record failed: %s", e)
+
     # ─── Controls ───
 
     async def skip(self, guild_id: int, requester_id: int = None) -> bool:
@@ -498,6 +523,50 @@ class PlayerService:
 
         ok = pm.move(src, dst)
         if ok:
+            self._emit(gid)
+        return ok
+
+    async def play_at(self, guild_id: int, user_id: int, index: int) -> bool:
+        """Joue le morceau à l'index donné dans la queue."""
+        gid = int(guild_id)
+        pm = self._get_pm(gid)
+        q = pm.peek_all()
+        if not (0 <= index < len(q)):
+            return False
+        item = q[index]
+        # Retire l'item de sa position actuelle
+        pm.remove_at(index)
+        # L'insère en tête
+        pm.insert_at(0, item)
+        # Skip le morceau en cours pour lancer le prochain (qui est notre item)
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()  # triggers _after which calls play_next
+        elif g:
+            await self.play_next(g)
+        self._emit(gid)
+        return True
+
+    async def restart(self, guild_id: int, requester_id: int = None) -> bool:
+        """Redémarre le morceau en cours depuis le début."""
+        gid = int(guild_id)
+        if requester_id is not None:
+            await self._ensure_can_control(gid, requester_id)
+        cur = self.current_song.get(gid)
+        if not cur:
+            return False
+        # Réinsère le morceau en tête de queue
+        pm = self._get_pm(gid)
+        pm.insert_at(0, dict(cur))
+        # Skip pour relancer
+        g = self.bot.get_guild(gid)
+        vc = g and g.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        elif g:
+            await self.play_next(g)
+        return True
             self._emit(gid)
         return ok
 
