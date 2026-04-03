@@ -145,17 +145,83 @@ function SearchBar() {
 function VideoPlayer() {
   const { player, togglePause, skip, stop, toggleRepeat, restartTrack } = usePlayer();
   const { progressRef, currentRef, totalRef } = useProgress();
+
   const cur = player.current;
   const videoId = extractVideoId(cur?.url);
 
+  const [iframeStart, setIframeStart] = useState(0);
+  const [iframeKey, setIframeKey] = useState('empty');
+
+  const syncRef = useRef<{
+    trackKey: string;
+    pos: number;
+    at: number;
+    paused: boolean;
+  }>({
+    trackKey: '',
+    pos: 0,
+    at: 0,
+    paused: true,
+  });
+
+  useEffect(() => {
+    if (!videoId || !cur) {
+      syncRef.current = {
+        trackKey: '',
+        pos: 0,
+        at: 0,
+        paused: true,
+      };
+      setIframeStart(0);
+      setIframeKey('empty');
+      return;
+    }
+
+    const now = Date.now();
+    const trackKey = `${videoId}::${cur.url || ''}::${cur.title || ''}`;
+    const incomingPos = Math.max(0, Math.floor(player.position || 0));
+    const last = syncRef.current;
+
+    const expectedPos = last.paused
+      ? last.pos
+      : last.pos + (now - last.at) / 1000;
+
+    const drift = Math.abs(expectedPos - incomingPos);
+
+    const shouldResync =
+      last.trackKey !== trackKey ||       // nouveau morceau
+      last.paused !== player.paused ||    // pause / reprise
+      drift >= 2.5 ||                     // dérive détectée
+      incomingPos === 0;                  // restart / début
+
+    if (!shouldResync) {
+      return;
+    }
+
+    syncRef.current = {
+      trackKey,
+      pos: incomingPos,
+      at: now,
+      paused: player.paused,
+    };
+
+    setIframeStart(incomingPos);
+    setIframeKey(
+      `${trackKey}:${incomingPos}:${player.paused ? 'pause' : 'play'}`
+    );
+  }, [videoId, cur?.url, cur?.title, player.position, player.paused]);
+
+  const iframeSrc = videoId
+    ? `https://www.youtube.com/embed/${videoId}?autoplay=${player.paused ? 0 : 1}&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1&start=${iframeStart}`
+    : null;
+
   return (
     <div className="flex flex-col gap-4 min-h-0 flex-1">
-      {/* Video / Artwork area */}
       <div className="video-frame">
-        {videoId ? (
+        {videoId && iframeSrc ? (
           <iframe
-            key={videoId}
-            src={`https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1`}
+            key={iframeKey}
+            src={iframeSrc}
             allow="autoplay; encrypted-media"
             allowFullScreen
             title="YouTube video"
@@ -176,7 +242,6 @@ function VideoPlayer() {
           </div>
         )}
 
-        {/* Overlay: track info at bottom */}
         {cur && (
           <div className="absolute bottom-0 left-0 right-0 z-10 p-4 pb-3">
             <div className="flex items-end gap-3">
@@ -195,6 +260,7 @@ function VideoPlayer() {
                   <div className="text-xs text-white/40 mt-0.5">par {cur.addedBy.name}</div>
                 )}
               </div>
+
               {videoId && (
                 <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 backdrop-blur-sm text-xs text-white/70">
                   <Ic icon="video" size={14}/> Vidéo
@@ -205,7 +271,6 @@ function VideoPlayer() {
         )}
       </div>
 
-      {/* Progress */}
       <div className="px-1">
         <div className="progress-track">
           <div ref={progressRef} className="progress-fill" style={{ width: '0%' }}/>
@@ -216,7 +281,6 @@ function VideoPlayer() {
         </div>
       </div>
 
-      {/* Controls */}
       <div className="flex items-center justify-center gap-3">
         <button onClick={stop} className="ctrl" title="Stop"><Ic icon="stop" size={20}/></button>
         <button onClick={restartTrack} className="ctrl" title="Restart"><Ic icon="prev" size={20}/></button>

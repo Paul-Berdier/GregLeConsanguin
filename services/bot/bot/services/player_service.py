@@ -526,25 +526,30 @@ class PlayerService:
             self._emit(gid)
         return ok
 
-    async def play_at(self, guild_id: int, user_id: int, index: int) -> bool:
-        """Joue le morceau à l'index donné dans la queue."""
+    async def restart(self, guild_id: int, requester_id: int = None) -> bool:
+        """Redémarre le morceau en cours depuis le début."""
         gid = int(guild_id)
-        pm = self._get_pm(gid)
-        q = pm.peek_all()
-        if not (0 <= index < len(q)):
+
+        if requester_id is not None:
+            await self._ensure_can_control(gid, requester_id)
+
+        cur = self.current_song.get(gid)
+        if not cur:
             return False
-        item = q[index]
-        # Retire l'item de sa position actuelle
-        pm.remove_at(index)
-        # L'insère en tête
-        pm.insert_at(0, item)
-        # Skip le morceau en cours pour lancer le prochain (qui est notre item)
+
+        # Réinsère une copie du morceau courant en tête de queue
+        pm = self._get_pm(gid)
+        pm.insert_at(0, dict(cur))
+
+        # Stoppe la lecture actuelle pour relancer immédiatement le morceau
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
+
         if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()  # triggers _after which calls play_next
+            vc.stop()  # déclenche le after -> play_next()
         elif g:
             await self.play_next(g)
+
         self._emit(gid)
         return True
 
