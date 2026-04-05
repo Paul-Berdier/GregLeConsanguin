@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 
 from greg_shared.config import settings
@@ -12,6 +13,20 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("greg.api")
+
+# Silence the "socket shutdown error: Bad file descriptor" spam
+# from eventlet/simple-websocket when Railway health checks hit /socket.io/
+logging.getLogger("simple_websocket").setLevel(logging.ERROR)
+logging.getLogger("engineio.server").setLevel(logging.WARNING)
+logging.getLogger("socketio.server").setLevel(logging.WARNING)
+
+# Also suppress the stderr prints from simple-websocket
+_orig_stderr_write = sys.stderr.write
+def _filtered_stderr(msg):
+    if "socket shutdown error" in msg or "Bad file descriptor" in msg:
+        return 0
+    return _orig_stderr_write(msg)
+sys.stderr.write = _filtered_stderr
 
 
 def main():
