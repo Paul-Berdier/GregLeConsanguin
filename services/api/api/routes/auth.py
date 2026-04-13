@@ -11,6 +11,33 @@ from greg_shared.config import settings
 bp = Blueprint("auth", __name__)
 
 
+_CLOSE_PAGE = """
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Signed in</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, sans-serif; background: #0b1220;
+         color: #f1f5f9; margin: 0; display: grid; place-items: center;
+         height: 100vh; }
+  .card { text-align: center; padding: 32px 40px; border-radius: 14px;
+          background: #141d33; border: 1px solid #334155;
+          box-shadow: 0 18px 40px rgba(0,0,0,.5); }
+  h1 { margin: 0 0 8px; font-size: 18px; color: #34d399; }
+  p { margin: 0; color: #94a3b8; font-size: 13px; }
+</style></head>
+<body>
+  <div class="card">
+    <h1>&#10003; Signed in</h1>
+    <p>You can close this window.</p>
+  </div>
+  <script>
+    try { if (window.opener) window.opener.focus(); } catch (e) {}
+    // Auto-close for popup/Electron child windows.
+    setTimeout(function(){ try { window.close(); } catch (e) {} }, 300);
+  </script>
+</body></html>
+"""
+
+
 @bp.get("/auth/login")
 def login():
     try:
@@ -43,12 +70,20 @@ def login():
         redirect_uri = redirect_uri.strip()
         scopes = scopes_raw.strip().replace(" ", "%20")
 
+        # `?return=overlay` signals the overlay/popup flow: callback should
+        # show a self-closing HTML page instead of redirecting to the web UI.
+        # We smuggle this through the OAuth `state` parameter (Discord echoes
+        # it back to the callback URL unchanged).
+        ret_mode = request.args.get("return", "").strip()
+        state = "overlay" if ret_mode == "overlay" else "web"
+
         url = (
             f"https://discord.com/api/oauth2/authorize"
             f"?client_id={client_id}"
             f"&redirect_uri={redirect_uri}"
             f"&response_type=code"
             f"&scope={scopes}"
+            f"&state={state}"
         )
         return redirect(url)
 
@@ -65,6 +100,7 @@ def login():
 def callback():
     try:
         code = request.args.get("code")
+        state = request.args.get("state", "web")
         if not code:
             return jsonify({"ok": False, "error": "missing_code"}), 400
 
@@ -112,7 +148,13 @@ def callback():
         user = user_r.json()
         session["discord_user"] = user
         session["discord_token"] = access_token
+        session.permanent = True  # persist across browser/Electron restarts
 
+        # Overlay/popup flow: show a self-closing HTML page.
+        if state == "overlay":
+            return _CLOSE_PAGE, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+        # Default (web) flow: redirect to the front-end.
         front_url = os.getenv("WEB_URL", "https://greg-le-consanguin.up.railway.app")
         return redirect(front_url)
 
