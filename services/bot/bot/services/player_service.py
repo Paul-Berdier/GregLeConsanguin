@@ -5,6 +5,11 @@ Changements par rapport à v1 :
 - Émet via bot.emit_state_update() (Redis) au lieu de socketio direct
 - find_insert_position() pour l'insertion triée en 2 zones
 - check_quota() structuré
+
+Fix v2.1 :
+- Détection de coupure réseau Discord (1006 / WebSocket drop)
+- Réinsertion automatique du morceau interrompu + délai de reconnexion
+- _explicit_stops : distinction arrêt intentionnel vs coupure accidentelle
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ import inspect
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import discord
 
@@ -42,6 +47,14 @@ AUDIO_EQ_PRESETS = {
     "music": "highpass=f=32,volume=-6dB,bass=g=4:f=95:w=1.0,alimiter=limit=0.98:attack=5:release=50",
 }
 
+# Délai d'attente (secondes) avant de retenter la lecture après une coupure réseau.
+# Doit être > au temps de reconnexion de discord.py (~2s).
+_RECONNECT_WAIT = 3.5
+
+# Si la chanson s'est arrêtée N secondes avant sa fin théorique, on considère
+# que c'est une coupure réseau et non une fin naturelle.
+_CUT_SHORT_MARGIN = 8
+
 
 class PlayerService:
     """Service central de lecture musicale."""
@@ -66,6 +79,12 @@ class PlayerService:
         self.current_source: Dict[int, Any] = {}
         self._progress_task: Dict[int, asyncio.Task] = {}
         self._locks: Dict[int, asyncio.Lock] = {}
+
+        # --- Fix reconnexion réseau ---
+        # Ensemble des guild IDs pour lesquels l'arrêt a été déclenché
+        # explicitement par une action utilisateur (skip, stop, play_at…).
+        # Tout arrêt NON présent ici est considéré accidentel (coupure Discord).
+        self._explicit_stops: Set[int] = set()
 
         self._cookies_file = settings.get_cookies_file()
         self._ratelimit = settings.ytdlp_limit_bps
@@ -103,6 +122,7 @@ class PlayerService:
 
     def _clear_now_playing(self, gid: int):
         self.is_playing[gid] = False
+        self._explicit_stops.discard(gid)
         for d in (self.current_song, self.play_start, self.paused_since,
                   self.paused_total, self.current_meta, self.now_playing):
             d.pop(gid, None)
@@ -145,6 +165,16 @@ class PlayerService:
         result = can_control_playback(self.bot, gid, requester_id, self._current_owner_weight(gid))
         if not result.allowed:
             raise PermissionError(result.reason)
+
+    # ─── Stop intentionnel (helpers internes) ───
+
+    def _mark_explicit_stop(self, gid: int):
+        """
+        À appeler AVANT tout vc.stop() déclenché volontairement
+        (skip, stop, play_at, restart…).
+        Permet à _after() de distinguer un arrêt voulu d'une coupure réseau.
+        """
+        self._explicit_stops.add(gid)
 
     # ─── State ───
 
@@ -281,7 +311,7 @@ class PlayerService:
         # Trouver la bonne position et déplacer si nécessaire
         new_queue = await loop.run_in_executor(None, pm.get_queue)
         current_idx = len(new_queue) - 1
-        target_idx = find_insert_position(new_queue[:-1], weight)  # Chercher dans la queue SANS le nouvel item
+        target_idx = find_insert_position(new_queue[:-1], weight)
 
         if 0 <= target_idx < len(new_queue) and target_idx != current_idx:
             await loop.run_in_executor(None, pm.move, current_idx, target_idx)
@@ -302,7 +332,6 @@ class PlayerService:
                 await vc.move_to(channel)
                 return True
             await channel.connect()
-            # Jouer l'intro si elle existe
             try:
                 await self._play_intro(guild, int(guild.id))
             except Exception:
@@ -369,7 +398,6 @@ class PlayerService:
                 self._emit(gid)
                 return
 
-            # Essai stream direct puis pipe
             for method in ("stream", "stream_pipe"):
                 if not hasattr(extractor, method):
                     continue
@@ -386,7 +414,6 @@ class PlayerService:
                 except Exception as e:
                     logger.warning("[%s KO] guild=%s url=%s: %s", method, gid, url, e)
 
-            # Aucun method n'a marché
             logger.error("Tous les extractors ont échoué pour %s", url)
             self._clear_now_playing(gid)
             self._emit(gid)
@@ -405,6 +432,7 @@ class PlayerService:
         self.current_source[gid] = srcp
 
         def _after(_e):
+            # ── Nettoyage de la source ──────────────────────────────────────
             try:
                 src = self.current_source.pop(gid, None)
                 if src and hasattr(src, "cleanup"):
@@ -412,8 +440,60 @@ class PlayerService:
                         src.cleanup()
                     except Exception:
                         pass
-            finally:
-                asyncio.run_coroutine_threadsafe(self.play_next(guild), self.bot.loop)
+            except Exception:
+                pass
+
+            # ── Détection coupure réseau vs arrêt intentionnel ──────────────
+            #
+            # Un arrêt intentionnel (skip, stop, play_at, restart…) est marqué
+            # via _mark_explicit_stop() AVANT que vc.stop() soit appelé.
+            # Si le flag n'est pas là, la lecture s'est arrêtée toute seule :
+            #   • soit fin naturelle de la chanson (elapsed ≈ duration)  → OK
+            #   • soit coupure Discord 1006 (elapsed << duration)         → relancer
+            #
+            was_explicit = gid in self._explicit_stops
+            self._explicit_stops.discard(gid)
+
+            was_cut_short = False
+            if not was_explicit:
+                elapsed = time.monotonic() - self.play_start.get(gid, time.monotonic())
+                meta = self.current_meta.get(gid, {})
+                duration = meta.get("duration")
+                if not duration:
+                    cs = self.current_song.get(gid, {})
+                    duration = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+
+                if duration and elapsed < duration - _CUT_SHORT_MARGIN:
+                    # La chanson a été interrompue bien avant sa fin → coupure réseau
+                    cur = self.current_song.get(gid)
+                    if cur:
+                        logger.warning(
+                            "[Reconnect] Guild %s — '%s' interrompue à %.0fs / %ds, réinsertion en tête de queue.",
+                            gid, cur.get("title", "?"), elapsed, duration,
+                        )
+                        try:
+                            pm = self._get_pm(gid)
+                            pm.insert_at(0, dict(cur))
+                            was_cut_short = True
+                        except Exception as exc:
+                            logger.error("[Reconnect] Erreur réinsertion: %s", exc)
+
+            # ── Relance ─────────────────────────────────────────────────────
+            async def _resume():
+                if was_cut_short:
+                    # Attendre que discord.py finisse de reconnecter le voice client
+                    logger.info("[Reconnect] Guild %s — attente %.1fs avant relecture.", gid, _RECONNECT_WAIT)
+                    await asyncio.sleep(_RECONNECT_WAIT)
+                    # Vérifier que le voice client est toujours là après le délai
+                    g = self.bot.get_guild(gid)
+                    if not g or not g.voice_client or not g.voice_client.is_connected():
+                        logger.warning("[Reconnect] Guild %s — vc absent après attente, abandon.", gid)
+                        self._clear_now_playing(gid)
+                        self._emit(gid)
+                        return
+                await self.play_next(guild)
+
+            asyncio.run_coroutine_threadsafe(_resume(), self.bot.loop)
 
         vc.play(srcp, after=_after)
         self.play_start[gid] = time.monotonic()
@@ -423,7 +503,6 @@ class PlayerService:
         self._ensure_ticker(gid)
         self._emit(gid)
 
-        # Record in history
         try:
             cur = self.current_song.get(gid, {})
             added_by = cur.get("added_by") or cur.get("requested_by")
@@ -440,6 +519,7 @@ class PlayerService:
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
+            self._mark_explicit_stop(gid)
             vc.stop()
         elif g:
             await self.play_next(g)
@@ -456,6 +536,7 @@ class PlayerService:
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
+            self._mark_explicit_stop(gid)
             vc.stop()
         self._cancel_ticker(gid)
         self._clear_now_playing(gid)
@@ -511,12 +592,10 @@ class PlayerService:
         if not (0 <= src < len(q) and 0 <= dst < len(q)):
             return False
 
-        # Check permission sur l'item
         perm = can_edit_queue_item(self.bot, gid, requester_id, q[src])
         if not perm.allowed:
             raise PermissionError(perm.reason)
 
-        # Valider le move (zone prio/normal)
         move_perm = validate_move(q, src, dst, requester_id, self.bot, gid)
         if not move_perm.allowed:
             raise PermissionError(move_perm.reason)
@@ -534,15 +613,13 @@ class PlayerService:
         if not (0 <= index < len(q)):
             return False
         item = q[index]
-        # Retire l'item de sa position actuelle
         pm.remove_at(index)
-        # L'insère en tête
         pm.insert_at(0, item)
-        # Skip le morceau en cours pour lancer le prochain (qui est notre item)
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            vc.stop()  # triggers _after which calls play_next
+            self._mark_explicit_stop(gid)
+            vc.stop()
         elif g:
             await self.play_next(g)
         self._emit(gid)
@@ -556,17 +633,15 @@ class PlayerService:
         cur = self.current_song.get(gid)
         if not cur:
             return False
-        # Réinsère le morceau en tête de queue
         pm = self._get_pm(gid)
         pm.insert_at(0, dict(cur))
-        # Skip pour relancer
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
+            self._mark_explicit_stop(gid)
             vc.stop()
         elif g:
             await self.play_next(g)
-
         self._emit(gid)
         return True
 
