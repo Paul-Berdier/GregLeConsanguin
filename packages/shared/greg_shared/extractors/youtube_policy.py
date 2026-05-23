@@ -76,42 +76,43 @@ def has_auth_cookies(cookies_file: Optional[str], cookies_from_browser: Optional
 
 def client_supports_cookies(client: str) -> bool:
     """
-    yt-dlp/YouTube ne supportent pas toutes les combinaisons client+cookies de façon équivalente.
-    On limite les clients auth aux clients web-like.
+    yt-dlp/YouTube ne supportent pas toutes les combinaisons client+cookies
+    de façon équivalente. On limite les clients auth aux clients web-like.
     """
-    return client in {"mweb", "web", "web_creator"}
+    return client in {"mweb", "web", "web_creator", "web_safari"}
 
 
 def strategy_order(cookies_file: Optional[str], cookies_from_browser: Optional[str]) -> List[YouTubeStrategy]:
     """
-    Politique de fallback propre et déterministe.
+    Politique de fallback propre et déterministe (révision 2026).
 
-    Règles :
-    - priorité à mweb + PO token
-    - quand on a des cookies, on NE démarre PAS par mweb+cookies :
-      on tente d'abord mweb+po sans cookies pour éviter les 403 observés
-    - les clients ios/android ne sont jamais combinés avec cookies
-    - web/web_creator restent des fallbacks tardifs
+    Hiérarchie :
+    - `tv` / `tv_simply` : pas de PO token requis, pas de cookies → 1er choix.
+    - `mweb` + PO token (avec/sans cookies) : voie historique, encore utile.
+    - `web_safari` / `web_creator` + cookies : fallback navigateur authentifié.
+    - `ios` / `android` / `web` no-cookie : dernier recours (souvent 403 en 2026).
     """
     has_auth = has_auth_cookies(cookies_file, cookies_from_browser)
     out: List[YouTubeStrategy] = []
 
-    # 1) voie principale recommandée
-    out.append(YouTubeStrategy("mweb", use_cookies=False, needs_po_token=True, label="mweb+po-nocookie"))
+    # 1) Voie royale 2026 — no-PO, no-cookies
+    out.append(YouTubeStrategy("tv", use_cookies=False, needs_po_token=False, label="tv-nocookie"))
+    out.append(YouTubeStrategy("tv_simply", use_cookies=False, needs_po_token=False, label="tv_simply-nocookie"))
 
-    # 2) même client mais avec auth seulement en second temps
+    # 2) mweb + PO token
+    out.append(YouTubeStrategy("mweb", use_cookies=False, needs_po_token=True, label="mweb+po-nocookie"))
     if has_auth:
         out.append(YouTubeStrategy("mweb", use_cookies=True, needs_po_token=True, label="mweb+po+cookies"))
 
-    # 3) web-like fallback avec cookies si dispo
+    # 3) Web-like avec cookies
     if has_auth:
+        out.append(YouTubeStrategy("web_safari", use_cookies=True, needs_po_token=False, label="web_safari+cookies"))
         out.append(YouTubeStrategy("web_creator", use_cookies=True, needs_po_token=False, label="web_creator+cookies"))
         out.append(YouTubeStrategy("web", use_cookies=True, needs_po_token=False, label="web+cookies"))
 
-    # 4) fallback no-cookie
+    # 4) Fallback no-cookie tardif (à éviter en 2026 sans PO)
     out.append(YouTubeStrategy("ios", use_cookies=False, needs_po_token=False, label="ios-nocookie"))
     out.append(YouTubeStrategy("android", use_cookies=False, needs_po_token=False, label="android-nocookie"))
-    out.append(YouTubeStrategy("web_creator", use_cookies=False, needs_po_token=False, label="web_creator-nocookie"))
     out.append(YouTubeStrategy("web", use_cookies=False, needs_po_token=False, label="web-nocookie"))
 
     # déduplication stable

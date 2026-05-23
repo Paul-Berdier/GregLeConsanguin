@@ -25,8 +25,11 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
     volumes:
       - playlist-data:/app/playlists
+      - history-data:/app/history
+      - bot-data:/app/data
       - ./services/bot/assets:/app/assets:ro
     restart: unless-stopped
 
@@ -68,3 +71,5 @@ services:
 volumes:
   redis-data:
   playlist-data:
+  history-data:
+  bot-data:

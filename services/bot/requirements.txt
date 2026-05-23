@@ -1,17 +1,21 @@
-# Core
-discord.py>=2.3.2
-redis>=5.0
+# ─── Core ───
+discord.py[voice]>=2.4.0,<3.0.0
+redis>=5.0,<6.0
 python-dotenv>=1.0.1
-aiohttp==3.10.5
+aiohttp>=3.10.5,<4.0
 
-# Audio
-yt-dlp
+# ─── Audio / extraction ───
+# yt-dlp évolue vite côté contournements YouTube (PO tokens, SABR…).
+# On prend la plus récente disponible mais on plancher à une version
+# qui supporte le client `tv` (no-PO).
+yt-dlp[default]>=2025.1.15
 ffmpeg-python>=0.2.0
-PyNaCl==1.5.0
+PyNaCl>=1.5.0,<2.0
 gtts>=2.5.1
 
-# PO token
+# ─── PO Token fetcher (Playwright) ───
+# Les binaires Chromium sont installés via `playwright install` dans le Dockerfile.
 playwright>=1.47.0
 
-# Shared (installed from /shared/ in Dockerfile)
-# greg-shared
+# ─── Shared package ───
+# Installé depuis /shared/ par le Dockerfile (greg-shared)

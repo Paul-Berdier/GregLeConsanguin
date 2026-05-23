@@ -55,6 +55,20 @@ _RECONNECT_WAIT = 3.5
 # que c'est une coupure réseau et non une fin naturelle.
 _CUT_SHORT_MARGIN = 8
 
+# Sous ce seuil (secondes lues), on considère que la chanson n'a JAMAIS
+# vraiment démarré — donc ce n'est pas une coupure réseau, c'est un flux
+# foireux (403, SABR, codec…). On ne re-enqueue pas, on incrémente un
+# compteur d'échecs et on passe à la suite.
+_MIN_PLAYBACK_BEFORE_RECONNECT = 5.0
+
+# Nombre maximum de retries consécutifs sur une même URL avant abandon.
+# Empêche la boucle infinie observée en cas de 403 permanent.
+_MAX_FAILURES_PER_TRACK = 3
+
+# Délai d'attente exponentiel après échec (en secondes, plafonné).
+_BACKOFF_BASE = 1.5
+_BACKOFF_MAX = 8.0
+
 
 class PlayerService:
     """Service central de lecture musicale."""
@@ -85,6 +99,12 @@ class PlayerService:
         # explicitement par une action utilisateur (skip, stop, play_at…).
         # Tout arrêt NON présent ici est considéré accidentel (coupure Discord).
         self._explicit_stops: Set[int] = set()
+
+        # --- Fix boucle infinie 403 ---
+        # Compteur d'échecs consécutifs par URL pour casser la boucle
+        # quand un flux est systématiquement injouable (403/SABR permanent).
+        # Clé : (guild_id, url) → nombre d'échecs.
+        self._track_failures: Dict[tuple, int] = {}
 
         self._cookies_file = settings.get_cookies_file()
         self._ratelimit = settings.ytdlp_limit_bps
@@ -398,6 +418,8 @@ class PlayerService:
                 self._emit(gid)
                 return
 
+            failure_key = (gid, url) if url else None
+            last_err: Optional[Exception] = None
             for method in ("stream", "stream_pipe"):
                 if not hasattr(extractor, method):
                     continue
@@ -410,14 +432,71 @@ class PlayerService:
                         self.current_song[gid]["title"] = title
                         self.now_playing[gid]["title"] = title
                     await self._play_source(guild, gid, srcp)
+                    # Lecture lancée avec succès → reset compteur d'échecs
+                    if failure_key:
+                        self._track_failures.pop(failure_key, None)
                     return
                 except Exception as e:
+                    last_err = e
                     logger.warning("[%s KO] guild=%s url=%s: %s", method, gid, url, e)
 
-            logger.error("Tous les extractors ont échoué pour %s", url)
+            # ── Échec extracteur : tous les flux ont échoué avant lecture ───
+            # On incrémente le même compteur que _after pour appliquer la
+            # même politique d'abandon après N tentatives consécutives.
+            cur_title = (self.current_song.get(gid, {}) or {}).get("title", "?")
+            fails = 0
+            if failure_key:
+                fails = self._track_failures.get(failure_key, 0) + 1
+                self._track_failures[failure_key] = fails
+
+            repeat_on = bool(self.repeat_all.get(gid))
+
+            if fails >= _MAX_FAILURES_PER_TRACK:
+                logger.error(
+                    "Track '%s' (guild %s) impossible après %d tentatives — abandon (%s).",
+                    cur_title, gid, fails, last_err,
+                )
+                if failure_key:
+                    self._track_failures.pop(failure_key, None)
+                # En mode repeat_all, le morceau a été ré-ajouté en fin de
+                # queue par play_next : on le retire pour ne pas boucler.
+                if repeat_on:
+                    try:
+                        pm2 = self._get_pm(gid)
+                        q = pm2.peek_all()
+                        for i in range(len(q) - 1, -1, -1):
+                            if q[i].get("url") == url:
+                                pm2.remove_at(i)
+                                break
+                    except Exception:
+                        pass
+                self._clear_now_playing(gid)
+                self._emit(gid)
+                asyncio.create_task(self.play_next(guild))
+                return
+
+            logger.warning(
+                "Track '%s' (guild %s) échec extracteur %d/%d — backoff puis retry.",
+                cur_title, gid, fails, _MAX_FAILURES_PER_TRACK,
+            )
+
+            # Réinsère en tête pour réessayer — SAUF si repeat_all l'a déjà
+            # remis en fin de queue (sinon on duplique).
+            if not repeat_on:
+                try:
+                    pm2 = self._get_pm(gid)
+                    pm2.insert_at(0, dict(self.current_song.get(gid, {})))
+                except Exception:
+                    pass
+
             self._clear_now_playing(gid)
             self._emit(gid)
-            asyncio.create_task(self.play_next(guild))
+            wait_s = min(_BACKOFF_MAX, _RECONNECT_WAIT * (_BACKOFF_BASE ** max(0, fails - 1)))
+
+            async def _retry():
+                await asyncio.sleep(wait_s)
+                await self.play_next(guild)
+            asyncio.create_task(_retry())
 
     async def _call_extractor(self, extractor, method: str, *args, **kwargs):
         fn = getattr(extractor, method)
@@ -448,49 +527,112 @@ class PlayerService:
             # Un arrêt intentionnel (skip, stop, play_at, restart…) est marqué
             # via _mark_explicit_stop() AVANT que vc.stop() soit appelé.
             # Si le flag n'est pas là, la lecture s'est arrêtée toute seule :
-            #   • soit fin naturelle de la chanson (elapsed ≈ duration)  → OK
-            #   • soit coupure Discord 1006 (elapsed << duration)         → relancer
+            #   • soit fin naturelle de la chanson (elapsed ≈ duration)
+            #   • soit coupure Discord 1006 (elapsed << duration mais lecture
+            #     démarrée)
+            #   • soit flux YouTube foireux (elapsed ≈ 0, jamais démarré)
+            #     → là PAS de re-enqueue, sinon boucle infinie sur 403/SABR.
             #
             was_explicit = gid in self._explicit_stops
             self._explicit_stops.discard(gid)
 
             was_cut_short = False
-            if not was_explicit:
+            track_failed = False
+            cur = self.current_song.get(gid)
+            cur_url = (cur or {}).get("url") if cur else None
+            failure_key = (gid, cur_url) if cur_url else None
+
+            if not was_explicit and cur:
                 elapsed = time.monotonic() - self.play_start.get(gid, time.monotonic())
                 meta = self.current_meta.get(gid, {})
                 duration = meta.get("duration")
                 if not duration:
-                    cs = self.current_song.get(gid, {})
-                    duration = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+                    duration = (
+                        int(cur["duration"])
+                        if isinstance(cur.get("duration"), (int, float))
+                        else None
+                    )
 
-                if duration and elapsed < duration - _CUT_SHORT_MARGIN:
-                    # La chanson a été interrompue bien avant sa fin → coupure réseau
-                    cur = self.current_song.get(gid)
-                    if cur:
+                if elapsed < _MIN_PLAYBACK_BEFORE_RECONNECT:
+                    # Le flux est mort presque immédiatement → ce n'est PAS
+                    # une coupure réseau, c'est un flux injouable.
+                    # On compte les échecs et on saute après N tentatives.
+                    fails = self._track_failures.get(failure_key, 0) + 1 if failure_key else 0
+                    if failure_key:
+                        self._track_failures[failure_key] = fails
+
+                    if fails >= _MAX_FAILURES_PER_TRACK:
+                        logger.error(
+                            "[Skip] Guild %s — '%s' injouable après %d tentatives, on abandonne.",
+                            gid, cur.get("title", "?"), fails,
+                        )
+                        track_failed = True
+                        if failure_key:
+                            self._track_failures.pop(failure_key, None)
+                    else:
                         logger.warning(
-                            "[Reconnect] Guild %s — '%s' interrompue à %.0fs / %ds, réinsertion en tête de queue.",
-                            gid, cur.get("title", "?"), elapsed, duration,
+                            "[Retry %d/%d] Guild %s — '%s' n'a pas démarré (%.1fs), nouvelle tentative.",
+                            fails, _MAX_FAILURES_PER_TRACK, gid,
+                            cur.get("title", "?"), elapsed,
                         )
                         try:
                             pm = self._get_pm(gid)
                             pm.insert_at(0, dict(cur))
                             was_cut_short = True
                         except Exception as exc:
-                            logger.error("[Reconnect] Erreur réinsertion: %s", exc)
+                            logger.error("[Retry] Erreur réinsertion: %s", exc)
+
+                elif duration and elapsed < duration - _CUT_SHORT_MARGIN:
+                    # Chanson interrompue bien avant sa fin théorique mais APRÈS
+                    # avoir commencé → vraie coupure réseau Discord.
+                    logger.warning(
+                        "[Reconnect] Guild %s — '%s' interrompue à %.0fs / %ds, réinsertion en tête de queue.",
+                        gid, cur.get("title", "?"), elapsed, duration,
+                    )
+                    try:
+                        pm = self._get_pm(gid)
+                        pm.insert_at(0, dict(cur))
+                        was_cut_short = True
+                    except Exception as exc:
+                        logger.error("[Reconnect] Erreur réinsertion: %s", exc)
+                else:
+                    # Fin naturelle → on nettoie le compteur d'échecs pour ce track.
+                    if failure_key:
+                        self._track_failures.pop(failure_key, None)
+            else:
+                # Arrêt explicite ou pas de current → on nettoie aussi.
+                if failure_key:
+                    self._track_failures.pop(failure_key, None)
+
+            # ── Backoff exponentiel si réinsertion ──────────────────────────
+            wait_s = 0.0
+            if was_cut_short:
+                # Backoff exponentiel basé sur le nombre d'échecs déjà enregistrés
+                fails = self._track_failures.get(failure_key, 1) if failure_key else 1
+                wait_s = min(_BACKOFF_MAX, _RECONNECT_WAIT * (_BACKOFF_BASE ** max(0, fails - 1)))
 
             # ── Relance ─────────────────────────────────────────────────────
             async def _resume():
                 if was_cut_short:
-                    # Attendre que discord.py finisse de reconnecter le voice client
-                    logger.info("[Reconnect] Guild %s — attente %.1fs avant relecture.", gid, _RECONNECT_WAIT)
-                    await asyncio.sleep(_RECONNECT_WAIT)
+                    logger.info(
+                        "[Reconnect] Guild %s — attente %.1fs avant relecture.",
+                        gid, wait_s,
+                    )
+                    await asyncio.sleep(wait_s)
                     # Vérifier que le voice client est toujours là après le délai
                     g = self.bot.get_guild(gid)
                     if not g or not g.voice_client or not g.voice_client.is_connected():
-                        logger.warning("[Reconnect] Guild %s — vc absent après attente, abandon.", gid)
+                        logger.warning(
+                            "[Reconnect] Guild %s — vc absent après attente, abandon.",
+                            gid,
+                        )
                         self._clear_now_playing(gid)
                         self._emit(gid)
                         return
+                if track_failed:
+                    # Le morceau a abandonné définitivement — on nettoie l'état courant
+                    # et on passe au suivant via play_next.
+                    self._clear_now_playing(gid)
                 await self.play_next(guild)
 
             asyncio.run_coroutine_threadsafe(_resume(), self.bot.loop)

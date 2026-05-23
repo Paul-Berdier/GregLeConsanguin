@@ -195,6 +195,22 @@ class General(commands.Cog):
 
         # Count cookies
         count = sum(1 for l in netscape.splitlines() if l and not l.startswith("#") and l.count("\t") >= 6)
+
+        # ── Invalide le cache PO + negative cache token_fetcher : ──
+        # un changement de cookies peut débloquer l'auto-fetch et change
+        # de toute façon la donne côté yt-dlp. Inutile de garder les
+        # anciens tokens / le verrou négatif.
+        try:
+            from greg_shared.extractors.youtube import invalidate_po_cache  # noqa
+            invalidate_po_cache()
+        except Exception:
+            pass
+        try:
+            from greg_shared.extractors.token_fetcher import invalidate_negative_cache  # noqa
+            invalidate_negative_cache()
+        except Exception:
+            pass
+
         color = 0x2ECC71 if count > 0 else 0xE74C3C
         embed = discord.Embed(title="YouTube cookies — Mise à jour", description=f"**{count}** cookies importés.", color=color)
         await inter.followup.send(embed=embed, ephemeral=True)

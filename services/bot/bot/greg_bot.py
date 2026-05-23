@@ -8,7 +8,6 @@ Responsabilités :
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import pkgutil
@@ -35,10 +34,15 @@ class GregBot(commands.Bot):
     """Le bot Discord de Greg le Consanguin."""
 
     def __init__(self):
+        # Greg n'utilise QUE des slash commands. On utilise `when_mentioned`
+        # comme préfixe — ça évite le warning discord.py "Privileged message
+        # content intent is missing" tout en gardant compatible un éventuel
+        # `@Greg ping` mention-based.
         super().__init__(
-            command_prefix="!",
+            command_prefix=commands.when_mentioned,
             intents=INTENTS,
             application_id=int(settings.discord_app_id),
+            help_command=None,
         )
         self.player_service: PlayerService = PlayerService(self)
         self.redis_bridge: RedisBridge = RedisBridge(self)
