@@ -28,6 +28,8 @@ def start_redis_listener(socketio):
                 settings.redis_url,
                 decode_responses=True,
                 socket_connect_timeout=10,
+                socket_keepalive=True,        # keepalive TCP (idle sockets)
+                health_check_interval=30,     # ping si la connexion stagne
                 # PAS de socket_timeout ici — on gère le polling nous-mêmes
             )
             pubsub = r.pubsub()
