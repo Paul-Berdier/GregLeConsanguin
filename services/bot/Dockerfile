@@ -47,6 +47,15 @@ RUN pip install -r requirements.txt
 RUN python -m playwright install --with-deps chromium \
  && find "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}" -type d | head -5
 
+# Runtime JavaScript Deno — requis par yt-dlp ≥2025.10 (EJS) pour résoudre
+# les signatures des flux YouTube sur les clients web (avec cookies).
+# Sans lui: "Requested format is not available" même avec des cookies valides.
+RUN curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+ && unzip -o /tmp/deno.zip -d /usr/local/bin \
+ && rm /tmp/deno.zip \
+ && chmod +x /usr/local/bin/deno \
+ && deno --version
+
 # ─────────────────────────────────────────────────────────────
 # Code du bot
 # ─────────────────────────────────────────────────────────────
