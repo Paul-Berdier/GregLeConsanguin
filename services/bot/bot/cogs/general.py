@@ -5,10 +5,12 @@ import asyncio
 import datetime as dt
 import json
 import os
+import re
+import shutil
 import sys
 import time
 from http.cookiejar import MozillaCookieJar
-from typing import Optional
+from typing import Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -22,8 +24,12 @@ from greg_shared.priority import (
 )
 
 OWNER_ID = settings.owner_id_int
-COOKIES_FILENAME = "youtube.com_cookies.txt"
 MAX_COOKIE_SIZE = 1024 * 1024
+_HTTPONLY_PREFIX = "#HttpOnly_"
+# MozillaCookieJar (donc yt-dlp) exige cet en-tête en TOUTE première ligne.
+_NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
+_NETSCAPE_MAGIC = re.compile(r"#( Netscape)? HTTP Cookie File")
+_EXPIRES_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
 def _owner_only():
@@ -45,6 +51,63 @@ def _is_netscape(s: str) -> bool:
     if "# Netscape HTTP Cookie File" in head:
         return True
     return any(line.count("\t") >= 6 for line in head.splitlines()[:5])
+
+
+def _loadable_entry(body: str) -> bool:
+    fields = body.split("\t")
+    if len(fields) != 7 or body.lstrip().startswith(("{", "[", '"')):
+        return False
+    domain, flag, _path, _secure, expires = fields[:5]
+    # MozillaCookieJar fait `assert domain_specified == initial_dot` : UNE seule
+    # ligne incohérente rend TOUT le fichier illisible (LoadError).
+    if (flag == "TRUE") != domain.startswith("."):
+        return False
+    # yt-dlp ignore les expirations non numériques.
+    return not expires or bool(_EXPIRES_RE.fullmatch(expires))
+
+
+def _clean_netscape(text: str) -> Tuple[str, int]:
+    """Ne garde que ce que yt-dlp sait lire : commentaires/lignes vides et entrées à
+    7 champs (y compris `#HttpOnly_…`). Une seule ligne parasite commençant par
+    `{`/`[` fait lever « Cookies file must be Netscape formatted, not JSON » à
+    TOUTES les extractions. Garantit l'en-tête Netscape en 1re ligne (BOM retiré),
+    sans quoi le chargement échoue aussi. Retourne (texte nettoyé, nombre de cookies)."""
+    keep, count = [], 0
+    for line in text.lstrip("﻿").splitlines():
+        if line.startswith(_HTTPONLY_PREFIX):
+            body = line[len(_HTTPONLY_PREFIX):]
+        elif not line.strip() or line.startswith("#"):
+            keep.append(line)
+            continue
+        else:
+            body = line
+        if _loadable_entry(body):
+            keep.append(line)
+            count += 1
+    while keep and not keep[0].strip():
+        keep.pop(0)
+    if not keep or not _NETSCAPE_MAGIC.match(keep[0]):
+        keep.insert(0, _NETSCAPE_HEADER)
+    return "\n".join(keep) + "\n", count
+
+
+def _load_cookiefile(path: str) -> int:
+    """Charge `path` exactement comme YoutubeDL(cookiefile=…) ; lève si illisible.
+    Bloquant (I/O disque) → via asyncio.to_thread. Retourne le nombre de cookies."""
+    try:
+        from yt_dlp.cookies import YoutubeDLCookieJar as jar_cls
+    except ImportError:
+        jar_cls = MozillaCookieJar  # même _really_load (en-tête exigé)
+    jar = jar_cls(path)
+    jar.load(ignore_discard=True, ignore_expires=True)
+    return len(jar)
+
+
+def _silent_remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _json_to_netscape(text: str) -> str:
@@ -166,7 +229,9 @@ class General(commands.Cog):
 
     # ─── Cookie management ───
 
-    @app_commands.command(name="yt_cookies_update", description="Met à jour les cookies YouTube + auto-test.")
+    # Cookies globaux à TOUS les serveurs (toutes les extractions yt-dlp) → owner only.
+    @app_commands.command(name="yt_cookies_update", description="Met à jour les cookies YouTube (owner).")
+    @_owner_only()
     @app_commands.describe(file="Fichier cookies (Netscape ou JSON)")
     async def yt_cookies_update(self, inter: discord.Interaction, file: discord.Attachment):
         await inter.response.defer(ephemeral=True)
@@ -175,7 +240,8 @@ class General(commands.Cog):
 
         raw = await file.read()
         try:
-            text = raw.decode("utf-8", errors="replace")
+            # utf-8-sig : un BOM (fichier enregistré depuis le Bloc-notes) masquerait l'en-tête.
+            text = raw.decode("utf-8-sig", errors="replace")
         except Exception:
             return await inter.followup.send("❌ Impossible de décoder le fichier.", ephemeral=True)
 
@@ -183,18 +249,52 @@ class General(commands.Cog):
         if not netscape:
             return await inter.followup.send("❌ Format inconnu. Fournis un cookies.txt ou JSON.", ephemeral=True)
 
-        target = os.path.abspath(COOKIES_FILENAME)
+        # Nettoyage + comptage AVANT d'écraser quoi que ce soit : un fichier sans
+        # aucun cookie exploitable casserait YouTube pour tous les serveurs.
+        netscape, count = _clean_netscape(netscape)
+        if count == 0:
+            return await inter.followup.send(
+                "❌ Aucun cookie valide dans ce fichier — les cookies actuels sont conservés.", ephemeral=True
+            )
+
+        # Chemin canonique partagé avec la lecture et le CookieGuardian (contrat C6).
+        from greg_shared.extractors import youtube as yt
+        target = os.path.abspath(yt.cookies_upload_path())
+        tmp = target + ".upload.tmp"
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(netscape)
+        except Exception as e:
+            _silent_remove(tmp)
+            return await inter.followup.send(f"❌ Écriture impossible: `{e}`", ephemeral=True)
+
+        # Validation avec le VRAI chargeur yt-dlp AVANT de toucher au fichier actif :
+        # un fichier illisible ferait échouer toutes les extractions, sur tous les serveurs.
+        try:
+            count = await asyncio.to_thread(_load_cookiefile, tmp)
+        except Exception as e:
+            _silent_remove(tmp)
+            return await inter.followup.send(
+                f"❌ Fichier refusé par yt-dlp : `{str(e)[:300]}` — les cookies actuels sont conservés.",
+                ephemeral=True,
+            )
+        if count == 0:
+            _silent_remove(tmp)
+            return await inter.followup.send(
+                "❌ Aucun cookie valide dans ce fichier — les cookies actuels sont conservés.", ephemeral=True
+            )
+
         try:
             if os.path.exists(target):
                 ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-                os.replace(target, target + f".bak.{ts}")
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(netscape)
+                # Copie (et non rename) : le fichier actif ne disparaît jamais, sinon une
+                # extraction concurrente pourrait y matérialiser YTDLP_COOKIES_B64.
+                shutil.copy2(target, target + f".bak.{ts}")
+            os.replace(tmp, target)
         except Exception as e:
+            _silent_remove(tmp)
             return await inter.followup.send(f"❌ Écriture impossible: `{e}`", ephemeral=True)
-
-        # Count cookies
-        count = sum(1 for l in netscape.splitlines() if l and not l.startswith("#") and l.count("\t") >= 6)
 
         # ── Invalide le cache PO + negative cache token_fetcher : ──
         # un changement de cookies peut débloquer l'auto-fetch et change
@@ -215,21 +315,24 @@ class General(commands.Cog):
         embed = discord.Embed(title="YouTube cookies — Mise à jour", description=f"**{count}** cookies importés.", color=color)
         await inter.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="yt_cookies_check", description="Vérifie l'état des cookies YouTube.")
+    @app_commands.command(name="yt_cookies_check", description="Vérifie l'état des cookies YouTube (owner).")
+    @_owner_only()
     async def yt_cookies_check(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
-        target = os.path.abspath(COOKIES_FILENAME)
-        if not os.path.exists(target):
+        # Le fichier réellement utilisé par la lecture, résolu maintenant (contrat C6).
+        from greg_shared.extractors import youtube as yt
+        target = await asyncio.to_thread(yt._pick_cookiefile, None)
+        if not target or not os.path.exists(target):
             return await inter.followup.send("🚫 Aucun cookies trouvé.", ephemeral=True)
         try:
             with open(target, "r", encoding="utf-8") as f:
                 text = f.read()
-            count = sum(1 for l in text.splitlines() if l and not l.startswith("#") and l.count("\t") >= 6)
+            count = _clean_netscape(text)[1]
             mtime = dt.datetime.fromtimestamp(os.path.getmtime(target))
             age = dt.datetime.now() - mtime
             embed = discord.Embed(
                 title="YouTube cookies — Status",
-                description=f"📄 `{COOKIES_FILENAME}` — **{count}** cookies\n⏱️ Dernière maj: {mtime:%Y-%m-%d %H:%M} ({age.days}j)",
+                description=f"📄 `{target}` — **{count}** cookies\n⏱️ Dernière maj: {mtime:%Y-%m-%d %H:%M} ({age.days}j)",
                 color=0x2ECC71 if count > 5 else 0xE74C3C,
             )
             await inter.followup.send(embed=embed, ephemeral=True)
@@ -255,7 +358,10 @@ class General(commands.Cog):
             await self.bot.close()
         except Exception:
             pass
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Le conteneur démarre via `python -m bot.main` : sys.argv[0] vaut alors
+        # /app/bot/main.py, et le relancer comme script met /app/bot (et non /app)
+        # dans sys.path → `import bot.greg_bot` plante. On relance donc le module.
+        os.execv(sys.executable, [sys.executable, "-m", "bot.main"])
 
 
 async def setup(bot):

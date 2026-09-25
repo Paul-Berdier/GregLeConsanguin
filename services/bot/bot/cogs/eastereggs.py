@@ -186,18 +186,9 @@ class EasterEggs(commands.Cog):
     async def gregquote(self, interaction: discord.Interaction):
         await interaction.response.send_message(f"💬 {random.choice(QUIPS)}")
 
-    # Gestion propre des erreurs (silencieux, en DM éphémère)
-    @commands.Cog.listener()
-    async def on_app_command_error(self, interaction: discord.Interaction,
-                                   error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.CheckFailure):
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message("⛔")
-                else:
-                    await interaction.followup.send("⛔")
-            except Exception:
-                pass
+    # NB : pas de listener `on_app_command_error` ici — discord.py ne dispatche jamais
+    # cet event. Les erreurs de slash commands (CheckFailure comprise) sont gérées
+    # globalement par le handler du CommandTree (greg_bot.py).
 
 async def setup(bot):
     await bot.add_cog(EasterEggs(bot))

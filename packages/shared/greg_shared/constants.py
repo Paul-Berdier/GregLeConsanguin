@@ -180,8 +180,7 @@ GREG_RESPONSES: Dict[str, List[str]] = {
     # ── Cookie Guardian ──
     "cookies_invalid": [
         "⚠️ **Les cookies YouTube sont invalides ou expirés !**\nErreur: `{error}`\n\n"
-        "👉 Utilisez le compte Google fourni pour Greg :\n"
-        "**Email :** `{email}`\n**Mot de passe :** `{password}`\n\n"
+        "👉 Utilisez le compte Google fourni pour Greg (identifiants à demander au owner) :\n"
         "1. Connectez-vous sur Google Chrome.\n"
         "2. Installez [Get cookies.txt (clean)](https://chromewebstore.google.com/detail/get-cookiestxt-clean/ahmnmhfbokciafffnknlekllgcnafnie)\n"
         "3. Allez sur [YouTube](https://youtube.com), exportez en *Netscape cookies.txt*.\n"
