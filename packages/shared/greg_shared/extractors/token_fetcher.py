@@ -10,16 +10,23 @@ Récupère un PO token YouTube via Playwright/Chromium, à utiliser avec
 - Aucun appel `subprocess` inutile.
 - Logging clair indiquant la raison de l'échec.
 - Auto-install optionnelle (`PLAYWRIGHT_AUTOINSTALL=1`) en dev/local.
+- Cache négatif GLOBAL aussi pour 'not_found' et les timeouts (le scraping
+  ytcfg ne trouve plus de token : inutile de payer 20-25 s à chaque vidéo).
+- Un seul fetch à la fois (pas de Chromium en parallèle) ; sur timeout le
+  worker est prié de fermer son navigateur. `fetch_po_token_ex` renvoie la
+  raison ("busy" = rien tenté : l'appelant ne met pas ce résultat en cache).
+- Cookies injectés depuis LE fichier résolu par youtube._pick_cookiefile.
+
+NB : appelé seulement si YT_PO_AUTOFETCH=1 (cf. youtube._resolve_po_tokens_for).
 """
 from __future__ import annotations
 
-import base64
 import os
 import subprocess
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 _YTDBG = os.getenv("YTDBG", "1").lower() not in ("0", "false", "")
 
@@ -28,6 +35,10 @@ _NEG_TTL = float(os.getenv("PO_NEG_TTL_SEC", "600"))   # 10 minutes par défaut
 _neg_until: float = 0.0
 _neg_reason: str = ""
 _neg_lock = threading.Lock()
+
+# Un seul worker Playwright à la fois (libéré par le worker lui-même).
+_fetch_lock = threading.Lock()
+_JOIN_GRACE_S = 10.0  # marge au-delà de timeout_ms avant d'abandonner le worker
 
 
 def _dbg(msg: str) -> None:
@@ -99,19 +110,23 @@ def _try_autoinstall() -> bool:
 
 
 # ─── Cookies (injection Netscape → Playwright context) ───
-def _inject_cookies_from_b64(context) -> None:
-    """Injecte les cookies depuis YTDLP_COOKIES_B64 (format Netscape)."""
-    b64 = os.getenv("YTDLP_COOKIES_B64")
-    if not b64:
-        return
-
+def _inject_cookies(context) -> None:
+    """Injecte les cookies du fichier résolu par youtube._pick_cookiefile
+    (upload > ancien fichier > YTDLP_COOKIES_B64 matérialisé), format Netscape."""
     try:
-        raw = base64.b64decode(b64).decode("utf-8", errors="replace")
-    except Exception:
+        from .youtube import _pick_cookiefile  # import tardif (évite un cycle)
+        path = _pick_cookiefile(None)
+        if not path:
+            return
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+    except Exception as e:
+        _dbg(f"cookies read fail: {e}")
         return
 
     cookies = []
     for line in raw.splitlines():
+        line = line.removeprefix("#HttpOnly_")
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
@@ -218,7 +233,8 @@ def _extract_token_js(page) -> Optional[str]:
 
 
 # ─── Worker thread (Playwright sync API) ───
-def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
+def _worker_fetch(video_id: str, timeout_ms: int, out: dict,
+                  stop: Optional[threading.Event] = None) -> None:
     # 1) Vérifie le cache négatif
     neg = _check_negative_cache()
     if neg:
@@ -264,6 +280,10 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
     try:
         with sync_playwright() as p:
             for url, ua in tries:
+                if stop is not None and stop.is_set():
+                    out["token"] = None
+                    out["why"] = "stopped"
+                    return
                 browser = context = None
                 try:
                     _dbg(f"goto {url}")
@@ -276,7 +296,7 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
                         ],
                     )
                     context = browser.new_context(user_agent=ua, locale="en-US")
-                    _inject_cookies_from_b64(context)
+                    _inject_cookies(context)
                     page = context.new_page()
 
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -288,6 +308,8 @@ def _worker_fetch(video_id: str, timeout_ms: int, out: dict) -> None:
                         pass
 
                     for _ in range(10):
+                        if stop is not None and stop.is_set():
+                            break
                         tok = _extract_token_js(page)
                         if tok:
                             out["token"] = tok
@@ -326,31 +348,59 @@ def fetch_po_token(video_id: str, timeout_ms: int = 15000) -> Optional[str]:
     """Récupère un PO token brut (sans préfixe `client.gvs+`).
 
     Retourne None si Playwright/Chromium n'est pas dispo, ou si le token
-    n'a pas pu être extrait. Met en cache négatif les erreurs structurelles
-    pour éviter les retries en rafale.
+    n'a pas pu être extrait. Met en cache négatif (global) les erreurs
+    structurelles, 'not_found' et les timeouts pour éviter les retries en rafale.
+    Un seul fetch à la fois : un appel concurrent renvoie None sans attendre.
+    """
+    return fetch_po_token_ex(video_id, timeout_ms)[0]
+
+
+def fetch_po_token_ex(video_id: str, timeout_ms: int = 15000) -> Tuple[Optional[str], str]:
+    """Comme fetch_po_token, mais renvoie aussi la raison : (token, why).
+
+    why ∈ {"ok", "busy" (un autre fetch occupe Chromium : RIEN n'a été tenté
+    pour cette vidéo), "negative_cache:…", "timeout", "not_found", …}.
     """
     neg = _check_negative_cache()
     if neg:
         _dbg(f"auto-fetch skipped (negative cache: {neg})")
-        return None
+        return None, f"negative_cache:{neg}"
+
+    if not _fetch_lock.acquire(blocking=False):
+        _dbg("auto-fetch déjà en cours — pas de second Chromium")
+        return None, "busy"
 
     _dbg(f"auto-fetch for video {video_id}")
     box: dict = {"token": None, "why": "init"}
-    t = threading.Thread(target=_worker_fetch,
-                         args=(video_id, timeout_ms, box),
-                         daemon=True)
-    t.start()
-    t.join(timeout=(timeout_ms / 1000.0) + 10.0)
+    stop = threading.Event()
+
+    def _run() -> None:
+        try:
+            _worker_fetch(video_id, timeout_ms, box, stop)
+        finally:
+            _fetch_lock.release()
+
+    t = threading.Thread(target=_run, daemon=True)
+    try:
+        t.start()
+    except Exception:
+        _fetch_lock.release()
+        raise
+    t.join(timeout=(timeout_ms / 1000.0) + _JOIN_GRACE_S)
     if t.is_alive():
         _dbg("worker timed out")
-        return None
+        stop.set()  # le worker ferme son navigateur au prochain point de contrôle
+        _set_negative_cache("timeout")
+        return None, "timeout"
 
     token = box.get("token")
-    why = box.get("why")
+    why = str(box.get("why") or "unknown")
     if token and isinstance(token, str) and len(token) > 10:
-        return token
+        return token, "ok"
+    if why == "not_found":
+        _set_negative_cache("not_found")
     _dbg(f"auto-fetch ended: {why}")
-    return None
+    return None, why
 
 
 def invalidate_negative_cache() -> None:
