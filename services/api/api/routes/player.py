@@ -1,31 +1,82 @@
 """Player routes — contrôle du lecteur de musique via Redis bridge."""
 from __future__ import annotations
 
+from typing import Any
+
 from flask import Blueprint, jsonify, request
 
 from api.services.bot_bridge import send_command
 
 bp = Blueprint("player", __name__)
 
+# play_for_user : le bot répond en < 20 s (contrat C2) ; marge pour Redis,
+# et on reste sous le proxyTimeout de 30 s du front Next. Si la commande attend
+# derrière un autre play_for_user de la même guild, c'est au bot de compter son
+# budget depuis la réception (champs `timeout`/`deadline` posés par send_command).
+PLAY_FOR_USER_TIMEOUT = 25
+MSG_PLAY_TIMEOUT = (
+    "Greg met trop de temps à répondre… La demande est peut-être encore en cours : "
+    "vérifie la file avant de réessayer."
+)
+# Commandes qui modifient l'état (skip, stop, pause, move…) : le bot les exécute
+# une par une par guild (contrat C3), donc un skip peut attendre derrière un
+# play_for_user. On attend autant que lui, sinon on répondrait TIMEOUT pour une
+# commande que le bot exécute quand même juste après (→ double skip au 2e clic).
+MUTATING_TIMEOUT = PLAY_FOR_USER_TIMEOUT
 
-def _gid(req, data=None) -> int:
-    if data is None:
-        data = req.get_json(silent=True) or {}
-    v = req.args.get("guild_id") or req.headers.get("X-Guild-ID") or data.get("guild_id")
+
+def _body(req) -> dict:
+    """Corps JSON de la requête — toujours un dict (un JSON non-objet est ignoré)."""
+    data = req.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _int(v) -> int | None:
+    """int() tolérant : None si la valeur n'est pas un entier valide."""
     try:
         return int(v)
     except (TypeError, ValueError):
-        return 0
+        return None
+
+
+def _gid(req, data=None) -> int:
+    if not isinstance(data, dict):
+        data = _body(req)
+    v = req.args.get("guild_id") or req.headers.get("X-Guild-ID") or data.get("guild_id")
+    return _int(v) or 0
 
 
 def _uid(req, data=None) -> int:
-    if data is None:
-        data = req.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = _body(req)
     v = data.get("user_id") or req.headers.get("X-User-ID")
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return 0
+    return _int(v) or 0
+
+
+def error_status(res: dict[str, Any], default: int = 409) -> int:
+    """Code HTTP d'une réponse non-ok du bot ou du pont Redis."""
+    err = str(res.get("error") or "")
+    if err == "TIMEOUT":
+        return 504
+    if err == "BOT_OFFLINE":
+        return 503
+    if err == "PRIORITY_FORBIDDEN":
+        return 403
+    return default
+
+
+def play_for_user_response(gid: int, uid: int, item: dict[str, Any]):
+    """Envoie play_for_user au bot et construit la réponse HTTP (contrats C2/C3).
+
+    Succès → 200 avec le résultat du bot tel quel (added/requested/truncated/…).
+    Échec → 409 (403 PRIORITY_FORBIDDEN, 503 BOT_OFFLINE, 504 TIMEOUT), `message` FR transmis.
+    """
+    res = send_command("play_for_user", gid, uid, data={"item": item}, timeout=PLAY_FOR_USER_TIMEOUT)
+    if res.get("ok"):
+        return jsonify(res), 200
+    if res.get("error") == "TIMEOUT":
+        res = {**res, "message": MSG_PLAY_TIMEOUT}
+    return jsonify(res), error_status(res)
 
 
 @bp.get("/player/state")
@@ -39,26 +90,27 @@ def get_state():
     if res.get("ok"):
         return jsonify(res), 200
 
-    return jsonify({
-        "ok": True,
-        "current": None,
-        "queue": [],
-        "is_paused": True,
-        "repeat_all": False,
-        "progress": {"elapsed": 0, "duration": 0},
+    # Contrat C3 : état « périmé », SANS faux current/queue vides — le front
+    # garde son état précédent au lieu d'effacer la lecture en cours.
+    out = {
+        "ok": False,
+        "stale": True,
         "backend_error": res.get("error", "unknown"),
-    }), 200
+    }
+    if res.get("message"):
+        out["message"] = res["message"]
+    return jsonify(out), 200
 
 
 @bp.post("/player/enqueue")
 def enqueue():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
 
-    query = (data.get("query") or data.get("url") or data.get("title") or "").strip()
+    query = str(data.get("query") or data.get("url") or data.get("title") or "").strip()
     if not query:
         return jsonify({"ok": False, "error": "missing query"}), 400
 
@@ -71,81 +123,82 @@ def enqueue():
         "provider": data.get("provider"),
     }
 
-    res = send_command("play_for_user", gid, uid, data={"item": item}, timeout=20)
-    code = 200 if res.get("ok") else (403 if res.get("error") == "PRIORITY_FORBIDDEN" else 409)
-    return jsonify(res), code
+    return play_for_user_response(gid, uid, item)
 
 
 @bp.post("/player/skip")
 def skip():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("skip", gid, uid, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 500)
+    res = send_command("skip", gid, uid, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res, 500)
     return jsonify(res), code
 
 
 @bp.post("/player/stop")
 def stop():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("stop", gid, uid, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 500)
+    res = send_command("stop", gid, uid, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res, 500)
     return jsonify(res), code
 
 
 @bp.post("/player/pause")
 def toggle_pause():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("toggle_pause", gid, uid, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 409)
+    res = send_command("toggle_pause", gid, uid, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res)
     return jsonify(res), code
 
 
 @bp.post("/player/repeat")
 def repeat():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     mode = str(data.get("mode", "toggle")).strip().lower()
     if not gid:
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
-    res = send_command("repeat", gid, data={"mode": mode}, timeout=8)
-    return jsonify(res), 200 if res.get("ok") else 409
+    res = send_command("repeat", gid, data={"mode": mode}, timeout=MUTATING_TIMEOUT)
+    return jsonify(res), 200 if res.get("ok") else error_status(res)
 
 
 @bp.post("/player/move")
 def move():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     src = data.get("src")
     dst = data.get("dst")
     if not gid or not uid or src is None or dst is None:
         return jsonify({"ok": False, "error": "missing params"}), 400
-    res = send_command("move", gid, uid, data={"src": int(src), "dst": int(dst)}, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 409)
+    src, dst = _int(src), _int(dst)
+    if src is None or dst is None:
+        return jsonify({"ok": False, "error": "invalid src/dst"}), 400
+    res = send_command("move", gid, uid, data={"src": src, "dst": dst}, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res)
     return jsonify(res), code
 
 
 @bp.delete("/player/queue/<int:index>")
 def remove_at(index: int):
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("remove", gid, uid, data={"index": index}, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 409)
+    res = send_command("remove", gid, uid, data={"index": index}, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res)
     return jsonify(res), code
 
 
@@ -168,9 +221,11 @@ def queue_stop_compat():
 
 @bp.post("/queue/remove")
 def queue_remove_compat():
-    data = request.get_json(silent=True) or {}
-    idx = data.get("index", 0)
-    return remove_at(int(idx))
+    data = _body(request)
+    idx = _int(data.get("index", 0))
+    if idx is None or idx < 0:
+        return jsonify({"ok": False, "error": "invalid index"}), 400
+    return remove_at(idx)
 
 
 @bp.get("/playlist")
@@ -191,36 +246,38 @@ def playlist_repeat_compat():
 @bp.post("/playlist/play_at")
 def playlist_play_at():
     """Joue le morceau à l'index donné dans la queue."""
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
-    index = data.get("index", 0)
+    index = _int(data.get("index", 0))
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("play_at", gid, uid, data={"index": int(index)}, timeout=8)
-    code = 200 if res.get("ok") else (403 if "PRIORITY" in str(res.get("error", "")) else 409)
+    if index is None or index < 0:
+        return jsonify({"ok": False, "error": "invalid index"}), 400
+    res = send_command("play_at", gid, uid, data={"index": index}, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res)
     return jsonify(res), code
 
 
 @bp.post("/playlist/restart")
 def playlist_restart():
     """Redémarre le morceau en cours."""
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("restart", gid, uid, timeout=8)
-    code = 200 if res.get("ok") else 409
+    res = send_command("restart", gid, uid, timeout=MUTATING_TIMEOUT)
+    code = 200 if res.get("ok") else error_status(res)
     return jsonify(res), code
 
 
 @bp.post("/voice/join")
 def voice_join():
-    data = request.get_json(silent=True) or {}
+    data = _body(request)
     gid = _gid(request, data)
     uid = _uid(request, data)
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
-    res = send_command("join", gid, uid, timeout=12)
-    return jsonify(res), 200 if res.get("ok") else 409
+    res = send_command("join", gid, uid, timeout=MUTATING_TIMEOUT)
+    return jsonify(res), 200 if res.get("ok") else error_status(res)

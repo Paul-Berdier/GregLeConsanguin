@@ -35,7 +35,13 @@ def create_app() -> Flask:
     # Extensions
     CORS(app, supports_credentials=True)
     compress.init_app(app)
-    socketio.init_app(app, cors_allowed_origins="*", async_mode="eventlet")
+    # Mode "threading" (serveur Werkzeug threadé + simple-websocket pour le
+    # transport websocket) : chaque requête a son propre thread OS, donc les
+    # appels bloquants (redis-py dans send_command, requests) ne gèlent plus
+    # toute l'API, et le Redis listener (thread natif) peut émettre sans risque.
+    # eventlet sans monkey_patch() bloquait le hub et coinçait les files
+    # d'émission des clients.
+    socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
     # Register routes
     from api.routes.health import bp as health_bp
