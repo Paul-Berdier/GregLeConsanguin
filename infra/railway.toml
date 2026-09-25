@@ -18,3 +18,18 @@
 # - GREG_OWNER_ID
 # - FLASK_SECRET_KEY
 # etc. (voir .env.example)
+
+# Build du bot (services/bot/Dockerfile) :
+# - yt-dlp est réinstallé (pip -U) dans une couche invalidée à chaque commit
+#   (RAILWAY_GIT_COMMIT_SHA, injecté automatiquement par Railway).
+# - Redeploy sans commit : changer YTDLP_REFRESH (ex: la date) pour forcer
+#   la mise à jour de yt-dlp, ou NO_CACHE=1 pour reconstruire toute l'image.
+
+# Démarrage de l'API (services/api/Dockerfile) :
+# - Start command = CMD du Dockerfile : `python -m api.main` (lance aussi le Redis
+#   listener → pushes playlist_update). Ne PAS définir de start command personnalisé
+#   (gunicorn / -k eventlet) : non supporté, plus de mises à jour live.
+
+# Build du web (services/web/Dockerfile) :
+# - API_URL, NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL sont figées au `next build`
+#   (build args) : les changer impose un redeploy du service web.
