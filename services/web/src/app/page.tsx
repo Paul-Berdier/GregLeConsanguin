@@ -4,7 +4,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
 import { useProgress } from '@/hooks/useProgress';
 import { api } from '@/lib/api';
+import { looksLikeUrl, enterPicksSuggestion, isShortcutIgnored } from '@/lib/playerUtils';
 import type { SearchResult } from '@/lib/types';
+
+const FOCUS_REFRESH_MIN_MS = 15000;
 
 // ── Helpers ──
 function fmt(sec?: number | null): string {
@@ -59,29 +62,52 @@ function SearchBar() {
   const [searching, setSearching] = useState(false);
   const timer = useRef<any>(null);
   const qRef = useRef('');
+  const busyRef = useRef(false);
+  const searchSeq = useRef(0); // invalide les autocomplétions en vol (saisie suivante / envoi)
 
   const doSearch = useCallback(async (query: string) => {
-    if (query.length < 2) { setSugs([]); setOpen(false); setSearching(false); return; }
+    if (query.length < 2 || looksLikeUrl(query)) { setSugs([]); setOpen(false); setSearching(false); return; }
+    const my = ++searchSeq.current;
     setSearching(true);
     try {
       const rows = await api.autocomplete(query, 6);
+      if (my !== searchSeq.current) return;
       if (qRef.current.trim() === query.trim() && Array.isArray(rows) && rows.length) {
         setSugs(rows); setOpen(true); setIdx(-1);
       } else if (qRef.current.trim() === query.trim()) { setSugs([]); setOpen(false); }
-    } catch {} finally { setSearching(false); }
+    } catch {} finally { if (my === searchSeq.current) setSearching(false); }
   }, []);
+
+  const cancelSearch = () => {
+    clearTimeout(timer.current);
+    searchSeq.current++;
+    setSearching(false);
+  };
 
   const onInput = (v: string) => {
     setQ(v); qRef.current = v;
-    clearTimeout(timer.current);
-    if (v.trim().length < 2) { setSugs([]); setOpen(false); return; }
+    setIdx(-1); // l'ancienne sélection ne correspond plus au texte
+    cancelSearch();
+    // Lien collé : jamais d'autocomplétion, il sera envoyé tel quel
+    if (v.trim().length < 2 || looksLikeUrl(v)) { setSugs([]); setOpen(false); return; }
     setSearching(true);
     timer.current = setTimeout(() => doSearch(v.trim()), 280);
   };
 
-  const submit = async (payload: Record<string, any>) => {
-    setBusy(true); setOpen(false); setSugs([]); setQ('');
-    try { await enqueue(payload); } finally { setBusy(false); }
+  // `typed` : texte du champ au moment de l'envoi — gardé jusqu'au succès, restauré en cas d'échec
+  const submit = async (payload: Record<string, any>, typed: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    cancelSearch(); setOpen(false); setSugs([]); setIdx(-1);
+    try {
+      const ok = await enqueue(payload);
+      if (ok && qRef.current === typed) { setQ(''); qRef.current = ''; }
+    } catch {
+      // Statut d'erreur déjà affiché par enqueue : on remet le texte si le champ a été vidé
+      if (!qRef.current.trim()) { setQ(typed); qRef.current = typed; }
+    } finally {
+      busyRef.current = false; setBusy(false);
+    }
   };
 
   const pick = (sug: SearchResult) => {
@@ -89,20 +115,29 @@ function SearchBar() {
     submit({ query: url || sug.title, url, webpage_url: url, title: sug.title,
       artist: sug.artist || sug.uploader || sug.channel, duration: sug.duration,
       thumb: sug.thumb || sug.thumbnail, thumbnail: sug.thumb || sug.thumbnail,
-      source: sug.source || 'yt', provider: sug.provider || sug.source });
+      source: sug.source || 'yt', provider: sug.provider || sug.source }, qRef.current);
   };
 
-  const go = () => {
-    if (!q.trim()) return;
-    idx >= 0 && sugs[idx] ? pick(sugs[idx]) : submit({ query: q.trim() });
+  // Bouton « Ajouter » : envoie TOUJOURS le texte tapé (jamais une suggestion)
+  const submitTyped = () => {
+    const text = q.trim();
+    if (!text || busyRef.current) return;
+    submit({ query: text }, q);
   };
 
   const onKey = (e: React.KeyboardEvent) => {
-    if (!open) { if (e.key === 'Enter') { e.preventDefault(); go(); } return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (busyRef.current) return;
+      // Suggestion seulement si choisie au clavier (flèches) dans la liste ouverte
+      if (enterPicksSuggestion(open, idx, sugs.length, q) && sugs[idx]) pick(sugs[idx]);
+      else submitTyped();
+      return;
+    }
+    if (!open) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(sugs.length - 1, i + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(-1, i - 1)); }
-    else if (e.key === 'Enter') { e.preventDefault(); go(); }
-    else if (e.key === 'Escape') setOpen(false);
+    else if (e.key === 'Escape') { setOpen(false); setIdx(-1); }
   };
 
   return (
@@ -115,16 +150,17 @@ function SearchBar() {
           onKeyDown={onKey}
           placeholder="Rechercher un titre…"
           className="flex-1 bg-transparent border-none outline-none text-sm text-txt placeholder:text-txt-muted min-w-0 font-body"/>
-        <button onClick={go} disabled={busy || !q.trim()}
+        <button onClick={submitTyped} disabled={busy || !q.trim()}
           className={`btn-accent text-xs py-1.5 px-3 ${busy ? 'loading-spin opacity-60' : ''}`}>
           Ajouter
         </button>
       </div>
       {open && sugs.length > 0 && (
-        <div className="sug-drop animate-fade-up">
+        // Survol : surlignage CSS (:hover) uniquement, il ne change pas la sélection clavier
+        <div className="sug-drop animate-fade-up" onMouseLeave={() => setIdx(-1)}>
           {sugs.map((s, i) => (
             <div key={`${s.url}-${i}`} className={`sug-item ${i === idx ? 'active' : ''}`}
-              onMouseDown={e => e.preventDefault()} onClick={() => pick(s)} onMouseEnter={() => setIdx(i)}>
+              onMouseDown={e => e.preventDefault()} onClick={() => pick(s)}>
               {(s.thumb || s.thumbnail) && <div className="q-thumb" style={{ width: 40, height: 40, backgroundImage: `url("${s.thumb || s.thumbnail}")` }}/>}
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold truncate">{s.title}</div>
@@ -438,7 +474,7 @@ function HistoryPanel() {
       url: item.url, title: item.title,
       artist: item.artist, thumb: item.thumb,
       duration: item.duration, provider: item.provider || 'youtube',
-    });
+    }).catch(() => {}); // statut d'erreur déjà affiché par enqueue
   };
 
   if (!guildId) return <div className="text-sm text-txt-muted py-6 text-center opacity-50">Choisis un serveur</div>;
@@ -539,8 +575,8 @@ export default function Home() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = async (ev: KeyboardEvent) => {
-      const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || (ev.target as HTMLElement)?.isContentEditable) return;
+      // Ctrl+R / Cmd+P… restent aux raccourcis du navigateur ; rien dans les champs / select / boutons (Espace)
+      if (isShortcutIgnored(ev)) return;
       const s = useStore.getState();
       if (!s.me || !s.guildId) return;
       if (ev.code === 'Space') { ev.preventDefault(); s.setStatus('Pause…', 'info'); try { await api.togglePause(s.guildId, s.me.id); s.setStatus('OK ✅', 'ok'); } catch { s.setStatus('Erreur', 'err'); } }
@@ -552,7 +588,18 @@ export default function Home() {
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
-  useEffect(() => { const h = () => refreshMe().catch(() => {}); window.addEventListener('focus', h); return () => window.removeEventListener('focus', h); }, [refreshMe]);
+  // Retour sur l'onglet : on revérifie la session, au plus une fois toutes les 15 s et jamais en parallèle
+  useEffect(() => {
+    let last = 0, inFlight = false;
+    const h = () => {
+      const now = Date.now();
+      if (inFlight || now - last < FOCUS_REFRESH_MIN_MS) return;
+      last = now; inFlight = true;
+      refreshMe().catch(() => {}).finally(() => { inFlight = false; });
+    };
+    window.addEventListener('focus', h);
+    return () => window.removeEventListener('focus', h);
+  }, [refreshMe]);
 
   const avatar = discordAvatar(me, 96);
   const name = me?.global_name || me?.display_name || me?.username || '';
@@ -574,7 +621,7 @@ export default function Home() {
           <select value={guildId} onChange={e => setGuild(e.target.value)}
             className="glass-subtle px-3 py-1.5 text-xs outline-none min-w-0 font-body">
             <option value="">Serveur…</option>
-            {guilds.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+            {guilds.map(g => <option key={g.id} value={g.id}>{g.name}{g.bot_present === false ? ' (sans Greg)' : ''}</option>)}
           </select>
 
           {me ? (

@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { getApiOrigin } from './api';
+import { getApiOrigin, isBrowserReachable } from './api';
 
 // Socket connects to the API service, not the Next.js frontend.
 // On Railway, they're separate services so we need the API origin.
@@ -7,9 +7,11 @@ function getWsUrl(): string {
   const env = (typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_WS_URL || '').trim()
     : '');
-  if (env) return env;
+  // Même garde que la base REST (api.ts) : une URL injoignable depuis ce navigateur
+  // (http://api:3000, localhost figé au build…) → origine de l'API / même origine.
+  if (env && isBrowserReachable(env, location.hostname)) return env;
 
-  // Fallback: connect to API origin (same as API base)
+  // Fallback: connect to API origin (same as API base) — '' = même origine (rewrite /socket.io)
   if (typeof window !== 'undefined') {
     return getApiOrigin() || '';
   }

@@ -4,6 +4,11 @@ import { useEffect, useCallback } from 'react';
 import { create } from 'zustand';
 import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, getSocketId } from '@/lib/socket';
 import { api } from '@/lib/api';
+import {
+  toSeconds, normalizeItem, buildUsersMap, isStalePayload,
+  looksLikeUrl, describeError, errorCode, enqueueSuccessText, pickDefaultGuild,
+  createSeqGate, staleStateText, livePosition, recoveredStatusText,
+} from '@/lib/playerUtils';
 import type {
   PlayerState, Track, UserInfo, GuildInfo,
   SpotifyProfile, SpotifyPlaylist, SpotifyTrack,
@@ -11,48 +16,9 @@ import type {
 } from '@/lib/types';
 
 // ── Helpers ──
-function toSeconds(v: any): number | null {
-  if (v == null) return null;
-  if (typeof v === 'number' && isFinite(v)) {
-    if (v > 10000) return Math.floor(v / 1000);
-    return Math.floor(v);
-  }
-  const s = String(v).trim();
-  if (!s) return null;
-  if (/^\d+(\.\d+)?$/.test(s)) {
-    const n = Number(s);
-    if (!isFinite(n)) return null;
-    if (n > 10000) return Math.floor(n / 1000);
-    return Math.floor(n);
-  }
-  const parts = s.split(':').map(Number);
-  if (parts.some((x) => !isFinite(x))) return null;
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  return null;
-}
-
 function clamp(n: number, a: number, b: number): number {
   if (!isFinite(n)) return a;
   return Math.min(Math.max(n, a), b);
-}
-
-function normalizeItem(it: any): Track | null {
-  if (!it || typeof it !== 'object') return null;
-
-  const title = it.title || it.name || it.track_title || it.track || '';
-  const url = it.url || it.webpage_url || it.href || it.link || '';
-  const artist = it.artist || it.uploader || it.author || it.channel || it.by || '';
-  const duration = toSeconds(it.duration ?? it.duration_s ?? it.duration_sec ?? it.duration_ms ?? it.length ?? it.length_s ?? it.length_ms) ?? null;
-  const thumb = it.thumb || it.thumbnail || it.image || it.artwork || it.cover || null;
-  const provider = it.provider || it.source || it.platform || null;
-
-  const rb = it.requested_by || it.added_by || it.requester || it.user || null;
-  const addedById = (rb && (rb.id || rb.user_id)) || it.requested_by_id || it.added_by_id || it.user_id || null;
-  const addedByName = (rb && (rb.display_name || rb.global_name || rb.username || rb.name)) || it.requested_by_name || it.added_by_name || it.user_name || it.username || '';
-  const addedBy = (addedById || addedByName) ? { id: addedById ? String(addedById) : '', name: String(addedByName || '').trim() } : null;
-
-  return { title: String(title || ''), url: String(url || ''), artist: String(artist || ''), duration, thumb, provider, addedBy, raw: it };
 }
 
 function normalizeMePayload(payload: any): UserInfo | null {
@@ -157,6 +123,8 @@ export const useStore = create<GregStore>((set, get) => ({
 
   applyPlaylistPayload: (payload: any) => {
     const root = payload && typeof payload === 'object' ? payload : {};
+    // État périmé / en échec (bot occupé, TIMEOUT…) : on garde l'état précédent
+    if (isStalePayload(root)) return;
     const p = root.state || root.pm || root.data || root;
     const isTick = !!p.only_elapsed;
     const state = get();
@@ -168,7 +136,10 @@ export const useStore = create<GregStore>((set, get) => ({
       if (typeof v === 'string') return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
       return !!v;
     };
-    const norm = (it: any) => { const n = normalizeItem(it); return n && (n.title || n.url) ? n : null; };
+    // added_by est un id : les infos user arrivent à part (queue_users / requested_by_user)
+    const users = buildUsersMap(p);
+    const normQ = (it: any) => normalizeItem(it, users);
+    const norm = (it: any) => { const n = normalizeItem(it, users); return n && (n.title || n.url) ? n : null; };
 
     let current = state.player.current;
     if (!isTick) current = norm(p.current || p.now_playing || p.playing || null);
@@ -177,10 +148,10 @@ export const useStore = create<GregStore>((set, get) => ({
     let queue = state.player.queue;
     if (!isTick) {
       const qRaw = Array.isArray(p.queue) ? p.queue : Array.isArray(p.items) ? p.items : Array.isArray(p.list) ? p.list : [];
-      queue = qRaw.map(normalizeItem).filter(Boolean) as Track[];
+      queue = qRaw.map(normQ).filter(Boolean) as Track[];
     } else {
       const qM = Array.isArray(p.queue) ? p.queue : Array.isArray(p.items) ? p.items : null;
-      if (qM) queue = qM.map(normalizeItem).filter(Boolean) as Track[];
+      if (qM) queue = qM.map(normQ).filter(Boolean) as Track[];
     }
 
     const paused = toBool(pick(p.is_paused, p.paused, p.isPaused, p.pause, false));
@@ -211,10 +182,13 @@ export const useStore = create<GregStore>((set, get) => ({
 // ── Hooks ──
 
 const RESYNC_MS = 5000;
+const RESYNC_IDLE_MS = 15000;
 const POLL_FALLBACK_MS = 3000;
 const VOICE_JOIN_COOLDOWN_MS = 8000;
 
 let _voiceJoinLastAt = 0;
+// /users/me : seule une réponse définitive (succès ou 401) plus récente que la dernière appliquée compte
+const _meGate = createSeqGate();
 
 /**
  * usePlayerInit — MUST be called exactly ONCE in the root component.
@@ -272,13 +246,19 @@ export function usePlayerInit() {
     return () => { unsubscribeGuild(guildId); };
   }, [guildId]);
 
-  // Server resync
+  // Server resync — pas conditionné à `current` : rapide en lecture ou si le dernier
+  // état était périmé, plus espacé sinon (rattrape un ajout fini après un TIMEOUT).
   useEffect(() => {
+    let lastAt = 0;
     const interval = setInterval(async () => {
       const s = useStore.getState();
-      if (s.player.current && !s.player.paused && s.me && s.guildId) {
-        await refreshPlaylist().catch(() => {});
-      }
+      if (!s.me || !s.guildId) return;
+      if (!s.socketReady) return; // socket coupé : le polling de secours s'en charge déjà
+      const playing = !!s.player.current && !s.player.paused;
+      const now = Date.now();
+      if (!playing && !_stateStale && now - lastAt < RESYNC_IDLE_MS) return;
+      lastAt = now;
+      await backgroundRefresh();
     }, RESYNC_MS);
     return () => clearInterval(interval);
   }, []);
@@ -289,7 +269,7 @@ export function usePlayerInit() {
       const s = useStore.getState();
       if (s.socketReady) return;
       if (!s.me || !s.guildId) return;
-      await refreshPlaylist().catch(() => {});
+      await backgroundRefresh();
     }, POLL_FALLBACK_MS);
     return () => clearInterval(interval);
   }, []);
@@ -304,14 +284,23 @@ export function usePlayer() {
 
   // ── Refresh functions ──
   const refreshMe = useCallback(async () => {
+    const seq = _meGate.next();
     try {
       const raw = await api.getMe();
       const me = normalizeMePayload(raw);
-      useStore.getState().setMe(me);
-      return me;
-    } catch {
-      useStore.getState().setMe(null);
-      return null;
+      // Une réponse plus récente a déjà tranché : on ne l'écrase pas
+      if (_meGate.tryApply(seq)) useStore.getState().setMe(me);
+      return useStore.getState().me;
+    } catch (e: any) {
+      // Seul un 401 signifie « déconnecté » ; réseau / 5xx / proxy = erreur transitoire,
+      // qui n'invalide pas une réponse plus ancienne encore en vol (ex. /users/me du boot)
+      if (e?.status === 401) {
+        if (_meGate.tryApply(seq)) useStore.getState().setMe(null);
+        return useStore.getState().me;
+      }
+      const prev = useStore.getState().me;
+      if (prev) useStore.getState().setStatus('Serveur injoignable — session conservée, nouvelle tentative plus tard…', 'warn');
+      return prev;
     }
   }, []);
 
@@ -409,6 +398,10 @@ export function usePlayer() {
     const oldGid = useStore.getState().guildId;
     if (oldGid) unsubscribeGuild(oldGid);
     useStore.getState().setGuildId(id);
+    // L'état affiché appartient à l'ancien serveur : on le vide (un état périmé du nouveau ne l'écrasera pas)
+    if (id !== oldGid) {
+      useStore.getState().applyPlaylistPayload({ current: null, queue: [], paused: true, repeat: false, position: 0, duration: 0 });
+    }
     if (id) {
       localStorage.setItem('greg.webplayer.guild_id', id);
       subscribeGuild(id);
@@ -434,28 +427,44 @@ export function usePlayer() {
     try {
       const res = await fn();
       useStore.getState().setStatus(okText, 'ok');
-      if (doRefresh) await refreshPlaylist().catch(() => {});
+      if (doRefresh) await refreshPlaylist({ quiet: true }).catch(() => {});
       return res;
     } catch (e: any) {
-      const msg = e?.payload?.error || e?.payload?.message || e?.message || String(e);
-      useStore.getState().setStatus(msg, 'err');
+      useStore.getState().setStatus(describeError(e), 'err');
       throw e;
     }
   }, []);
 
-  const enqueue = useCallback(async (payload: Record<string, any>) => {
+  /**
+   * Ajoute un titre / un lien / une playlist. Renvoie true si l'ajout a réussi,
+   * false s'il n'a pas été envoyé ; lève l'erreur API sinon (statut déjà affiché).
+   */
+  const enqueue = useCallback(async (payload: Record<string, any>): Promise<boolean> => {
     const s = useStore.getState();
     if (!s.me || !s.guildId) {
       useStore.getState().setStatus('Connecte-toi et choisis un serveur.', 'warn');
-      return;
+      return false;
     }
-    await safeAction(
-      () => api.queueAdd(s.guildId, s.me!.id, payload),
-      'Ajouté à la file ✅',
-      true,
+    // Lien collé (pas une suggestion avec titre) : peut être une playlist, plus long à charger
+    const pastedLink = !payload?.title && looksLikeUrl(String(payload?.query || payload?.url || ''));
+    useStore.getState().setStatus(
+      pastedLink ? 'Chargement du lien… (une playlist peut prendre quelques secondes)' : 'Ajout en cours…',
+      'info',
     );
+    try {
+      const res = await api.queueAdd(s.guildId, s.me!.id, payload);
+      useStore.getState().setStatus(enqueueSuccessText(res), 'ok');
+    } catch (e: any) {
+      // TIMEOUT : le bot peut encore finir l'ajout → avertissement plutôt qu'erreur
+      useStore.getState().setStatus(describeError(e), errorCode(e) === 'TIMEOUT' ? 'warn' : 'err');
+      throw e;
+    } finally {
+      // Toujours resynchroniser (même en échec : le bot a pu ajouter une partie des titres)
+      await refreshPlaylist({ quiet: true }).catch(() => {});
+    }
     await bestEffortVoiceJoin('add');
-  }, [safeAction, bestEffortVoiceJoin]);
+    return true;
+  }, [bestEffortVoiceJoin]);
 
   const skip = useCallback(async () => {
     const s = useStore.getState();
@@ -613,10 +622,11 @@ export function usePlayer() {
     await refreshMe();
     await refreshGuilds();
 
+    // Serveur sauvegardé absent de la liste → écarté ; auto-sélection : premier serveur où Greg est présent
     const s = useStore.getState();
-    if (!s.guildId && s.guilds.length) {
-      useStore.getState().setGuildId(s.guilds[0].id);
-    }
+    const chosen = pickDefaultGuild(s.guilds, s.guildId);
+    if (chosen.discarded && typeof window !== 'undefined') localStorage.removeItem('greg.webplayer.guild_id');
+    if (chosen.guildId !== s.guildId) useStore.getState().setGuildId(chosen.guildId);
 
     try {
       await refreshSpotify();
@@ -667,18 +677,70 @@ export function usePlayer() {
 }
 
 // Standalone refresh
-async function refreshPlaylist() {
+let _stateSeq = 0;          // numéro de la dernière requête lancée
+let _stateAppliedSeq = 0;   // numéro de la dernière réponse appliquée
+let _stateInFlight = 0;
+let _stateStale = false;    // dernier état non rafraîchi (bot occupé / API en échec)
+let _staleNotice = '';      // code du dernier état périmé déjà signalé (un message par cause)
+let _staleText = '';        // texte de l'avertissement affiché pour cette cause (effacé au retour)
+
+/**
+ * Rafraîchit l'état du lecteur. En cas d'échec ou d'état périmé (stale), on GARDE
+ * l'état précédent (jamais de faux « Rien en lecture »). `quiet` : pas de message de statut.
+ */
+async function refreshPlaylist(opts?: { quiet?: boolean }) {
   const s = useStore.getState();
   if (!s.me || !s.guildId) {
     s.applyPlaylistPayload({ current: null, queue: [], paused: true, repeat: false, position: 0, duration: 0 });
     return;
   }
+  const gid = s.guildId;
+  const seq = ++_stateSeq;
+  _stateInFlight++;
   try {
-    const data = await api.getPlaylistState(s.guildId);
-    s.applyPlaylistPayload(data);
+    const data = await api.getPlaylistState(gid);
+    // Réponse d'un autre serveur ou plus ancienne qu'une réponse déjà appliquée : ignorée
+    if (useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
+    if (isStalePayload(data)) throw Object.assign(new Error('stale'), { payload: data });
+    _stateAppliedSeq = seq;
+    _stateStale = false;
+    _staleNotice = '';
+    // L'avertissement « hors ligne / occupé » encore affiché est remplacé (sinon il reste à vie)
+    const recovered = recoveredStatusText(useStore.getState().status.text, _staleText);
+    _staleText = '';
+    if (recovered) useStore.getState().setStatus(recovered, 'ok');
+    useStore.getState().applyPlaylistPayload(data);
   } catch (e: any) {
-    s.setStatus(String(e?.message || e), 'err');
+    if (useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
+    _stateStale = true;
+    const code = errorCode(e) || (isStalePayload(e?.payload) ? 'STALE' : 'ERROR');
+    // Bot hors ligne : plus rien ne joue côté Discord → on fige la progression (pas de piste fantôme)
+    if (code === 'BOT_OFFLINE') {
+      const st = useStore.getState();
+      if (st.player.current && !st.player.paused) {
+        const now = performance.now();
+        const pos = livePosition(st.tickBase, false, now);
+        st.setPlayer({ paused: true, position: pos });
+        st.setTickBase({ pos, at: now, dur: st.tickBase.dur });
+      }
+    }
+    // Un message par cause (évite de spammer toutes les 5 s) ; `quiet` marque la cause comme vue
+    if (code !== _staleNotice) {
+      _staleNotice = code;
+      if (!opts?.quiet) {
+        _staleText = staleStateText(e);
+        useStore.getState().setStatus(_staleText, 'warn');
+      }
+    }
+  } finally {
+    _stateInFlight--;
   }
+}
+
+/** Rafraîchissement périodique : jamais deux requêtes d'état en parallèle. */
+async function backgroundRefresh() {
+  if (_stateInFlight > 0) return;
+  await refreshPlaylist().catch(() => {});
 }
 
 export { refreshPlaylist };

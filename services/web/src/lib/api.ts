@@ -14,23 +14,69 @@
  *   POST /spotify/add_current_to_playlist, /spotify/add_queue_to_playlist
  */
 
-const DEFAULT_RAILWAY = 'https://gregleconsanguin.up.railway.app/api/v1';
+const DEFAULT_BASE = '/api/v1';
 
-function getApiBase(): string {
-  if (typeof window === 'undefined') return '/api/v1';
+const isLoopback = (h: string) =>
+  h === 'localhost' || h.endsWith('.localhost') || h === '::1' || /^127\.\d+\.\d+\.\d+$/.test(h);
 
-  const raw = (window as any).GREG_API_BASE || '/api/v1';
-  const b = String(raw).trim();
-  if (!b) return DEFAULT_RAILWAY;
-
-  if (/^https?:\/\//i.test(b)) return b.replace(/\/+$/, '');
-  if (location.hostname.includes('railway.app')) return b.replace(/\/+$/, '');
-  if (b === '/api/v1') return DEFAULT_RAILWAY;
-
-  return b.replace(/\/+$/, '');
+/**
+ * Vrai si l'URL (absolue) est joignable par le navigateur qui affiche `pageHost` :
+ * pas un nom de service interne (http://api:3000 du réseau Docker, *.railway.internal),
+ * ni un localhost figé au build puis servi depuis une autre machine.
+ */
+export function isBrowserReachable(url: string, pageHost: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  if (!host || host.endsWith('.internal')) return false;
+  if (!host.includes('.') && !host.includes(':') && host !== 'localhost') return false;
+  if (isLoopback(host) && !isLoopback(String(pageHost || '').toLowerCase())) return false;
+  return true;
 }
 
-let API_BASE = '/api/v1';
+/**
+ * Base REST vue du navigateur, par priorité :
+ *  1. window.GREG_API_BASE (injection manuelle) ;
+ *  2. front de prod (*.railway.app) → '/api/v1' relatif (rewrite Next, même origine que le cookie de session) ;
+ *  3. NEXT_PUBLIC_API_URL (figée au build, ex. docker-compose : http://localhost:3000), si joignable
+ *     par le navigateur — '/api/v1' ajouté quand l'URL n'a pas de chemin ;
+ *  4. '/api/v1' relatif sur tout autre hôte (rewrite Next → API_URL).
+ * Plus de repli implicite vers l'API de prod : pour la viser depuis un `next dev` local,
+ * NEXT_PUBLIC_API_URL=https://gregleconsanguin.up.railway.app.
+ */
+export function resolveApiBase(opts: { override?: unknown; envUrl?: unknown; pageHost?: string }): string {
+  const strip = (s: string) => s.replace(/\/+$/, '') || DEFAULT_BASE;
+  const override = String(opts.override ?? '').trim();
+  const pageHost = String(opts.pageHost || '');
+
+  if (/^https?:\/\//i.test(override)) return strip(override);
+  if (pageHost.includes('railway.app')) return strip(override || DEFAULT_BASE);
+  if (override) return strip(override);
+
+  const env = String(opts.envUrl ?? '').trim();
+  if (env.startsWith('/')) return strip(env);
+  if (/^https?:\/\//i.test(env) && isBrowserReachable(env, pageHost)) {
+    const u = new URL(env);
+    const path = u.pathname.replace(/\/+$/, '');
+    return `${u.origin}${path || DEFAULT_BASE}`;
+  }
+  return DEFAULT_BASE;
+}
+
+function getApiBase(): string {
+  if (typeof window === 'undefined') return DEFAULT_BASE;
+  return resolveApiBase({
+    override: (window as any).GREG_API_BASE,
+    // Accès littéral : Next remplace process.env.NEXT_PUBLIC_* au build
+    envUrl: process.env.NEXT_PUBLIC_API_URL,
+    pageHost: location.hostname,
+  });
+}
+
+let API_BASE = DEFAULT_BASE;
 if (typeof window !== 'undefined') {
   API_BASE = getApiBase();
 }
