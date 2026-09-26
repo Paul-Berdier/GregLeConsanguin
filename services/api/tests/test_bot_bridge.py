@@ -139,7 +139,25 @@ def test_fire_and_forget_has_no_timeout(fake_redis):
     cmd = json.loads(fr.published[0][1])
     assert "timeout" not in cmd
     assert "deadline" not in cmd and "sent_at" not in cmd
-    assert cmd["request_id"] == ""
+
+
+def test_fire_and_forget_has_unique_request_id_for_dedup(fake_redis):
+    # SEC-C3 : chaque instance du bot fait SET greg:req:<request_id> NX avant d'exécuter →
+    # sans request_id, chaque instance exécuterait la commande (double exécution).
+    fr = fake_redis(receivers=2)
+    bb.send_fire_and_forget("emit_state", 1)
+    bb.send_fire_and_forget("emit_state", 1)
+    ids = [json.loads(p)["request_id"] for _, p in fr.published]
+    assert all(isinstance(i, str) and len(i) >= 16 for i in ids)
+    assert ids[0] != ids[1]
+
+
+def test_command_request_id_is_long_enough_to_never_collide(fake_redis):
+    # Une collision de request_id ferait ignorer la 2e commande par la dédup du bot.
+    fr = fake_redis(receivers=0)
+    bb.send_command("skip", 1, 2, timeout=1)
+    cmd = json.loads(fr.published[0][1])
+    assert len(cmd["request_id"]) >= 16
 
 
 # ── greg:bot:guilds (C5) ──

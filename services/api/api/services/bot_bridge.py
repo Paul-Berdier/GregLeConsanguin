@@ -137,7 +137,9 @@ def send_command(
         {"ok": False, "error": "BOT_OFFLINE", "message": ...} si aucun bot n'écoute.
         {"ok": False, "error": "REDIS_UNAVAILABLE", "message": ...} si Redis est injoignable.
     """
-    request_id = str(uuid.uuid4())[:8]
+    # UUID complet : le bot déduplique sur greg:req:<request_id> (SEC-C3), une
+    # collision ferait ignorer une commande légitime.
+    request_id = uuid.uuid4().hex
     response_channel = f"greg:response:{request_id}"
     sent_at = time.time()
     command = {
@@ -230,7 +232,9 @@ def send_fire_and_forget(
         "guild_id": guild_id,
         "user_id": user_id,
         "data": data or {},
-        "request_id": "",
+        # Pas de réponse attendue, mais un id quand même : sans lui, chaque instance
+        # du bot exécuterait la commande (dédup SEC-C3).
+        "request_id": uuid.uuid4().hex,
     }
     for attempt in range(2):
         try:

@@ -14,6 +14,8 @@ import redis
 
 from greg_shared.config import settings
 
+from api.services.authz import ROOM_AUTHENTICATED
+
 logger = logging.getLogger("greg.api.redis")
 
 CHANNEL_STATE = "greg:player:state"
@@ -68,10 +70,9 @@ def _handle_message(socketio, channel: str, data: dict):
 
     if channel == CHANNEL_STATE:
         state = data.get("state", data)
+        # Jamais de diffusion globale : seuls les membres (room guild:<id>) reçoivent l'état.
         if room:
             socketio.emit("playlist_update", state, room=room)
-        else:
-            socketio.emit("playlist_update", state)
 
     elif channel == CHANNEL_PROGRESS:
         payload = {
@@ -89,4 +90,5 @@ def _handle_message(socketio, channel: str, data: dict):
             socketio.emit("playlist_update", payload, room=room)
 
     elif channel == CHANNEL_BOT_STATUS:
-        socketio.emit("bot_status", data)
+        # Contient la liste des serveurs du bot : réservé aux sockets connectés à Discord.
+        socketio.emit("bot_status", data, room=ROOM_AUTHENTICATED)

@@ -1,17 +1,33 @@
-"""WebSocket events — Socket.IO handlers.
+"""WebSocket events — Socket.IO handlers du front Next.js.
 
-Handles both the new Next.js frontend events AND the old player.js overlay events.
+Les noms `overlay_*` sont historiques : le front web les utilise toujours pour
+s'abonner aux mises à jour d'une guild et pour le keep-alive.
+
+Sécurité (SEC-C4) : une room `guild:<id>` ne se rejoint qu'avec une session
+Discord ET un accès confirmé par le bot (membre du serveur) ; sinon le client
+reçoit `guild_join_error` {guild_id, error, message, retry}.
 """
 from __future__ import annotations
 
 import logging
+import re
+from typing import Optional
 
 from flask import request as flask_request
 from flask_socketio import emit, join_room, leave_room
 
 from api import socketio
+from api.services import bot_bridge
+from api.services.authz import MSG_NOT_AUTHENTICATED, ROOM_AUTHENTICATED, session_user_id
 
 logger = logging.getLogger("greg.api.ws")
+
+_GUILD_ID_RE = re.compile(r"^[0-9]{1,20}$")
+
+# Échecs passagers : le front réessaie de s'abonner un peu plus tard.
+_RETRYABLE = frozenset({"TIMEOUT", "BOT_OFFLINE", "REDIS_UNAVAILABLE", "MEMBER_CHECK_FAILED"})
+_MSG_JOIN_FAILED = "Impossible de suivre ce serveur pour l'instant."
+_MSG_BRIDGE_ERROR = "Greg est injoignable pour le moment, nouvelle tentative bientôt."
 
 
 def _payload(data) -> dict:
@@ -19,10 +35,60 @@ def _payload(data) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _guild_id(data: dict) -> Optional[int]:
+    """guild_id valide (entier > 0) ou None — jamais d'appel au bot sur une valeur douteuse."""
+    raw = data.get("guild_id")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    s = str(raw).strip()
+    if not _GUILD_ID_RE.match(s):
+        return None
+    gid = int(s)
+    return gid if gid > 0 else None
+
+
+def _deny(gid: int, error: str, message: Optional[str], retry: bool) -> None:
+    leave_room(f"guild:{gid}")
+    emit("guild_join_error", {
+        "guild_id": str(gid),
+        "error": error,
+        "message": message or _MSG_JOIN_FAILED,
+        "retry": retry,
+    })
+
+
+def _subscribe(gid: int) -> bool:
+    """Rejoint `guild:<gid>` si l'utilisateur de la session y a accès, et envoie l'état."""
+    uid = session_user_id()
+    if uid is None:
+        _deny(gid, "NOT_AUTHENTICATED", MSG_NOT_AUTHENTICATED, False)
+        return False
+    try:
+        res = bot_bridge.send_command("get_state", gid, uid, timeout=5)
+    except Exception as e:
+        logger.error("Abonnement guild %s impossible: %s", gid, e)
+        _deny(gid, "REDIS_UNAVAILABLE", _MSG_BRIDGE_ERROR, True)
+        return False
+    if not isinstance(res, dict) or not res.get("ok"):
+        res = res if isinstance(res, dict) else {}
+        err = str(res.get("error") or "UNKNOWN")
+        _deny(gid, err, res.get("message"), err in _RETRYABLE)
+        return False
+
+    room = f"guild:{gid}"
+    join_room(room)
+    logger.debug("Client %s joined room %s", flask_request.sid, room)
+    emit("playlist_update", res.get("state", res))
+    return True
+
+
 # ── Connection ──
 
 @socketio.on("connect")
 def on_connect():
+    # Room des sockets connectés à Discord (bot_status : liste des serveurs du bot).
+    if session_user_id() is not None:
+        join_room(ROOM_AUTHENTICATED)
     logger.debug("Client connected: sid=%s", flask_request.sid)
 
 
@@ -31,63 +97,45 @@ def on_disconnect():
     logger.debug("Client disconnected: sid=%s", flask_request.sid)
 
 
-# ── Guild rooms (new frontend) ──
+# ── Guild rooms ──
 
 @socketio.on("join_guild")
 def on_join_guild(data=None):
-    """Client rejoint la room d'une guild."""
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if guild_id:
-        room = f"guild:{guild_id}"
-        join_room(room)
-        logger.debug("Client %s joined room %s", flask_request.sid, room)
-        emit("joined", {"guild_id": guild_id, "room": room})
+    gid = _guild_id(_payload(data))
+    if gid is not None and _subscribe(gid):
+        emit("joined", {"guild_id": str(gid), "room": f"guild:{gid}"})
 
 
 @socketio.on("leave_guild")
 def on_leave_guild(data=None):
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if guild_id:
-        room = f"guild:{guild_id}"
-        leave_room(room)
-        logger.debug("Client %s left room %s", flask_request.sid, room)
+    gid = _guild_id(_payload(data))
+    if gid is not None:
+        leave_room(f"guild:{gid}")
+        logger.debug("Client %s left room guild:%s", flask_request.sid, gid)
 
-
-# ── Overlay events (player.js compat) ──
 
 @socketio.on("overlay_register")
 def on_overlay_register(data=None):
-    """Le front s'enregistre comme overlay web player."""
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if guild_id:
-        room = f"guild:{guild_id}"
-        join_room(room)
-        logger.debug("Overlay registered: sid=%s guild=%s", flask_request.sid, guild_id)
+    """Le front s'enregistre (et s'abonne à sa guild si fournie)."""
+    gid = _guild_id(_payload(data))
     emit("overlay_ack", {"status": "ok", "sid": flask_request.sid})
+    if gid is not None:
+        _subscribe(gid)
 
 
 @socketio.on("overlay_subscribe_guild")
 def on_overlay_subscribe(data=None):
-    """L'overlay s'abonne aux updates d'une guild."""
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if guild_id:
-        room = f"guild:{guild_id}"
-        join_room(room)
-        logger.debug("Overlay subscribed: sid=%s guild=%s", flask_request.sid, guild_id)
+    gid = _guild_id(_payload(data))
+    if gid is not None:
+        _subscribe(gid)
 
 
 @socketio.on("overlay_unsubscribe_guild")
 def on_overlay_unsubscribe(data=None):
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if guild_id:
-        room = f"guild:{guild_id}"
-        leave_room(room)
-        logger.debug("Overlay unsubscribed: sid=%s guild=%s", flask_request.sid, guild_id)
+    gid = _guild_id(_payload(data))
+    if gid is not None:
+        leave_room(f"guild:{gid}")
+        logger.debug("Client %s unsubscribed from guild:%s", flask_request.sid, gid)
 
 
 @socketio.on("overlay_ping")
@@ -101,17 +149,7 @@ def on_overlay_ping(data=None):
 
 @socketio.on("request_state")
 def on_request_state(data=None):
-    """Client demande l'état courant d'une guild."""
-    data = _payload(data)
-    guild_id = str(data.get("guild_id", ""))
-    if not guild_id.isdigit():
-        return
-
-    from api.services.bot_bridge import send_command
-    try:
-        res = send_command("get_state", int(guild_id), timeout=5)
-        if res.get("ok"):
-            state = res.get("state", res)
-            emit("playlist_update", state)
-    except Exception as e:
-        logger.error("request_state failed: %s", e)
+    """Client demande l'état courant d'une guild (même contrôle d'accès qu'un abonnement)."""
+    gid = _guild_id(_payload(data))
+    if gid is not None:
+        _subscribe(gid)
