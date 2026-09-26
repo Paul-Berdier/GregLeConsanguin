@@ -19,15 +19,29 @@ Robustesse (v2.2) :
   retry avec backoff ; l'abonné lit avec get_message(timeout) + un ping de
   surveillance, et se reconnecte (en fermant l'ancienne connexion) si Redis
   ne répond plus.
+
+Sécurité :
+- SEC-C2 — le bot fait autorité sur l'appartenance : sur une guild qu'il connaît,
+  l'utilisateur doit en être membre (cache, sinon fetch_member auprès de Discord)
+  avant toute commande, lectures comprises → NOT_GUILD_MEMBER / MEMBER_CHECK_FAILED.
+- SEC-C3 — une commande n'est exécutée que par UNE instance du bot :
+  SET greg:req:<request_id> NX EX 120 avant d'exécuter ; clé déjà posée → une autre
+  instance s'en charge (aucune réponse). Redis en erreur → exécutée quand même.
+- Ces vérifications tournent dans la tâche de la commande (l'écoute ne bloque
+  jamais), jamais derrière le verrou de la guild, et sans changer l'ordre
+  d'arrivée des commandes d'une même guild.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import socket
+import uuid
 from typing import Any, Dict, Optional, Set
 
+import discord
 import redis.asyncio as aioredis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
@@ -43,6 +57,13 @@ CHANNEL_STATE = "greg:player:state"
 CHANNEL_PROGRESS = "greg:player:progress"
 CHANNEL_BOT_STATUS = "greg:bot:status"
 KEY_BOT_GUILDS = "greg:bot:guilds"
+# SEC-C3 : réservation d'une commande par une instance (SET NX EX).
+KEY_REQUEST_PREFIX = "greg:req:"
+_REQUEST_CLAIM_TTL = 120
+# Au-delà, Redis est jugé indisponible pour la réservation : on exécute quand même.
+_CLAIM_TIMEOUT = 2.0
+# SEC-C2 : délai max de fetch_member (au-delà → MEMBER_CHECK_FAILED, réessayable).
+_MEMBER_CHECK_TIMEOUT = 5.0
 
 # Commandes en lecture seule : jamais sérialisées derrière une commande lente.
 _READ_ONLY_ACTIONS = frozenset({"get_state", "get_history"})
@@ -57,6 +78,8 @@ _PLAY_RESPONSE_MARGIN = 3.0
 
 _MSG_EXPIRED = "Greg était occupé avec une autre demande sur ce serveur : réessaie."
 _MSG_GUILD_NOT_FOUND = "Greg n'est pas (ou plus) sur ce serveur."
+_MSG_NOT_GUILD_MEMBER = "Tu n'es pas membre de ce serveur."
+_MSG_MEMBER_CHECK_FAILED = "Vérification impossible, réessaie dans un instant."
 
 
 def _command_timeout(data: Dict[str, Any]) -> Optional[float]:
@@ -108,6 +131,8 @@ class RedisBridge:
         self._cmd_locks: Dict[int, asyncio.Lock] = {}
         # Références des tâches de commandes en cours (évite leur collecte par le GC).
         self._tasks: Set[asyncio.Task] = set()
+        # Identifiant de cette instance du bot (valeur de greg:req:<request_id>, SEC-C3).
+        self.instance_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
     async def _get_redis(self) -> aioredis.Redis:
         """Redis pour publish/commandes (avec timeout, keepalive et retry)."""
@@ -213,18 +238,82 @@ class RedisBridge:
             self._cmd_locks[gid] = asyncio.Lock()
         return self._cmd_locks[gid]
 
-    def _dispatch(self, data: Dict[str, Any]) -> asyncio.Task:
-        """Traite la commande dans sa propre tâche : l'écoute ne bloque jamais."""
-        received = asyncio.get_running_loop().time()
-        task = asyncio.create_task(self._run_command(data, received))
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
+
+    def _dispatch(self, data: Dict[str, Any]) -> asyncio.Task:
+        """Traite la commande dans sa propre tâche : l'écoute ne bloque jamais."""
+        received = asyncio.get_running_loop().time()
+        return self._spawn(self._run_command(data, received))
 
     async def _reply(self, data: Dict[str, Any], result: Dict[str, Any]) -> None:
         request_id = data.get("request_id", "")
         if request_id:
             await self._publish(f"greg:response:{request_id}", {"request_id": request_id, **result})
+
+    async def _claim(self, data: Dict[str, Any]) -> bool:
+        """SEC-C3 : réserve la commande pour CETTE instance (SET NX EX).
+
+        False = une autre instance l'a déjà prise → ne rien faire (pas de réponse).
+        Redis en erreur ou muet → journalisé, et la commande est exécutée (fail open).
+        """
+        request_id = str(data.get("request_id") or "")
+        if not request_id:
+            return True
+        try:
+            r = await self._get_redis()
+            claimed = await asyncio.wait_for(
+                r.set(f"{KEY_REQUEST_PREFIX}{request_id}", self.instance_id, nx=True, ex=_REQUEST_CLAIM_TTL),
+                timeout=_CLAIM_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning("Redis: réservation de la commande %s impossible (%r) — exécutée quand même.", request_id, e)
+            return True
+        if not claimed:
+            logger.info("Redis CMD %s déjà prise par une autre instance : ignorée.", request_id)
+            return False
+        return True
+
+    async def _check_member(self, guild, raw_user_id: Any) -> Optional[Dict[str, Any]]:
+        """SEC-C2 : None si l'utilisateur est membre de `guild`, sinon la réponse d'erreur."""
+        try:
+            uid = int(raw_user_id or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        not_member = {"ok": False, "error": "NOT_GUILD_MEMBER", "message": _MSG_NOT_GUILD_MEMBER}
+        if uid <= 0:
+            return not_member
+        try:
+            if guild.get_member(uid) is not None:
+                return None
+            # Absent du cache (cache pas encore rempli, membre jamais vu…) : on demande à Discord.
+            await asyncio.wait_for(guild.fetch_member(uid), timeout=_MEMBER_CHECK_TIMEOUT)
+            return None
+        except discord.NotFound:
+            return not_member
+        except Exception as e:
+            logger.warning("Vérification d'appartenance impossible (guild=%s user=%s): %r", guild.id, uid, e)
+            return {"ok": False, "error": "MEMBER_CHECK_FAILED", "message": _MSG_MEMBER_CHECK_FAILED}
+
+    async def _admit(self, data: Dict[str, Any], guild) -> bool:
+        """SEC-C3 puis SEC-C2 : True si CETTE instance doit exécuter la commande.
+
+        Le refus d'un non-membre est répondu ici, tout de suite ; une commande prise
+        par une autre instance est ignorée sans réponse. Guild inconnue (guild=None) :
+        pas de vérification d'appartenance, comportement inchangé.
+        """
+        if not await self._claim(data):
+            return False
+        if guild is None:
+            return True
+        err = await self._check_member(guild, data.get("user_id"))
+        if err is not None:
+            await self._reply(data, err)
+            return False
+        return True
 
     async def _run_command(self, data: Dict[str, Any], received: Optional[float] = None) -> None:
         try:
@@ -232,20 +321,30 @@ class RedisBridge:
             if received is None:
                 received = loop.time()
             action = str(data.get("action", ""))
-            if action in _READ_ONLY_ACTIONS:
-                await self._handle_command(data)
-                return
             try:
                 gid = int(data.get("guild_id") or 0)
             except (TypeError, ValueError):
                 gid = 0
-            if self.bot.get_guild(gid) is None:
-                # Guild où Greg n'est pas : ni verrou ni état créés pour un guild_id arbitraire.
-                await self._reply(data, {"ok": False, "error": "GUILD_NOT_FOUND", "message": _MSG_GUILD_NOT_FOUND})
+            guild = self.bot.get_guild(gid) if gid else None
+            if action in _READ_ONLY_ACTIONS:
+                # Aucun verrou : vérifications puis lecture, sans attendre personne.
+                if await self._admit(data, guild):
+                    await self._handle_command(data)
                 return
+            if guild is None:
+                # Guild où Greg n'est pas : ni verrou ni état créés pour un guild_id arbitraire.
+                if await self._claim(data):
+                    await self._reply(data, {"ok": False, "error": "GUILD_NOT_FOUND", "message": _MSG_GUILD_NOT_FOUND})
+                return
+            # Vérifications lancées tout de suite, EN PARALLÈLE de l'attente du verrou : un
+            # refus part sans attendre son tour, et la place dans la file est prise avant
+            # tout `await` (une réponse Redis/Discord plus rapide ne double pas la précédente).
+            admission = self._spawn(self._admit(data, guild))
             # Même guild → une commande à la fois, dans l'ordre d'arrivée
             # (asyncio.Lock réveille ses waiters en FIFO).
             async with self._cmd_lock(gid):
+                if not await admission:
+                    return
                 waited = loop.time() - received
                 timeout = _command_timeout(data)
                 if timeout is not None and waited >= timeout - _EXPIRY_MARGIN:
