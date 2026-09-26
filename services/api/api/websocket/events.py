@@ -14,6 +14,11 @@ from api import socketio
 logger = logging.getLogger("greg.api.ws")
 
 
+def _payload(data) -> dict:
+    """Payload d'un event — toujours un dict (payload absent ou non-objet → {})."""
+    return data if isinstance(data, dict) else {}
+
+
 # ── Connection ──
 
 @socketio.on("connect")
@@ -29,8 +34,9 @@ def on_disconnect():
 # ── Guild rooms (new frontend) ──
 
 @socketio.on("join_guild")
-def on_join_guild(data):
+def on_join_guild(data=None):
     """Client rejoint la room d'une guild."""
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
     if guild_id:
         room = f"guild:{guild_id}"
@@ -40,7 +46,8 @@ def on_join_guild(data):
 
 
 @socketio.on("leave_guild")
-def on_leave_guild(data):
+def on_leave_guild(data=None):
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
     if guild_id:
         room = f"guild:{guild_id}"
@@ -51,8 +58,9 @@ def on_leave_guild(data):
 # ── Overlay events (player.js compat) ──
 
 @socketio.on("overlay_register")
-def on_overlay_register(data):
+def on_overlay_register(data=None):
     """Le front s'enregistre comme overlay web player."""
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
     if guild_id:
         room = f"guild:{guild_id}"
@@ -62,8 +70,9 @@ def on_overlay_register(data):
 
 
 @socketio.on("overlay_subscribe_guild")
-def on_overlay_subscribe(data):
+def on_overlay_subscribe(data=None):
     """L'overlay s'abonne aux updates d'une guild."""
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
     if guild_id:
         room = f"guild:{guild_id}"
@@ -72,7 +81,8 @@ def on_overlay_subscribe(data):
 
 
 @socketio.on("overlay_unsubscribe_guild")
-def on_overlay_unsubscribe(data):
+def on_overlay_unsubscribe(data=None):
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
     if guild_id:
         room = f"guild:{guild_id}"
@@ -81,18 +91,20 @@ def on_overlay_unsubscribe(data):
 
 
 @socketio.on("overlay_ping")
-def on_overlay_ping(data):
+def on_overlay_ping(data=None):
     """Keep-alive ping."""
+    data = _payload(data)
     emit("overlay_pong", {"t": data.get("t"), "sid": flask_request.sid})
 
 
 # ── State request ──
 
 @socketio.on("request_state")
-def on_request_state(data):
+def on_request_state(data=None):
     """Client demande l'état courant d'une guild."""
+    data = _payload(data)
     guild_id = str(data.get("guild_id", ""))
-    if not guild_id:
+    if not guild_id.isdigit():
         return
 
     from api.services.bot_bridge import send_command

@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class PlaylistManager:
@@ -75,10 +75,11 @@ class PlaylistManager:
         """
         with self.lock:
             if not os.path.exists(self.file):
+                # Pas de fichier = file vide. On n'écrit RIEN en lecture : le
+                # fichier sera créé au premier ajout (une lecture sur un
+                # guild_id quelconque ne doit pas remplir le disque).
                 self.queue = []
                 self.now_playing = None
-                self._safe_write()
-                print(f"[PlaylistManager {self.guild_id}] 📂 Nouveau fichier créé (vide).")
                 return
 
             try:
@@ -217,14 +218,39 @@ class PlaylistManager:
             print(f"[PlaylistManager {self.guild_id}] ➕➕ Ajouté {count} éléments.")
             return count
 
-    def insert_at(self, index: int, item: Dict[str, Any] | str) -> Dict[str, Any]:
-        """Insère un item à une position spécifique."""
+    def insert_at(self, index: int, item: Dict[str, Any] | str) -> Optional[Dict[str, Any]]:
+        """Insère un item à une position spécifique (None si l'item n'a pas d'URL)."""
         with self.lock:
-            obj = self._coerce_item(item) if isinstance(item, str) else dict(item)
+            obj = self._coerce_item(item)
+            if obj.get("url") in (None, "", "about:blank"):
+                print(f"[PlaylistManager {self.guild_id}] 🙄 insert_at ignoré (item sans URL): {item!r}")
+                return None
             idx = max(0, min(index, len(self.queue)))
             self.queue.insert(idx, obj)
             self.save()
             return obj
+
+    def insert_by(self, item: Dict[str, Any] | str, position_fn: Callable[[List[Dict[str, Any]]], int]) -> int:
+        """Insère un item à la position calculée par `position_fn(queue)`, ATOMIQUEMENT
+        (calcul + insertion sous le même verrou). Retourne l'index d'insertion."""
+        with self.lock:
+            obj = self._coerce_item(item)
+            idx = int(position_fn(list(self.queue)))
+            idx = max(0, min(idx, len(self.queue)))
+            self.queue.insert(idx, obj)
+            self.save()
+            print(f"[PlaylistManager {self.guild_id}] ➕ Inséré #{idx+1}: {obj.get('title')} — {obj.get('url')}")
+            return idx
+
+    def remove_last_where(self, predicate: Callable[[Dict[str, Any]], bool]) -> Optional[Dict[str, Any]]:
+        """Retire le DERNIER item qui satisfait `predicate` (None si aucun)."""
+        with self.lock:
+            for i in range(len(self.queue) - 1, -1, -1):
+                if predicate(self.queue[i]):
+                    removed = self.queue.pop(i)
+                    self.save()
+                    return removed
+            return None
 
     def pop_next(self) -> Optional[Dict[str, Any]]:
         """Retire et renvoie le prochain item (tête de file) et définit now_playing."""
@@ -257,9 +283,16 @@ class PlaylistManager:
             self.save()
             print(f"[PlaylistManager {self.guild_id}] ⛔ Playlist vidée (stop).")
 
-    def remove_at(self, index: int) -> bool:
-        """Supprime l’élément à l’index donné. True si OK."""
+    def remove_at(self, index: int, expected: Optional[Dict[str, Any]] = None) -> bool:
+        """Supprime l’élément à l’index donné. True si OK.
+
+        `expected` : l'item vu par l'appelant ; si la file a bougé entre-temps
+        (ce n'est plus lui à cet index), on ne supprime rien.
+        """
         with self.lock:
+            if expected is not None and not (0 <= index < len(self.queue) and self.queue[index] == expected):
+                print(f"[PlaylistManager {self.guild_id}] ❌ remove_at: la file a changé (index {index}).")
+                return False
             if 0 <= index < len(self.queue):
                 removed = self.queue.pop(index)
                 self.save()
@@ -268,14 +301,17 @@ class PlaylistManager:
             print(f"[PlaylistManager {self.guild_id}] ❌ remove_at hors bornes: {index}")
             return False
 
-    def move(self, src: int, dst: int) -> bool:
-        """Déplace l’élément de `src` vers `dst`."""
+    def move(self, src: int, dst: int, expected: Optional[Dict[str, Any]] = None) -> bool:
+        """Déplace l’élément de `src` vers `dst` (`expected` : cf. remove_at)."""
         with self.lock:
             if src == dst:
                 return False
             n = len(self.queue)
             if not (0 <= src < n and 0 <= dst < n):
                 print(f"[PlaylistManager {self.guild_id}] ❌ move invalide: src={src}, dst={dst}, n={n}")
+                return False
+            if expected is not None and self.queue[src] != expected:
+                print(f"[PlaylistManager {self.guild_id}] ❌ move: la file a changé (src {src}).")
                 return False
             item = self.queue.pop(src)
             self.queue.insert(dst, item)

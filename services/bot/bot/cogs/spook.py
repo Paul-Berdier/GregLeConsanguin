@@ -11,12 +11,14 @@ from discord import app_commands
 
 
 def _project_path(*parts) -> str:
-    # Chemin stable: racine du projet = parent de /commands
-    base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    # Racine de l'app = parent du package `bot` (bot/cogs/../..) : /app dans l'image
+    # Docker (COPY services/bot/ .), services/bot en dev — là où vit `assets/`.
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     return os.path.join(base, *parts)
 
 
-SFX_DIR = _project_path("assets", "spook")
+SFX_DIR = os.getenv("SPOOK_SFX_DIR") or _project_path("assets", "sounds", "spook")
+SFX_DIR_LABEL = os.getenv("SPOOK_SFX_DIR") or "assets/sounds/spook"
 SFX_EXTS = {".mp3", ".ogg", ".wav", ".m4a"}
 
 # Defaults surchargeables via .env
@@ -86,8 +88,9 @@ class Spook(commands.Cog):
             return self._sfx_cache
         files: List[str] = []
         try:
-            os.makedirs(SFX_DIR, exist_ok=True)
-            for name in os.listdir(SFX_DIR):
+            # Pas de makedirs : un mauvais chemin doit se voir (0 fichier), pas créer
+            # un dossier vide (et /app/assets est monté en lecture seule en compose).
+            for name in (os.listdir(SFX_DIR) if os.path.isdir(SFX_DIR) else []):
                 ext = os.path.splitext(name)[1].lower()
                 if ext in SFX_EXTS:
                     files.append(os.path.join(SFX_DIR, name))
@@ -119,15 +122,34 @@ class Spook(commands.Cog):
         vc = guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             return True
-        # 2) Si Cog Music existe, regarde son état interne (best effort)
+        # 2) État du PlayerService (le Cog Music n'a pas d'attribut is_playing) :
+        #    morceau en cours (y compris entre deux titres), intro, ou file en attente.
+        ps = getattr(self.bot, "player_service", None)
+        if ps is None:
+            return False
         try:
-            music_cog = self.bot.get_cog("Music")
-            if music_cog and isinstance(getattr(music_cog, "is_playing", None), dict):
-                gid = int(guild.id)
-                return bool(music_cog.is_playing.get(gid, False))
+            gid = int(guild.id)
+            if ps.is_playing.get(gid, False) or ps.intro_playing.get(gid, False):
+                return True
+            pm = ps.pm_map.get(gid)
+            return bool(pm and pm.length() > 0)
         except Exception:
-            pass
-        return False
+            return False
+
+    def _resume_music_if_pending(self, guild: discord.Guild):
+        """Un /play arrivé pendant le SFX a vu vc.is_playing() → play_next est ressorti
+        sans rien lancer. Si des titres attendent et que rien ne joue, on relance la file."""
+        ps = getattr(self.bot, "player_service", None)
+        if ps is None:
+            return
+        try:
+            gid = int(guild.id)
+            pm = ps.pm_map.get(gid)
+            if (pm and pm.length() > 0 and not ps.is_playing.get(gid, False)
+                    and not ps.intro_playing.get(gid, False)):
+                asyncio.create_task(ps.play_next(guild))
+        except Exception as e:
+            print(f"[Spook] Reprise de la file impossible: {e}")
 
     async def _play_sfx_once(self, guild: discord.Guild) -> bool:
         """Joue un sfx (si dispo) sans empiéter sur une lecture en cours. Retourne True si lecture lancée."""
@@ -149,19 +171,28 @@ class Spook(commands.Cog):
             src = discord.PCMVolumeTransformer(src, volume=max(0.0, min(vol, 1.0)))
 
             # Lecture (bloque la source du voice client pendant le sfx)
-            done = asyncio.get_running_loop().create_future()
+            loop = asyncio.get_running_loop()
+            done = loop.create_future()
+
+            def _finish():
+                if not done.done():
+                    done.set_result(True)
 
             def after(err):
+                # Appelé depuis le thread audio de discord.py → retour thread-safe sur la loop
                 try:
                     if err:
                         print(f"[Spook] Erreur lecture SFX: {err}")
                 finally:
-                    if not done.done():
-                        done.set_result(True)
+                    try:
+                        loop.call_soon_threadsafe(_finish)
+                    except RuntimeError:
+                        pass  # loop fermée (arrêt du bot)
 
             vc.play(src, after=after)
             # Attendre fin
             await done
+            self._resume_music_if_pending(guild)
             return True
         except Exception as e:
             print(f"[Spook] Impossible de jouer SFX '{path}': {e}")
@@ -355,7 +386,7 @@ class Spook(commands.Cog):
                 f"**Activé :** {'✅' if en else '❌'}\n"
                 f"**Délais :** {self.min_delay[gid]}–{self.max_delay[gid]}s\n"
                 f"**Volume :** {self.volume[gid]:.2f}\n"
-                f"**Fichiers :** {len(self._list_sfx())} dans `assets/spook`\n"
+                f"**Fichiers :** {len(self._list_sfx())} dans `{SFX_DIR_LABEL}`\n"
                 f"**Humains dans le channel :** {humans}\n"
             ),
             color=discord.Color.dark_teal() if en else discord.Color.dark_grey()
@@ -382,7 +413,7 @@ class Spook(commands.Cog):
             await interaction.followup.send("✅ Bruit joué.", ephemeral=True)
         else:
             await interaction.followup.send(
-                "❌ Impossible de jouer un son (aucun fichier ? place des sfx dans `assets/spook`).",
+                f"❌ Impossible de jouer un son (aucun fichier ? place des sfx dans `{SFX_DIR_LABEL}`).",
                 ephemeral=True
             )
 
@@ -394,12 +425,12 @@ class Spook(commands.Cog):
     async def spook_files(self, interaction: discord.Interaction):
         files = self._list_sfx()
         if not files:
-            return await interaction.response.send_message("🚫 Aucun fichier SFX trouvé dans `assets/spook`.", ephemeral=True)
+            return await interaction.response.send_message(f"🚫 Aucun fichier SFX trouvé dans `{SFX_DIR_LABEL}`.", ephemeral=True)
         names = [os.path.basename(p) for p in files]
         preview = "\n".join(f"- {n}" for n in names[:20])
         more = f"\n… (+{len(names)-20})" if len(names) > 20 else ""
         await interaction.response.send_message(
-            f"**{len(names)}** fichier(s) détecté(s) dans `assets/spook`:\n{preview}{more}",
+            f"**{len(names)}** fichier(s) détecté(s) dans `{SFX_DIR_LABEL}`:\n{preview}{more}",
             ephemeral=True
         )
 

@@ -14,11 +14,55 @@ import requests as req
 from flask import Blueprint, jsonify, request, session, redirect
 
 from greg_shared.config import settings
+from api.routes.player import error_status, play_for_user_response
 from api.services.bot_bridge import send_command
 
 logger = logging.getLogger("greg.api.spotify")
 
 bp = Blueprint("spotify", __name__)
+
+_SP_SEARCH_URL = "https://api.spotify.com/v1/search"
+
+
+def _json_body() -> dict:
+    """Corps JSON de la requête — toujours un dict (un JSON non-objet est ignoré)."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _to_int(v):
+    """int() tolérant : None si la valeur n'est pas un entier valide."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sp_failed(r):
+    """Réponse d'erreur quand Spotify refuse l'appel (token expiré, playlist non possédée…)."""
+    logger.warning("Spotify HTTP %s: %s", r.status_code, (getattr(r, "text", "") or "")[:200])
+    return jsonify({"ok": False, "error": f"HTTP {r.status_code}"}), 400
+
+
+def _sp_search_track(h, search_q: str, timeout: int):
+    """Recherche Spotify d'un titre — la query est encodée par requests (params=)."""
+    return req.get(
+        _SP_SEARCH_URL,
+        params={"q": search_q, "type": "track", "limit": 1},
+        headers=h, timeout=timeout,
+    )
+
+
+def _bot_state(gid: int, timeout: int):
+    """État du bot → (state, None) ou (None, réponse d'erreur) si le bot n'a pas répondu."""
+    state_res = send_command("get_state", gid, timeout=timeout)
+    if not state_res.get("ok"):
+        out = {"ok": False, "error": state_res.get("error", "unknown")}
+        if state_res.get("message"):
+            out["message"] = state_res["message"]
+        return None, (jsonify(out), error_status(state_res))
+    state = state_res.get("state", state_res)
+    return (state if isinstance(state, dict) else {}), None
 
 
 # ── OAuth ──
@@ -192,7 +236,7 @@ def spotify_playlist_create():
     h = _sp_headers()
     if not h:
         return jsonify({"ok": False, "error": "not_linked"}), 401
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     name = data.get("name", "Greg Playlist")
     is_public = data.get("public", True)
 
@@ -220,12 +264,14 @@ def spotify_playlist_delete():
     h = _sp_headers()
     if not h:
         return jsonify({"ok": False, "error": "not_linked"}), 401
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     pid = data.get("playlist_id", "")
     if not pid:
         return jsonify({"ok": False, "error": "missing_playlist_id"}), 400
     try:
         r = req.delete(f"https://api.spotify.com/v1/playlists/{pid}/followers", headers=h, timeout=10)
+        if not r.ok:
+            return _sp_failed(r)
         return jsonify({"ok": True}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -236,7 +282,7 @@ def spotify_remove_tracks():
     h = _sp_headers()
     if not h:
         return jsonify({"ok": False, "error": "not_linked"}), 401
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     pid = data.get("playlist_id", "")
     uris = data.get("track_uris", [])
     if not pid or not uris:
@@ -244,7 +290,9 @@ def spotify_remove_tracks():
     try:
         body = {"tracks": [{"uri": u} for u in uris]}
         r = req.delete(f"https://api.spotify.com/v1/playlists/{pid}/tracks", headers=h, json=body, timeout=10)
-        return jsonify({"ok": True}), 200 if r.ok else 400
+        if not r.ok:
+            return _sp_failed(r)
+        return jsonify({"ok": True}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -252,29 +300,49 @@ def spotify_remove_tracks():
 @bp.post("/spotify/quickplay")
 def spotify_quickplay():
     """Ajoute un titre Spotify à la queue Discord via bot bridge."""
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     gid = data.get("guild_id")
     uid = data.get("user_id")
     track = data.get("track", {})
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id/user_id"}), 400
+    gid, uid = _to_int(gid), _to_int(uid)
+    if not gid or not uid:
+        return jsonify({"ok": False, "error": "invalid guild_id/user_id"}), 400
+    if not isinstance(track, dict):
+        return jsonify({"ok": False, "error": "invalid track"}), 400
 
-    # On envoie au bot la commande de jouer un titre Spotify
-    search_query = f"{track.get('name', '')} {track.get('artists', '')}".strip()
+    name = str(track.get("name") or track.get("title") or "").strip()
+    artists = track.get("artists")
+    if isinstance(artists, list):
+        names = [a.get("name") if isinstance(a, dict) else a for a in artists]
+        artist = ", ".join(str(n).strip() for n in names if n)
+    else:
+        artist = str(artists or track.get("artist") or "").strip()
+
+    # Texte libre « titre artiste » : le bot le résout lui-même (recherche YouTube)
+    search_query = f"{name} {artist}".strip()
     if not search_query:
         return jsonify({"ok": False, "error": "empty_track"}), 400
 
+    duration_ms = _to_int(track.get("duration_ms"))
+    thumb = track.get("image")
+    if not thumb:
+        album = track.get("album")
+        images = album.get("images") if isinstance(album, dict) else None
+        if isinstance(images, list) and images and isinstance(images[0], dict):
+            thumb = images[0].get("url")
+
+    # Même forme d'item que /player/enqueue (le provider est déterminé par le bot)
     item = {
         "url": search_query,
-        "title": track.get("name", search_query),
-        "artist": track.get("artists", ""),
-        "duration": track.get("duration_ms"),
-        "thumb": track.get("image"),
-        "provider": "spotify",
+        "title": name or search_query,
+        "artist": artist or None,
+        "duration": duration_ms // 1000 if duration_ms and duration_ms > 0 else None,
+        "thumb": thumb or None,
+        "provider": None,
     }
-    res = send_command("play_for_user", int(gid), int(uid), data={"item": item}, timeout=20)
-    code = 200 if res.get("ok") else 409
-    return jsonify(res), code
+    return play_for_user_response(gid, uid, item)
 
 
 @bp.post("/spotify/add_current_to_playlist")
@@ -283,29 +351,30 @@ def spotify_add_current():
     h = _sp_headers()
     if not h:
         return jsonify({"ok": False, "error": "not_linked"}), 401
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     pid = data.get("playlist_id", "")
     gid = data.get("guild_id", "")
     if not pid or not gid:
         return jsonify({"ok": False, "error": "missing params"}), 400
+    gid = _to_int(gid)
+    if not gid:
+        return jsonify({"ok": False, "error": "invalid guild_id"}), 400
 
-    # Get current track from bot
-    state_res = send_command("get_state", int(gid), timeout=5)
-    state = state_res.get("state", state_res)
+    # Get current track from bot (un timeout n'est PAS « rien en lecture »)
+    state, err = _bot_state(gid, timeout=5)
+    if err:
+        return err
     current = state.get("current") or state.get("now_playing")
-    if not current:
+    if not isinstance(current, dict) or not current:
         return jsonify({"ok": False, "error": "nothing_playing"}), 400
 
-    title = current.get("title", "")
-    artist = current.get("artist", "")
+    title = current.get("title") or ""
+    artist = current.get("artist") or ""
     search_q = f"{title} {artist}".strip()
 
     # Search Spotify for this track
     try:
-        r = req.get(
-            f"https://api.spotify.com/v1/search?q={search_q}&type=track&limit=1",
-            headers=h, timeout=10,
-        )
+        r = _sp_search_track(h, search_q, timeout=10)
         if not r.ok:
             return jsonify({"ok": False, "error": "spotify_search_failed"}), 400
 
@@ -322,6 +391,8 @@ def spotify_add_current():
             f"https://api.spotify.com/v1/playlists/{pid}/tracks",
             headers=h, json={"uris": [uri]}, timeout=10,
         )
+        if not add_r.ok:
+            return _sp_failed(add_r)
         return jsonify({"ok": True, "added_uri": uri}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -333,33 +404,41 @@ def spotify_add_queue():
     h = _sp_headers()
     if not h:
         return jsonify({"ok": False, "error": "not_linked"}), 401
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     pid = data.get("playlist_id", "")
     gid = data.get("guild_id", "")
     max_items = data.get("max_items", 20)
     if not pid or not gid:
         return jsonify({"ok": False, "error": "missing params"}), 400
+    gid = _to_int(gid)
+    if not gid:
+        return jsonify({"ok": False, "error": "invalid guild_id"}), 400
+    max_items = _to_int(max_items)
+    if max_items is None:
+        return jsonify({"ok": False, "error": "invalid max_items"}), 400
+    max_items = max(1, min(max_items, 100))
 
-    # Get queue from bot
-    state_res = send_command("get_state", int(gid), timeout=8)
-    state = state_res.get("state", state_res)
-    queue = state.get("queue", [])[:max_items]
+    # Get queue from bot (un timeout n'est PAS « file vide »)
+    state, err = _bot_state(gid, timeout=8)
+    if err:
+        return err
+    queue = state.get("queue") or []
+    queue = queue[:max_items] if isinstance(queue, list) else []
 
     if not queue:
         return jsonify({"ok": False, "error": "queue_empty"}), 400
 
     added = []
     for item in queue:
-        title = item.get("title", "")
-        artist = item.get("artist", "")
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title") or ""
+        artist = item.get("artist") or ""
         search_q = f"{title} {artist}".strip()
         if not search_q:
             continue
         try:
-            r = req.get(
-                f"https://api.spotify.com/v1/search?q={search_q}&type=track&limit=1",
-                headers=h, timeout=8,
-            )
+            r = _sp_search_track(h, search_q, timeout=8)
             if r.ok:
                 tracks = r.json().get("tracks", {}).get("items", [])
                 if tracks and tracks[0].get("uri"):
@@ -372,10 +451,12 @@ def spotify_add_queue():
 
     # Add all URIs at once
     try:
-        req.post(
+        add_r = req.post(
             f"https://api.spotify.com/v1/playlists/{pid}/tracks",
             headers=h, json={"uris": added[:100]}, timeout=15,
         )
+        if not add_r.ok:
+            return _sp_failed(add_r)
         return jsonify({"ok": True, "added_count": len(added)}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

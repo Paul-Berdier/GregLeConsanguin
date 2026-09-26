@@ -4,6 +4,12 @@ flask-cors>=4.0.0
 flask-socketio>=5.3.6
 flask-compress>=1.15
 python-socketio[client]>=5.11.3
+# eventlet / gunicorn : NON utilisés (Socket.IO en async_mode="threading", websocket via
+# simple-websocket). Un start command gunicorn/eventlet n'est PAS supporté : le Redis
+# listener (pushes playlist_update) n'est lancé que par main() et Socket.IO est forcé en
+# threading. L'API doit démarrer avec `python -m api.main` (CMD du Dockerfile) : supprimer
+# tout start command personnalisé côté Railway. Paquets gardés seulement pour qu'un
+# override oublié ne fasse pas crasher le service au boot ; à retirer ensuite.
 eventlet>=0.35.2
 gunicorn>=22.0
 

@@ -6,6 +6,8 @@ Fix v2.1 :
   le morceau courant est réinséré en tête de queue pour la prochaine
   connexion (le PlayerService s'en occupe via _mark_explicit_stop).
 - L'auto-disconnect marque l'arrêt comme explicite avant vc.stop().
+- /join passe par PlayerService.connect_for_user (C7) puis ensure_playing
+  (client fantôme géré, file en attente relancée).
 """
 from __future__ import annotations
 
@@ -78,29 +80,63 @@ class Voice(commands.Cog):
             t.cancel()
 
     @app_commands.command(name="join", description="Fait rejoindre Greg dans votre vocal.")
+    @app_commands.guild_only()
     async def join(self, inter: discord.Interaction):
         if not inter.user.voice or not inter.user.voice.channel:
             return await inter.response.send_message(
                 greg_says("error_not_in_voice", user=inter.user.mention), ephemeral=True
             )
         ch = inter.user.voice.channel
+
+        # Politique de déplacement (C7) : on n'arrache pas Greg d'un salon où il
+        # joue encore pour quelqu'un. Check synchrone → réponse immédiate.
+        ps = getattr(self.bot, "player_service", None)
+        busy = ps.busy_elsewhere(inter.guild, ch) if ps else None
+        if busy is not None:
+            return await inter.response.send_message(
+                f"🎶 Greg joue déjà dans <#{busy.id}> pour d'autres oreilles, {inter.user.mention}. "
+                "Rejoins-les ou attends la fin du concert.",
+                ephemeral=True,
+            )
+
+        # connect()/move_to() peuvent dépasser les 3 s accordées par Discord pour
+        # la première réponse → on diffère d'abord, puis tout passe par followup.
+        await inter.response.defer()
+        prev = inter.guild.voice_client
+        key = "move_voice" if prev is not None and prev.is_connected() else "join_voice"
         try:
-            if inter.guild.voice_client is None:
+            if ps is not None:
+                # Même chemin que /play et le web : verrou vocal par guild, attente d'une
+                # reconnexion 1006/4006 en cours, nettoyage d'un client fantôme (sinon
+                # move_to() « réussit » sans être connecté ou connect() lève « Already connected »),
+                # et politique C7 re-vérifiée APRÈS une éventuelle reconnexion.
+                err = await ps.connect_for_user(inter.guild, ch)
+                if err is not None:
+                    if err.get("error") == "BOT_IN_OTHER_CHANNEL":
+                        return await inter.followup.send(err.get("message") or greg_says(
+                            "error_voice_connect", user=inter.user.mention))
+                    return await inter.followup.send(greg_says("error_voice_connect", user=inter.user.mention))
+                # Après un kick / une coupure, la file est conservée : on la relance.
+                ps.ensure_playing(inter.guild)
+            elif inter.guild.voice_client is None:
                 await ch.connect(timeout=10)
-                await inter.response.send_message(greg_says("join_voice", channel=ch.name, user=inter.user.mention))
             else:
                 await inter.guild.voice_client.move_to(ch)
-                await inter.response.send_message(greg_says("move_voice", channel=ch.name, user=inter.user.mention))
-            self._cancel_autodc(inter.guild.id)
         except asyncio.TimeoutError:
-            await inter.response.send_message(greg_says("error_voice_connect", user=inter.user.mention))
-        except Exception:
-            await inter.response.send_message(greg_says("error_generic", user=inter.user.mention))
+            return await inter.followup.send(greg_says("error_voice_connect", user=inter.user.mention))
+        except Exception as e:
+            logger.warning("Guild %s — /join impossible: %s", inter.guild.id, e)
+            return await inter.followup.send(greg_says("error_generic", user=inter.user.mention))
+        self._cancel_autodc(inter.guild.id)
+        await inter.followup.send(greg_says(key, channel=ch.name, user=inter.user.mention))
 
     @app_commands.command(name="leave", description="Fait quitter Greg du vocal.")
+    @app_commands.guild_only()
     async def leave(self, inter: discord.Interaction):
         vc = inter.guild.voice_client
         if vc:
+            # disconnect() attend la confirmation du gateway → defer avant.
+            await inter.response.defer()
             try:
                 if vc.is_playing() or vc.is_paused():
                     ps = getattr(self.bot, "player_service", None)
@@ -110,8 +146,8 @@ class Voice(commands.Cog):
             except Exception:
                 pass
             await vc.disconnect()
-            await inter.response.send_message(greg_says("leave_voice", user=inter.user.mention))
             self._cancel_autodc(inter.guild.id)
+            await inter.followup.send(greg_says("leave_voice", user=inter.user.mention))
         else:
             await inter.response.send_message(
                 "❌ Je suis même pas en vocal, {user}. Vérifie tes lunettes.".format(user=inter.user.mention),
@@ -119,6 +155,7 @@ class Voice(commands.Cog):
             )
 
     @app_commands.command(name="autodc", description="Affiche ou modifie le délai d'auto-déconnexion.")
+    @app_commands.guild_only()
     @app_commands.describe(seconds="Nouveau délai en secondes (vide pour afficher)")
     async def autodc(self, inter: discord.Interaction, seconds: Optional[int] = None):
         gid = inter.guild.id

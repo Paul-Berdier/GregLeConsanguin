@@ -19,6 +19,10 @@ services:
     build:
       context: .
       dockerfile: services/bot/Dockerfile
+      args:
+        # Change la valeur pour forcer la mise à jour de yt-dlp au build,
+        # ex: YTDLP_REFRESH=$(date +%F) docker compose build bot
+        YTDLP_REFRESH: ${YTDLP_REFRESH:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -59,13 +63,26 @@ services:
     build:
       context: .
       dockerfile: services/web/Dockerfile
+      # Figés au `next build` (rewrites de next.config.js + NEXT_PUBLIC_* inlinés
+      # dans le bundle) → build args, pas `environment:` (sans effet au runtime).
+      args:
+        # Cible des rewrites /api et /socket.io, résolue CÔTÉ SERVEUR Next
+        # (réseau Docker) → nom interne du service.
+        API_URL: http://api:3000
+        # Base REST lue par le NAVIGATEUR (resolveApiBase de api.ts) → doit être
+        # joignable depuis l'hôte (port publié de l'API), jamais http://api:3000.
+        # Ignorée si injoignable (page ouverte depuis une autre machine) → '/api/v1'
+        # relatif, proxifié par Next vers API_URL.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+        # Vide EN DUR (pas lu depuis .env) : le socket suit alors la base REST
+        # (getApiOrigin() de api.ts) → REST et socket visent TOUJOURS la même API :
+        # http://localhost:3000 depuis l'hôte, sinon /api/v1 et /socket.io relatifs
+        # (rewrite vers api:3000). Une valeur distincte ferait mélanger deux files.
+        NEXT_PUBLIC_WS_URL: ""
     depends_on:
       - api
     ports:
       - "3001:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://api:3000
-      - NEXT_PUBLIC_WS_URL=http://api:3000
     restart: unless-stopped
 
 volumes:

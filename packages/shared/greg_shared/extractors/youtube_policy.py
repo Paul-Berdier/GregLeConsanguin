@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -21,20 +20,6 @@ class YouTubeStrategy:
         return f"{self.client}{po}{suffix}"
 
 
-def _write_cookiefile_from_b64(target_path: str) -> Optional[str]:
-    b64 = os.getenv("YTDLP_COOKIES_B64")
-    if not b64:
-        return None
-    try:
-        raw = base64.b64decode(b64)
-        text = raw.decode("utf-8", errors="replace")
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(text)
-        return target_path
-    except Exception:
-        return None
-
-
 def resolve_cookie_inputs(
     cookies_file: Optional[str],
     cookies_from_browser: Optional[str],
@@ -44,29 +29,23 @@ def resolve_cookie_inputs(
     """
     Résout proprement les cookies utilisables par yt-dlp.
 
-    Ordre :
+    Même résolution que la lecture (youtube._pick_cookiefile, à chaque appel) :
     1. arg cookies_file
-    2. env YTDLP_COOKIES_FILE / YOUTUBE_COOKIES_PATH
-    3. fichier local par défaut
-    4. YTDLP_COOKIES_B64 -> écrit un Netscape cookiefile
+    2. fichier uploadé : youtube.cookies_upload_path()
+       (YTDLP_COOKIES_FILE / YOUTUBE_COOKIES_PATH / youtube.com_cookies.txt)
+    3. ancien fichier local youtube.com_cookies.txt
+    4. YTDLP_COOKIES_B64 (base64 ou gzip) matérialisé dans le chemin d'upload,
+       seulement s'il est absent
+    `default_cookie_file` reste un dernier recours explicite.
     """
+    from .youtube import _pick_cookiefile  # import tardif : même logique partout
+
     browser_spec = (cookies_from_browser or os.getenv("YTDLP_COOKIES_BROWSER") or "").strip() or None
 
-    if cookies_file and os.path.exists(cookies_file):
-        return cookies_file, browser_spec
-
-    env_file = (os.getenv("YTDLP_COOKIES_FILE") or os.getenv("YOUTUBE_COOKIES_PATH") or "").strip()
-    if env_file and os.path.exists(env_file):
-        return env_file, browser_spec
-
-    if os.path.exists(default_cookie_file):
-        return default_cookie_file, browser_spec
-
-    written = _write_cookiefile_from_b64(default_cookie_file)
-    if written and os.path.exists(written):
-        return written, browser_spec
-
-    return None, browser_spec
+    picked = _pick_cookiefile(cookies_file)
+    if not picked and default_cookie_file and os.path.exists(default_cookie_file):
+        picked = default_cookie_file
+    return picked, browser_spec
 
 
 def has_auth_cookies(cookies_file: Optional[str], cookies_from_browser: Optional[str]) -> bool:

@@ -35,11 +35,12 @@ def main():
 
     logger.info("=== DÉMARRAGE GREG LE CONSANGUIN v2 ===")
 
-    from bot.greg_bot import GregBot
-
-    bot = GregBot()
-
     try:
+        # Import dans le try : un échec (ex. relance comme script au lieu de
+        # `python -m bot.main`) passe par le logger (et greg.log), pas seulement stderr.
+        from bot.greg_bot import GregBot
+
+        bot = GregBot()
         bot.run(settings.discord_token)
     except KeyboardInterrupt:
         logger.info("Arrêt demandé par l'utilisateur.")

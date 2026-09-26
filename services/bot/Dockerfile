@@ -34,20 +34,20 @@ RUN pip install /shared/
 
 # ─────────────────────────────────────────────────────────────
 # Dépendances Python du bot
-# - yt-dlp est pinné à une version récente connue stable
-# - discord.py 2.4 (release officielle, pas master) — voice OK
-# - playwright + son binaire Chromium (CRITIQUE pour PO tokens)
+# - discord.py[voice] >= 2.7.1 : DAVE (E2EE vocal) obligatoire côté Discord
+# - yt-dlp : plancher seulement, rafraîchi plus bas dans une couche dédiée
+# - playwright + son binaire Chromium (PO tokens, auto-fetch opt-in)
 # ─────────────────────────────────────────────────────────────
 COPY services/bot/requirements.txt .
 RUN pip install -r requirements.txt
 
-# Installation Playwright + binaire Chromium + deps système
-# C'EST LE FIX CENTRAL: sans cette étape, fetch_po_token() échoue
-# silencieusement et yt-dlp se prend des 403 en boucle.
+# Installation Playwright + binaire Chromium + deps système.
+# L'auto-fetch des PO tokens est opt-in (YT_PO_AUTOFETCH=1) : on garde
+# Chromium dans l'image pour pouvoir l'activer sans rebuild.
 RUN python -m playwright install --with-deps chromium \
  && find "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}" -type d | head -5
 
-# Runtime JavaScript Deno — requis par yt-dlp ≥2025.10 (EJS) pour résoudre
+# Runtime JavaScript Deno — requis par yt-dlp ≥2025.11 (EJS) pour résoudre
 # les signatures des flux YouTube sur les clients web (avec cookies).
 # Sans lui: "Requested format is not available" même avec des cookies valides.
 RUN curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
@@ -55,6 +55,22 @@ RUN curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x8
  && rm /tmp/deno.zip \
  && chmod +x /usr/local/bin/deno \
  && deno --version
+
+# ─────────────────────────────────────────────────────────────
+# yt-dlp toujours à jour : couche séparée et tardive.
+# YouTube casse régulièrement les vieux extracteurs/solveurs EJS, et le cache
+# de layers (Railway/BuildKit) figerait sinon la version résolue au dernier
+# changement de requirements.txt. Cette couche est invalidée :
+#   - à chaque commit déployé (Railway injecte RAILWAY_GIT_COMMIT_SHA) ;
+#   - à la demande via YTDLP_REFRESH (variable Railway ou build arg compose,
+#     ex: la date du jour) — ou NO_CACHE=1 sur Railway pour tout reconstruire.
+# Placée après Chromium/Deno pour ne pas les re-télécharger à chaque fois.
+# ─────────────────────────────────────────────────────────────
+ARG RAILWAY_GIT_COMMIT_SHA=""
+ARG YTDLP_REFRESH=""
+RUN echo "yt-dlp refresh (commit=${RAILWAY_GIT_COMMIT_SHA:-local}, refresh=${YTDLP_REFRESH:-none})" \
+ && pip install -U "yt-dlp[default]" \
+ && python -m yt_dlp --version
 
 # ─────────────────────────────────────────────────────────────
 # Code du bot

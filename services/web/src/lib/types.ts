@@ -35,6 +35,9 @@ export interface GuildInfo {
   id: string;
   name: string;
   icon?: string;
+  owner?: boolean;
+  // Absent si l'API ne connaît pas la présence du bot (clé Redis greg:bot:guilds manquante)
+  bot_present?: boolean;
 }
 
 export interface SearchResult {

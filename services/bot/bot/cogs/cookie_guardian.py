@@ -4,14 +4,15 @@ from __future__ import annotations
 import os
 import json
 import time
-import gzip
-import base64
 import asyncio
+import logging
 from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import discord
 from discord.ext import commands, tasks
+
+logger = logging.getLogger("greg.announce")
 
 # =========================
 #   Config & constants
@@ -20,38 +21,102 @@ from discord.ext import commands, tasks
 ANNOUNCE_STORE = os.getenv("ANNOUNCE_STORE", ".announcements.json")  # fichier persistant
 OWNER_ID = int(os.getenv("GREG_OWNER_ID", "0") or 0)
 
+# Plancher des annonces répétées (anti-spam) : le scheduler tourne toutes les 20 s.
+MIN_EVERY_SECONDS = 300
+# Annonces : jamais de @everyone/@here ni de ping de rôle (les mentions d'users restent actives).
+ANNOUNCE_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=False)
+
 # CookieGuardian (héritage de l'ancien fichier)
+# NB : les identifiants du compte Google (YTBOT_USER / YTBOT_PASS) ne sont JAMAIS
+# postés sur Discord. Le chemin des cookies n'est plus figé à l'import : il est
+# résolu à chaque run via youtube._pick_cookiefile(None) (contrat C6).
 TEST_URL = os.getenv("YTC_TEST_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-YT_USER = os.getenv("YTBOT_USER") or "<non défini>"
-YT_PASS = os.getenv("YTBOT_PASS") or "<non défini>"
 DEFAULT_NOTIFY_CHANNEL_ID = int(os.getenv("YTC_NOTIFY_CHANNEL_ID", "0") or 0)
-COOKIES_PATH_ENV = (
-    os.getenv("YTDLP_COOKIES_FILE")
-    or ("youtube.com_cookies.txt" if os.path.exists("youtube.com_cookies.txt") else None)
-)
 
 # =========================
 #   Helpers
 # =========================
 
-def _owner_or_manage():
-    async def predicate(inter: discord.Interaction):
-        # Owner absolu
-        if OWNER_ID and inter.user.id == OWNER_ID:
+async def _is_owner(inter: discord.Interaction) -> bool:
+    # Owner absolu
+    if OWNER_ID and inter.user.id == OWNER_ID:
+        return True
+    # Fallback: owner de l'application
+    try:
+        app = await inter.client.application_info()
+        if inter.user.id == app.owner.id:
             return True
-        # Fallback: owner de l'application
-        try:
-            app = await inter.client.application_info()
-            if inter.user.id == app.owner.id:
-                return True
-        except Exception:
-            pass
+    except Exception:
+        pass
+    return False
+
+def _owner_or_manage():
+    # app_commands.check (et PAS commands.check, ignoré par les slash commands)
+    async def predicate(inter: discord.Interaction):
+        if await _is_owner(inter):
+            return True
         # Manage Guild ?
         perms = getattr(getattr(inter, "user", None), "guild_permissions", None)
         if perms and perms.manage_guild:
             return True
-        raise commands.CheckFailure("owner_or_manage_required")
-    return commands.check(predicate)
+        raise discord.app_commands.CheckFailure("owner_or_manage_required")
+    return discord.app_commands.check(predicate)
+
+def _owner_only():
+    # Config globale à tous les serveurs (CookieGuardian) → owner uniquement
+    async def predicate(inter: discord.Interaction):
+        if await _is_owner(inter):
+            return True
+        raise discord.app_commands.CheckFailure("owner_only")
+    return discord.app_commands.check(predicate)
+
+def _clamp_every(sec: int) -> int:
+    """0 = one-shot ; sinon au moins MIN_EVERY_SECONDS."""
+    if sec <= 0:
+        return 0
+    return max(MIN_EVERY_SECONDS, sec)
+
+def _resolve_cookiefile() -> Optional[str]:
+    """Même résolution que la lecture (upload > legacy > YTDLP_COOKIES_B64 matérialisé),
+    évaluée à chaque appel. Bloquant (peut écrire le fichier B64) → à lancer en thread."""
+    try:
+        from greg_shared.extractors import youtube as yt
+        return yt._pick_cookiefile(None)
+    except Exception as e:
+        logger.warning("CookieGuardian: résolution du cookiefile impossible: %s", e)
+        return None
+
+def _yt_cookies_valid_sync(cookiefile: Optional[str]) -> Tuple[bool, str]:
+    """Validation yt-dlp BLOQUANTE (réseau + solveur JS) → toujours via asyncio.to_thread."""
+    try:
+        from yt_dlp import YoutubeDL
+    except Exception as e:
+        return False, f"yt-dlp manquant: {e}"
+    if not cookiefile or not os.path.exists(cookiefile):
+        return False, "missing_cookiefile"
+
+    from greg_shared.extractors.youtube import cookiefile_copy
+
+    try:
+        # Copie privée : yt-dlp réécrit son cookiejar à la fermeture et écraserait
+        # un upload /yt_cookies_update fait pendant la validation.
+        with cookiefile_copy(cookiefile) as ck:
+            if not ck:
+                return False, "missing_cookiefile"
+            opts = {
+                "quiet": True, "noprogress": True, "cookiefile": ck, "nocheckcertificate": True,
+                "skip_download": True, "socket_timeout": 10,
+            }
+            with YoutubeDL(opts) as ydl:
+                # process=False : le "Sign in to confirm you're not a bot" sort de l'extraction,
+                # inutile de lancer la sélection de formats.
+                ydl.extract_info(TEST_URL, download=False, process=False)
+        return True, "ok"
+    except Exception as e:
+        s = str(e)
+        if ("Sign in to confirm you're not a bot" in s) or ("HTTP Error 403" in s):
+            return False, "auth_required"
+        return False, s
 
 def _now() -> int:
     return int(time.time())
@@ -120,6 +185,9 @@ class Announcement:
     pin: bool = False
     delete_after: Optional[int] = None  # en secondes
     last_message_id: Optional[int] = None  # suivi pour pin/update
+    # Guild propriétaire, figée à la création : l'annonce reste gérable même si son
+    # salon est supprimé. None = entrée héritée (complétée dès que le salon est résolu).
+    guild_id: Optional[int] = None
 
 # =========================
 #   Cog principal
@@ -174,6 +242,42 @@ class Announcer(commands.Cog):
     def _new_id(self) -> int:
         return 1 + max([0] + list(self.announcements.keys()))
 
+    # Le store est global à tous les serveurs : une annonce appartient à SA guild
+    # (guild_id stocké), et un admin ne voit/modifie que celles de SA guild.
+    def _ann_guild_id(self, a: Announcement) -> Optional[int]:
+        if a.guild_id:
+            return int(a.guild_id)
+        # Entrée héritée : guild déduite du salon, puis mémorisée (persistée au prochain
+        # _flush) pour qu'elle reste gérable si le salon disparaît ensuite.
+        ch = self.bot.get_channel(a.channel_id)
+        g = getattr(ch, "guild", None)
+        if g is None:
+            return None
+        a.guild_id = int(g.id)
+        return a.guild_id
+
+    def _backfill_guild_ids(self) -> bool:
+        """Complète guild_id des entrées héritées dont le salon est résolu (cache prêt)."""
+        changed = False
+        for a in self.announcements.values():
+            if not a.guild_id and self._ann_guild_id(a) is not None:
+                changed = True
+        return changed
+
+    async def _can_manage(self, inter: discord.Interaction, a: Announcement) -> bool:
+        gid = self._ann_guild_id(a)
+        if gid is not None:
+            return gid == inter.guild_id
+        # Entrée héritée dont le salon n'existe plus : guild inconnue → owner uniquement
+        # (sinon elle resterait ingérable à vie, sauf édition manuelle du JSON).
+        return await _is_owner(inter)
+
+    async def _get_ann(self, inter: discord.Interaction, ann_id: int) -> Optional[Announcement]:
+        a = self.announcements.get(int(ann_id))
+        if a is None or not await self._can_manage(inter, a):
+            return None
+        return a
+
     # ================
     #  Scheduler
     # ================
@@ -209,6 +313,8 @@ class Announcer(commands.Cog):
     @_scheduler.before_loop
     async def _before_scheduler(self):
         await self.bot.wait_until_ready()
+        if self._backfill_guild_ids():
+            self._flush()
 
     # ================
     #  Send logic
@@ -218,7 +324,7 @@ class Announcer(commands.Cog):
         if ch is None or not isinstance(ch, (discord.TextChannel, discord.Thread, discord.ForumChannel)):
             return None
         try:
-            msg = await ch.send(a.message)
+            msg = await ch.send(a.message, allowed_mentions=ANNOUNCE_MENTIONS)
             if a.pin:
                 # dé-épingler l'ancien si on en avait un (pour “toujours là”)
                 if a.last_message_id and a.last_message_id != msg.id:
@@ -232,8 +338,9 @@ class Announcer(commands.Cog):
                 a.last_message_id = msg.id
             if a.delete_after and a.delete_after > 0:
                 try:
-                    await asyncio.sleep(a.delete_after)
-                    await msg.delete()
+                    # Suppression différée en arrière-plan : un sleep ici bloquait
+                    # tout le scheduler (annonces + CookieGuardian) pendant delete_after.
+                    await msg.delete(delay=a.delete_after)
                 except Exception:
                     pass
             return msg.id
@@ -255,87 +362,65 @@ class Announcer(commands.Cog):
         if ch is None:
             return
 
-        # 1) tenter d'utiliser l'env YTDLP_COOKIES_B64 si YTDLP_COOKIES_FILE manquant
-        path = COOKIES_PATH_ENV
-        if not path and os.getenv("YTDLP_COOKIES_B64"):
-            try:
-                blob = base64.b64decode(os.getenv("YTDLP_COOKIES_B64"))
-                if len(blob) >= 2 and blob[:2] == b"\x1f\x8b":
-                    blob = gzip.decompress(blob)
-                content = blob.decode("utf-8", "ignore")
-                path = "/tmp/youtube.com_cookies.txt"
-                with open(path, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(content)
-                try:
-                    os.chmod(path, 0o600)
-                except Exception:
-                    pass
-                os.environ["YTDLP_COOKIES_FILE"] = path
-            except Exception:
-                path = None
+        # 1) cookiefile résolu À CHAQUE RUN, exactement comme la lecture
+        #    (upload /yt_cookies_update > legacy > YTDLP_COOKIES_B64 matérialisé).
+        #    Plus de fichier /tmp ni de mutation d'os.environ (qui masquaient l'upload).
+        path = await asyncio.to_thread(_resolve_cookiefile)
 
-        # 2) validation yt-dlp
+        # 2) validation yt-dlp (hors event loop)
         ok, err = await self._yt_cookies_valid(path)
         if ok:
             return  # tout va bien → pas de bruit
 
-        # 3) message d’aide (toujours là si pin)
+        # 3) message d’aide (toujours là si pin) — SANS identifiants : le salon est lisible
+        #    par des membres et les épingles restent consultables indéfiniment.
         text = (
             "⚠️ **Cookies YouTube invalides ou expirés !**\n"
-            f"Erreur: `{err}`\n\n"
-            "👉 Utilisez le compte Google fourni pour Greg :\n"
-            f"**Email :** `{YT_USER}`\n"
-            f"**Mot de passe :** `{YT_PASS}`\n\n"
+            f"Erreur: `{str(err)[:300]}`\n\n"
+            "👉 Le propriétaire de Greg doit rafraîchir les cookies du compte Google dédié "
+            "(identifiants dans le gestionnaire de secrets, jamais sur Discord) :\n"
             "1. Connectez-vous à ce compte sur Google Chrome.\n"
             "2. Installez l’extension officielle : "
             "[Get cookies.txt (clean)](https://chromewebstore.google.com/detail/get-cookiestxt-clean/ahmnmhfbokciafffnknlekllgcnafnie)\n"
             "3. Allez sur [YouTube](https://youtube.com), exportez en *Netscape cookies.txt*.\n"
-            "4. Lancez la commande **/yt_cookies_update** et uploadez ce fichier.\n\n"
-            "✅ Cela mettra à jour les cookies pour tous les utilisateurs du bot."
+            "4. Lancez la commande **/yt_cookies_update** (owner) et uploadez ce fichier.\n\n"
+            "✅ Cela mettra à jour les cookies pour tous les serveurs du bot."
         )
 
         pin = bool(cgc.get("pin", True))
         last_id = cgc.get("last_message_id")
         try:
-            msg = await ch.send(text)
+            msg = await ch.send(text, allowed_mentions=discord.AllowedMentions.none())
+            # L'alerte précédente est obsolète (et les anciennes versions y postaient
+            # les identifiants du compte) → on la supprime au lieu de simplement la désépingler.
+            if last_id and last_id != msg.id:
+                try:
+                    old = await ch.fetch_message(int(last_id))
+                    if old:
+                        await old.delete()
+                except Exception:
+                    pass
+            cgc["last_message_id"] = msg.id
             if pin:
-                if last_id and last_id != msg.id:
-                    try:
-                        old = await ch.fetch_message(int(last_id))
-                        if old and old.pinned:
-                            await old.unpin()
-                    except Exception:
-                        pass
                 await msg.pin(reason="CookieGuardian")
-                cgc["last_message_id"] = msg.id
         except Exception:
             pass
 
-    async def _yt_cookies_valid(self, cookiefile: Optional[str]) -> (bool, str):
-        try:
-            from yt_dlp import YoutubeDL
-        except Exception as e:
-            return False, f"yt-dlp manquant: {e}"
-        if not cookiefile or not os.path.exists(cookiefile):
-            return False, "missing_cookiefile"
-
-        opts = {"quiet": True, "noprogress": True, "cookiefile": cookiefile, "nocheckcertificate": True}
-        try:
-            with YoutubeDL(opts) as ydl:
-                ydl.extract_info(TEST_URL, download=False)
-            return True, "ok"
-        except Exception as e:
-            s = str(e)
-            if ("Sign in to confirm you're not a bot" in s) or ("HTTP Error 403" in s):
-                return False, "auth_required"
-            return False, s
+    async def _yt_cookies_valid(self, cookiefile: Optional[str]) -> Tuple[bool, str]:
+        # extract_info est bloquant (réseau + Deno/EJS) → thread, sinon l'event loop
+        # Discord/Redis gèle plusieurs secondes après chaque déploiement puis toutes les 6 h.
+        return await asyncio.to_thread(_yt_cookies_valid_sync, cookiefile)
 
     # =========================
     #   Slash-commands
     # =========================
+    # guild_only + default_permissions : masqué aux membres par défaut (défense en
+    # profondeur — le vrai contrôle reste les app_commands.check ci-dessous).
     announce = discord.app_commands.Group(
         name="announce",
-        description="Gérer les annonces textuelles"
+        description="Gérer les annonces textuelles",
+        guild_only=True,
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @announce.command(name="add", description="Créer une annonce (répétition optionnelle).")
@@ -365,12 +450,13 @@ class Announcer(commands.Cog):
             id=self._new_id(),
             channel_id=channel.id,
             message=message,
-            every_seconds=max(0, ev_sec),
+            every_seconds=_clamp_every(ev_sec),
             next_run_ts=_now() + max(5, offset or 0),
             enabled=True,
             pin=bool(pin),
             delete_after=(int(delete_after) if delete_after else None),
-            last_message_id=None
+            last_message_id=None,
+            guild_id=inter.guild_id,
         )
         self.announcements[a.id] = a
         self._flush()
@@ -385,15 +471,17 @@ class Announcer(commands.Cog):
     @_owner_or_manage()
     async def list_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
-        if not self.announcements:
+        mine = [a for a in self.announcements.values() if await self._can_manage(inter, a)]
+        if not mine:
             await inter.followup.send("📭 Aucune annonce.", ephemeral=True)
             return
         lines = []
-        for a in sorted(self.announcements.values(), key=lambda x: x.id):
+        for a in sorted(mine, key=lambda x: x.id):
+            orphan = " — ⚠️ salon introuvable" if self.bot.get_channel(a.channel_id) is None else ""
             lines.append(
                 f"**#{a.id}** — <#{a.channel_id}> — enabled={a.enabled} — "
                 f"every=`{_human_every(a.every_seconds) if a.every_seconds else 'once'}` — "
-                f"next=`<t:{a.next_run_ts}:R>` — pin=`{a.pin}` — delete_after=`{a.delete_after}`"
+                f"next=`<t:{a.next_run_ts}:R>` — pin=`{a.pin}` — delete_after=`{a.delete_after}`{orphan}"
             )
         await inter.followup.send("\n".join(lines), ephemeral=True)
 
@@ -402,7 +490,9 @@ class Announcer(commands.Cog):
     @discord.app_commands.describe(ann_id="ID de l'annonce")
     async def remove(self, inter: discord.Interaction, ann_id: int):
         await inter.response.defer(ephemeral=True)
-        a = self.announcements.pop(int(ann_id), None)
+        a = await self._get_ann(inter, ann_id)
+        if a:
+            self.announcements.pop(a.id, None)
         self._flush()
         await inter.followup.send(
             f"{'🗑️ Supprimée' if a else '❌ Introuvable'} (#{ann_id}).", ephemeral=True
@@ -413,7 +503,7 @@ class Announcer(commands.Cog):
     @discord.app_commands.describe(ann_id="ID de l'annonce", enabled="ON/OFF")
     async def toggle(self, inter: discord.Interaction, ann_id: int, enabled: bool):
         await inter.response.defer(ephemeral=True)
-        a = self.announcements.get(int(ann_id))
+        a = await self._get_ann(inter, ann_id)
         if not a:
             return await inter.followup.send("❌ Annonce introuvable.", ephemeral=True)
         a.enabled = bool(enabled)
@@ -446,18 +536,18 @@ class Announcer(commands.Cog):
         next_in: Optional[str] = None,
     ):
         await inter.response.defer(ephemeral=True)
-        a = self.announcements.get(int(ann_id))
+        a = await self._get_ann(inter, ann_id)
         if not a:
             return await inter.followup.send("❌ Annonce introuvable.", ephemeral=True)
         if channel:
             a.channel_id = channel.id
+            # Le salon choisi appartient forcément à la guild de la commande.
+            a.guild_id = inter.guild_id
         if message is not None:
             a.message = message
         if every is not None:
             ev = _parse_every(every or "")
-            if ev < 0:
-                ev = 0
-            a.every_seconds = ev
+            a.every_seconds = _clamp_every(ev)
         if pin is not None:
             a.pin = bool(pin)
         if delete_after is not None:
@@ -476,7 +566,7 @@ class Announcer(commands.Cog):
     @discord.app_commands.describe(ann_id="ID")
     async def send_now(self, inter: discord.Interaction, ann_id: int):
         await inter.response.defer(ephemeral=True)
-        a = self.announcements.get(int(ann_id))
+        a = await self._get_ann(inter, ann_id)
         if not a:
             return await inter.followup.send("❌ Annonce introuvable.", ephemeral=True)
         await self._send_announcement(a)
@@ -490,7 +580,7 @@ class Announcer(commands.Cog):
 
     # ---- CookieGuardian management ----
     @announce.command(name="cookie_guardian", description="Configurer l’annonce CookieGuardian (toujours active).")
-    @_owner_or_manage()
+    @_owner_only()
     @discord.app_commands.describe(
         channel="Salon de notification",
         every="Fréquence (ex: 6h, 12h) — défaut 6h",

@@ -7,6 +7,10 @@
 #  - Tests CLI: env | search | resolve | stream | download
 #  - Proxy/IPv4: respecte HTTP(S)_PROXY / ALL_PROXY / SC_FORCE_IPV4
 #  - Debug: SC_DEBUG=1 pour traces verbeuses
+#  - Sets/albums (/sets/) : is_playlist_url + expand_bundle (permaliens)
+#  - Liens courts on.soundcloud.com : redirection suivie avant stream/expand
+#  - HTTP bloquant (client_id, resolve, transcoding) exécuté hors boucle asyncio
+#  - CLI : python -m greg_shared.extractors.soundcloud <cmd>
 # ----------------------------------------------------------------------
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 from urllib.parse import urlparse
@@ -83,6 +88,12 @@ def _resolve_ffmpeg_paths(ffmpeg_hint: Optional[str]) -> Tuple[str, Optional[str
             return which, os.path.dirname(which)
         return "ffmpeg", None
 
+    if not os.path.dirname(ffmpeg_hint):
+        # Nom nu ("ffmpeg") : c'est le PATH qui fait foi, pas le CWD
+        which = shutil.which(ffmpeg_hint)
+        if which:
+            return which, os.path.dirname(which)
+
     p = _abs(ffmpeg_hint)
     if os.path.isdir(p):
         cand = os.path.join(p, exe_name)
@@ -105,6 +116,7 @@ from pathlib import Path as _Path
 _SC_CACHE_FILE = _Path(".sc_client_ids.json")
 _SC_CLIENT_CACHE: List[str] = []
 _SC_MAX_CACHE = 20
+_SC_CACHE_LOCK = threading.Lock()  # le resolve tourne désormais dans des threads
 
 _CLIENT_ID_REGEXES = [
     re.compile(r'client_id\s*[:=]\s*"([A-Za-z0-9-_]{16,64})"'),
@@ -117,7 +129,8 @@ def _load_sc_cache():
         if _SC_CACHE_FILE.exists():
             data = json.loads(_SC_CACHE_FILE.read_text("utf-8"))
             if isinstance(data, list):
-                _SC_CLIENT_CACHE = [str(x) for x in data if x]
+                with _SC_CACHE_LOCK:
+                    _SC_CLIENT_CACHE = [str(x) for x in data if x]
                 _dbg("cache load:", _SC_CLIENT_CACHE[:3], f"(total {len(_SC_CLIENT_CACHE)})")
     except Exception as e:
         _dbg("cache load failed:", e)
@@ -131,12 +144,13 @@ def _save_sc_cache():
 def _push_good_client_id(cid: str):
     if not cid:
         return
-    if cid in _SC_CLIENT_CACHE:
-        _SC_CLIENT_CACHE.remove(cid)
-    _SC_CLIENT_CACHE.insert(0, cid)
-    while len(_SC_CLIENT_CACHE) > _SC_MAX_CACHE:
-        _SC_CLIENT_CACHE.pop()
-    _save_sc_cache()
+    with _SC_CACHE_LOCK:
+        if cid in _SC_CLIENT_CACHE:
+            _SC_CLIENT_CACHE.remove(cid)
+        _SC_CLIENT_CACHE.insert(0, cid)
+        while len(_SC_CLIENT_CACHE) > _SC_MAX_CACHE:
+            _SC_CLIENT_CACHE.pop()
+        _save_sc_cache()
     _dbg(f"mark good client_id: {cid[:4]}… (cache={len(_SC_CLIENT_CACHE)})")
 
 def _requests_session() -> requests.Session:
@@ -220,13 +234,30 @@ def _sc_resolve_track(page_url: str, client_id: str, timeout: float = 8.0) -> Op
         return data
     return None
 
+def _sc_resolve(page_url: str, client_id: str, timeout: float = 8.0) -> Tuple[int, Optional[dict]]:
+    """Resolve API v2 générique (track, playlist…) → (status HTTP, JSON|None)."""
+    ses = _requests_session()
+    r = ses.get("https://api-v2.soundcloud.com/resolve",
+                params={"url": page_url, "client_id": client_id},
+                timeout=timeout)
+    if not r.ok:
+        return r.status_code, None
+    data = r.json()
+    return r.status_code, (data if isinstance(data, dict) else None)
+
+def _is_preview_transcoding(t: dict) -> bool:
+    """Extrait Go+ de 30 s (yt-dlp : `snipped` ou '/preview/' dans l'URL)."""
+    return bool(t.get("snipped")) or "/preview/" in str(t.get("url") or "")
+
 def _pick_transcodings(track_json: dict) -> Tuple[Optional[dict], Optional[dict]]:
-    """Retourne (progressive, hls) s'ils existent."""
+    """Retourne (progressive, hls) s'ils existent (jamais un extrait Go+)."""
     media = (track_json or {}).get("media") or {}
     trans = media.get("transcodings") or []
     progressive = None
     hls = None
     for t in trans:
+        if _is_preview_transcoding(t):
+            continue
         proto = ((t.get("format") or {}).get("protocol") or "").lower()
         if proto == "progressive" and not progressive:
             progressive = t
@@ -248,6 +279,212 @@ def _resolve_stream_url(transcoding: dict, client_id: str, timeout: float = 8.0)
     if isinstance(url, str) and url.startswith("http"):
         return url
     return None
+
+# ======================= Public: sets / playlists =====================
+
+_SC_SET_PATH_RE = re.compile(r"^/[^/]+/sets/[^/]+", re.IGNORECASE)
+_SC_BUNDLE_MARGIN = 5
+
+def is_playlist_url(url: str) -> bool:
+    """Set / album SoundCloud (/<user>/sets/<slug>). Seul le chemin compte :
+    `…/track?in=user/sets/x` reste un titre."""
+    if not isinstance(url, str):
+        return False
+    s = url.strip()
+    if s and "://" not in s:
+        s = "https://" + s
+    try:
+        u = urlparse(s)
+    except Exception:
+        return False
+    host = (u.hostname or "").lower()
+    if host not in ("soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"):
+        return False
+    return bool(_SC_SET_PATH_RE.match(u.path or ""))
+
+def _sc_canonical_page(url: str) -> str:
+    s = url.strip()
+    if "://" not in s:
+        s = "https://" + s
+    u = urlparse(s)
+    return f"https://soundcloud.com{u.path.rstrip('/')}"
+
+_SC_SHORT_HOSTS = ("on.soundcloud.com",)
+_SC_PAGE_HOSTS = ("soundcloud.com", "www.soundcloud.com", "m.soundcloud.com")
+
+def is_short_link(url: str) -> bool:
+    """Lien de partage de l'appli mobile (https://on.soundcloud.com/AbCd) :
+    titre OU set, on ne le sait qu'après la redirection (hors ligne ici)."""
+    if not isinstance(url, str):
+        return False
+    s = url.strip()
+    if s and "://" not in s:
+        s = "https://" + s
+    try:
+        return (urlparse(s).hostname or "").lower() in _SC_SHORT_HOSTS
+    except Exception:
+        return False
+
+def resolve_short_link(url: str, timeout: float = 8.0) -> str:
+    """on.soundcloud.com/… → permalien canonique (redirection 302 suivie, HEAD).
+
+    SYNCHRONE (réseau) : à lancer dans un thread. Pas un lien court → inchangé,
+    sans réseau. Échec → lien d'origine inchangé.
+    """
+    if not is_short_link(url):
+        return url
+    s = url.strip()
+    if "://" not in s:
+        s = "https://" + s
+    try:
+        r = _requests_session().head(s, allow_redirects=True, timeout=timeout)
+        final = str(getattr(r, "url", "") or "")
+        host = (urlparse(final).hostname or "").lower()
+        if getattr(r, "ok", False) and host in _SC_PAGE_HOSTS:
+            page = _sc_canonical_page(final)
+            _dbg(f"lien court {s} → {page}")
+            return page
+        _dbg(f"lien court {s} non résolu (status={getattr(r, 'status_code', '?')}, final={final})")
+    except Exception as e:
+        _dbg(f"lien court {s} : résolution impossible: {e}")
+    return url
+
+def _sc_track_playable(t: dict) -> bool:
+    if not isinstance(t, dict) or not t.get("permalink_url"):
+        return False
+    if t.get("streamable") is False:
+        return False
+    # BLOCK = bloqué ici ; SNIP = extrait Go+ de 30 s seulement
+    return str(t.get("policy") or "").upper() not in ("BLOCK", "SNIP")
+
+def _sc_track_item(t: dict) -> dict:
+    url = str(t.get("permalink_url"))
+    thumb = t.get("artwork_url") or ((t.get("user") or {}).get("avatar_url"))
+    if isinstance(thumb, str):
+        thumb = thumb.replace("-large.", "-t500x500.")
+    dur_ms = t.get("full_duration") or t.get("duration")
+    return {
+        "title": t.get("title") or url,
+        "url": url,
+        "webpage_url": url,
+        "artist": (t.get("user") or {}).get("username"),
+        "thumb": thumb,
+        "duration": int(dur_ms / 1000) if isinstance(dur_ms, (int, float)) and dur_ms > 0 else None,
+        "provider": "soundcloud",
+    }
+
+def _sc_tracks_by_ids(ids: List[int], client_id: str, timeout: float = 8.0) -> Dict[int, dict]:
+    """Complète les « stubs » d'un set (au-delà des ~5 premiers titres)."""
+    out: Dict[int, dict] = {}
+    ses = _requests_session()
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        r = ses.get("https://api-v2.soundcloud.com/tracks",
+                    params={"ids": ",".join(str(x) for x in chunk), "client_id": client_id},
+                    timeout=timeout)
+        if not r.ok:
+            continue
+        for t in r.json() or []:
+            if isinstance(t, dict) and t.get("id") is not None:
+                out[t["id"]] = t
+    return out
+
+def _expand_with_ytdlp(page_url: str, limit: int) -> List[dict]:
+    """Repli : listing flat yt-dlp (titres parfois absents → URL en titre)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        "playlistend": limit + _SC_BUNDLE_MARGIN,
+        "ignoreerrors": False,
+        "socket_timeout": 10,
+    }
+    if _HTTP_PROXY:
+        opts["proxy"] = _HTTP_PROXY
+    if _FORCE_IPV4:
+        opts["source_address"] = "0.0.0.0"
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(page_url, download=False)
+    out = []
+    for e in (info or {}).get("entries") or []:
+        url = (e or {}).get("url") or (e or {}).get("webpage_url")
+        if not url:
+            continue
+        out.append({
+            "title": e.get("title") or url,
+            "url": url,
+            "webpage_url": url,
+            "artist": e.get("uploader"),
+            "thumb": e.get("thumbnail"),
+            "duration": int(e["duration"]) if isinstance(e.get("duration"), (int, float)) else None,
+            "provider": "soundcloud",
+        })
+    return out[:limit]
+
+def expand_bundle(url: str, *, limit: int = 10, cookies_file: Optional[str] = None,
+                  cookies_from_browser: Optional[str] = None) -> List[dict]:
+    """Liste les titres d'un set/album SoundCloud (SYNCHRONE, rapide).
+
+    API v2 resolve (+ /tracks?ids= pour les stubs), repli yt-dlp flat.
+    Lien court on.soundcloud.com : résolu d'abord (set → ses titres,
+    titre → ce seul titre).
+    Entrées : permaliens canoniques `https://soundcloud.com/<user>/<titre>`.
+    Lève BundleError (PLAYLIST_UNAVAILABLE / PLAYLIST_EMPTY).
+    """
+    from . import BundleError  # import tardif : le module reste lançable en CLI
+
+    N = max(1, int(limit or 10))
+    if is_short_link(url):
+        resolved = resolve_short_link(url)
+        if is_short_link(resolved):
+            raise BundleError("PLAYLIST_UNAVAILABLE",
+                              "Impossible d'ouvrir ce lien court SoundCloud (on.soundcloud.com).")
+        url = resolved
+    page = _sc_canonical_page(url)
+    data: Optional[dict] = None
+    good_cid: Optional[str] = None
+    for cid in _sc_client_ids() or []:
+        try:
+            status, data = _sc_resolve(page, cid)
+        except Exception as e:
+            _dbg(f"set resolve failed ({cid[:4]}…): {e}")
+            data = None
+            continue
+        if status == 404:
+            raise BundleError("PLAYLIST_UNAVAILABLE",
+                              "Cette playlist SoundCloud est introuvable ou privée.")
+        if data:
+            good_cid = cid
+            break
+
+    if data is None:
+        try:
+            out = _expand_with_ytdlp(page, N)
+        except Exception as e:
+            _dbg(f"set yt-dlp fallback failed: {e}")
+            raise BundleError("PLAYLIST_UNAVAILABLE",
+                              "Impossible de lire cette playlist SoundCloud pour le moment.") from e
+    else:
+        _push_good_client_id(good_cid)
+        if data.get("kind") == "track":
+            tracks = [data]
+        else:
+            tracks = [t for t in (data.get("tracks") or []) if isinstance(t, dict)]
+        window = tracks[:N + _SC_BUNDLE_MARGIN]
+        stub_ids = [t["id"] for t in window if not t.get("permalink_url") and t.get("id") is not None]
+        if stub_ids:
+            try:
+                full = _sc_tracks_by_ids(stub_ids, good_cid)
+                window = [full.get(t.get("id"), t) for t in window]
+            except Exception as e:
+                _dbg(f"tracks?ids failed: {e}")
+        out = [_sc_track_item(t) for t in window if _sc_track_playable(t)][:N]
+
+    if not out:
+        raise BundleError("PLAYLIST_EMPTY",
+                          "Cette playlist SoundCloud est vide ou ne contient aucun titre lisible.")
+    return out
 
 # =========================== Public: search ==========================
 
@@ -299,7 +536,7 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
     if _FORCE_IPV4:
         ydl_opts["source_address"] = "0.0.0.0"
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _extract_and_download():
         with YoutubeDL(ydl_opts) as ydl:
@@ -324,6 +561,63 @@ async def download(url: str, ffmpeg_path: str, cookies_file: str = None):
 
 # ============================ Public: stream =========================
 
+def _api_v2_resolve_stream(page_url: str) -> Optional[Tuple[str, str, bool]]:
+    """Partie API v2 de stream(), SYNCHRONE (lancée via asyncio.to_thread) :
+    client_ids (+ scraping), resolve, transcoding → (stream_url, title, is_hls).
+    None → repli yt-dlp ; TrackUnavailable si le titre est bloqué / extrait Go+."""
+    from . import TrackUnavailable  # import tardif : le module reste lançable en CLI
+
+    cids = _sc_client_ids()
+    _dbg("client_ids available:", len(cids))
+    for cid in cids or [None]:
+        if not cid:
+            _dbg("no client_id available → skip resolve, go yt_dlp fallback")
+            break
+        try:
+            status, tr = _sc_resolve(page_url, cid)
+            if status == 404:
+                return None  # introuvable pour tous les client_id : repli yt_dlp direct
+            if not tr:
+                continue
+            if tr.get("kind") == "playlist":
+                # Un set résolu comme « titre » : jamais son 1er morceau en silence
+                raise TrackUnavailable(
+                    "Lien de playlist SoundCloud : il doit être ajouté comme playlist, pas comme un titre."
+                )
+            if tr.get("kind") != "track" and "media" not in tr:
+                _dbg(f"resolve kind={tr.get('kind')} → pas un titre, repli yt_dlp")
+                return None
+
+            title = tr.get("title") or "Son inconnu"
+            policy = str(tr.get("policy") or "").upper()
+            if tr.get("access", "").lower() == "blocked" or policy == "BLOCK":
+                _dbg("access=blocked → cannot stream via API")
+                raise TrackUnavailable("Titre SoundCloud bloqué dans ce pays.")
+            progressive, hls = _pick_transcodings(tr)
+            _dbg("resolve → transcodings:",
+                 [((t or {}).get("format", {}) or {}).get("protocol") for t in [progressive, hls] if t])
+
+            chosen = progressive or hls
+            if not chosen:
+                trans = ((tr.get("media") or {}).get("transcodings") or [])
+                if policy == "SNIP" or (trans and all(_is_preview_transcoding(t) for t in trans)):
+                    raise TrackUnavailable(
+                        "Titre SoundCloud Go+ : seul un extrait de 30 s est disponible."
+                    )
+                continue
+            stream_url = _resolve_stream_url(chosen, cid)
+            if stream_url:
+                _push_good_client_id(cid)
+                proto = ((chosen.get("format") or {}).get("protocol") or "").lower()
+                is_hls = proto == "hls" or stream_url.lower().endswith(".m3u8")
+                return stream_url, title, is_hls
+        except TrackUnavailable:
+            raise
+        except Exception as e:
+            _dbg(f"resolve attempt failed ({cid[:4]}…): {e}")
+            continue
+    return None
+
 async def stream(
     url_or_query: str,
     ffmpeg_path: str,
@@ -338,6 +632,19 @@ async def stream(
     """
     import discord  # import tardif pour éviter charge côté outils CLI
 
+    from . import TrackUnavailable
+
+    if isinstance(url_or_query, str) and is_short_link(url_or_query):
+        # Lien court de l'appli (titre ou set ?) : redirection suivie (HTTP → thread)
+        url_or_query = await asyncio.to_thread(resolve_short_link, url_or_query)
+
+    if isinstance(url_or_query, str) and is_playlist_url(url_or_query):
+        # Un set passé comme titre : jamais résolu en entier ici
+        raise TrackUnavailable(
+            f"Lien de playlist SoundCloud ({_sc_canonical_page(url_or_query)}) : "
+            "il doit être ajouté comme playlist, pas comme un titre."
+        )
+
     ff_exec, _ = _resolve_ffmpeg_paths(ffmpeg_path)
 
     # Build sortie FFmpeg (commune) : 48 kHz + stéréo + faible latence + filtre éventuel
@@ -350,62 +657,38 @@ async def stream(
         _dbg("FFMPEG out_options:", opts)
         return opts
 
-    # --- 1) Progressive/HLS via API v2 si URL SoundCloud
+    # --- 1) Progressive/HLS via API v2 si URL SoundCloud (HTTP bloquant → thread)
     if isinstance(url_or_query, str) and "soundcloud.com" in url_or_query:
-        cids = _sc_client_ids()
-        _dbg("client_ids available:", len(cids))
-        for cid in cids or [None]:
-            if not cid:
-                _dbg("no client_id available → skip resolve, go yt_dlp fallback")
-                break
-            try:
-                tr = _sc_resolve_track(url_or_query, cid)
-                if not tr:
-                    continue
+        resolved = await asyncio.to_thread(_api_v2_resolve_stream, url_or_query)
+        if resolved:
+            stream_url, title, is_hls = resolved
 
-                title = tr.get("title") or "Son inconnu"
-                if tr.get("access", "").lower() == "blocked":
-                    _dbg("access=blocked → cannot stream via API")
-                progressive, hls = _pick_transcodings(tr)
-                _dbg("resolve → transcodings:",
-                     [((t or {}).get("format", {}) or {}).get("protocol") for t in [progressive, hls] if t])
+            before = f"-headers {shlex.quote(_ffmpeg_headers_str(None))} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+            if _HTTP_PROXY:
+                before += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
+            if _FORCE_IPV4:
+                before += " -protocol_whitelist file,http,https,tcp,tls,crypto"
+            if is_hls:
+                before += " -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL"
 
-                chosen = progressive or hls
-                if chosen:
-                    stream_url = _resolve_stream_url(chosen, cid)
-                    if stream_url:
-                        _push_good_client_id(cid)
-                        proto = ((chosen.get("format") or {}).get("protocol") or "").lower()
-                        is_hls = proto == "hls" or stream_url.lower().endswith(".m3u8")
+            out = _out_opts()  # ★ applique -ar 48k, -ac 2 et -af si présent
+            _dbg("FFMPEG before_options:", before)
 
-                        before = f"-headers {shlex.quote(_ffmpeg_headers_str(None))} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-                        if _HTTP_PROXY:
-                            before += f" -http_proxy {shlex.quote(_HTTP_PROXY)}"
-                        if _FORCE_IPV4:
-                            before += " -protocol_whitelist file,http,https,tcp,tls,crypto"
-                        if is_hls:
-                            before += " -protocol_whitelist file,http,https,tcp,tls,crypto -allowed_extensions ALL"
-
-                        out = _out_opts()  # ★ applique -ar 48k, -ac 2 et -af si présent
-                        _dbg("FFMPEG before_options:", before)
-
-                        source = discord.FFmpegPCMAudio(
-                            stream_url,
-                            before_options=before,
-                            options=out,
-                            executable=ff_exec
-                        )
-                        return source, title
-
-            except Exception as e:
-                _dbg(f"resolve attempt failed ({cid[:4]}…): {e}")
-                continue
+            source = discord.FFmpegPCMAudio(
+                stream_url,
+                before_options=before,
+                options=out,
+                executable=ff_exec
+            )
+            return source, title
 
     # --- 2) Fallback: yt_dlp (peut renvoyer HLS)
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
         "default_search": "scsearch3",
+        "noplaylist": True,
+        "playlist_items": "1",  # un set (ex. lien court) n'est jamais résolu en entier
         "nocheckcertificate": True,
         "retries": 5,
         "fragment_retries": 5,
@@ -415,16 +698,27 @@ async def stream(
     if _FORCE_IPV4:
         ydl_opts["source_address"] = "0.0.0.0"
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _extract():
         with YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url_or_query, download=False)
 
     try:
-        data = await loop.run_in_executor(None, _extract)
-        info = data["entries"][0] if "entries" in data else data
+        data = await loop.run_in_executor(None, _extract) or {}
+        if data.get("_type") == "playlist" and is_playlist_url(str(data.get("webpage_url") or "")):
+            # ex. lien court non résolu que yt-dlp a suivi jusqu'à un set
+            raise TrackUnavailable(
+                f"Lien de playlist SoundCloud ({_sc_canonical_page(str(data['webpage_url']))}) : "
+                "il doit être ajouté comme playlist, pas comme un titre."
+            )
+        entries = [e for e in (data.get("entries") or []) if e] if "entries" in data else [data]
+        if not entries or not entries[0].get("url"):
+            raise RuntimeError("aucun flux audio")
+        info = entries[0]
         stream_url = info["url"]
+        if "/preview/" in stream_url or "preview" in str(info.get("format_id") or ""):
+            raise TrackUnavailable("Titre SoundCloud Go+ : seul un extrait de 30 s est disponible.")
         title = info.get("title", "Son inconnu")
         http_headers = info.get("http_headers") or data.get("http_headers") or {}
         is_hls = ".m3u8" in stream_url.lower()
@@ -438,7 +732,6 @@ async def stream(
         out = _out_opts()
         _dbg("FFMPEG before_options:", before)
 
-        import discord
         source = discord.FFmpegPCMAudio(
             stream_url,
             before_options=before,
@@ -447,7 +740,12 @@ async def stream(
         )
         return source, title
 
+    except TrackUnavailable:
+        raise
     except Exception as e:
+        if re.search(r"\bdrm\b", str(e), re.IGNORECASE):
+            # Flux uniquement chiffrés (DRM) : définitif, inutile de réessayer
+            raise TrackUnavailable("Titre SoundCloud protégé par DRM : lecture impossible.") from e
         raise RuntimeError(f"Échec de l'extraction SoundCloud : {e}")
 
 # ======================== Helpers de test (CLI) =======================

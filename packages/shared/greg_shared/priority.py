@@ -367,16 +367,26 @@ def validate_move(
 
     src_item = queue[src]
     src_is_prio = is_priority_item(src_item)
-    boundary = priority_boundary(queue)
 
-    # Simule le move pour checker la position finale
-    dst_in_prio_zone = dst < boundary if src >= boundary else dst < (boundary - 1)
+    # Simule le move (pop + insert) et compare le voisinage de l'item avant/après.
+    # Fix v2.2 : l'ancien calcul via priority_boundary() refusait dst == boundary-1
+    # (dernière place de la zone prioritaire) et se trompait dès que la file
+    # n'était pas triée (item remis en tête par un retry, copie repeat_all…).
+    after = list(queue)
+    after.insert(dst, after.pop(src))
 
-    if not src_is_prio and dst_in_prio_zone:
-        return PermissionResult(False, "cannot_promote_to_priority_zone")
-
-    if src_is_prio and not dst_in_prio_zone:
-        return PermissionResult(False, "cannot_demote_from_priority_zone")
+    if src_is_prio:
+        # Un item prioritaire ne doit passer derrière aucun item normal de plus.
+        normals_before = sum(1 for it in queue[:src] if not is_priority_item(it))
+        normals_after = sum(1 for it in after[:dst] if not is_priority_item(it))
+        if normals_after > normals_before:
+            return PermissionResult(False, "cannot_demote_from_priority_zone")
+    else:
+        # Un item normal ne doit doubler aucun item prioritaire.
+        prios_before = sum(1 for it in queue[:src] if is_priority_item(it))
+        prios_after = sum(1 for it in after[:dst] if is_priority_item(it))
+        if prios_after < prios_before:
+            return PermissionResult(False, "cannot_promote_to_priority_zone")
 
     return PermissionResult(True, "ok")
 

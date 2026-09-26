@@ -252,12 +252,41 @@ def _scrape_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
         return []
 
 
+# ─── Détection des liens collés ───
+# Même liste d'hôtes que greg_shared.extractors.normalize_link (contrat C1) ;
+# l'API n'importe pas greg_shared.extractors (pas de yt-dlp côté API).
+
+_KNOWN_LINK_HOSTS = frozenset({
+    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
+    "soundcloud.com", "on.soundcloud.com", "m.soundcloud.com",
+    "open.spotify.com", "spotify.link",
+})
+_SPOTIFY_URI_RE = re.compile(r"^spotify:[a-z]+:", re.IGNORECASE)
+
+
+def _looks_like_link(q: str) -> bool:
+    """True si l'entrée est un lien (http(s)://, hôte connu sans schéma, URI spotify:)."""
+    s = (q or "").strip()
+    if s.startswith("<") and s.endswith(">"):
+        s = s[1:-1].strip()
+    low = s.lower()
+    if low.startswith(("http://", "https://")) or _SPOTIFY_URI_RE.match(low):
+        return True
+    host = re.split(r"[/?#]", low, maxsplit=1)[0]
+    return host in _KNOWN_LINK_HOSTS
+
+
 # ─── Routes ───
 
 def _do_autocomplete():
     q = (request.args.get("q") or request.args.get("query") or "").strip()
     limit = request.args.get("limit", 8, type=int)
     if not q:
+        return jsonify({"ok": True, "results": []}), 200
+
+    # Lien collé (playlist, vidéo, Spotify…) : pas de recherche texte, sinon
+    # InnerTube renvoie des vidéos sans rapport qui remplaceraient le lien.
+    if _looks_like_link(q):
         return jsonify({"ok": True, "results": []}), 200
 
     # 1) InnerTube API (rapide, fiable)
@@ -285,7 +314,7 @@ def suggest():
     """Typeahead instantané (text only, ~50ms)."""
     q = (request.args.get("q") or "").strip()
     limit = request.args.get("limit", 6, type=int)
-    if not q:
+    if not q or _looks_like_link(q):
         return jsonify({"ok": True, "suggestions": []}), 200
     suggestions = _yt_suggest(q, limit)
     return jsonify({"ok": True, "suggestions": suggestions}), 200

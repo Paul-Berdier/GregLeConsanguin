@@ -1,7 +1,8 @@
 """Redis listener — reçoit les state updates du bot et les relaye en WebSocket.
 
-Utilise get_message() en polling au lieu de listen() pour éviter
-les socket_timeout avec eventlet.
+Utilise get_message() en polling au lieu de listen() (pas de socket_timeout,
+reconnexion simple). Tourne dans un thread OS natif : les socketio.emit sont
+sûrs car l'API est en async_mode="threading".
 """
 from __future__ import annotations
 
