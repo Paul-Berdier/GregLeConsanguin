@@ -2,16 +2,15 @@
 
 import { useEffect, useCallback } from 'react';
 import { create } from 'zustand';
-import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, getSocketId } from '@/lib/socket';
-import { api } from '@/lib/api';
+import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, resetSocket } from '@/lib/socket';
+import { api, onAuthLost } from '@/lib/api';
 import {
   toSeconds, normalizeItem, buildUsersMap, isStalePayload,
   looksLikeUrl, describeError, errorCode, enqueueSuccessText, pickDefaultGuild,
-  createSeqGate, staleStateText, livePosition, recoveredStatusText,
+  createSeqGate, staleStateText, livePosition, recoveredStatusText, guildJoinErrorAction,
 } from '@/lib/playerUtils';
 import type {
   PlayerState, Track, UserInfo, GuildInfo,
-  SpotifyProfile, SpotifyPlaylist, SpotifyTrack,
   StatusKind, SearchResult,
 } from '@/lib/types';
 
@@ -49,12 +48,6 @@ interface GregStore {
   player: PlayerState;
   tickBase: { pos: number; at: number; dur: number };
 
-  // Spotify
-  spotifyLinked: boolean;
-  spotifyProfile: SpotifyProfile | null;
-  spotifyPlaylists: SpotifyPlaylist[];
-  spotifyTracks: SpotifyTrack[];
-  spotifyCurrentPlaylistId: string;
 
   // History
   historyItems: any[];
@@ -72,11 +65,6 @@ interface GregStore {
   applyPlaylistPayload: (payload: any) => void;
   setStatus: (text: string, kind?: StatusKind) => void;
 
-  setSpotifyLinked: (v: boolean) => void;
-  setSpotifyProfile: (p: SpotifyProfile | null) => void;
-  setSpotifyPlaylists: (p: SpotifyPlaylist[]) => void;
-  setSpotifyTracks: (t: SpotifyTrack[]) => void;
-  setSpotifyCurrentPlaylistId: (id: string) => void;
   setHistoryItems: (items: any[]) => void;
 }
 
@@ -96,11 +84,6 @@ export const useStore = create<GregStore>((set, get) => ({
   },
   tickBase: { pos: 0, at: 0, dur: 0 },
 
-  spotifyLinked: false,
-  spotifyProfile: null,
-  spotifyPlaylists: [],
-  spotifyTracks: [],
-  spotifyCurrentPlaylistId: '',
 
   historyItems: [],
 
@@ -114,11 +97,6 @@ export const useStore = create<GregStore>((set, get) => ({
   setTickBase: (tickBase) => set({ tickBase }),
   setStatus: (text, kind = 'info') => set({ status: { text, kind } }),
 
-  setSpotifyLinked: (spotifyLinked) => set({ spotifyLinked }),
-  setSpotifyProfile: (spotifyProfile) => set({ spotifyProfile }),
-  setSpotifyPlaylists: (spotifyPlaylists) => set({ spotifyPlaylists }),
-  setSpotifyTracks: (spotifyTracks) => set({ spotifyTracks }),
-  setSpotifyCurrentPlaylistId: (spotifyCurrentPlaylistId) => set({ spotifyCurrentPlaylistId }),
   setHistoryItems: (historyItems) => set({ historyItems }),
 
   applyPlaylistPayload: (payload: any) => {
@@ -186,9 +164,40 @@ const RESYNC_IDLE_MS = 15000;
 const POLL_FALLBACK_MS = 3000;
 const VOICE_JOIN_COOLDOWN_MS = 8000;
 
+const GUILD_JOIN_RETRY_MS = 5000;
+const SOCKET_DOWN_TEXT = 'Socket déconnecté — polling actif';
+
 let _voiceJoinLastAt = 0;
 // /users/me : seule une réponse définitive (succès ou 401) plus récente que la dernière appliquée compte
 const _meGate = createSeqGate();
+// guild_join_error transitoire : un seul nouvel abonnement en attente (serveur affiché)
+let _joinRetry: ReturnType<typeof setTimeout> | null = null;
+
+function clearJoinRetry() {
+  if (!_joinRetry) return;
+  clearTimeout(_joinRetry);
+  _joinRetry = null;
+}
+
+/**
+ * Session Discord terminée (bouton Déco ou 401 NOT_AUTHENTICATED sur n'importe quel appel) :
+ * me = null (le bouton Connexion réapparaît), état vidé, et socket reconnecté pour quitter
+ * les rooms des serveurs. Sans autre effet si l'utilisateur était déjà déconnecté.
+ */
+function handleLoggedOut(text: string, kind: StatusKind = 'warn') {
+  const st = useStore.getState();
+  const wasLoggedIn = !!st.me;
+  // Réponse définitive la plus récente : un /users/me plus ancien encore en vol ne la contredit pas
+  _meGate.tryApply(_meGate.next());
+  st.setMe(null);
+  if (!wasLoggedIn) return;
+  clearJoinRetry();
+  st.setGuilds([]);
+  st.applyPlaylistPayload({ current: null, queue: [], paused: true, repeat: false, position: 0, duration: 0 });
+  st.setHistoryItems([]);
+  resetSocket();
+  st.setStatus(text, kind);
+}
 
 /**
  * usePlayerInit — MUST be called exactly ONCE in the root component.
@@ -196,6 +205,10 @@ const _meGate = createSeqGate();
  */
 export function usePlayerInit() {
   const guildId = useStore((s) => s.guildId);
+  const meId = useStore((s) => s.me?.id || '');
+
+  // 401 NOT_AUTHENTICATED sur n'importe quel appel REST → déconnecté (comme refreshMe)
+  useEffect(() => onAuthLost((e) => handleLoggedOut(describeError(e))), []);
 
   // Socket setup (once)
   useEffect(() => {
@@ -203,31 +216,45 @@ export function usePlayerInit() {
 
     const onConnect = () => {
       useStore.getState().setSocketReady(true);
-      useStore.getState().setStatus('Socket connecté ✅', 'ok');
       const s = useStore.getState();
-      overlayRegister(s.guildId, s.me?.id);
-      if (s.guildId) subscribeGuild(s.guildId);
+      // Anonyme (ex. juste après une déconnexion) : on garde le message affiché,
+      // sauf l'avertissement « socket déconnecté » devenu faux
+      if (s.me || s.status.text === SOCKET_DOWN_TEXT) s.setStatus('Socket connecté ✅', 'ok');
+      // Serveur : seulement via subscribeGuild (une seule vérification d'accès côté API)
+      overlayRegister('', s.me?.id);
+      if (s.me && s.guildId) subscribeGuild(s.guildId);
     };
 
     const onDisconnect = () => {
       useStore.getState().setSocketReady(false);
-      useStore.getState().setStatus('Socket déconnecté — polling actif', 'warn');
+      useStore.getState().setStatus(SOCKET_DOWN_TEXT, 'warn');
+    };
+
+    // Abonnement refusé par l'API (contrat SEC-C4) : on n'est PAS dans la room du serveur
+    const onGuildJoinError = (payload: any) => {
+      const s = useStore.getState();
+      const a = guildJoinErrorAction(payload, s.me ? s.guildId : '');
+      if (a.action === 'ignore') return;
+      if (a.action === 'show') { s.setStatus(a.text, 'err'); return; }
+      // Transitoire (bot occupé / hors ligne, vérification impossible) : nouvel essai dans ~5 s
+      // si ce serveur est toujours affiché ; l'état REST signale déjà la cause.
+      if (_joinRetry) return;
+      const gid = s.guildId;
+      _joinRetry = setTimeout(() => {
+        _joinRetry = null;
+        const st = useStore.getState();
+        if (st.me && st.guildId === gid) subscribeGuild(gid);
+      }, GUILD_JOIN_RETRY_MS);
     };
 
     const onPlaylistUpdate = (payload: any) => {
       useStore.getState().applyPlaylistPayload(payload);
     };
 
-    const onSpotifyLinked = (payload: any) => {
-      useStore.getState().setSpotifyLinked(true);
-      useStore.getState().setSpotifyProfile(payload?.profile || payload?.data?.profile || null);
-      useStore.getState().setStatus('Spotify lié ✅', 'ok');
-    };
-
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('playlist_update', onPlaylistUpdate);
-    socket.on('spotify:linked', onSpotifyLinked);
+    socket.on('guild_join_error', onGuildJoinError);
 
     startPing();
 
@@ -235,16 +262,17 @@ export function usePlayerInit() {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('playlist_update', onPlaylistUpdate);
-      socket.off('spotify:linked', onSpotifyLinked);
+      socket.off('guild_join_error', onGuildJoinError);
+      clearJoinRetry();
     };
   }, []);
 
-  // Guild subscription
+  // Guild subscription — seulement connecté (l'API refuse un socket anonyme)
   useEffect(() => {
-    if (!guildId) return;
+    if (!guildId || !meId) return;
     subscribeGuild(guildId);
-    return () => { unsubscribeGuild(guildId); };
-  }, [guildId]);
+    return () => { clearJoinRetry(); unsubscribeGuild(guildId); };
+  }, [guildId, meId]);
 
   // Server resync — pas conditionné à `current` : rapide en lecture ou si le dernier
   // état était périmé, plus espacé sinon (rattrape un ajout fini après un TIMEOUT).
@@ -318,70 +346,6 @@ export function usePlayer() {
     }
   }, []);
 
-  const refreshSpotify = useCallback(async () => {
-    const s = useStore.getState();
-    if (!s.me) {
-      useStore.getState().setSpotifyLinked(false);
-      useStore.getState().setSpotifyProfile(null);
-      return;
-    }
-    try {
-      const st = await api.spotifyStatus();
-      const linked = 'linked' in st ? !!st.linked : !!st?.ok;
-      useStore.getState().setSpotifyLinked(linked);
-      useStore.getState().setSpotifyProfile(st?.profile || st?.me || st?.data?.profile || null);
-
-      if (linked && !useStore.getState().spotifyProfile) {
-        try {
-          const me = await api.spotifyMe();
-          useStore.getState().setSpotifyProfile(me?.profile || me?.me || me?.data?.profile || me || null);
-        } catch {}
-      }
-    } catch {
-      useStore.getState().setSpotifyLinked(false);
-      useStore.getState().setSpotifyProfile(null);
-    }
-  }, []);
-
-  const refreshSpotifyPlaylists = useCallback(async () => {
-    const s = useStore.getState();
-    if (!s.spotifyLinked) {
-      useStore.getState().setSpotifyPlaylists([]);
-      useStore.getState().setSpotifyTracks([]);
-      return;
-    }
-    try {
-      const data = await api.spotifyPlaylists();
-      const items = data?.items || data?.playlists || data?.data?.items || data?.data?.playlists || (Array.isArray(data) ? data : []);
-      useStore.getState().setSpotifyPlaylists(items);
-
-      let currentPl = useStore.getState().spotifyCurrentPlaylistId;
-      if (!currentPl) {
-        const saved = typeof window !== 'undefined' ? localStorage.getItem('greg.spotify.last_playlist_id') || '' : '';
-        currentPl = saved;
-      }
-      if (!currentPl && items.length) currentPl = items[0]?.id || '';
-      useStore.getState().setSpotifyCurrentPlaylistId(currentPl);
-
-      if (currentPl) {
-        await loadSpotifyTracks(currentPl);
-      }
-    } catch {
-      useStore.getState().setSpotifyPlaylists([]);
-    }
-  }, []);
-
-  const loadSpotifyTracks = useCallback(async (playlistId: string) => {
-    try {
-      const data = await api.spotifyPlaylistTracks(playlistId);
-      const items = data?.tracks || data?.items || data?.tracks?.items || data?.data?.items || (Array.isArray(data) ? data : []);
-      const tracks = items.map((x: any) => x?.track || x).filter(Boolean);
-      useStore.getState().setSpotifyTracks(tracks);
-    } catch {
-      useStore.getState().setSpotifyTracks([]);
-    }
-  }, []);
-
   // ── Actions ──
   const refreshHistory = useCallback(async () => {
     const s = useStore.getState();
@@ -396,7 +360,7 @@ export function usePlayer() {
 
   const setGuild = useCallback(async (id: string) => {
     const oldGid = useStore.getState().guildId;
-    if (oldGid) unsubscribeGuild(oldGid);
+    // (Dés)abonnement Socket.IO : effet [guildId, meId] de usePlayerInit (une seule vérification d'accès)
     useStore.getState().setGuildId(id);
     // L'état affiché appartient à l'ancien serveur : on le vide (un état périmé du nouveau ne l'écrasera pas)
     if (id !== oldGid) {
@@ -404,11 +368,21 @@ export function usePlayer() {
     }
     if (id) {
       localStorage.setItem('greg.webplayer.guild_id', id);
-      subscribeGuild(id);
     } else {
       localStorage.removeItem('greg.webplayer.guild_id');
     }
     await refreshPlaylist().catch(() => {});
+  }, []);
+
+  /** Bouton Déco : session effacée côté API puis déconnexion locale (socket compris), sans rechargement. */
+  const logout = useCallback(async () => {
+    try {
+      await api.logout();
+    } catch (e: any) {
+      useStore.getState().setStatus(describeError(e), 'err');
+      return;
+    }
+    handleLoggedOut('Déconnecté ✅', 'ok');
   }, []);
 
   const bestEffortVoiceJoin = useCallback(async (reason: string) => {
@@ -509,111 +483,6 @@ export function usePlayer() {
     await bestEffortVoiceJoin('play_at');
   }, [safeAction, bestEffortVoiceJoin]);
 
-  // Spotify actions
-  const spotifyLogin = useCallback(() => {
-    const s = useStore.getState();
-    if (!s.me) {
-      useStore.getState().setStatus('Connecte-toi à Discord avant Spotify.', 'warn');
-      return;
-    }
-    const sid = getSocketId();
-    const url = api.getSpotifyLoginUrl(sid);
-    const w = 520, h = 720;
-    const y = Math.round(window.outerHeight / 2 + window.screenY - h / 2);
-    const x = Math.round(window.outerWidth / 2 + window.screenX - w / 2);
-    const popup = window.open(url, 'spotify_link', `toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=${w},height=${h},top=${y},left=${x}`);
-    if (!popup) {
-      useStore.getState().setStatus('Popup bloquée — autorise les popups.', 'warn');
-      return;
-    }
-    useStore.getState().setStatus('Ouverture Spotify…', 'info');
-
-    // Poll for link status
-    (async () => {
-      const deadline = Date.now() + 60000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 1500));
-        await refreshSpotify();
-        if (useStore.getState().spotifyLinked) {
-          useStore.getState().setStatus('Spotify connecté ✅', 'ok');
-          await refreshSpotifyPlaylists().catch(() => {});
-          break;
-        }
-      }
-    })().catch(() => {});
-  }, [refreshSpotify, refreshSpotifyPlaylists]);
-
-  const spotifyLogout = useCallback(async () => {
-    await safeAction(() => api.spotifyLogout(), 'Spotify délié ✅', false);
-    const st = useStore.getState();
-    st.setSpotifyLinked(false);
-    st.setSpotifyProfile(null);
-    st.setSpotifyPlaylists([]);
-    st.setSpotifyTracks([]);
-    st.setSpotifyCurrentPlaylistId('');
-    localStorage.removeItem('greg.spotify.last_playlist_id');
-  }, [safeAction]);
-
-  const selectSpotifyPlaylist = useCallback(async (playlistId: string) => {
-    useStore.getState().setSpotifyCurrentPlaylistId(playlistId);
-    localStorage.setItem('greg.spotify.last_playlist_id', playlistId);
-    await loadSpotifyTracks(playlistId);
-  }, [loadSpotifyTracks]);
-
-  const spotifyQuickplay = useCallback(async (track: any) => {
-    const s = useStore.getState();
-    if (!s.me || !s.guildId) {
-      useStore.getState().setStatus('Choisis un serveur Discord.', 'warn');
-      return;
-    }
-    await safeAction(() => api.spotifyQuickplay(s.guildId, s.me!.id, track), 'Lecture Spotify ✅', true);
-    await bestEffortVoiceJoin('spotify_quickplay');
-  }, [safeAction, bestEffortVoiceJoin]);
-
-  const spotifyDeletePlaylist = useCallback(async (playlistId: string) => {
-    await safeAction(() => api.spotifyDeletePlaylist(playlistId), 'Playlist supprimée ✅', false);
-    if (useStore.getState().spotifyCurrentPlaylistId === playlistId) {
-      useStore.getState().setSpotifyCurrentPlaylistId('');
-      useStore.getState().setSpotifyTracks([]);
-      localStorage.removeItem('greg.spotify.last_playlist_id');
-    }
-    await refreshSpotifyPlaylists().catch(() => {});
-  }, [safeAction, refreshSpotifyPlaylists]);
-
-  const spotifyRemoveTrack = useCallback(async (playlistId: string, uri: string) => {
-    await safeAction(() => api.spotifyRemoveTracks(playlistId, [uri]), 'Titre retiré ✅', false);
-    await loadSpotifyTracks(playlistId).catch(() => {});
-  }, [safeAction, loadSpotifyTracks]);
-
-  const spotifyCreatePlaylist = useCallback(async (name: string, isPublic: boolean) => {
-    const data = await safeAction(
-      () => api.spotifyCreatePlaylist(name, isPublic),
-      'Playlist créée ✅',
-      false,
-    );
-    await refreshSpotifyPlaylists().catch(() => {});
-    const id = data?.id || data?.playlist_id || data?.playlist?.id || '';
-    if (id) {
-      useStore.getState().setSpotifyCurrentPlaylistId(id);
-      localStorage.setItem('greg.spotify.last_playlist_id', id);
-      await loadSpotifyTracks(id).catch(() => {});
-    }
-  }, [safeAction, refreshSpotifyPlaylists, loadSpotifyTracks]);
-
-  const spotifyAddCurrent = useCallback(async (playlistId: string) => {
-    const s = useStore.getState();
-    if (!s.guildId) { useStore.getState().setStatus('Choisis un serveur.', 'warn'); return; }
-    await safeAction(() => api.spotifyAddCurrentToPlaylist(playlistId, s.guildId), 'Titre ajouté à la playlist ✅', false);
-    await loadSpotifyTracks(playlistId).catch(() => {});
-  }, [safeAction, loadSpotifyTracks]);
-
-  const spotifyAddQueue = useCallback(async (playlistId: string) => {
-    const s = useStore.getState();
-    if (!s.guildId) { useStore.getState().setStatus('Choisis un serveur.', 'warn'); return; }
-    await safeAction(() => api.spotifyAddQueueToPlaylist(playlistId, s.guildId, 20), 'File ajoutée ✅', false);
-    await loadSpotifyTracks(playlistId).catch(() => {});
-  }, [safeAction, loadSpotifyTracks]);
-
   // ── Boot ──
   const boot = useCallback(async () => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('greg.webplayer.guild_id') || '' : '';
@@ -628,33 +497,19 @@ export function usePlayer() {
     if (chosen.discarded && typeof window !== 'undefined') localStorage.removeItem('greg.webplayer.guild_id');
     if (chosen.guildId !== s.guildId) useStore.getState().setGuildId(chosen.guildId);
 
-    try {
-      await refreshSpotify();
-      if (useStore.getState().spotifyLinked) {
-        await refreshSpotifyPlaylists().catch(() => {});
-      }
-    } catch {
-      useStore.getState().setSpotifyLinked(false);
-      useStore.getState().setSpotifyProfile(null);
-      useStore.getState().setSpotifyPlaylists([]);
-      useStore.getState().setSpotifyTracks([]);
-    }
-
     await refreshPlaylist().catch(() => {});
     await refreshHistory().catch(() => {});
     useStore.getState().setStatus('Prêt ✅', 'ok');
-  }, [refreshMe, refreshGuilds, refreshSpotify, refreshSpotifyPlaylists, refreshHistory]);
+  }, [refreshMe, refreshGuilds, refreshHistory]);
 
   return {
     ...store,
     boot,
     setGuild,
+    logout,
     refreshMe,
     refreshGuilds,
-    refreshSpotify,
-    refreshSpotifyPlaylists,
     refreshHistory,
-    loadSpotifyTracks,
     enqueue,
     skip,
     stop,
@@ -664,15 +519,6 @@ export function usePlayer() {
     removeFromQueue,
     playAt,
     bestEffortVoiceJoin,
-    spotifyLogin,
-    spotifyLogout,
-    selectSpotifyPlaylist,
-    spotifyQuickplay,
-    spotifyDeletePlaylist,
-    spotifyRemoveTrack,
-    spotifyCreatePlaylist,
-    spotifyAddCurrent,
-    spotifyAddQueue,
   };
 }
 
@@ -699,8 +545,8 @@ async function refreshPlaylist(opts?: { quiet?: boolean }) {
   _stateInFlight++;
   try {
     const data = await api.getPlaylistState(gid);
-    // Réponse d'un autre serveur ou plus ancienne qu'une réponse déjà appliquée : ignorée
-    if (useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
+    // Réponse d'un autre serveur, arrivée après une déconnexion, ou plus ancienne qu'une réponse déjà appliquée : ignorée
+    if (!useStore.getState().me || useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
     if (isStalePayload(data)) throw Object.assign(new Error('stale'), { payload: data });
     _stateAppliedSeq = seq;
     _stateStale = false;
@@ -711,7 +557,8 @@ async function refreshPlaylist(opts?: { quiet?: boolean }) {
     if (recovered) useStore.getState().setStatus(recovered, 'ok');
     useStore.getState().applyPlaylistPayload(data);
   } catch (e: any) {
-    if (useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
+    // Déconnecté (ex. 401 NOT_AUTHENTICATED, déjà traité par handleLoggedOut) : pas d'avertissement « périmé »
+    if (!useStore.getState().me || useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
     _stateStale = true;
     const code = errorCode(e) || (isStalePayload(e?.payload) ? 'STALE' : 'ERROR');
     // Bot hors ligne : plus rien ne joue côté Discord → on fige la progression (pas de piste fantôme)

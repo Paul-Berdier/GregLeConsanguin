@@ -21,6 +21,7 @@ const {
   staleStateText,
   livePosition,
   recoveredStatusText,
+  guildJoinErrorAction,
 } = await loadTs('../src/lib/playerUtils.ts');
 
 // ── durations-over-10000-as-ms ──
@@ -289,4 +290,59 @@ test("recoveredStatusText : efface l'avertissement « bot hors ligne » une fois
   // Aucun avertissement affiché par cette cause
   assert.equal(recoveredStatusText('', ''), null);
   assert.equal(recoveredStatusText(warn, ''), null);
+});
+
+// ── SEC-C7 : identité par la session, appartenance au serveur ──
+test('describeError : NOT_AUTHENTICATED / NOT_GUILD_MEMBER / MEMBER_CHECK_FAILED traduits', () => {
+  assert.equal(describeError(err({ ok: false, error: 'NOT_AUTHENTICATED' }, 401)),
+    'Connecte-toi avec Discord pour contrôler Greg.');
+  assert.equal(describeError(err({ ok: false, error: 'NOT_GUILD_MEMBER' }, 403)),
+    "Tu n'es pas membre de ce serveur.");
+  assert.equal(describeError(err({ ok: false, error: 'MEMBER_CHECK_FAILED' }, 503)),
+    'Vérification impossible, réessaie dans un instant.');
+  // /users/me et /guilds répondent en minuscules : même message
+  assert.equal(describeError(err({ ok: false, error: 'not_authenticated' }, 401)),
+    'Connecte-toi avec Discord pour contrôler Greg.');
+  // payload.message de l'API toujours prioritaire
+  assert.equal(describeError(err({ ok: false, error: 'NOT_GUILD_MEMBER', message: 'Pas chez toi.' }, 403)), 'Pas chez toi.');
+  // Code inconnu en minuscules : inchangé (ex. Spotify non lié)
+  assert.equal(describeError(err({ ok: false, error: 'not_linked' }, 401)), 'not_linked');
+});
+
+test('guildJoinErrorAction : erreurs transitoires → nouvel abonnement (retry)', () => {
+  for (const code of ['TIMEOUT', 'BOT_OFFLINE', 'REDIS_UNAVAILABLE', 'MEMBER_CHECK_FAILED']) {
+    const a = guildJoinErrorAction({ guild_id: '42', error: code, retry: true }, '42');
+    assert.equal(a.action, 'retry', code);
+    assert.equal(a.code, code);
+  }
+  // retry absent : déduit du code (même liste que l'API)
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'MEMBER_CHECK_FAILED' }, '42').action, 'retry');
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'TIMEOUT' }, '42').action, 'retry');
+});
+
+test('guildJoinErrorAction : refus définitif → message affiché, pas de retry', () => {
+  const a = guildJoinErrorAction({ guild_id: '42', error: 'NOT_GUILD_MEMBER', message: "Tu n'es pas membre de ce serveur.", retry: false }, '42');
+  assert.deepEqual(a, { action: 'show', code: 'NOT_GUILD_MEMBER', text: "Tu n'es pas membre de ce serveur." });
+  // message absent → code traduit
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'NOT_AUTHENTICATED', retry: false }, '42').text,
+    'Connecte-toi avec Discord pour contrôler Greg.');
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'NOT_GUILD_MEMBER' }, '42').action, 'show');
+  // ni code ni message : texte de repli (jamais « [object Object] »)
+  const bare = guildJoinErrorAction({ guild_id: '42' }, '42');
+  assert.equal(bare.action, 'show');
+  assert.ok(bare.text && !/object/i.test(bare.text), bare.text);
+});
+
+test('guildJoinErrorAction : le booléen retry de l’API fait foi', () => {
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'TIMEOUT', retry: false }, '42').action, 'show');
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'SOMETHING_NEW', retry: true }, '42').action, 'retry');
+});
+
+test('guildJoinErrorAction : erreur d’un autre serveur (ou aucun serveur affiché) → ignorée', () => {
+  assert.equal(guildJoinErrorAction({ guild_id: '7', error: 'TIMEOUT', retry: true }, '42').action, 'ignore');
+  assert.equal(guildJoinErrorAction({ guild_id: '42', error: 'NOT_GUILD_MEMBER' }, '').action, 'ignore');
+  assert.equal(guildJoinErrorAction(null, '42').action, 'ignore');
+  assert.equal(guildJoinErrorAction('oops', '42').action, 'ignore');
+  // guild_id numérique côté API : comparé en chaîne
+  assert.equal(guildJoinErrorAction({ guild_id: 42, error: 'TIMEOUT' }, '42').action, 'retry');
 });

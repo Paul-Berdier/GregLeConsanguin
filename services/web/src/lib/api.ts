@@ -7,11 +7,7 @@
  *   POST /queue/add, /queue/remove, /queue/skip, /queue/stop
  *   POST /playlist/play_at, /playlist/toggle_pause, /playlist/repeat, /playlist/restart
  *   POST /voice/join
- *   GET  /spotify/login, /spotify/status, /spotify/me, /spotify/playlists
- *   GET  /spotify/playlist_tracks?playlist_id=...
- *   POST /spotify/playlist_create, /spotify/playlist_remove_tracks
- *   POST /spotify/playlist_delete, /spotify/quickplay, /spotify/logout
- *   POST /spotify/add_current_to_playlist, /spotify/add_queue_to_playlist
+ *   GET  /history?guild_id=...&mode=top|recent
  */
 
 const DEFAULT_BASE = '/api/v1';
@@ -90,6 +86,31 @@ export function getApiOrigin(): string {
   }
 }
 
+/**
+ * 401 NOT_AUTHENTICATED (contrats SEC-C1/C7) : la session Discord n'existe plus.
+ * Casse ignorée (/users/me et /guilds répondent « not_authenticated ») ; les autres 401
+ * ne déconnectent PAS de Discord.
+ */
+export function isNotAuthenticated(status: number, payload: any): boolean {
+  if (Number(status) !== 401 || !payload || typeof payload !== 'object') return false;
+  return String(payload.error || '').trim().toUpperCase() === 'NOT_AUTHENTICATED';
+}
+
+type AuthLostListener = (err: any) => void;
+let _authLostListeners: AuthLostListener[] = [];
+
+/** Prévenu à chaque 401 NOT_AUTHENTICATED, quel que soit l'appel. Renvoie la désinscription. */
+export function onAuthLost(cb: AuthLostListener): () => void {
+  _authLostListeners = [..._authLostListeners, cb];
+  return () => { _authLostListeners = _authLostListeners.filter((x) => x !== cb); };
+}
+
+function notifyAuthLost(err: any) {
+  for (const cb of _authLostListeners) {
+    try { cb(err); } catch {}
+  }
+}
+
 async function request(method: string, path: string, opts?: {
   query?: Record<string, string>;
   json?: any;
@@ -126,7 +147,9 @@ async function request(method: string, path: string, opts?: {
 
   if (!res.ok) {
     const msg = payload?.error || payload?.message || `HTTP ${res.status}`;
-    throw Object.assign(new Error(msg), { status: res.status, payload });
+    const err = Object.assign(new Error(msg), { status: res.status, payload });
+    if (isNotAuthenticated(res.status, payload)) notifyAuthLost(err);
+    throw err;
   }
 
   if (payload && typeof payload === 'object' && payload.ok === false) {
@@ -217,35 +240,6 @@ export const api = {
     }
     return [];
   },
-
-  // Spotify
-  getSpotifyLoginUrl: (sid: string) =>
-    `${API_BASE}/spotify/login?sid=${encodeURIComponent(sid)}`,
-
-  spotifyStatus: () => get('/spotify/status'),
-  spotifyMe: () => get('/spotify/me'),
-  spotifyLogout: () => post('/spotify/logout', {}),
-  spotifyPlaylists: () => get('/spotify/playlists'),
-  spotifyPlaylistTracks: (playlistId: string) =>
-    get('/spotify/playlist_tracks', { playlist_id: playlistId }),
-
-  spotifyCreatePlaylist: (name: string, isPublic: boolean) =>
-    post('/spotify/playlist_create', { name, public: isPublic }),
-
-  spotifyDeletePlaylist: (playlistId: string) =>
-    post('/spotify/playlist_delete', { playlist_id: playlistId }),
-
-  spotifyRemoveTracks: (playlistId: string, trackUris: string[]) =>
-    post('/spotify/playlist_remove_tracks', { playlist_id: playlistId, track_uris: trackUris }),
-
-  spotifyQuickplay: (guildId: string, userId: string, track: any) =>
-    post('/spotify/quickplay', basePayload(guildId, userId, { track })),
-
-  spotifyAddCurrentToPlaylist: (playlistId: string, guildId: string) =>
-    post('/spotify/add_current_to_playlist', { playlist_id: playlistId, guild_id: guildId }),
-
-  spotifyAddQueueToPlaylist: (playlistId: string, guildId: string, maxItems = 20) =>
-    post('/spotify/add_queue_to_playlist', { playlist_id: playlistId, guild_id: guildId, max_items: maxItems }),
 
   // History
   getHistory: (guildId: string, mode = 'top', limit = 20) =>

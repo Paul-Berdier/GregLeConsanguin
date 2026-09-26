@@ -103,7 +103,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   QUOTA_EXCEEDED: 'Quota atteint : tu as déjà assez de titres dans la file.',
   PLAYLIST_UNAVAILABLE: 'Playlist inaccessible (privée, supprimée ou bloquée).',
   PLAYLIST_EMPTY: 'Playlist vide (ou aucun titre disponible).',
-  SPOTIFY_UNSUPPORTED: 'Les liens Spotify ne sont pas pris en charge ici : colle un lien YouTube ou SoundCloud.',
+  SPOTIFY_UNSUPPORTED: 'Les liens Spotify ne sont pas pris en charge : colle un lien YouTube ou le titre du morceau.',
   UNSUPPORTED_SOURCE: 'Source non prise en charge : colle un lien YouTube ou SoundCloud.',
   NO_RESULTS: 'Aucun résultat trouvé.',
   EXPAND_TIMEOUT: 'La playlist met trop de temps à charger, réessaie plus tard.',
@@ -112,6 +112,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   GUILD_NOT_FOUND: "Greg n'est pas sur ce serveur : choisis-en un autre.",
   VOICE_CONNECT_FAILED: 'Impossible de rejoindre le salon vocal.',
   PRIORITY_FORBIDDEN: 'Action refusée : priorité insuffisante.',
+  // Contrats SEC-C1/C2 : identité par la session, appartenance vérifiée par le bot
+  NOT_AUTHENTICATED: 'Connecte-toi avec Discord pour contrôler Greg.',
+  NOT_GUILD_MEMBER: "Tu n'es pas membre de ce serveur.",
+  MEMBER_CHECK_FAILED: 'Vérification impossible, réessaie dans un instant.',
 };
 
 /** Code d'erreur applicatif (payload.error, ou backend_error d'un état périmé C3) ou ''. */
@@ -128,7 +132,9 @@ export function describeError(e: any): string {
   const msg = p && typeof p.message === 'string' ? p.message.trim() : '';
   if (msg) return msg;
   const code = errorCode(e);
-  if (code && ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
+  // /users/me et /guilds répondent « not_authenticated » en minuscules
+  const known = code && (ERROR_MESSAGES[code] || ERROR_MESSAGES[code.toUpperCase()]);
+  if (known) return known;
   if (code) return code;
   const status = Number(e?.status) || 0;
   if (status >= 500) return `Serveur injoignable (HTTP ${status}), réessaie dans un instant.`;
@@ -151,6 +157,29 @@ export function staleStateText(e: any): string {
   const hasMsg = !!(p && typeof p.message === 'string' && p.message.trim());
   if (hasMsg || (code && ERROR_MESSAGES[code]) || !isStalePayload(p)) return describeError(e);
   return BUSY_TEXT;
+}
+
+// ── Abonnement Socket.IO à un serveur (contrat SEC-C4/C7) ──
+// Mêmes codes que le `retry` calculé par l'API (utilisés seulement si le booléen manque).
+const JOIN_RETRY_CODES = ['TIMEOUT', 'BOT_OFFLINE', 'REDIS_UNAVAILABLE', 'MEMBER_CHECK_FAILED'];
+
+/**
+ * Réaction à un `guild_join_error` {guild_id, error, message, retry} :
+ * - 'ignore' : erreur d'un autre serveur que celui affiché (ou aucun serveur affiché) ;
+ * - 'retry'  : échec transitoire → se réabonner un peu plus tard ;
+ * - 'show'   : refus définitif (NOT_GUILD_MEMBER, NOT_AUTHENTICATED…) → afficher `text`.
+ */
+export function guildJoinErrorAction(p: any, currentGuildId: string): {
+  action: 'ignore' | 'retry' | 'show'; code: string; text: string;
+} {
+  const cur = String(currentGuildId || '');
+  if (!p || typeof p !== 'object' || !cur) return { action: 'ignore', code: '', text: '' };
+  if (p.guild_id != null && String(p.guild_id) !== cur) return { action: 'ignore', code: '', text: '' };
+  const code = typeof p.error === 'string' ? p.error.trim() : '';
+  const hasMsg = typeof p.message === 'string' && !!p.message.trim();
+  const text = code || hasMsg ? describeError({ payload: p }) : "Impossible de suivre ce serveur pour l'instant.";
+  const retry = typeof p.retry === 'boolean' ? p.retry : JOIN_RETRY_CODES.includes(code);
+  return { action: retry ? 'retry' : 'show', code, text };
 }
 
 /**

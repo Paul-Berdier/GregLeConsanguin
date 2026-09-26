@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'Greg le Consanguin — Web Player',
-  description: 'Lecteur musical Discord — stream, queue, Spotify, vidéo.',
+  description: 'Lecteur musical Discord — stream, queue, vidéo.',
   icons: { icon: '/images/icon.png' },
 };
 

@@ -43,6 +43,19 @@ export function getSocketId(): string {
   return socket?.id || '';
 }
 
+/**
+ * Déconnexion Discord (contrat SEC-C7) : la session du socket est figée à la poignée de
+ * main, l'ancienne connexion resterait dans les rooms guild:<id>. On coupe puis on rouvre
+ * (nouvelle poignée de main, cookie à jour → socket anonyme, sans aucune room de serveur).
+ */
+export function resetSocket() {
+  if (!socket) return;
+  try {
+    socket.disconnect();
+    socket.connect();
+  } catch {}
+}
+
 export function overlayRegister(guildId?: string, userId?: string) {
   const s = getSocket();
   if (!s.connected) return;

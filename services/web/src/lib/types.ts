@@ -54,35 +54,4 @@ export interface SearchResult {
   provider?: string;
 }
 
-export interface SpotifyProfile {
-  id: string;
-  display_name?: string;
-  email?: string;
-  images?: { url: string }[];
-}
-
-export interface SpotifyPlaylist {
-  id: string;
-  name: string;
-  owner?: { display_name?: string; id?: string } | string;
-  tracks?: { total?: number };
-  tracks_total?: number;
-  tracksCount?: number;
-  images?: { url: string }[];
-  image?: string;
-  cover?: string;
-}
-
-export interface SpotifyTrack {
-  id: string;
-  name?: string;
-  title?: string;
-  uri?: string;
-  artists?: { name: string }[] | string;
-  artist?: string;
-  duration_ms?: number;
-  album?: { images?: { url: string }[] };
-  image?: string;
-}
-
 export type StatusKind = 'info' | 'ok' | 'err' | 'warn';

@@ -567,7 +567,7 @@ function Sidebar() {
 // ═══════════════════════════════
 export default function Home() {
   usePlayerInit();
-  const { me, guilds, guildId, socketReady, status, boot, setGuild, refreshMe } = usePlayer();
+  const { me, guilds, guildId, socketReady, status, boot, setGuild, logout, refreshMe } = usePlayer();
   const [booted, setBooted] = useState(false);
 
   useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
@@ -628,8 +628,8 @@ export default function Home() {
             <div className="flex items-center gap-2">
               {avatar && <img src={avatar} alt="" className="w-7 h-7 rounded-full border border-border"/>}
               <span className="text-xs text-txt-muted hidden md:inline">{name}</span>
-              <button onClick={async () => {
-                try { await api.logout(); window.location.reload(); } catch {} }}
+              {/* Déconnexion sans rechargement : socket reconnecté (quitte les rooms des serveurs) */}
+              <button onClick={() => { logout().catch(() => {}); }}
                 className="btn text-[11px] py-1">Déco</button>
             </div>
           ) : (
