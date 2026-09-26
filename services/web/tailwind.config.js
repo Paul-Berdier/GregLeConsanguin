@@ -4,32 +4,48 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Nuit gothique : tokens de src/theme/tokens.css
+        nuit:    'var(--nuit)',
+        nef:     'var(--nef)',
+        voute:   'var(--voute)',
+        os:      'var(--os)',
+        cendre:  'var(--cendre)',
+        or:      'var(--or)',
+        gueules: 'var(--gueules)',
+
+        // legacy: supprimé à l'étape 3
         surface: {
-          0: '#06080f',
-          1: 'rgba(12, 16, 28, 0.85)',
-          2: 'rgba(18, 24, 42, 0.72)',
-          3: 'rgba(26, 32, 54, 0.60)',
+          0: 'var(--nuit)',
+          1: 'var(--nef)',
+          2: 'var(--voute)',
+          3: 'var(--voute-2)',
         },
-        accent: { DEFAULT: '#7c5cfc', light: '#a78bfa', dim: 'rgba(124, 92, 252, 0.15)' },
-        teal:   { DEFAULT: '#2dd4bf', dim: 'rgba(45, 212, 191, 0.12)' },
-        rose:   { DEFAULT: '#fb7185', dim: 'rgba(251, 113, 133, 0.12)' },
-        txt:    { DEFAULT: '#e2e8f0', muted: '#64748b', dim: '#334155' },
-        border: { DEFAULT: 'rgba(148, 163, 184, 0.10)', hover: 'rgba(148, 163, 184, 0.20)' },
+        // legacy: supprimé à l'étape 3
+        accent: { DEFAULT: 'rgb(var(--lumiere-rgb))', light: 'var(--or)', dim: 'rgb(var(--lumiere-rgb) / .15)' },
+        // legacy: supprimé à l'étape 3. DEFAULT en color-mix + <alpha-value> : un `var(--x)` nu
+        // ferait disparaître les variantes à opacité (`bg-rose/20` n'est pas généré par Tailwind 3).
+        teal:   { DEFAULT: 'color-mix(in srgb, var(--or) calc(<alpha-value> * 100%), transparent)', dim: 'color-mix(in srgb, var(--or) 12%, transparent)' },
+        // legacy: supprimé à l'étape 3
+        rose:   { DEFAULT: 'color-mix(in srgb, var(--gueules) calc(<alpha-value> * 100%), transparent)', dim: 'color-mix(in srgb, var(--gueules) 12%, transparent)' },
+        // legacy: supprimé à l'étape 3
+        txt:    { DEFAULT: 'var(--os)', muted: 'var(--cendre)', dim: 'var(--cendre-2)' },
+        // legacy: supprimé à l'étape 3
+        border: { DEFAULT: 'var(--hair)', hover: 'var(--hair-2)' },
       },
       fontFamily: {
-        display: ['"Sora"', 'system-ui', 'sans-serif'],
-        body:    ['"DM Sans"', 'system-ui', 'sans-serif'],
-        mono:    ['"JetBrains Mono"', 'monospace'],
+        display: ['var(--f-display)'],
+        body:    ['var(--f-ui)'],
+        mono:    ['var(--f-ui)'],
       },
       borderRadius: { xl2: '20px', xl3: '24px' },
       boxShadow: {
-        glow: '0 0 40px rgba(124, 92, 252, 0.15)',
+        glow: '0 0 40px rgb(var(--lumiere-rgb) / .15)',
         deep: '0 20px 60px rgba(0, 0, 0, 0.5)',
         card: '0 8px 32px rgba(0, 0, 0, 0.3)',
       },
       keyframes: {
         'fade-up': { from: { opacity: '0', transform: 'translateY(12px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
-        'pulse-ring': { '0%,100%': { boxShadow: '0 0 0 0 rgba(124,92,252,0)' }, '50%': { boxShadow: '0 0 0 8px rgba(124,92,252,0.15)' } },
+        'pulse-ring': { '0%,100%': { boxShadow: '0 0 0 0 rgb(207 167 90 / 0)' }, '50%': { boxShadow: '0 0 0 8px rgb(207 167 90 / .15)' } },
         'gradient-shift': { '0%,100%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' } },
         shimmer: { from: { backgroundPosition: '-200% 0' }, to: { backgroundPosition: '200% 0' } },
       },

@@ -47,3 +47,7 @@ youtube.com_cookies.txt
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Next / TypeScript (generes)
+services/web/next-env.d.ts
+services/web/tsconfig.tsbuildinfo

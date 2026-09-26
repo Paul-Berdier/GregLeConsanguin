@@ -1,0 +1,57 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : tokens (couleur, polices, mouvement).
+   Repris à la lettre du prototype (proto-gothique, work/refine/src/styles.css,
+   bloc :root). Seules différences : les familles passent par les variables
+   de next/font/local (src/theme/fonts.ts, classes posées sur <html>), et les
+   variables de scène (--R --vw --f --crown --heart) arrivent à l'étape 2.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  color-scheme:dark;
+  --nuit:#0b0908;        /* the nave wall: page ground */
+  --nef:#14110e;         /* surfaces (queue, popovers) */
+  --voute:#1d1915;       /* raised: inputs, hovered rows, plaques */
+  --voute-2:#27221c;
+  --os:#efe7d8;          /* bone: primary text */
+  --os-2:#cfc6b6;
+  --cendre:#9b9183;      /* ash: secondary text (6.1:1 on --nef) */
+  --cendre-2:#71695e;    /* non-text marks only (3.5:1 on --nef) */
+  --or:#cfa75a;          /* gold: Greg's voice, focus, top ranks */
+  --gueules:#e0583e;     /* heraldic red: remove, errors */
+  --plomb:#060403;       /* lead: the came around every plaque and roundel */
+  --pierre-rgb:150 136 116;  /* the limestone of the window (rendered in Blender) */
+  --hair:rgb(239 231 216 / .075);
+  --hair-2:rgb(239 231 216 / .14);
+  --lumiere:#b4c4e2;     /* the song's light (rewritten per track from the thumbnail) */
+  --lumiere-rgb:180 196 226;
+
+  --f-display:var(--font-grenze-gotisch),"Grenze",serif;
+  --f-title:var(--font-grenze),"Alegreya Sans",serif;
+  --f-ui:var(--font-alegreya-sans),"Segoe UI",system-ui,sans-serif;
+  --f-voice:var(--font-alegreya-italic),Georgia,serif;
+
+  /* motion tokens (research/motion.md §4.1) */
+  --slow:1;
+  --dur-press:120ms; --dur-hover:150ms; --dur-micro:160ms; --dur-pop-in:200ms; --dur-pop-out:120ms;
+  --dur-shift:200ms; --dur-exit:180ms; --dur-enter:260ms; --dur-text:280ms; --dur-toast:400ms;
+  --dur-reveal:420ms; --dur-flight:420ms; --dur-glint:900ms; --dur-ambient:900ms; --stagger:30ms;
+  --ease-out:cubic-bezier(.23,1,.32,1);
+  --ease-in-out:cubic-bezier(.77,0,.175,1);
+  --ease-drawer:cubic-bezier(.32,.72,0,1);
+  --ease-shift:cubic-bezier(.2,0,0,1);
+  --ease-drop:cubic-bezier(.2,1,.1,1);
+  --ease-flash:cubic-bezier(.25,.1,.25,1);
+  --spring-snap-dur:450ms;
+  --spring-snap:linear(0,.1787,.4522,.668,.8096,.8947,.9432,.97,.9843,.9919,.9959,.9979,.999,.9995,1);
+  --spring-move-dur:650ms;
+  --spring-move:linear(0,.0792,.2371,.4044,.5525,.6726,.7652,.8341,.8842,.9199,.9451,.9626,.9747,.9829,.9886,.9924,.9949,.9966,.9978,.9985,.999,1);
+  --spring-settle-dur:750ms;
+  --spring-settle:linear(0,.0663,.2105,.3763,.5332,.6669,.7733,.8533,.9107,.9499,.9754,.9911,1,1.0044,1.0061,1.0062,1.0055,1.0045,1.0035,1.0026,1.0018,1.0012,1.0008,1,1);
+  --spring-seal-dur:700ms;
+  --spring-seal:linear(0,.0581,.1953,.3667,.5407,.6976,.8271,.9258,.9947,1.0379,1.0605,1.0679,1.0652,1.0566,1.0451,1.0332,1.0222,1.0131,1.006,1.001,.9978,.9961,1);
+
+  --header-h:72px;
+  --panel-w:420px;
+}
+
+/* mouvement réduit : pas de vol, pas de reflet, pas de décalage en cascade */
+@media (prefers-reduced-motion: reduce){:root{--dur-flight:0ms;--dur-glint:0ms;--stagger:0ms}}

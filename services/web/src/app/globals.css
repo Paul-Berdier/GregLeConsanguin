@@ -1,59 +1,70 @@
+@import '../theme/tokens.css';
+@import '../components/Header/header.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 
 /* ═══ Base ═══ */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 
 body {
-  font-family: 'DM Sans', system-ui, sans-serif;
-  color: #e2e8f0;
-  background: #06080f;
+  background: var(--nuit);
+  color: var(--os);
+  font: 400 15.5px/1.42 var(--f-ui);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
-/* Noise overlay */
-body::before {
-  content: '';
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  opacity: 0.025;
+/* Focus doré (clavier). En couche base : un `outline-none` explicite garde la main,
+   comme `.field input` dans le prototype, qui s'appuie sur son propre anneau. */
+@layer base {
+  :focus-visible { outline: 2px solid var(--or); outline-offset: 3px; }
 }
 
-/* Ambient gradients */
-body::after {
-  content: '';
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background:
-    radial-gradient(900px 500px at 15% 5%, rgba(124, 92, 252, 0.12), transparent 60%),
-    radial-gradient(700px 400px at 85% 90%, rgba(45, 212, 191, 0.06), transparent 50%);
+/* Classes maison en couche `components` : émises avant les utilitaires, qui gardent donc
+   la main sur le même élément (`plaque rounded-full`, `sr static`…). Hors couche, ou même
+   en `@layer utilities` (Tailwind 3 les range après les utilitaires du cœur), elles
+   passeraient après et gagneraient en silence. Émises seulement si utilisées. */
+@layer components {
+  /* Nef : une faible lumière chaude au sol, peinte une fois (posée dans layout.tsx). */
+  .nightfall {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(120% 90% at 50% 125%, rgb(40 30 20 / .5), transparent 60%);
+  }
+
+  /* Plaque : plomb à l'extérieur, filet de pierre à l'intérieur, la lumière du morceau sur l'arête haute. */
+  .plaque {
+    background: var(--voute); border-radius: 9px; corner-shape: bevel;
+    box-shadow: 0 0 0 1px var(--plomb), inset 0 0 0 1px rgb(var(--pierre-rgb) / .22),
+      inset 0 1px 0 rgb(var(--lumiere-rgb) / .38), 0 22px 44px -14px rgb(0 0 0 / .85);
+  }
+
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .tnum { font-variant-numeric: tabular-nums lining-nums; }
 }
 
 /* ═══ Scrollbar ═══ */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(124, 92, 252, 0.25); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(124, 92, 252, 0.4); }
-* { scrollbar-width: thin; scrollbar-color: rgba(124,92,252,0.25) transparent; }
+::-webkit-scrollbar-thumb { background: var(--hair-2); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--pierre-rgb) / .45); }
+* { scrollbar-width: thin; scrollbar-color: var(--hair-2) transparent; }
 
-/* ═══ Components ═══ */
+/* ═══ Components (legacy : repeints aux tokens, remplacés aux étapes 2 et 3) ═══ */
 @layer components {
-  /* Glass card */
+  /* Carte (ex-verre dépoli : fond plein, plus de flou d'arrière-plan) */
   .glass {
-    background: rgba(12, 16, 28, 0.75);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid rgba(148, 163, 184, 0.08);
+    background: var(--nef);
+    border: 1px solid var(--hair);
     border-radius: 20px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 32px rgb(0 0 0 / .3);
   }
   .glass-subtle {
-    background: rgba(18, 24, 42, 0.50);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(148, 163, 184, 0.06);
+    background: var(--voute);
+    border: 1px solid var(--hair);
     border-radius: 16px;
   }
 
@@ -64,14 +75,14 @@ body::after {
     aspect-ratio: 16/9;
     border-radius: 20px;
     overflow: hidden;
-    background: #0a0c14;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 80px rgba(124, 92, 252, 0.06);
+    background: var(--plomb);
+    box-shadow: 0 20px 60px rgb(0 0 0 / .6);
   }
   .video-frame::after {
     content: '';
     position: absolute; inset: 0; z-index: 2;
     pointer-events: none;
-    background: linear-gradient(0deg, rgba(6,8,15,0.7) 0%, transparent 30%, transparent 70%, rgba(6,8,15,0.3) 100%);
+    background: linear-gradient(0deg, rgb(11 9 8 / .7) 0%, transparent 30%, transparent 70%, rgb(11 9 8 / .3) 100%);
     border-radius: 20px;
   }
   .video-frame iframe, .video-frame video {
@@ -94,15 +105,15 @@ body::after {
     height: clamp(120px, 20vw, 200px);
     border-radius: 20px;
     background-size: cover; background-position: center;
-    box-shadow: 0 16px 48px rgba(0,0,0,0.6);
-    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow: 0 16px 48px rgb(0 0 0 / .6);
+    border: 1px solid var(--hair);
   }
 
   /* Progress bar */
   .progress-track {
     width: 100%; height: 6px;
     border-radius: 99px;
-    background: rgba(100, 116, 139, 0.15);
+    background: rgb(var(--pierre-rgb) / .15);
     cursor: pointer;
     position: relative;
     transition: height 0.15s;
@@ -110,7 +121,7 @@ body::after {
   .progress-track:hover { height: 10px; }
   .progress-fill {
     height: 100%; border-radius: 99px;
-    background: linear-gradient(90deg, #7c5cfc, #2dd4bf);
+    background: linear-gradient(90deg, rgb(var(--lumiere-rgb)), var(--or));
     will-change: width;
     position: relative;
   }
@@ -119,121 +130,109 @@ body::after {
     position: absolute; right: -5px; top: 50%;
     width: 14px; height: 14px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--os);
     transform: translateY(-50%) scale(0);
     transition: transform 0.15s;
-    box-shadow: 0 0 8px rgba(124,92,252,0.5);
+    box-shadow: 0 0 8px rgb(var(--lumiere-rgb) / .5);
   }
   .progress-track:hover .progress-fill::after { transform: translateY(-50%) scale(1); }
 
   /* Control buttons */
   .ctrl {
-    @apply flex items-center justify-center cursor-pointer transition-all duration-200;
+    @apply flex items-center justify-center cursor-pointer;
+    transition: background-color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out),
+      transform var(--dur-press) var(--ease-out);
     width: 48px; height: 48px;
     border-radius: 16px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.06);
-    color: #e2e8f0;
+    background: rgb(239 231 216 / .04);
+    border: 1px solid var(--hair);
+    color: var(--os);
   }
-  .ctrl:hover { background: rgba(124, 92, 252, 0.12); border-color: rgba(124, 92, 252, 0.25); }
+  .ctrl:hover { background: rgb(var(--lumiere-rgb) / .12); border-color: rgb(var(--lumiere-rgb) / .25); }
   .ctrl:active { transform: scale(0.93); }
   .ctrl-main {
     @apply ctrl;
     width: 60px; height: 60px;
     border-radius: 20px;
-    background: rgba(124, 92, 252, 0.2);
-    border-color: rgba(124, 92, 252, 0.35);
+    background: rgb(var(--lumiere-rgb) / .2);
+    border-color: rgb(var(--lumiere-rgb) / .35);
   }
-  .ctrl-main:hover { background: rgba(124, 92, 252, 0.3); box-shadow: 0 0 20px rgba(124,92,252,0.2); }
+  .ctrl-main:hover { background: rgb(var(--lumiere-rgb) / .3); box-shadow: 0 0 20px rgb(var(--lumiere-rgb) / .2); }
   .ctrl-active {
-    background: rgba(124, 92, 252, 0.2) !important;
-    border-color: rgba(124, 92, 252, 0.5) !important;
-    box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.12);
+    background: rgb(var(--lumiere-rgb) / .2) !important;
+    border-color: rgb(var(--lumiere-rgb) / .5) !important;
+    box-shadow: 0 0 0 3px rgb(var(--lumiere-rgb) / .12);
   }
 
   /* Buttons */
   .btn {
-    @apply inline-flex items-center gap-2 font-semibold text-sm cursor-pointer transition-all duration-200;
+    @apply inline-flex items-center gap-2 font-semibold text-sm cursor-pointer;
+    transition: background-color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out),
+      transform var(--dur-press) var(--ease-out);
     padding: 8px 16px;
     border-radius: 12px;
-    border: 1px solid rgba(148,163,184,0.12);
-    background: rgba(255,255,255,0.04);
-    color: #e2e8f0;
+    border: 1px solid var(--hair-2);
+    background: rgb(239 231 216 / .04);
+    color: var(--os);
   }
-  .btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(148,163,184,0.2); }
+  .btn:hover { background: rgb(239 231 216 / .08); border-color: rgb(239 231 216 / .2); }
   .btn:active { transform: scale(0.97); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
   .btn-accent {
     @apply btn;
-    background: rgba(124, 92, 252, 0.18);
-    border-color: rgba(124, 92, 252, 0.35);
+    background: rgb(var(--lumiere-rgb) / .18);
+    border-color: rgb(var(--lumiere-rgb) / .35);
   }
-  .btn-accent:hover { background: rgba(124, 92, 252, 0.28); }
+  .btn-accent:hover { background: rgb(var(--lumiere-rgb) / .28); }
 
   /* Queue item */
   .q-item {
-    @apply flex items-center gap-3 cursor-pointer transition-all duration-200;
+    @apply flex items-center gap-3 cursor-pointer;
+    transition: background-color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
     padding: 8px 10px;
     border-radius: 14px;
     border: 1px solid transparent;
   }
-  .q-item:hover { background: rgba(124,92,252,0.06); border-color: rgba(124,92,252,0.12); }
-  .q-item-active { background: rgba(124,92,252,0.1) !important; border-color: rgba(124,92,252,0.25) !important; }
+  .q-item:hover { background: rgb(var(--lumiere-rgb) / .06); border-color: rgb(var(--lumiere-rgb) / .12); }
+  .q-item-active { background: rgb(var(--lumiere-rgb) / .1) !important; border-color: rgb(var(--lumiere-rgb) / .25) !important; }
 
   .q-thumb {
     width: 44px; height: 44px;
     border-radius: 10px;
-    background: rgba(15,23,42,0.6);
+    background: var(--voute);
     background-size: cover; background-position: center;
     flex-shrink: 0;
-    border: 1px solid rgba(255,255,255,0.04);
+    border: 1px solid var(--hair);
   }
 
-  /* Suggestion dropdown */
-  .sug-drop {
-    position: absolute; left: 0; right: 0;
-    top: calc(100% + 6px);
-    background: rgba(10, 14, 26, 0.96);
-    backdrop-filter: blur(24px);
-    border: 1px solid rgba(148,163,184,0.12);
-    border-radius: 16px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-    overflow: hidden; max-height: 340px; overflow-y: auto;
-    z-index: 60;
-  }
-  .sug-item {
-    @apply flex items-center gap-3 cursor-pointer transition-colors duration-100;
-    padding: 10px 12px;
-    border-bottom: 1px solid rgba(148,163,184,0.06);
-  }
-  .sug-item:last-child { border-bottom: none; }
-  .sug-item:hover, .sug-item.active { background: rgba(124,92,252,0.1); }
+  /* Suggestions de recherche : .sug / .sug-item dans components/Header/header.css */
 
   /* Tabs */
   .tab {
-    @apply font-semibold text-sm cursor-pointer transition-all duration-200;
+    @apply font-semibold text-sm cursor-pointer;
+    transition: color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out);
     padding: 8px 20px;
     border-radius: 10px;
-    color: #64748b;
+    color: var(--cendre);
   }
-  .tab:hover { color: #e2e8f0; }
+  .tab:hover { color: var(--os); }
   .tab-active {
-    color: #e2e8f0;
-    background: rgba(124,92,252,0.15);
-    box-shadow: inset 0 0 0 1px rgba(124,92,252,0.25);
+    color: var(--os);
+    background: rgb(var(--lumiere-rgb) / .15);
+    box-shadow: inset 0 0 0 1px rgb(var(--lumiere-rgb) / .25);
   }
 
   /* Status bar */
-  .status-ok { background: rgba(45,212,191,0.1) !important; border-color: rgba(45,212,191,0.2) !important; }
-  .status-err { background: rgba(251,113,133,0.1) !important; border-color: rgba(251,113,133,0.2) !important; }
+  .status-ok { background: rgb(207 167 90 / .1) !important; border-color: rgb(207 167 90 / .2) !important; }
+  .status-err { background: rgb(224 88 62 / .1) !important; border-color: rgb(224 88 62 / .2) !important; }
 
   /* Loading */
   .loading-spin::after {
     content: ''; display: inline-block;
     width: 14px; height: 14px; margin-left: 8px;
     border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.2);
-    border-top-color: rgba(255,255,255,0.9);
+    border: 2px solid rgb(239 231 216 / .2);
+    border-top-color: rgb(239 231 216 / .9);
     animation: spin 0.7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -244,7 +243,7 @@ body::after {
   }
   .wave-bar {
     width: 3px; border-radius: 2px;
-    background: linear-gradient(0deg, #7c5cfc, #2dd4bf);
+    background: linear-gradient(0deg, rgb(var(--lumiere-rgb)), var(--or));
     animation: wave-bounce 0.8s ease-in-out infinite alternate;
   }
   .wave-bar:nth-child(1) { height: 40%; animation-delay: 0s; }
