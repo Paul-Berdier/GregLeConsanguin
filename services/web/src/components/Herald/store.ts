@@ -1,0 +1,43 @@
+'use client';
+
+import { useSyncExternalStore } from 'react';
+import { createHerald, deckToast, errorToast } from '@/lib/herald';
+import type { DeckReader, SayOptions, Toast } from '@/lib/herald';
+import { errorCopy } from '@/lib/playerUtils';
+import { seedOf } from '@/lib/stage/scene';
+import { has, quip, t } from '@/theme/copy';
+
+let announcer: ((t: Toast) => void) | null = null;
+
+/** Le Héraut de la page (un seul) : usePlayer y annonce, <Herald/> l'affiche et le lit aux lecteurs d'écran. */
+export const herald = createHerald({
+  now: () => Date.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  announce: (toast) => announcer?.(toast),
+});
+
+/** <Herald/> branche ici ses régions aria-live persistantes. */
+export function setAnnouncer(fn: ((t: Toast) => void) | null): void {
+  announcer = fn;
+}
+
+const EMPTY: readonly Toast[] = [];
+export function useToasts(): readonly Toast[] {
+  return useSyncExternalStore(herald.subscribe, herald.getSnapshot, () => EMPTY);
+}
+
+const DECK: DeckReader = { t, has, quip, seedOf };
+
+/**
+ * Message du deck : `key` est une entrée `{ text, kind?, quips? }` (ex. 'toast.removed').
+ * `text` remplace le texte de l'entrée (texte déjà rendu) ; la réplique vient des `quips` de l'entrée (deckToast).
+ */
+export function say(key: string, o: SayOptions = {}): number {
+  return herald.notify(deckToast(key, o, DECK));
+}
+
+/** Erreur d'API → texte du deck (errorCopy) et sa sorte ; `ctx.name` nomme le demandeur d'un titre prioritaire. */
+export function sayError(e: unknown, ctx?: { name?: string; q?: string; action?: string }): number {
+  return herald.notify(errorToast(errorCopy(e, ctx), DECK));
+}
