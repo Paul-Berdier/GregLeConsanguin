@@ -1,0 +1,26 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : l'horloge en lecture seule (zone de survol sur l'anneau, temps aux naissances de l'arc).
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 235–251). Écart voulu : pas de seek
+   (le bot n'a pas de commande) : ni curseur main, ni anneau de focus, la zone ne sert qu'au survol.
+   Variables lues : --R --crown (posées sur .stage).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dial {
+  position: absolute; left: 50%; top: 0; z-index: 1; overflow: visible; pointer-events: none;
+  width: calc(2.12 * var(--R)); height: calc(2.12 * var(--R)); margin-left: calc(-1.06 * var(--R));
+}
+.dial .dial-hit { fill: none; stroke: transparent; pointer-events: stroke; }
+.stage[data-scene=night] .dial .dial-hit { pointer-events: none; }
+.spring { position: absolute; top: calc(var(--crown) - 9px); z-index: 2; font: 600 15px/1 var(--f-ui); color: var(--cendre); white-space: nowrap; }
+.spring.l { right: calc(50% + 1.03 * var(--R) + 10px); color: rgb(var(--lumiere-rgb)); }
+.spring.r { left: calc(50% + 1.03 * var(--R) + 10px); }
+.stage[data-springs=row] .spring { display: none; }
+.times-row { display: none; justify-content: space-between; margin-top: 10px; font: 600 13px/1 var(--f-ui); color: var(--cendre); }
+.times-row span:first-child { color: rgb(var(--lumiere-rgb)); }
+.stage[data-springs=row] .times-row { display: flex; }
+.stage[data-scene=night] .spring, .stage[data-scene=night] .times-row { visibility: hidden; }
+.dial-tip {
+  position: absolute; z-index: 5; pointer-events: none; padding: 6px 8px; font: 600 13px/1 var(--f-ui); color: var(--os);
+  opacity: 0; transform: translate(-50%, -100%) translateY(-10px); transition: opacity 120ms var(--ease-out);
+}
+.dial-tip[data-on=true] { opacity: 1; }
+@media (hover: none) { .dial .dial-hit { pointer-events: none; } }

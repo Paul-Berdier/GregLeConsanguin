@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const pub = (p) => fileURLToPath(new URL(`../public/${p}`, import.meta.url));
 const REQUIRED = [
@@ -24,4 +24,10 @@ test('un sceau royal par initiale A–Z', () => {
 test('poids total raisonnable (< 1,6 Mo hors sceaux)', () => {
   const total = REQUIRED.reduce((s, p) => s + statSync(pub(p)).size, 0);
   assert.ok(total < 1_600_000, `${total} octets`);
+});
+test('bonnet à grelots de Greg (portrait de la nuit « déconnecté »), avec sa licence', () => {
+  for (const p of ['gothique/jester-cap-256.webp', 'gothique/jester-cap-512.webp']) {
+    assert.ok(existsSync(pub(p)) && statSync(pub(p)).size > 0, p);
+  }
+  assert.match(readFileSync(pub('licenses/LICENSES.md'), 'utf8'), /jester-cap-256\.webp/);
 });
