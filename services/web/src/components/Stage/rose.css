@@ -1,0 +1,55 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : la rosace (pierre Blender + verre peint dans un worker, lib/rose).
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 205–233). Écarts voulus :
+   - la coupe jour / nuit est portée par chaque fenêtre (data-kind), jamais animée : le passage
+     jour ↔ nuit est le fondu d'opacité de RoseClient (on n'anime que transform et opacity) ;
+   - --p0 / --p1 (masque de l'horloge) valent 0 par défaut : sans eux, le masque serait invalide
+     et tout l'anneau s'allumerait.
+   Variables lues : --R --clip-day --clip-night --ring-h --a0 (posées sur .stage), --p0 --p1 (Rose.tsx).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.rosace {
+  --p0: 0; --p1: 0;
+  position: absolute; left: 50%; top: 0; z-index: 0; pointer-events: none;
+  width: calc(2.12 * var(--R)); height: calc(2.12 * var(--R)); margin-left: calc(-1.06 * var(--R));
+}
+.rosace .dim { position: absolute; inset: 0; transition: opacity 700ms ease; }
+.stage[data-paused=true] .rosace .dim { opacity: .42; }
+.rosace .slot { position: absolute; inset: 0; }
+
+/* chaque calque isole sa pile : le z-index d'une fenêtre (la nouvelle sur l'ancienne) ne passe jamais le bloom devant le verre */
+.rosace .bloom-layer { position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 0; isolation: isolate; }
+.rosace .bloom-layer canvas {
+  position: absolute; left: calc(-1.5 * var(--R)); top: calc(-1.5 * var(--R));
+  width: calc(3 * var(--R)); height: calc(3 * var(--R));
+}
+/* la nuit, pas de halo laiteux sous le texte : le bas du bloom s'efface */
+.stage[data-scene=night] .rosace .bloom-layer canvas {
+  -webkit-mask: linear-gradient(#000 48%, transparent 66%); mask: linear-gradient(#000 48%, transparent 66%);
+}
+
+/* le bas de la rose s'enfonce dans l'ombre sous le texte de nuit (masque fixe : le jour, cette partie est coupée) */
+.rosace .glass-layer {
+  position: absolute; inset: 0; z-index: 1; isolation: isolate;
+  -webkit-mask: linear-gradient(#000 calc(1.14 * var(--R)), transparent calc(1.74 * var(--R)));
+  mask: linear-gradient(#000 calc(1.14 * var(--R)), transparent calc(1.74 * var(--R)));
+}
+/* un titre : la rose coupée au linteau ; la lune : la rose entière (coupe rectangulaire, jamais animée) */
+.rosace .glass-layer .slot { clip-path: inset(0 0 var(--clip-day) 0); }
+.rosace .glass-layer .slot[data-kind=moon] { clip-path: inset(0 0 var(--clip-night) 0); }
+.rosace .glass-layer canvas, .rosace .stone-still { position: absolute; left: 0; top: 0; width: 100%; }
+.rosace canvas.win, .rosace .stone-still { height: 100%; }
+
+/* l'horloge : les panneaux joués (ring) et le panneau courant, plus vif (head), découpés par deux masques
+   coniques centrés sur la rose ; les masques ne changent qu'une fois par panneau (Rose.tsx) */
+.rosace canvas.ring, .rosace canvas.head { height: var(--ring-h); }
+.rosace canvas.ring {
+  -webkit-mask: conic-gradient(from calc(var(--a0) * 1deg) at 50% calc(1.06 * var(--R)), #000 calc(var(--p0) * 1deg), transparent 0);
+  mask: conic-gradient(from calc(var(--a0) * 1deg) at 50% calc(1.06 * var(--R)), #000 calc(var(--p0) * 1deg), transparent 0);
+}
+.rosace canvas.head {
+  -webkit-mask: conic-gradient(from calc(var(--a0) * 1deg) at 50% calc(1.06 * var(--R)), transparent calc(var(--p0) * 1deg), #000 0 calc(var(--p1) * 1deg), transparent 0);
+  mask: conic-gradient(from calc(var(--a0) * 1deg) at 50% calc(1.06 * var(--R)), transparent calc(var(--p0) * 1deg), #000 0 calc(var(--p1) * 1deg), transparent 0);
+}
+.stage[data-scene=night] .rosace canvas.ring, .stage[data-scene=night] .rosace canvas.head { visibility: hidden; }
+
+@media (prefers-reduced-motion: reduce) { .rosace .dim { transition-duration: 200ms; } }
