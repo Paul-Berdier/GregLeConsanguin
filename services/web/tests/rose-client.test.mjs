@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
-const { roseKey, keyFits, isMoonKey, evictable, KEEP_OTHERS, FADE_MS, RoseClient } = await loadTs('../src/lib/rose/client.ts');
+const { roseKey, keyFits, isMoonKey, evictable, KEEP_OTHERS, FADE_MS, RoseClient, afterFirstPaint, FIRST_PAINT_WAIT_MS } = await loadTs('../src/lib/rose/client.ts');
 
 test('clé d’une fenêtre : titre ou lune, à une taille et une densité', () => {
   assert.equal(roseKey('dQw4w9WgXcQ', 349, 2), 't:dQw4w9WgXcQ@349x2');
@@ -371,4 +371,60 @@ test('démarrage différé : taille, titre et prochain titre demandés avant sta
   await finishFades();
   assert.equal(front().key, 't:A@100x1');
   c.destroy();
+});
+
+// Étape 4, vérification dans Chrome : sur un navigateur froid, le premier temps mort venait avant que la première image
+// soit présentée (worker 335 ms, first-contentful-paint 340 ms). La pierre attend désormais l'image présentée.
+function paintHost({ painted = false, observer = true } = {}) {
+  const h = { idles: [], timers: [], watching: 0 };
+  h.painted = () => painted;
+  h.onPaint = (cb) => { if (!observer) return null; h.watching++; h.paint = () => { painted = true; cb(); }; return () => { h.watching--; }; };
+  h.idle = (cb) => { const e = { cb, live: true }; h.idles.push(e); return () => { e.live = false; }; };
+  h.later = (cb, ms) => { const e = { cb, ms, live: true }; h.timers.push(e); return () => { e.live = false; }; };
+  h.fire = (list) => { for (const e of list.splice(0)) if (e.live) e.cb(); };
+  return h;
+}
+
+test('pierre différée : la première image présentée (first-contentful-paint), puis le premier temps mort', () => {
+  const runs = [], h = paintHost();
+  afterFirstPaint(() => runs.push('start'), h);
+  assert.equal(h.idles.length, 0, 'aucun temps mort guetté avant l’image présentée');
+  assert.equal(h.watching, 1);
+  h.paint();
+  assert.equal(h.watching, 0, 'l’observateur est débranché');
+  assert.equal(h.idles.length, 1);
+  assert.deepEqual(runs, []);
+  h.fire(h.idles);
+  assert.deepEqual(runs, ['start']);
+  h.fire(h.timers);
+  assert.deepEqual(runs, ['start'], 'le filet ne relance pas');
+});
+
+test('pierre différée : déjà présentée, ou sans observateur, au premier temps mort ; onglet caché, filet de 3 s ; annulée, rien', () => {
+  for (const o of [{ painted: true }, { observer: false }]) {
+    const runs = [], h = paintHost(o);
+    afterFirstPaint(() => runs.push('start'), h);
+    assert.equal(h.watching, 0);
+    assert.equal(h.idles.length, 1, JSON.stringify(o));
+    h.fire(h.idles);
+    assert.deepEqual(runs, ['start']);
+  }
+  const hidden = paintHost(), runs = [];
+  afterFirstPaint(() => runs.push('start'), hidden);
+  assert.deepEqual(hidden.timers.map((e) => e.ms), [FIRST_PAINT_WAIT_MS]);
+  assert.equal(FIRST_PAINT_WAIT_MS, 3000);
+  hidden.fire(hidden.timers);
+  assert.equal(hidden.watching, 0);
+  hidden.fire(hidden.idles);
+  assert.deepEqual(runs, ['start']);
+  const gone = paintHost(), none = [];
+  const cancel = afterFirstPaint(() => none.push('start'), gone);
+  cancel();
+  assert.equal(gone.watching, 0);
+  gone.fire(gone.timers); gone.fire(gone.idles);
+  assert.deepEqual(none, [], 'démonté avant l’image : rien ne démarre');
+  const late = paintHost({ painted: true }), after = [];
+  afterFirstPaint(() => after.push('start'), late)();
+  late.fire(late.idles);
+  assert.deepEqual(after, [], 'démonté avant le temps mort : rien ne démarre');
 });

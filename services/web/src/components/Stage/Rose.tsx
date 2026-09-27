@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { RoseClient, STONE_URL, roseSupported } from '@/lib/rose/client';
+import { RoseClient, STONE_URL, afterFirstPaint, roseSupported } from '@/lib/rose/client';
 import { BUSY_MS, NIGHT_ROSE_FADE_MS } from '@/lib/stage/coronation';
 import type { Ceremony } from './coronation';
 
@@ -17,9 +17,10 @@ export type RoseProps = {
 /**
  * La rosace (spec §4) : bloom et verre, deux calques remplis par RoseClient (canevas bitmaprenderer).
  * Décorative : aria-hidden. Moteur sans OffscreenCanvas, ou worker hors service : la pierre seule, immobile (spec §7).
- * La pierre et le worker attendent le premier temps mort après l'affichage (spec §7) : ce qui a été demandé entre-temps
- * part au démarrage. Au Couronnement, la rosace se rallume selon le plan (en vol, à l'atterrissage) et ne peint rien
- * d'avance pendant la cérémonie (un titre sans vidéo aussi) ; à l'arrêt, la lune entre en 240 ms.
+ * La pierre et le worker attendent la première image présentée, puis le premier temps mort (spec §7, afterFirstPaint) :
+ * ce qui a été demandé entre-temps part au démarrage. Au Couronnement, la rosace se rallume selon le plan (en vol, à
+ * l'atterrissage) et ne peint rien d'avance pendant la cérémonie (un titre sans vidéo aussi) ; à l'arrêt, la lune entre
+ * en 240 ms.
  * Styles : rose.css. Le masque de l'horloge passe par --p0 / --p1 sur la racine.
  */
 export default function Rose({ videoId, nextId, R, mask, crown }: RoseProps) {
@@ -35,9 +36,8 @@ export default function Rose({ videoId, nextId, R, mask, crown }: RoseProps) {
     const c = new RoseClient({ bloom: bloomRef.current, glass: glassRef.current }, { onFail });
     client.current = c;
     const start = () => { if (client.current === c) c.start(); };
-    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void };
-    const idle = w.requestIdleCallback ? w.requestIdleCallback(start, { timeout: 1500 }) : window.setTimeout(start, 200);
-    return () => { if (w.cancelIdleCallback) w.cancelIdleCallback(idle); else clearTimeout(idle); c.destroy(); client.current = null; };
+    const cancel = afterFirstPaint(start);
+    return () => { cancel(); c.destroy(); client.current = null; };
   }, []);
 
   useEffect(() => { if (R) client.current?.resize(R); }, [R]);

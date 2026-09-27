@@ -9,7 +9,8 @@
  *   et la repeinte attend la fin du fondu en cours.
  * - Sans à-coup : chaque fondu repart de l'opacité rendue ; seule la fenêtre qui entre s'éclaircit.
  * - Pendant une cérémonie (hold, Rose.tsx), rien n'est peint d'avance non plus.
- * - start() peut attendre le premier temps mort : la taille, le titre et le prochain titre demandés avant partent alors.
+ * - start() peut attendre (afterFirstPaint : la première image présentée, puis le premier temps mort) : la taille, le titre
+ *   et le prochain titre demandés avant partent alors.
  * Sans import runtime : les fonctions exportées sont testées (tests/rose-client.test.mjs).
  */
 import type { RoseIn, RoseOut } from './rose.worker';
@@ -73,6 +74,63 @@ const idle = (fn: () => void): void => {
   const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
   if (ric) ric(fn, { timeout: 1500 }); else setTimeout(fn, 1);
 };
+
+/** Filet de afterFirstPaint : un onglet ouvert en arrière-plan ne présente aucune image. */
+export const FIRST_PAINT_WAIT_MS = 3000;
+
+/** Ce que afterFirstPaint lit du navigateur (les tests en passent un factice). Chaque attente rend son annulation. */
+export type PaintHost = {
+  painted(): boolean;                                        // première image avec contenu déjà présentée ?
+  onPaint(cb: () => void): (() => void) | null;              // à sa présentation ; null : pas d'observateur
+  idle(cb: () => void): () => void;                          // premier temps mort
+  later(cb: () => void, ms: number): () => void;
+};
+
+/**
+ * La pierre et le worker attendent la première image présentée (first-contentful-paint, instant de présentation), puis le
+ * premier temps mort (spec §7). Le temps mort seul ne suffit pas : sur un navigateur froid, il venait avant la présentation.
+ * Sans observateur, au premier temps mort ; image jamais présentée (onglet caché), au bout de FIRST_PAINT_WAIT_MS.
+ * Rend l'annulation (démontage).
+ */
+export function afterFirstPaint(run: () => void, host: PaintHost = browserPaintHost()): () => void {
+  let stops: (() => void)[] = [], armed = false;
+  const stop = (): void => { for (const s of stops) s(); stops = []; };
+  const arm = (): void => {
+    if (armed) return;
+    armed = true;
+    stop();
+    stops.push(host.idle(run));
+  };
+  if (host.painted()) { arm(); return stop; }
+  const off = host.onPaint(arm);
+  if (!off) arm();
+  else if (armed) off();                                     // image déjà là : l'observateur l'a signalée aussitôt
+  else stops.push(off, host.later(arm, FIRST_PAINT_WAIT_MS));
+  return stop;
+}
+
+/** Le navigateur : Paint Timing (first-contentful-paint), requestIdleCallback (repli : 200 ms). */
+export function browserPaintHost(): PaintHost {
+  const w = globalThis as {
+    requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void;
+  };
+  const fcp = (l: { getEntriesByName(name: string): unknown[] }): boolean => l.getEntriesByName('first-contentful-paint').length > 0;
+  return {
+    painted: () => typeof performance !== 'undefined' && fcp(performance),
+    onPaint: (cb) => {
+      if (typeof PerformanceObserver === 'undefined' || !PerformanceObserver.supportedEntryTypes?.includes('paint')) return null;
+      const po = new PerformanceObserver((l) => { if (fcp(l)) cb(); });
+      po.observe({ type: 'paint', buffered: true });
+      return () => po.disconnect();
+    },
+    idle: (cb) => {
+      if (w.requestIdleCallback) { const h = w.requestIdleCallback(cb, { timeout: 1500 }); return () => w.cancelIdleCallback?.(h); }
+      const t = setTimeout(cb, 200);
+      return () => clearTimeout(t);
+    },
+    later: (cb, ms) => { const t = setTimeout(cb, ms); return () => clearTimeout(t); },
+  };
+}
 
 export class RoseClient {
   private layers: RoseLayers;

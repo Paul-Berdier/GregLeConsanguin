@@ -45,8 +45,15 @@ test('ordres notés, Héraut après l’atterrissage, pierre au premier temps mo
   assert.match(read('src/components/Stage/Transport.tsx'), /kingOrders\.mark\(NEXT, e\.detail === 0 \? 'key' : 'pointer'/);
   assert.match(read('src/hooks/usePlayer.ts'), /setTimeout\(\(\) => say\('toast\.playNow'[\s\S]*?\), wait\)/);
   const rose = read('src/components/Stage/Rose.tsx');
-  for (const re of [/const start = \(\) => \{ if \(client\.current === c\) c\.start\(\); \};/, /requestIdleCallback/, /NIGHT_ROSE_FADE_MS/, /c\.hold\(BUSY_MS\)/]) {
+  for (const re of [/const start = \(\) => \{ if \(client\.current === c\) c\.start\(\); \};/, /NIGHT_ROSE_FADE_MS/, /c\.hold\(BUSY_MS\)/]) {
     assert.match(rose, re);
+  }
+  // étape 4, Chrome : l'image présentée d'abord (first-contentful-paint), puis le premier temps mort (client.ts)
+  assert.match(rose, /const cancel = afterFirstPaint\(start\);/);
+  assert.match(rose, /return \(\) => \{ cancel\(\); c\.destroy\(\); client\.current = null; \};/);
+  const client = code('src/lib/rose/client.ts');
+  for (const re of [/getEntriesByName\('first-contentful-paint'\)/, /observe\(\{ type: 'paint', buffered: true \}\)/, /requestIdleCallback/, /cancelIdleCallback/]) {
+    assert.match(client, re);
   }
 });
 
