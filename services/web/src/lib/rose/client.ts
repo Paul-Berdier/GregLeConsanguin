@@ -8,6 +8,8 @@
  * - Pendant un redimensionnement, rien n'est peint d'avance : la préparation attend la taille finale,
  *   et la repeinte attend la fin du fondu en cours.
  * - Sans à-coup : chaque fondu repart de l'opacité rendue ; seule la fenêtre qui entre s'éclaircit.
+ * - Pendant une cérémonie (hold, Rose.tsx), rien n'est peint d'avance non plus.
+ * - start() peut attendre le premier temps mort : la taille, le titre et le prochain titre demandés avant partent alors.
  * Sans import runtime : les fonctions exportées sont testées (tests/rose-client.test.mjs).
  */
 import type { RoseIn, RoseOut } from './rose.worker';
@@ -106,6 +108,8 @@ export class RoseClient {
     // module introuvable ou en erreur : aucune réponse ne viendra jamais
     w.onerror = w.onmessageerror = (e: Event) => this.fail(e);
     this.post({ type: 'init', stoneUrl: new URL(STONE_URL, location.origin).href });
+    // démarrage différé (Rose.tsx, après le premier affichage) : ce qui a été demandé entre-temps part maintenant
+    if (this.R) { void this.request(null).then((d) => { if (d) this.build(d); }); void this.show(this.want); this.prepare(this.next); }
   }
 
   destroy(): void {
@@ -195,10 +199,14 @@ export class RoseClient {
     go();
   }
 
+  /** Cérémonie en cours : rien n'est peint d'avance avant ms. */
+  hold(ms: number): void { this.busyUntil = Math.max(this.busyUntil, performance.now() + ms); }
+
   private post(m: RoseIn): void { this.worker?.postMessage(m); }
 
   private request(id: string | null): Promise<Painted | null> {
-    if (this.dead) return Promise.resolve(null);
+    // sans worker (avant start(), différé) : une attente posée ici ne se résoudrait jamais
+    if (this.dead || !this.worker) return Promise.resolve(null);
     const key = roseKey(id, this.R, this.dpr);
     const ready = this.ready.get(key);
     if (ready) return Promise.resolve(ready);
@@ -318,7 +326,7 @@ export class RoseClient {
       return;
     }
     if (!fade) { for (const s of leaving) this.retire(s); return; }
-    this.busyUntil = performance.now() + fade + 60;
+    this.busyUntil = Math.max(this.busyUntil, performance.now() + fade + 60);   // hold() compte aussi
     for (const el of [slot.bloom, slot.glass]) ease(el, 1, fade, 'backwards');
     for (const s of leaving) {
       const hold = s.glass.dataset.kind === kind && Number(s.glass.style.zIndex) < z;

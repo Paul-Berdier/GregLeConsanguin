@@ -3,8 +3,10 @@
 import { useEffect, useId, useRef } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
 import { usePopover } from '@/components/Header/GuildPicker';
+import { NEXT, kingOrders } from '@/lib/stage/coronation';
 import { seedOf } from '@/lib/stage/scene';
 import { quip, t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 
 const I = {
   stop: <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11"/></svg>,
@@ -15,8 +17,10 @@ const I = {
 
 /**
  * Transport : tout arrêter (confirmé si la file a des titres), reprendre au début, lecture/pause
- * (une rondelle du verre du morceau, en --lumiere), suivant, boucle. Libellés : deck `controls.*`.
- * Les actions passent par usePlayer (les mises à jour optimistes arrivent à l'étape 3). Styles : now.css.
+ * (une rondelle du verre du morceau, en --lumiere), suivant, boucle. Libellés : deck `controls.*` ; bulles de
+ * « Depuis le début », « Suivant » et « Boucle » : tx('transport.*') (Maj+← et Maj+→ : les lettres P, N et R
+ * ne sautent plus de titre). Suivant note l'ordre du Roi : à la souris, le Couronnement peut voler ; au clavier
+ * (Entrée, Espace : e.detail === 0), il passe en mode rapide. Actions optimistes (usePlayer). Styles : now.css.
  */
 export default function Transport() {
   const { player, togglePause, skip, stop, toggleRepeat, restartTrack } = usePlayer();
@@ -61,18 +65,19 @@ export default function Transport() {
         </div>
       </div>
       <button type="button" className="tbtn" disabled={!on} onClick={() => restartTrack().catch(() => {})} aria-label={t('controls.restart.aria')}>
-        {I.restart}<span className="tip plaque" aria-hidden="true">{t('controls.restart.tip')}</span>
+        {I.restart}<span className="tip plaque" aria-hidden="true">{tx('transport.restartTip')}</span>
       </button>
       <button type="button" className="tbtn main" disabled={!on} onClick={() => togglePause().catch(() => {})} aria-label={t(player.paused ? 'controls.play.aria' : 'controls.pause.aria')}>
         <svg className="ic-pause" data-shown={on && !player.paused} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.5" y="4.8" width="4.2" height="14.4"/><rect x="13.3" y="4.8" width="4.2" height="14.4"/></svg>
         <svg className="ic-play" data-shown={!on || player.paused} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8.3 4.8v14.4L19.6 12z"/></svg>
         <span className="tip plaque" aria-hidden="true">{t(player.paused ? 'controls.play.tip' : 'controls.pause.tip')}</span>
       </button>
-      <button type="button" className="tbtn" disabled={!on} onClick={() => skip().catch(() => {})} aria-label={t('controls.skip.aria')}>
-        {I.skip}<span className="tip plaque" aria-hidden="true">{t('controls.skip.tip')}</span>
+      <button type="button" className="tbtn" disabled={!on} aria-label={t('controls.skip.aria')}
+        onClick={(e) => { kingOrders.mark(NEXT, e.detail === 0 ? 'key' : 'pointer', performance.now()); skip().catch(() => {}); }}>
+        {I.skip}<span className="tip plaque" aria-hidden="true">{tx('transport.skipTip')}</span>
       </button>
       <button type="button" className="tbtn" disabled={!on} aria-pressed={player.repeat} onClick={() => toggleRepeat().catch(() => {})} aria-label={t('controls.repeat.aria')}>
-        {I.repeat}<span className="tip plaque" aria-hidden="true">{t('controls.repeat.tip')}</span>
+        {I.repeat}<span className="tip plaque" aria-hidden="true">{tx('transport.repeatTip')}</span>
       </button>
     </div>
   );

@@ -3,7 +3,10 @@
    Repris de proto-gothique/work/refine/src/styles.css (lignes 300–368). Écarts voulus :
    - le titre garde sa hauteur même vide : la mise en page de la scène (useStageLayout) n'en dépend pas ;
    - transitions sur transform et opacity seulement : les survols changent de couleur sans animation ;
-   - l'icône lecture/pause se croise en opacité et échelle, sans flou (le flou vient avec la révérence, étape 4) ;
+   - l'icône lecture/pause se croise en opacité et échelle, sans flou (pas de flou du tout, écart 1 de l'étape 4) ;
+   - Couronnement (Swap.tsx) : l'ancienne légende et la nouvelle (.line) se superposent sur la même case de grille
+     et se croisent en translation et fondu, sans le flou du prototype ; le reflet d'or (.glint, glint.ts, l. 322–326)
+     glisse en translateX ;
    - « Demandé par vous » porte le sceau du Roi (l'utilisateur) : jamais Greg ;
    - sur un écran étroit, la confirmation d'arrêt se centre sur le transport (elle sortait de l'écran),
      et son échelle d'entrée part toujours du bouton d'arrêt (DESIGN §5) ;
@@ -33,18 +36,29 @@
 /* le titre du morceau : Grenze 600, sa propre voix ; la hauteur suit la taille, avec ou sans texte */
 .title-slot {
   --title-size: clamp(28px, calc(var(--vw) * .055), 40px);
+  display: grid; position: relative;
   margin: 8px 0 0; min-height: calc(var(--title-size) * 1.08 + 2px); padding-bottom: 2px;
   font: 600 var(--title-size)/1.08 var(--f-title); letter-spacing: -.015em; color: var(--os);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.meta-slot {
-  display: flex; align-items: center; gap: 7px; margin: 4px 0 0; min-height: 22px;
-  font-size: 15.5px; color: var(--cendre); white-space: nowrap; overflow: hidden;
-}
+.meta-slot { display: grid; margin: 4px 0 0; min-height: 22px; font-size: 15.5px; color: var(--cendre); }
+/* légendes croisées : l'ancienne (aria-hidden) sort pendant que la nouvelle entre, sur la même case */
+.title-slot > .line, .meta-slot > .line { grid-area: 1 / 1; min-width: 0; }
+.title-slot > .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta-slot > .line { display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; }
 .meta-slot .artist { overflow: hidden; text-overflow: ellipsis; }
 .meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--os-2); }
 .meta-slot .seal { width: 20px; height: 20px; flex: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .6)); }
 .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--cendre-2); flex: none; }
+
+/* le reflet d'or, une fois par Couronnement : une bande glisse, le texte doré qu'elle porte glisse à rebours */
+.glint { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.glint-band { position: absolute; top: 0; bottom: 0; left: 0; overflow: hidden; }
+.glint-text {
+  position: absolute; top: 0; left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: rgb(var(--lumiere-rgb)); font: 600 var(--title-size)/1.08 var(--f-title); letter-spacing: -.015em; padding-bottom: 2px;
+  -webkit-mask: linear-gradient(90deg, transparent, #000 35%, #000 65%, transparent);
+  mask: linear-gradient(90deg, transparent, #000 35%, #000 65%, transparent);
+}
 
 /* transport : ses mesures vivent ici, une seule source pour les boutons et l'origine de la confirmation
    (écran étroit, plus bas) : --tb un bouton, --tmain la rondelle, --tmain-m ses marges, --tgap l'espace */
@@ -108,6 +122,7 @@
 .confirm .row-btns { display: flex; gap: 8px; justify-content: flex-end; }
 
 @media (prefers-reduced-motion: reduce) {
+  .glint { display: none; }
   .kicker .eq i { animation: none; transform: scaleY(.6); }
   .kicker .eq, .tbtn, .tip { transition: none; }
   .tbtn.main svg[data-shown=false] { transform: none; }

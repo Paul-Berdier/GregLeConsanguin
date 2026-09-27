@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    NUIT GOTHIQUE : la scène (colonne, empilement, lumière de la rose) et les classes qu'elle partage.
-   Repris de proto-gothique/work/refine/src/styles.css (lignes 199–204, 226–231, 285–296, 300–302,
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 199–204, 226–231, 273, 285–296, 300–302,
    556–572). Les variables --R --vw --f --crown --cR --heart --ring-h --clip-day --clip-night --a0 sont
    posées par Stage.tsx (useStageLayout ; la nuit, fitNight de layout.ts) ; ci-dessous, leurs valeurs avant la première mesure.
    Importé par globals.css avec rose.css, portal.css, now.css, clock.css et night.css.
@@ -39,6 +39,13 @@
   -webkit-mask: linear-gradient(transparent 0, #000 22%); mask: linear-gradient(transparent 0, #000 22%);
 }
 .stage[data-scene=night] .lightpool { opacity: 0; }
+
+/* le fantôme du Couronnement (components/Stage/coronation.ts) : un seul, réutilisé, créé et composé pendant un temps
+   mort ; taille de la scène, réduit sur la pochette au départ (transform-origin 0 0) : net à l'arrivée */
+.ghost {
+  position: fixed; left: 0; top: 0; z-index: 80; pointer-events: none; overflow: hidden; opacity: 0; border-radius: 3px;
+  background: #050404 center / cover no-repeat; transform-origin: 0 0; will-change: transform;
+}
 
 /* sous le portail : ce qui joue et le transport, puis la note et la synchro */
 .below { position: relative; z-index: 2; display: flow-root; }   /* flow-root : la marge de .now compte dans sa hauteur mesurée */

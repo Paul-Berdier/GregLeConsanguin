@@ -11,6 +11,8 @@ import {
 import { createQueueEngine, moveIndices, viewOf } from '@/lib/queue/optimistic';
 import type { Mutation } from '@/lib/queue/optimistic';
 import { addedKeys, restorePlan } from '@/lib/queue/undo';
+import { reducedMotion } from '@/lib/motion';
+import { AFTER_CEREMONY_MS, kingOrders } from '@/lib/stage/coronation';
 import { requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import { herald, say, sayError } from '@/components/Herald/store';
@@ -107,7 +109,13 @@ const engine = createQueueEngine({
   now: () => performance.now(),
   send: sendMutation,
   onView: (v) => useStore.setState({ player: v.player, tickBase: v.tickBase }),
-  onRefused: (m, e, before) => { sayError(e, { name: requesterName(m, before), action: m.kind === 'move' ? 'move' : undefined }); },
+  onRefused: (m, e, before) => {
+    sayError(e, { name: requesterName(m, before), action: m.kind === 'move' ? 'move' : undefined });
+    // « Jouer maintenant » ou « Suivant » refusé : la scène revient au titre qui n'a jamais cessé de jouer. Ce retour
+    // est noté comme un ordre (components/Stage/coronation.ts) : cérémonie rapide et sans annonce, le refus a parlé.
+    const back = upcoming().player.current?.key;
+    if (back && back !== useStore.getState().player.current?.key) kingOrders.mark(back, 'key', performance.now());
+  },
 });
 
 /**
@@ -412,12 +420,18 @@ async function playNext(key: string): Promise<boolean> {
   return ok;
 }
 
+/** Jouer maintenant : le Héraut attend que la couronne soit posée (le Couronnement, components/Stage/coronation.ts). */
 async function playNow(key: string): Promise<boolean> {
   const v = engine.view().player;
   const x = v.queue.find((q) => q.key === key);
   if (!x) return false;
+  const t0 = performance.now();
   const ok = await engine.dispatch({ kind: 'playAt', key, fromKey: v.current?.key ?? null });
-  if (ok) { say('toast.playNow', { vars: { title: songOf(x) } }); await bestEffortVoiceJoin('play_at'); }
+  if (ok) {
+    const wait = reducedMotion() ? 0 : Math.max(0, AFTER_CEREMONY_MS - (performance.now() - t0));   // après l'atterrissage
+    setTimeout(() => say('toast.playNow', { vars: { title: songOf(x) } }), wait);
+    await bestEffortVoiceJoin('play_at');
+  }
   return ok;
 }
 

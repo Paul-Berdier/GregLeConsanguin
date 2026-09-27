@@ -1,9 +1,14 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    NUIT GOTHIQUE : le portail de pierre et la vidéo (lecteur YouTube persistant sous un poster).
-   Repris de proto-gothique/work/refine/src/styles.css (lignes 253–270, 327–328). Écarts voulus :
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 253–270, 327–328 ; mouvement réduit, 538–539).
+   Écarts voulus :
    - couches de tech.md §5.3 : iframe, posters, voile de pause, badge ; le poster couvre jusqu'à
-     PLAYING + 3,5 s et pendant la pause (data-covered, Portal.tsx) ;
-   - la révérence (la scène s'incline à .97) arrive à l'étape 4 : ici, seuls le voile et le badge ;
+     PLAYING + REVEAL_AFTER_PLAYING_MS et pendant la pause (data-covered, Portal.tsx) ;
+   - la Révérence (l. 258–260) : en pause, la vidéo s'incline à .97 sur le ressort --spring-settle ; mouvement réduit :
+     le voile et le badge seuls ;
+   - le Couronnement (coronation.ts) : le portail revient de la nuit en scale(.97) → 1 ; en vol, le nouveau poster
+     attend l'atterrissage sous le fantôme (data-held) et paraît sans fondu (data-cut), l'ancien part en scale(1.03) ;
+     sinon, le nouveau entre en --poster-ms (plan de la cérémonie, style en ligne de Poster) ;
    - « Synchro vidéo » : popover plaque hors de la vidéo, jamais de flou sur l'iframe ;
    - l'ombre du portail est une box-shadow, pas le `filter: drop-shadow` du prototype : un filtre sur un
      ancêtre de l'iframe rejoue une passe de rendu à chaque image de la vidéo (tech.md §6.2) ; le cadre
@@ -16,23 +21,28 @@
   position: relative; z-index: 2; width: calc(var(--vw) + 2 * var(--f));
   border: var(--f) solid transparent; border-image: url(/gothique/stone-frame-640.webp) 96 / var(--f) stretch;
   box-shadow: 0 18px 30px rgb(0 0 0 / .6);
-  transition: opacity 500ms ease;
+  transition: opacity 500ms ease, transform 520ms var(--ease-out);
 }
-.stage[data-scene=night] .portal { opacity: 0; pointer-events: none; }
-.video { position: relative; width: var(--vw); aspect-ratio: 16 / 9; overflow: hidden; background: #050404; }
+.stage[data-scene=night] .portal { opacity: 0; transform: scale(.97); pointer-events: none; }
+.video { position: relative; width: var(--vw); aspect-ratio: 16 / 9; overflow: hidden; background: #050404;
+  transition: transform var(--spring-settle-dur) var(--spring-settle); }
+.stage[data-paused=true] .video { transform: scale(.97); }
 .video .yt { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 .video .yt iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 
 /* fond opaque : couvert, l'iframe ne transparaît jamais (poster pas encore chargé, marges d'une pochette carrée) */
 .video .posters { position: absolute; inset: 0; z-index: 2; background: #050404; opacity: 1; transition: opacity 200ms ease; }
 .video .posters[data-covered=false] { opacity: 0; transition-duration: var(--dur-reveal); }
+/* pas de var(--poster-ms, repli) dans la transition : le lecteur de stage-contract (animated()) coupe à la virgule du repli */
 .video .poster {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-  opacity: 0; transition: opacity var(--dur-reveal) var(--ease-out);
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transform: scale(.96);
+  --poster-ms: var(--dur-reveal); transition: opacity var(--poster-ms) var(--ease-out), transform var(--poster-ms) var(--ease-out);
 }
-.video .poster[data-ready=true] { opacity: 1; }
-.video .poster[data-leaving] { opacity: 0; transition-duration: 200ms; }
-.video .poster.art { object-fit: contain; }
+.video .poster[data-ready=true] { opacity: 1; transform: none; }
+.video .poster[data-cut] { transition: none; }
+.video .poster[data-held] { opacity: 0; }
+.video .poster[data-leaving] { opacity: 0; transform: scale(1.03); transition: opacity 200ms ease, transform 260ms var(--ease-out); }
+.video .poster.art { object-fit: contain; transform: none; }
 
 .video .veil { position: absolute; inset: 0; z-index: 3; background: #000; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
 .stage[data-paused=true] .video .veil { opacity: .36; }
@@ -74,8 +84,12 @@
 .sync-reset:disabled { opacity: .4; cursor: default; }
 
 @media (prefers-reduced-motion: reduce) {
+  .portal { transition: opacity 500ms ease; }
+  .stage[data-scene=night] .portal, .stage[data-paused=true] .video { transform: none; }
+  .video { transition: none; }
   /* motion.md §6.10 : les posters se relaient en fondu de 200 ms (--dur-reveal n'est pas raccourci par tokens.css) */
-  .video .poster, .video .posters[data-covered=false] { transition-duration: 200ms; }
+  .video .poster, .video .poster[data-leaving] { transform: none; transition: opacity 200ms ease; }
+  .video .posters[data-covered=false] { transition-duration: 200ms; }
   .paused-badge, .stage[data-paused=true] .paused-badge { transform: translate(-50%, -50%); }
   .sync-btn, .sync-reset { transition: none; }
 }

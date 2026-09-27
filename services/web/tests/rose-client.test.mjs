@@ -97,7 +97,7 @@ async function until(cond, ms = 3000) {
 }
 
 /** Un client branché sur un worker factice (sans vrai Worker : `new URL(…, import.meta.url)` n'a pas d'URL de fichier ici). */
-function makeRose({ paintMs = 1 } = {}) {
+function makeRose({ paintMs = 1, autoStart = true } = {}) {
   anims.length = 0;
   const layers = { bloom: new El('div', true), glass: new El('div', true) };
   const posts = [];
@@ -119,7 +119,7 @@ function makeRose({ paintMs = 1 } = {}) {
     terminate() { this.terminated = true; },
   };
   const c = new RoseClient(layers, { createWorker: () => worker, onFail: () => { fails++; } });
-  c.start();
+  if (autoStart) c.start();
   /** La fenêtre au premier plan des deux calques : elle doit être celle voulue, et visible. */
   const front = () => {
     const pick = (layer) => {
@@ -343,5 +343,32 @@ test('titres qui se bousculent, retour arrière, nuit et jour en plein fondu : a
   assert.deepEqual(comp.jolts, []);
   assert.deepEqual(front(), { key: 't:D@100x1', glass: 1, bloom: 1 });
   assert.deepEqual(mounted(), { glass: ['t:D@100x1'], bloom: ['t:D@100x1'] });
+  c.destroy();
+});
+
+test('hold : pendant une cérémonie, le prochain titre attend pour être peint', async () => {
+  const { c, posts, layers } = makeRose();
+  c.resize(100);
+  await until(() => layers.glass.children.length > 0);
+  c.hold(150);
+  c.prepare('N');
+  await wait(60);
+  assert.ok(!posts.some((k) => k.startsWith('t:N@')), 'peinte pendant la cérémonie');
+  await until(() => posts.some((k) => k.startsWith('t:N@')), 1500);
+  c.destroy();
+});
+
+test('démarrage différé : taille, titre et prochain titre demandés avant start() partent au démarrage', async () => {
+  const { c, posts, layers, front } = makeRose({ autoStart: false });
+  c.resize(100);
+  await c.show('A');
+  c.prepare('B');
+  await wait(20);
+  assert.deepEqual(posts, [], 'rien avant start()');
+  c.start();
+  await until(() => posts.includes('t:A@100x1') && posts.includes('moon@100x1') && posts.some((k) => k.startsWith('t:B@')));
+  await until(() => layers.glass.children.some((s) => slotKey(s) === 't:A@100x1'));
+  await finishFades();
+  assert.equal(front().key, 't:A@100x1');
   c.destroy();
 });

@@ -1,12 +1,13 @@
 'use client';
 
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, RefObject } from 'react';
 import { useStore } from '@/hooks/usePlayer';
 import { useStageLayout } from '@/hooks/useStageLayout';
 import { useStageClock } from '@/hooks/useStageClock';
 import { useVideoOffset } from '@/hooks/useVideoOffset';
 import { extractVideoId } from '@/lib/format';
+import { DUR, EASE, reducedMotion } from '@/lib/motion';
 import { fitNight, nightBottom, sameLayout, stageCssVars } from '@/lib/stage/layout';
 import type { StageLayout } from '@/lib/stage/layout';
 import { dialGeometry, paneMask } from '@/lib/stage/dial';
@@ -20,6 +21,7 @@ import Portal from './Portal';
 import SyncOffset from './SyncOffset';
 import NowPlaying, { NOW_TITLE_ID } from './NowPlaying';
 import Transport from './Transport';
+import { startCoronation, useCeremony } from './coronation';
 
 type NightFit = { layout: StageLayout; bottom: number };
 
@@ -27,8 +29,8 @@ type NightFit = { layout: StageLayout; bottom: number };
  * Mise en page de la nuit (fitNight, layout.ts), remesurée quand la colonne, le bloc du dessous ou le texte de
  * la nuit changent de taille (fenêtre, police chargée, une ligne de plus). null le jour : useStageLayout suffit.
  * Écart 10 du plan de l'étape 2 : quand le texte de nuit ne tient pas sous la rose du jour (1280 × 720 :
- * R 280 → 244 ; 1366 × 657 : 242 → 205), la rose change de taille d'un coup en passant jour ↔ nuit, pendant
- * le fondu de la rosace ; l'étape 4 l'animera (FLIP en transform sur la rose).
+ * R 280 → 244 ; 1366 × 657 : 242 → 205), la rose change de taille en passant jour ↔ nuit, pendant le fondu de
+ * la rosace ; Stage l'anime (FLIP en transform sur la rose, 420 ms).
  */
 function useNightFit(scene: Scene, colRef: RefObject<HTMLElement>, stageRef: RefObject<HTMLElement>,
   belowRef: RefObject<HTMLElement>): NightFit | null {
@@ -64,7 +66,8 @@ function useNightFit(scene: Scene, colRef: RefObject<HTMLElement>, stageRef: Ref
  * `booted` : la session a été vérifiée (page.tsx) ; avant, c'est la nuit « chargement ».
  * Mémoïsée : page.tsx lit tout le store (usePlayer) et se rend à chaque tick du bot ; la scène, elle,
  * ne se rend qu'à ses propres changements (sélecteurs de primitives ci-dessous : `me` et `player.current`
- * sont recréés à chaque charge utile) et une fois par panneau de l'horloge.
+ * sont recréés à chaque charge utile), une fois par panneau de l'horloge et aux étapes du Couronnement
+ * (coronation.ts, branché ici une fois ; la cérémonie du titre en cours passe à la rosace et au portail).
  */
 function Stage({ booted }: { booted: boolean }) {
   const colRef = useRef<HTMLElement>(null);
@@ -76,6 +79,10 @@ function Stage({ booted }: { booted: boolean }) {
   const thumb = useStore((s) => s.player.current?.thumb || s.player.current?.thumbnail || null);
   const nextUrl = useStore((s) => s.player.queue[0]?.url);
   const paused = useStore((s) => s.player.paused);
+  const currentKey = useStore((s) => s.player.current?.key ?? null);
+  const ceremony = useCeremony();
+  const crown = ceremony && ceremony.key === currentKey ? ceremony : null;
+  useEffect(() => startCoronation(), []);
 
   const scene = stageScene({ booted, loggedIn, hasCurrent });
   const day = scene === 'day';
@@ -89,6 +96,17 @@ function Stage({ booted }: { booted: boolean }) {
   const nextId = extractVideoId(nextUrl);
   // Titre sans vidéo YouTube (SoundCloud, que le bot joue aussi) : sa pochette tient lieu d'image.
   const art = day && !videoId ? thumb : null;
+
+  // Écart 10 de l'étape 2 : R qui change avec la scène passe en FLIP (420 ms), pas un redimensionnement de fenêtre.
+  const sceneAt = useRef(0), lastR = useRef(0), lastDay = useRef(day);
+  useLayoutEffect(() => {
+    if (lastDay.current !== day) { lastDay.current = day; sceneAt.current = performance.now(); }
+    const R = layout?.R ?? 0, prev = lastR.current;
+    lastR.current = R;
+    const rose = stageRef.current?.querySelector<HTMLElement>('.rosace');
+    if (!rose || !prev || !R || Math.abs(prev - R) < 1 || performance.now() - sceneAt.current > 400 || reducedMotion()) return;
+    rose.animate([{ transform: `scale(${prev / R})` }, { transform: 'none' }], { duration: DUR.reveal, easing: EASE.out });
+  }, [layout?.R, day]);
 
   // Filet de sécurité (DESIGN §12.4) : si la scène ou sa nuit débordent malgré tout, la colonne défile.
   useLayoutEffect(() => {
@@ -108,11 +126,11 @@ function Stage({ booted }: { booted: boolean }) {
     <section className="stage-col" ref={colRef} aria-label={day ? t('now.kicker') : undefined}>
       <div className="stage" ref={stageRef} style={style}
         data-scene={day ? 'day' : 'night'} data-paused={day && paused} data-springs={layout?.springs ?? 'spring'}>
-        <Rose videoId={videoId} nextId={nextId} R={layout?.R ?? 0} mask={paneMask(day ? pane : -1)}/>
+        <Rose videoId={videoId} nextId={nextId} R={layout?.R ?? 0} mask={paneMask(day ? pane : -1)} crown={crown}/>
         <div className="lightpool" aria-hidden="true"/>
         <Clock dial={dial} active={day} labelledBy={NOW_TITLE_ID}/>
         {scene !== 'day' && <NightState kind={scene}/>}
-        <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art}/>
+        <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art} crown={crown}/>
         <div className="below" ref={belowRef}>
           <TimesRow/>
           <div className="now">

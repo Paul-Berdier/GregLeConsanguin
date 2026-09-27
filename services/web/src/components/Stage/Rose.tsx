@@ -3,20 +3,26 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { RoseClient, STONE_URL, roseSupported } from '@/lib/rose/client';
+import { BUSY_MS, NIGHT_ROSE_FADE_MS } from '@/lib/stage/coronation';
+import type { Ceremony } from './coronation';
 
 export type RoseProps = {
   videoId: string | null;              // titre dont le verre est affiché ; null = clair de lune
   nextId: string | null;               // prochain titre : sa fenêtre est peinte d'avance
   R: number;                           // rayon du vitrail (useStageLayout) ; 0 tant qu'inconnu
   mask: { p0: number; p1: number };    // panneaux de l'horloge déjà joués / courant (paneMask, degrés)
+  crown: Ceremony | null;              // cérémonie du titre en cours (coronation.ts) : quand et en combien la rosace se rallume
 };
 
 /**
  * La rosace (spec §4) : bloom et verre, deux calques remplis par RoseClient (canevas bitmaprenderer).
  * Décorative : aria-hidden. Moteur sans OffscreenCanvas, ou worker hors service : la pierre seule, immobile (spec §7).
+ * La pierre et le worker attendent le premier temps mort après l'affichage (spec §7) : ce qui a été demandé entre-temps
+ * part au démarrage. Au Couronnement, la rosace se rallume selon le plan (en vol, à l'atterrissage) et ne peint rien
+ * d'avance pendant la cérémonie (un titre sans vidéo aussi) ; à l'arrêt, la lune entre en 240 ms.
  * Styles : rose.css. Le masque de l'horloge passe par --p0 / --p1 sur la racine.
  */
-export default function Rose({ videoId, nextId, R, mask }: RoseProps) {
+export default function Rose({ videoId, nextId, R, mask, crown }: RoseProps) {
   const bloomRef = useRef<HTMLDivElement>(null);
   const glassRef = useRef<HTMLDivElement>(null);
   const client = useRef<RoseClient | null>(null);
@@ -28,12 +34,31 @@ export default function Rose({ videoId, nextId, R, mask }: RoseProps) {
     const onFail = () => { client.current = null; setSupported(false); };
     const c = new RoseClient({ bloom: bloomRef.current, glass: glassRef.current }, { onFail });
     client.current = c;
-    c.start();
-    return () => { c.destroy(); client.current = null; };
+    const start = () => { if (client.current === c) c.start(); };
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void };
+    const idle = w.requestIdleCallback ? w.requestIdleCallback(start, { timeout: 1500 }) : window.setTimeout(start, 200);
+    return () => { if (w.cancelIdleCallback) w.cancelIdleCallback(idle); else clearTimeout(idle); c.destroy(); client.current = null; };
   }, []);
 
   useEffect(() => { if (R) client.current?.resize(R); }, [R]);
-  useEffect(() => { void client.current?.show(videoId); }, [videoId]);
+
+  const crownRef = useRef(crown);
+  crownRef.current = crown;
+  const shownId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const c = client.current, was = shownId.current;
+    shownId.current = videoId;
+    if (!c) return;
+    // Un titre sans vidéo (SoundCloud) montre aussi la lune, mais suit son Couronnement ; sans cérémonie, c'est
+    // l'arrêt : la lune en 240 ms.
+    const plan = crownRef.current?.plan ?? null;
+    if (plan) c.hold(BUSY_MS);
+    const fade = plan ? plan.roseFade : was ? NIGHT_ROSE_FADE_MS : undefined;
+    if (!plan?.roseAt) { void c.show(videoId, fade); return; }
+    const tm = setTimeout(() => { void c.show(videoId, fade); }, plan.roseAt);             // en vol : à l'atterrissage
+    return () => clearTimeout(tm);
+  }, [videoId]);
+
   // pas de R ici : pendant un redimensionnement, le client repeint le prochain titre une fois la taille posée
   useEffect(() => { client.current?.prepare(nextId); }, [nextId]);
 

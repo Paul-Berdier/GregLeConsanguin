@@ -4,13 +4,15 @@
    - la coupe jour / nuit est portée par chaque fenêtre (data-kind), jamais animée : le passage
      jour ↔ nuit est le fondu d'opacité de RoseClient (on n'anime que transform et opacity) ;
    - --p0 / --p1 (masque de l'horloge) valent 0 par défaut : sans eux, le masque serait invalide
-     et tout l'anneau s'allumerait.
+     et tout l'anneau s'allumerait ;
+   - quand R change avec la scène (jour ↔ nuit), Stage.tsx anime la rose en FLIP depuis son haut, fixe.
    Variables lues : --R --clip-day --clip-night --ring-h --a0 (posées sur .stage), --p0 --p1 (Rose.tsx).
    ═══════════════════════════════════════════════════════════════════════════ */
 .rosace {
   --p0: 0; --p1: 0;
   position: absolute; left: 50%; top: 0; z-index: 0; pointer-events: none;
   width: calc(2.12 * var(--R)); height: calc(2.12 * var(--R)); margin-left: calc(-1.06 * var(--R));
+  transform-origin: 50% 0;
 }
 .rosace .dim { position: absolute; inset: 0; transition: opacity 700ms ease; }
 .stage[data-paused=true] .rosace .dim { opacity: .42; }
