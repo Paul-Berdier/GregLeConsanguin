@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
-import { api } from '@/lib/api';
+import { playerActions, usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
 import { isShortcutIgnored } from '@/lib/playerUtils';
+import Herald from '@/components/Herald/Herald';
 import Header from '@/components/Header/Header';
 import Stage from '@/components/Stage/Stage';
 import Sidebar from '@/components/Sidebar';
@@ -15,22 +15,23 @@ const FOCUS_REFRESH_MIN_MS = 15000;
 // ═══════════════════════════════
 export default function Home() {
   usePlayerInit();
-  const { status, boot, refreshMe, me } = usePlayer();
+  const { boot, refreshMe, me } = usePlayer();
   const [booted, setBooted] = useState(false);
 
   useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
 
   // Keyboard shortcuts
   useEffect(() => {
-    const handler = async (ev: KeyboardEvent) => {
+    const handler = (ev: KeyboardEvent) => {
       // Ctrl+R / Cmd+P… restent aux raccourcis du navigateur ; rien dans les champs / select / boutons (Espace)
       if (isShortcutIgnored(ev)) return;
       const s = useStore.getState();
       if (!s.me || !s.guildId) return;
-      if (ev.code === 'Space') { ev.preventDefault(); s.setStatus('Pause…', 'info'); try { await api.togglePause(s.guildId, s.me.id); s.setStatus('OK ✅', 'ok'); } catch { s.setStatus('Erreur', 'err'); } }
-      else if (ev.key === 'n') { try { await api.queueSkip(s.guildId, s.me.id); s.setStatus('Skip ✅', 'ok'); } catch {} }
-      else if (ev.key === 'p') { try { await api.restart(s.guildId, s.me.id); } catch {} }
-      else if (ev.key === 'r') { try { await api.repeat(s.guildId, s.me.id); } catch {} }
+      // Les erreurs passent par le Héraut (usePlayer) ; pause et suivant sont optimistes
+      if (ev.code === 'Space') { ev.preventDefault(); void playerActions.togglePause(); }
+      else if (ev.key === 'n') void playerActions.skip();
+      else if (ev.key === 'p') void playerActions.restartTrack();
+      else if (ev.key === 'r') void playerActions.toggleRepeat();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -69,23 +70,10 @@ export default function Home() {
           {/* Droite : file et historique (étape 3) */}
           <Sidebar/>
         </main>
-
-        {/* ═══ Status ═══ */}
-        <footer className="flex-shrink-0">
-          <div className={`glass-subtle px-3 py-2 text-xs ${
-            status.kind === 'ok' ? 'status-ok' : status.kind === 'err' ? 'status-err' : ''}`}>
-            <div className="flex items-center justify-between">
-              <span className="text-txt-muted">{status.text}</span>
-              <div className="hidden md:flex items-center gap-3 text-txt-dim text-[10px]">
-                <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">Space</kbd> Pause</span>
-                <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">N</kbd> Skip</span>
-                <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">P</kbd> Restart</span>
-                <span><kbd className="px-1 py-0.5 rounded border border-border text-[9px] font-mono">R</kbd> Repeat</span>
-              </div>
-            </div>
-          </div>
-        </footer>
       </div>
+
+      {/* Le Héraut : au-dessus du pied du panneau ; au centre en bas quand le panneau n'est pas là */}
+      <Herald dock={booted && me ? 'panel' : 'center'}/>
     </div>
   );
 }

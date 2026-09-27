@@ -206,6 +206,10 @@ export const api = {
   queueStop: (guildId: string, userId: string) =>
     post('/queue/stop', basePayload(guildId, userId)),
 
+  // Déplacer un titre de la file : le bot fait queue.insert(dst, queue.pop(src)) (index 0 = le prochain)
+  move: (guildId: string, userId: string, src: number, dst: number) =>
+    post('/player/move', basePayload(guildId, userId, { src, dst })),
+
   // Playlist controls
   playAt: (guildId: string, userId: string, index: number) =>
     post('/playlist/play_at', basePayload(guildId, userId, { index })),

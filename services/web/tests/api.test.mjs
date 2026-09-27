@@ -101,3 +101,21 @@ test('onAuthLost : prévenu à chaque 401 NOT_AUTHENTICATED, jamais pour un autr
     globalThis.fetch = realFetch;
   }
 });
+
+test('api.move : POST /player/move {src, dst} (le bot fait insert(dst, pop(src)))', async () => {
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: opts.method, body: JSON.parse(opts.body) });
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    await api.move('42', '7', 3, 0);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/api\/v1\/player\/move$/);
+    assert.equal(calls[0].method, 'POST');
+    assert.deepEqual(calls[0].body, { src: 3, dst: 0, guild_id: '42', user_id: '7' });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
