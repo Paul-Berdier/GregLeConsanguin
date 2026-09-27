@@ -2,7 +2,7 @@
  * Helpers purs du web player (aucun import runtime, testables avec node:test).
  * Voir tests/playerUtils.test.mjs.
  */
-import type { Track, GuildInfo } from './types';
+import type { Track, GuildInfo, PlayerState, Snapshot } from './types';
 
 // ── Durées ──
 // Le bot envoie TOUJOURS des secondes : seules les valeurs explicitement en ms
@@ -52,7 +52,7 @@ export function normalizeItem(it: any, users?: Record<string, any> | null): Trac
   const addedByName = (rb && (rb.display_name || rb.global_name || rb.username || rb.name)) || it.requested_by_name || it.added_by_name || it.user_name || it.username || '';
   const addedBy = (addedById || addedByName) ? { id: addedById ? String(addedById) : '', name: String(addedByName || '').trim() } : null;
 
-  return { title: String(title || ''), url: String(url || ''), artist: String(artist || ''), duration, thumb, provider, addedBy, raw: it };
+  return { key: '', title: String(title || ''), url: String(url || ''), artist: String(artist || ''), duration, thumb, provider, addedBy, raw: it };
 }
 
 /** Table id → user à partir de queue_users + requested_by_user (payload get_state). */
@@ -75,6 +75,109 @@ export function buildUsersMap(p: any): Record<string, any> {
 export function isStalePayload(p: any): boolean {
   if (!p || typeof p !== 'object') return false;
   return p.stale === true || p.ok === false || (p.backend_error != null && p.backend_error !== '');
+}
+
+// ── Clés stables et état reçu (tech.md §3.2 ; motion.md P8, P9) ──
+
+// Empreinte d'un titre : `q:<qid>` si le bot en donne un, sinon url | added_by | ts | repeat_tag.
+// Le bot n'a pas d'identifiant par titre ; `ts` est posé à l'ajout (_coerce_item) et suit le titre.
+function fingerprint(t: Track): string {
+  const r = t.raw && typeof t.raw === 'object' ? t.raw : {};
+  if (r.qid) return `q:${r.qid}`;
+  return `f:${[t.url || r.url || '', r.added_by ?? r.requested_by ?? '', r.ts ?? '', r.repeat_tag ?? ''].join('|')}`;
+}
+
+/**
+ * Clés stables : l'empreinte suivie du rang de l'occurrence (`#0`, `#1` pour de vrais doublons).
+ * Un titre garde sa clé quand d'autres s'insèrent avant lui : les lignes ne sont jamais remontées.
+ */
+export function assignKeys(items: Track[]): Track[] {
+  const seen = new Map<string, number>();
+  return items.map((t) => {
+    const fp = fingerprint(t);
+    const n = seen.get(fp) ?? 0;
+    seen.set(fp, n + 1);
+    const key = `${fp}#${n}`;
+    return t.key === key ? t : { ...t, key };
+  });
+}
+
+/** Même titre, mêmes champs affichés (raw ignoré). */
+export function sameTrack(a: Track | null, b: Track | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.key === b.key && a.url === b.url && a.title === b.title && a.artist === b.artist
+    && a.duration === b.duration && a.thumb === b.thumb && a.provider === b.provider
+    && (a.addedBy?.id ?? '') === (b.addedBy?.id ?? '') && (a.addedBy?.name ?? '') === (b.addedBy?.name ?? '');
+}
+
+/** Partage structurel : un titre inchangé garde son objet, une file inchangée garde son tableau (lignes mémoïsées). */
+export function shareTracks(prev: Track[], next: Track[]): Track[] {
+  const byKey = new Map(prev.map((t) => [t.key, t]));
+  let same = prev.length === next.length;
+  const out = next.map((t, i) => {
+    const old = byKey.get(t.key);
+    const keep = old && sameTrack(old, t) ? old : t;
+    if (keep !== prev[i]) same = false;
+    return keep;
+  });
+  return same ? prev : out;
+}
+
+const pick = (...vals: any[]) => vals.find((v) => v !== undefined && v !== null);
+function toBool(v: any): boolean {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+  return !!v;
+}
+
+/**
+ * État reçu (REST /playlist, socket playlist_update) → instantané, fusionné avec le précédent :
+ * - null pour un état périmé (contrat C3 : on garde l'état précédent) ;
+ * - un tick (`only_elapsed`) ne touche qu'au temps et à la pause : titre, file et boucle restent ;
+ * - clés stables et partage structurel (une file inchangée garde son tableau).
+ * `now` : performance.now() à la réception, ancre de l'horloge.
+ */
+export function snapshotFromPayload(payload: any, prev: Snapshot, now: number): Snapshot | null {
+  const root = payload && typeof payload === 'object' ? payload : {};
+  if (isStalePayload(root)) return null;
+  const p = root.state || root.pm || root.data || root;
+  const isTick = !!p.only_elapsed;
+  // added_by est un id : les infos user arrivent à part (queue_users / requested_by_user)
+  const users = buildUsersMap(p);
+
+  let current = prev.player.current;
+  const rawCur = normalizeItem(p.current || p.now_playing || p.playing || null, users);
+  const cur = rawCur && (rawCur.title || rawCur.url) ? assignKeys([rawCur])[0] : null;
+  if (!isTick || cur) current = cur && sameTrack(prev.player.current, cur) ? prev.player.current : cur;
+
+  let queue = prev.player.queue;
+  const qRaw = Array.isArray(p.queue) ? p.queue : Array.isArray(p.items) ? p.items : Array.isArray(p.list) ? p.list : null;
+  if (qRaw || !isTick) {
+    const items = (qRaw || []).map((it: any) => normalizeItem(it, users)).filter(Boolean) as Track[];
+    queue = shareTracks(prev.player.queue, assignKeys(items));
+  }
+
+  const paused = toBool(pick(p.is_paused, p.paused, p.isPaused, p.pause, false));
+  // Un tick ne porte pas la boucle : elle garde sa valeur (sinon elle s'éteint à chaque seconde)
+  const repeat = isTick ? prev.player.repeat : toBool(pick(p.repeat_all, p.repeat, p.repeat_mode, p.loop, false));
+  const elapsed = toSeconds(pick(p.progress?.elapsed, p.progress?.position, p.elapsed, p.position, p.pos, p.current_time, 0)) ?? 0;
+  const duration = toSeconds(pick(p.progress?.duration, p.duration, p.total, p.length, current?.duration, 0)) ?? 0;
+
+  const player: PlayerState = {
+    current, queue, paused: paused || !current, repeat,
+    position: Math.max(0, elapsed), duration: Math.max(0, duration),
+  };
+  return { player, tickBase: { pos: player.position, at: now, dur: player.duration } };
+}
+
+/** État vide (déconnecté, changement de serveur). */
+export function emptySnapshot(now = 0): Snapshot {
+  return {
+    player: { current: null, queue: [], paused: true, repeat: false, position: 0, duration: 0 },
+    tickBase: { pos: 0, at: now, dur: 0 },
+  };
 }
 
 // ── Liens ──
@@ -141,6 +244,55 @@ export function describeError(e: any): string {
   if (status === 401) return 'Session expirée : reconnecte-toi.';
   if (e?.name === 'TypeError') return 'Connexion au serveur impossible.';
   return String(e?.message || e || 'Erreur inconnue');
+}
+
+// Codes d'erreur qui ont leur texte dans le deck (copy.v2.json, section `error`).
+const DECK_ERRORS = new Set([
+  'QUOTA_EXCEEDED', 'PLAYLIST_UNAVAILABLE', 'PLAYLIST_EMPTY', 'SPOTIFY_UNSUPPORTED', 'UNSUPPORTED_SOURCE',
+  'CHANNEL_LINK', 'NO_RESULTS', 'EXPAND_TIMEOUT', 'TIMEOUT', 'BOT_OFFLINE', 'REDIS_UNAVAILABLE',
+  'USER_NOT_IN_VOICE', 'BOT_IN_OTHER_CHANNEL', 'GUILD_NOT_FOUND', 'VOICE_CONNECT_FAILED', 'PRIORITY_FORBIDDEN',
+  'NOT_AUTHENTICATED', 'NOT_GUILD_MEMBER', 'MEMBER_CHECK_FAILED', 'MOVE_FAILED', 'MOVE_PROMOTE_PRIORITY',
+  'MOVE_DEMOTE_PRIORITY', 'MOVE_CONFLICT', 'NOT_PLAYING', 'EXPIRED', 'GUILDS_FAILED',
+]);
+
+/** Texte d'une erreur pour le Héraut : `key` = entrée du deck (kind, quips), `path` = texte à rendre avec `vars`. */
+export type ErrorCopy = { key: string; path: string; vars?: Record<string, string> } | { key: string; text: string };
+
+/**
+ * Erreur d'API → texte du deck (vouvoiement du Roi), avec son contexte :
+ * - `name` : qui a ajouté le titre visé (PRIORITY_FORBIDDEN nomme le prioritaire) ;
+ * - `q` : texte cherché (NO_RESULTS) ;
+ * - `action` : 'move' fait d'un refus sans code (409, file changée côté bot) un MOVE_CONFLICT ;
+ *   'state' fait d'un état périmé (TIMEOUT ou cause inconnue) le « Greg est occupé » de toast.stale.
+ * Code inconnu : le message français de l'API s'il y en a un, sinon HTTP_5XX, HTTP_401, NETWORK ou UNKNOWN.
+ */
+export function errorCopy(e: any, ctx: { name?: string; q?: string; action?: string } = {}): ErrorCopy {
+  const code = errorCode(e).toUpperCase();
+  const status = Number(e?.status) || 0;
+  if (code === 'PRIORITY_FORBIDDEN') {
+    return ctx.name ? { key: 'error.PRIORITY_FORBIDDEN', path: 'error.PRIORITY_FORBIDDEN.text', vars: { name: ctx.name } }
+      : { key: 'error.PRIORITY_FORBIDDEN', path: 'error.PRIORITY_FORBIDDEN.textGeneric' };
+  }
+  if (code === 'NO_RESULTS') {
+    return ctx.q ? { key: 'error.NO_RESULTS', path: 'error.NO_RESULTS.text', vars: { q: ctx.q } }
+      : { key: 'error.NO_RESULTS', path: 'error.NO_RESULTS.textGeneric' };
+  }
+  // Le quota exact (k, cap) n'est pas dans la réponse de l'API
+  if (code === 'QUOTA_EXCEEDED') return { key: 'error.QUOTA_EXCEEDED', path: 'error.QUOTA_EXCEEDED.textGeneric' };
+  // État du lecteur périmé (contrat C3) : « occupé » pour un TIMEOUT ou une cause inconnue
+  if (ctx.action === 'state' && isStalePayload(e?.payload) && (code === 'TIMEOUT' || !DECK_ERRORS.has(code))) {
+    return { key: 'toast.stale', path: 'toast.stale.text' };
+  }
+  if (DECK_ERRORS.has(code)) return { key: `error.${code}`, path: `error.${code}.text` };
+  if (code.startsWith('UNKNOWN_ACTION')) return { key: 'error.UNKNOWN_ACTION', path: 'error.UNKNOWN_ACTION.text' };
+  if (!code && ctx.action === 'move' && status === 409) return { key: 'error.MOVE_CONFLICT', path: 'error.MOVE_CONFLICT.text' };
+  const p = e?.payload && typeof e.payload === 'object' ? e.payload : null;
+  const msg = p && typeof p.message === 'string' ? p.message.trim() : '';
+  if (msg) return { key: 'error.UNKNOWN', text: msg };
+  if (status >= 500) return { key: 'error.HTTP_5XX', path: 'error.HTTP_5XX.text' };
+  if (status === 401) return { key: 'error.HTTP_401', path: 'error.HTTP_401.text' };
+  if (e?.name === 'TypeError') return { key: 'error.NETWORK', path: 'error.NETWORK.text' };
+  return { key: 'error.UNKNOWN', path: 'error.UNKNOWN.text' };
 }
 
 const BUSY_TEXT = 'Greg est occupé — état du lecteur non rafraîchi…';
@@ -275,4 +427,29 @@ export function isShortcutIgnored(ev: {
     if (typeof t?.closest === 'function' && t.closest('button,a,select,[role=button]')) return true;
   }
   return false;
+}
+
+/**
+ * Toast du Héraut après un ajout réussi (contrat C2/C4 : added / requested / truncated / playlist / title),
+ * en clés du deck : `path` (texte), `suffix` (complément de playlist), `vars`, `action` (libellé d'annulation).
+ */
+export function addedCopy(res: any, fallbackTitle: string): {
+  key: string; path: string; suffix: string | null; vars: Record<string, string | number>; action: string;
+} {
+  const r = res && typeof res === 'object' ? res : {};
+  const num = (v: any) => (v != null && v !== '' && isFinite(Number(v)) ? Number(v) : null);
+  const message = typeof r.message === 'string' ? r.message.trim() : '';
+  if (r.playlist_error && message) {
+    return { key: 'toast.playlistPartial', path: 'toast.playlistPartial.text', suffix: null, vars: {}, action: 'toast.added.action' };
+  }
+  if (r.playlist) {
+    const n = num(r.added) ?? 0;
+    const m = num(r.requested);
+    const suffix = r.truncated === 'quota' ? 'toast.playlistAdded.suffixQuota'
+      : r.truncated === 'limit' ? 'toast.playlistAdded.suffixLimit'
+        : m != null && m > n ? 'toast.playlistAdded.suffixOf' : null;
+    return { key: 'toast.playlistAdded', path: 'toast.playlistAdded.text', suffix, vars: { n, m: m ?? n }, action: 'toast.playlistAdded.action' };
+  }
+  const title = (typeof r.title === 'string' && r.title.trim()) || fallbackTitle;
+  return { key: 'toast.added', path: 'toast.added.text', suffix: null, vars: { title }, action: 'toast.added.action' };
 }

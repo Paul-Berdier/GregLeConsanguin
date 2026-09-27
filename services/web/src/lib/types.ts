@@ -1,4 +1,6 @@
 export interface Track {
+  /** Clé stable d'un titre d'un état à l'autre (assignKeys, playerUtils.ts) ; '' avant assignKeys. */
+  key: string;
   url: string;
   title: string;
   artist?: string;
@@ -29,6 +31,19 @@ export interface PlayerState {
   repeat: boolean;
   position: number;
   duration: number;
+}
+
+/** Ancre de l'horloge : position `pos` (s) à l'instant `at` (performance.now(), ms), durée `dur` (s). */
+export interface TickBase {
+  pos: number;
+  at: number;
+  dur: number;
+}
+
+/** Un état complet du lecteur : ce que l'API ou le socket envoient, ou ce que la page affiche. */
+export interface Snapshot {
+  player: PlayerState;
+  tickBase: TickBase;
 }
 
 export interface GuildInfo {
