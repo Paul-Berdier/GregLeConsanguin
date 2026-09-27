@@ -1,0 +1,50 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LE PANNEAU : plaque de la file et de l'historique, titres, onglets, volets, ménestrels (DESIGN §3, §12.5).
+   Repris de proto-gothique/work/refine/src/styles.css : lignes 371–393, 483–485 et 555–589, sauf :
+   - les couleurs d'onglet changent sans transition (seule la pilule glisse, en transform) ;
+   - le mouvement réduit suit prefers-reduced-motion ;
+   - le panneau prend la hauteur de la grille (.main-layout, globals.css) ; volets : Sidebar.tsx.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.panel { position: relative; min-height: 0; display: flex; flex-direction: column; border-radius: 16px; corner-shape: bevel; background: var(--nef); box-shadow: inset 0 0 0 1px var(--hair); }
+/* la fenêtre éclaire l'arête proche du panneau */
+.panel::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; corner-shape: bevel; pointer-events: none;
+  background: radial-gradient(90% 38% at 0% 0%, rgb(var(--lumiere-rgb) / .09), transparent 70%);
+  box-shadow: inset 1px 1px 0 rgb(var(--lumiere-rgb) / .16);
+}
+.panel-head { position: relative; padding: 18px 18px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; }
+.ptitle-slot { position: relative; display: grid; min-width: 0; }
+.psubs { grid-column: 1 / -1; margin-top: -4px; }
+.ptitle-slot > * { grid-area: 1 / 1; }
+.ptitle-slot > [aria-hidden=true] { opacity: 0; visibility: hidden; }
+.ptitle { margin: 0; font: 600 33px/1 var(--f-display); color: var(--os); letter-spacing: .005em; white-space: nowrap; }
+.psub { font-size: 14px; color: var(--cendre); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tabs { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 9px; corner-shape: bevel; background: var(--nuit); box-shadow: inset 0 0 0 1px var(--hair); }
+.tabs .pill {
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 7px; corner-shape: bevel;
+  background: var(--voute-2); box-shadow: 0 1px 0 rgb(255 255 255 / .04) inset;
+  transition: transform var(--dur-pop-in) var(--ease-in-out);
+}
+.tabs[data-tab=hist] .pill { transform: translateX(100%); }
+.tab { position: relative; z-index: 1; height: 36px; padding: 0 12px; border-radius: 7px; font-size: 14.5px; font-weight: 500; color: var(--cendre); display: flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+.tab[aria-selected=true] { color: var(--os); }
+.count { font-size: 13px; color: var(--cendre); min-width: 8px; }
+
+.panes { position: relative; flex: 1; min-height: 0; display: grid; margin-top: 14px; }
+.pane { grid-area: 1 / 1; min-height: 0; display: flex; flex-direction: column; }
+.pane[aria-hidden=true] { visibility: hidden; pointer-events: none; }
+
+/* les ménestrels du Codex Manesse tiennent compagnie à l'espace vide */
+.minstrels { position: absolute; left: 50%; bottom: 58px; width: min(88%, 380px); transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 600ms ease; }
+.panel[data-roomy=true] .minstrels { opacity: .075; }
+
+@media (max-width: 900px) { .panel { min-height: 520px; } }
+@media (max-width: 520px) {
+  .panel-head { padding: 16px 14px 0; }
+  .ptitle { font-size: 28px; }
+  .psub { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tabs .pill { transition: none; }
+}

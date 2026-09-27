@@ -12,25 +12,6 @@ module.exports = {
         cendre:  'var(--cendre)',
         or:      'var(--or)',
         gueules: 'var(--gueules)',
-
-        // legacy: supprimé à l'étape 3
-        surface: {
-          0: 'var(--nuit)',
-          1: 'var(--nef)',
-          2: 'var(--voute)',
-          3: 'var(--voute-2)',
-        },
-        // legacy: supprimé à l'étape 3
-        accent: { DEFAULT: 'rgb(var(--lumiere-rgb))', light: 'var(--or)', dim: 'rgb(var(--lumiere-rgb) / .15)' },
-        // legacy: supprimé à l'étape 3. DEFAULT en color-mix + <alpha-value> : un `var(--x)` nu
-        // ferait disparaître les variantes à opacité (`bg-rose/20` n'est pas généré par Tailwind 3).
-        teal:   { DEFAULT: 'color-mix(in srgb, var(--or) calc(<alpha-value> * 100%), transparent)', dim: 'color-mix(in srgb, var(--or) 12%, transparent)' },
-        // legacy: supprimé à l'étape 3
-        rose:   { DEFAULT: 'color-mix(in srgb, var(--gueules) calc(<alpha-value> * 100%), transparent)', dim: 'color-mix(in srgb, var(--gueules) 12%, transparent)' },
-        // legacy: supprimé à l'étape 3
-        txt:    { DEFAULT: 'var(--os)', muted: 'var(--cendre)', dim: 'var(--cendre-2)' },
-        // legacy: supprimé à l'étape 3
-        border: { DEFAULT: 'var(--hair)', hover: 'var(--hair-2)' },
       },
       fontFamily: {
         display: ['var(--f-display)'],

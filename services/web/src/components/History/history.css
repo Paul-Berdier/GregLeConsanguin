@@ -1,0 +1,43 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LES ANNALES et « SOUVENT DEMANDÉS ICI » (DESIGN §12.5).
+   Repris de proto-gothique/work/refine/src/styles.css : lignes 476–482 et 488–500, sauf :
+   - les couleurs de survol et du segment changent sans transition (seul l'appui s'anime, en transform) ;
+   - le mouvement réduit suit prefers-reduced-motion.
+   Les lignes reprennent .row, .card, .thumb, .meta de queue.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.hpane { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.hstate { padding: 30px 18px 10px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.hstate h4 { margin: 0; font: 600 26px/1 var(--f-display); }
+.hstate p { margin: 0; font-size: 15px; color: var(--cendre); max-width: 290px; }
+:root[data-quips=off] .hstate .quip { display: none; }
+
+/* ce que le serveur demande le plus, offert là où finit la file */
+.sugg { margin-top: 14px; padding-top: 6px; }
+.srow .card { grid-template-columns: 24px 56px minmax(0, 1fr) 40px; height: 48px; }
+.srow .thumb, .hrow .thumb { cursor: default; touch-action: auto; }
+.srow .thumb { width: 56px; }
+.srow .t { font-size: 14.5px; }
+.srow .a { font-size: 13px; }
+
+.seg { display: flex; gap: 4px; padding: 0 18px 8px; }
+.seg button { height: 34px; padding: 0 12px; border-radius: 7px; corner-shape: bevel; font-size: 14.5px; color: var(--cendre); box-shadow: inset 0 0 0 1px var(--hair); }
+.seg button[aria-pressed=true] { color: var(--os); background: var(--voute-2); box-shadow: none; }
+.seg .refresh { margin-left: auto; width: 34px; padding: 0; display: grid; place-items: center; }
+.seg .refresh svg { width: 16px; height: 16px; }
+.hrow .card { grid-template-columns: 24px 72px minmax(0, 1fr) 40px; }
+.rank { font: 700 14.5px/1 var(--f-ui); color: var(--cendre); text-align: right; justify-self: end; width: 24px; padding-right: 2px; }
+/* les trois premiers : dorés, soulignés d'un filet d'or */
+.rank.top { color: var(--or); text-decoration: underline; text-decoration-color: rgb(207 167 90 / .45); text-underline-offset: 4px; text-decoration-thickness: 1px; }
+.hrow .add, .srow .add { width: 34px; height: 34px; border-radius: 7px; corner-shape: bevel; display: grid; place-items: center; color: var(--cendre); transition: transform var(--dur-press) var(--ease-out); }
+.hrow .add svg, .srow .add svg { width: 16px; height: 16px; }
+.hrow .add:active, .srow .add:active { transform: scale(.94); }
+@media (hover: hover) and (pointer: fine) {
+  .hrow:hover .add, .srow:hover .add { color: var(--os); background: rgb(239 231 216 / .05); }
+  .hrow .add:hover, .srow .add:hover { background: var(--voute-2); }
+}
+.hrow:focus-within .add, .srow:focus-within .add { color: var(--os); }
+@media (hover: none) { .hrow .add, .srow .add { width: 40px; height: 40px; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .hrow .add, .srow .add { transition: none; }
+}

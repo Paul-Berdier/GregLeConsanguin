@@ -1,95 +1,102 @@
 'use client';
 
-import { useState } from 'react';
-import { usePlayer, useStore } from '@/hooks/usePlayer';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { playerActions, useStore } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
-import { fmt } from '@/lib/format';
-import { Ic } from '@/components/icons';
+import { EASE, reducedMotion } from '@/lib/motion';
+import { agoOf } from '@/lib/queue/view';
+import type { HistoryItem } from '@/lib/queue/view';
+import { seedOf } from '@/lib/stage/scene';
+import { quip, t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
+import HistoryRow from './HistoryRow';
+import { useRequeueList } from './useRequeue';
 
-// ═══════════════════════════════
-// History / Top Panel
-// ═══════════════════════════════
+const REFRESH = <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 11a7.5 7.5 0 1 0-2.2 5.3"/><path d="M19.5 4.5V11H13"/></svg>;
+
+/**
+ * Les Annales (DESIGN §12.5, motion.md §6.15) : « Plus joués » (rangs, les trois premiers dorés) ou « Récents ».
+ * « Plus joués » est la liste du store (usePlayer.refreshHistory, aussi lue par « Souvent demandés ici ») ;
+ * « Récents » reste locale. Un clic sélectionne, un double-clic ou « + » remet le titre dans la file.
+ * Le demandeur n'est nommé que s'il est connu : le Roi (« vous ») ou un courtisan présent dans la file.
+ */
 export default function HistoryPanel() {
-  const { historyItems, enqueue, refreshHistory, guildId } = usePlayer();
+  const guildId = useStore((s) => s.guildId);
+  const top = useStore((s) => s.historyItems) as HistoryItem[];
+  const meId = useStore((s) => s.me?.id ?? '');
+  const queue = useStore((s) => s.player.queue);
+  const current = useStore((s) => s.player.current);
   const [mode, setMode] = useState<'top' | 'recent'>('top');
+  const [recent, setRecent] = useState<HistoryItem[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const refreshRef = useRef<HTMLButtonElement>(null);
+  /** Numéro du dernier chargement, avancé aussi par un changement de serveur : une réponse dépassée ne s'écrit plus. */
+  const seq = useRef(0);
 
-  const reload = async (m: 'top' | 'recent') => {
+  useEffect(() => { seq.current++; setMode('top'); setRecent(null); setLoading(false); }, [guildId]);
+
+  const load = async (m: 'top' | 'recent') => {
     setMode(m);
+    if (!guildId) return;
+    const id = ++seq.current;
+    const live = () => id === seq.current;
     setLoading(true);
     try {
-      const s = useStore.getState();
-      if (!s.guildId) return;
-      const data = await api.getHistory(s.guildId, m, 30);
-      useStore.getState().setHistoryItems(data?.items || []);
-    } catch {} finally { setLoading(false); }
+      if (m === 'top') await playerActions.refreshHistory();
+      else {
+        const items = ((await api.getHistory(guildId, 'recent', 30))?.items || []) as HistoryItem[];
+        if (live()) setRecent(items);
+      }
+    } catch {
+      if (m === 'recent' && live()) setRecent([]);
+    } finally {
+      if (live()) setLoading(false);
+    }
+  };
+  const refresh = () => {
+    if (!reducedMotion()) refreshRef.current?.querySelector('svg')?.animate([{ transform: 'rotate(0)' }, { transform: 'rotate(360deg)' }], { duration: 500, easing: EASE.inOut });
+    void load(mode);
   };
 
-  const quickAdd = (item: any) => {
-    enqueue({
-      query: item.url || item.title,
-      url: item.url, title: item.title,
-      artist: item.artist, thumb: item.thumb,
-      duration: item.duration, provider: item.provider || 'youtube',
-    }).catch(() => {}); // statut d'erreur déjà affiché par enqueue
+  const names = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const x of [current, ...queue]) if (x?.addedBy?.id && x.addedBy.name) out.set(x.addedBy.id, x.addedBy.name);
+    return out;
+  }, [queue, current]);
+  const nameOf = (id?: string) => (!id ? '' : id === meId ? t('history.mine') : names.get(id) || '');
+
+  const items = mode === 'top' ? top : recent ?? [];
+  const list = useRequeueList(items);
+  const now = Date.now();
+  const metaOf = (it: HistoryItem) => {
+    if (mode === 'top') return tx('history.plays', { n: it.play_count ?? 0 });
+    const ago = agoOf(it.last_played, now);
+    return ago ? tx(`history.ago.${ago.unit}`, { n: ago.n }) : '';
   };
 
-  if (!guildId) return <div className="text-sm text-txt-muted py-6 text-center opacity-50">Choisis un serveur</div>;
+  if (!guildId) return <div className="hstate"><p>{t('history.noGuild')}</p></div>;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Mode toggle */}
-      <div className="flex gap-1 mb-3 p-1 rounded-xl bg-surface-3 flex-shrink-0">
-        <button onClick={() => reload('top')} className={`tab flex-1 text-center text-xs ${mode === 'top' ? 'tab-active' : ''}`}>
-          Top joués
-        </button>
-        <button onClick={() => reload('recent')} className={`tab flex-1 text-center text-xs ${mode === 'recent' ? 'tab-active' : ''}`}>
-          Récents
-        </button>
-        <button onClick={() => reload(mode)} disabled={loading}
-          className={`tab text-xs px-2 ${loading ? 'loading-spin opacity-50' : ''}`}>
-          ↻
-        </button>
+    <div className="hpane">
+      <div className="seg">
+        <button type="button" aria-pressed={mode === 'top'} onClick={() => void load('top')}>{t('history.segments.top')}</button>
+        <button type="button" aria-pressed={mode === 'recent'} onClick={() => void load('recent')}>{t('history.segments.recent')}</button>
+        <button type="button" className="refresh" ref={refreshRef} aria-label={t('history.refresh')} title={t('history.refresh')} onClick={refresh}>{REFRESH}</button>
       </div>
-
-      {/* Items */}
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[900px]:max-h-[40vh]">
-        {!historyItems.length ? (
-          <div className="text-center text-txt-muted text-sm py-8 opacity-40">
-            <Ic icon="music" size={28}/><br/>
-            <span className="mt-2 block">Aucun historique encore</span>
-            <span className="text-xs block mt-1">Joue des morceaux pour les voir ici</span>
-          </div>
-        ) : historyItems.map((item, i) => (
-          <div key={`${item.url}-${i}`} className="q-item group" onClick={() => quickAdd(item)}>
-            <div className="relative">
-              {item.thumb
-                ? <div className="q-thumb" style={{ backgroundImage: `url("${item.thumb}")` }}/>
-                : <div className="q-thumb flex items-center justify-center"><Ic icon="music" size={18}/></div>}
-              {/* Play count badge */}
-              {mode === 'top' && item.play_count > 1 && (
-                <div className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-accent text-[10px] font-bold text-white flex items-center justify-center px-1">
-                  {item.play_count}
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold truncate">{item.title || 'Titre inconnu'}</div>
-              <div className="text-xs text-txt-muted truncate">
-                {[
-                  item.artist || '',
-                  item.duration ? fmt(item.duration) : '',
-                  item.last_played_by ? `par ${item.last_played_by}` : '',
-                ].filter(Boolean).join(' · ')}
-              </div>
-            </div>
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent-dim hover:bg-accent/20 text-accent">
-                <Ic icon="play" size={14}/>
-              </div>
-            </div>
-          </div>
-        ))}
+      <div className="scroller">
+        {!items.length ? (
+          loading || (mode === 'recent' && recent === null)
+            ? <div className="hstate" role="status"><p>{t('history.loading.text')}</p></div>
+            : <div className="hstate"><h4>{t('history.empty.title')}</h4><p>{t('history.empty.body')}</p>
+              <div className="quip" aria-hidden="true">{quip('history.empty', seedOf(guildId))}</div></div>
+        ) : (
+          <ol className="qlist" aria-label={tx('history.list')} onClick={list.onClick} onDoubleClick={list.onDoubleClick}>
+            {items.map((it, i) => (
+              <HistoryRow key={`${it.url}-${i}`} item={it} rank={mode === 'top' ? i + 1 : 0} meta={metaOf(it)}
+                byName={nameOf(it.last_played_by)} variant="hrow" picked={list.picked === it.url}/>
+            ))}
+          </ol>
+        )}
       </div>
     </div>
   );

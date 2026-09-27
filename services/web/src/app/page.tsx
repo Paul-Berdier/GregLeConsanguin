@@ -68,7 +68,7 @@ export default function Home() {
           <Stage booted={booted}/>
 
           {/* Droite : file et historique (étape 3) */}
-          <Sidebar/>
+          <Sidebar booted={booted}/>
         </main>
       </div>
 
