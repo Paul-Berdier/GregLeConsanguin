@@ -74,6 +74,8 @@
 .sync-reset:disabled { opacity: .4; cursor: default; }
 
 @media (prefers-reduced-motion: reduce) {
+  /* motion.md §6.10 : les posters se relaient en fondu de 200 ms (--dur-reveal n'est pas raccourci par tokens.css) */
+  .video .poster, .video .posters[data-covered=false] { transition-duration: 200ms; }
   .paused-badge, .stage[data-paused=true] .paused-badge { transform: translate(-50%, -50%); }
   .sync-btn, .sync-reset { transition: none; }
 }

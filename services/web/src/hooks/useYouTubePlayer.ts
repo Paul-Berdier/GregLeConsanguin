@@ -23,21 +23,27 @@ export type YTPlayer = {
 type YTNamespace = { Player: new (el: HTMLElement, opts: Record<string, unknown>) => YTPlayer };
 type YTWindow = Window & { YT?: YTNamespace; onYouTubeIframeAPIReady?: () => void };
 export type YTHandlers = { onState: (state: number) => void; onError: (code: number) => void };
+/** Code passé à onError quand l'API elle-même n'a pas pu se charger (réseau, bloqueur) : YouTube n'en a que de positifs. */
+export const YT_API_FAILED = -1;
 
 const API_SRC = 'https://www.youtube.com/iframe_api';
 let apiPromise: Promise<YTNamespace> | null = null;
 
-/** Charge l'API une seule fois ; enchaîne un onYouTubeIframeAPIReady déjà posé. */
+/**
+ * Charge l'API une seule fois ; enchaîne un onYouTubeIframeAPIReady déjà posé. Si le script échoue, la promesse est
+ * rejetée et oubliée, sa balise retirée : un prochain montage réessaie au lieu d'attendre pour toujours.
+ */
 export function loadYouTubeApi(): Promise<YTNamespace> {
   const w = window as YTWindow;
   if (w.YT?.Player) return Promise.resolve(w.YT);
-  apiPromise ??= new Promise<YTNamespace>((resolve) => {
+  apiPromise ??= new Promise<YTNamespace>((resolve, reject) => {
     const prev = w.onYouTubeIframeAPIReady;
     w.onYouTubeIframeAPIReady = () => { prev?.(); if (w.YT) resolve(w.YT); };
     if (!document.querySelector(`script[src="${API_SRC}"]`)) {
       const tag = document.createElement('script');
       tag.src = API_SRC;
       tag.async = true;
+      tag.onerror = () => { tag.remove(); apiPromise = null; reject(new Error('iframe_api')); };
       document.head.appendChild(tag);
     }
   });
@@ -61,6 +67,9 @@ export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: Y
       if (!alive) return;
       created = new YT.Player(host, {
         width: '100%', height: '100%',
+        // Sous-titres (écart 5 du plan) : l'iframe muette en affiche malgré cc_load_policy: 0, et dans la langue que
+        // YouTube choisit (allemand mesuré en fr-FR comme en en-US) ; hl et cc_lang_pref: 'fr', essayés, n'y changent
+        // rien (Chrome, 27/09/2026). Il resterait unloadModule, non documenté et écarté par le plan : à trancher à l'étape 4.
         playerVars: {
           autoplay: 1, mute: 1, controls: 0, rel: 0, iv_load_policy: 3, disablekb: 1,
           playsinline: 1, fs: 0, cc_load_policy: 0, enablejsapi: 1, origin: location.origin,
@@ -76,7 +85,7 @@ export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: Y
           onError: (e: { data: number }) => { if (alive) h.current.onError(e.data); },
         },
       });
-    }).catch(() => {});
+    }).catch(() => { if (alive) h.current.onError(YT_API_FAILED); });   // le poster reste, la note le dit
     return () => {
       alive = false;
       try { created?.destroy(); } catch {}

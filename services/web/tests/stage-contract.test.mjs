@@ -1,7 +1,7 @@
 // Contrats entre les morceaux de la scène (étape 2) : variables CSS, imports, mouvement, fichiers retirés.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadTs } from './_loadTs.mjs';
 
@@ -67,6 +67,17 @@ test('mouvement réduit prévu dans chaque feuille qui déplace ou met à l’é
   }
 });
 
+test('jamais « transition: all », ni dans une feuille ni en classe Tailwind (transition-all)', () => {
+  const walk = (dir) => readdirSync(path(dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory()
+    ? walk(`${dir}/${e.name}`) : /\.(?:tsx?|css)$/.test(e.name) ? [`${dir}/${e.name}`] : []));
+  const files = walk('src');
+  assert.ok(files.includes('src/app/page.tsx'), 'parcours de src/');
+  for (const f of files) {
+    const text = read(f).replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.ok(!/\btransition-all\b|transition(?:-property)?\s*:\s*all\b/.test(text), `${f} : une transition sur « all »`);
+  }
+});
+
 test('le lecteur provisoire et la progression par image sont retirés', () => {
   assert.ok(!existsSync(path('src/components/Stage/VideoPlayer.tsx')));
   assert.ok(!existsSync(path('src/hooks/useProgress.ts')));
@@ -103,6 +114,9 @@ test('déconnecté : un seul « Se connecter avec Discord », celui de la nuit ;
 });
 
 // ─── Correctifs après revue (tâche 8) ───────────────────────────────────────────────────────────
+// Les tests qui lisent le texte source (Stage.tsx, page.tsx, Header.tsx) sont des garde-fous, pas des tests
+// de comportement : ils attrapent un retour en arrière évident, une réécriture équivalente peut les casser.
+// Le comportement est vérifié dans Chrome (étape 10 de la tâche 8) ; la logique pure, dans ses propres tests.
 
 /** Corps des blocs `@…` dont l'en-tête correspond à `head` (accolades imbriquées comprises). */
 function atBodies(css, head) {
@@ -120,15 +134,37 @@ const noComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 /** Déclarations d'une règle de premier niveau (ou d'un bloc) dont le sélecteur est exactement `sel`. */
 const ruleBody = (css, sel) => css.match(new RegExp(`(?:^|[\\n{}])\\s*${sel.replace(/[.[\]=()]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
 
-test('la nuit compte dans la mise en page : Stage.tsx reprend la géométrie de l’oculus de night.css', () => {
+test('la nuit compte dans la mise en page : layout.ts reprend la géométrie de l’oculus de night.css', () => {
   const night = noComments(read('src/components/Stage/night.css'));
-  const stage = read('src/components/Stage/Stage.tsx');
+  // nightBottom (layout.ts, tests/stageLayout.test.mjs) pose la nuit comme night.css : même haut, même marge
   assert.match(ruleBody(night, '.night'), /top:\s*calc\(var\(--crown\) \+ var\(--cR\) - var\(--heart\) \/ 2\)/, "haut de la nuit : centre de la rose moins un demi-oculus");
   const cssGap = Number(ruleBody(night, '.heart').match(/margin-bottom:\s*calc\(var\(--R\) \* ([\d.]+)\)/)?.[1]);
-  const tsGap = Number(stage.match(/const HEART_GAP = ([\d.]+);/)?.[1]);
-  assert.ok(cssGap > 0 && cssGap === tsGap, `marge sous l'oculus : night.css ${cssGap} R, Stage.tsx ${tsGap} R`);
-  assert.match(stage, /l\.crown \+ l\.cR \+ l\.heart \/ 2 \+ HEART_GAP \* l\.R \+ tail/, 'bas de la nuit calculé comme night.css le pose');
+  assert.ok(cssGap > 0 && cssGap === layout.HEART_GAP, `marge sous l'oculus : night.css ${cssGap} R, layout.ts ${layout.HEART_GAP} R`);
+  // garde-fous sur le texte source, pas des tests de comportement : la scène se sert de fitNight et contient sa nuit
+  const stage = read('src/components/Stage/Stage.tsx');
+  assert.match(stage, /import \{[^}]*\bfitNight\b[^}]*\} from '@\/lib\/stage\/layout'/, 'Stage.tsx prend fitNight dans layout.ts');
   assert.match(stage, /minHeight:/, 'la scène contient sa nuit (centrage et filet de sécurité)');
+});
+
+/**
+ * Largeur de la colonne de scène, connecté, sur ordinateur, d'après la grille : la page moins ses marges
+ * (--page-x, header.css, posées par page.tsx), l'écart de la grille (globals.css) et le panneau (--panel-w :
+ * tokens.css, réduit sous un seuil dans stage.css).
+ */
+function stageColW(viewportW) {
+  const num = (text, re, what) => { const v = Number(text.match(re)?.[1]); assert.ok(v > 0, what); return v; };
+  assert.match(read('src/app/page.tsx'), /padding: '0 calc\(var\(--page-x\)[^']*calc\(var\(--page-x\)/, 'page.tsx : marges --page-x des deux côtés');
+  const pageX = num(noComments(read('src/components/Header/header.css')), /^:root\s*\{\s*--page-x:\s*([\d.]+)px/m, '--page-x');
+  const gap = num(ruleBody(noComments(read('src/app/globals.css')), '.main-layout'), /(?:^|;)\s*gap:\s*([\d.]+)px/, 'écart de la grille');
+  const panel = num(noComments(read('src/theme/tokens.css')), /--panel-w:\s*([\d.]+)px/, '--panel-w');
+  const narrow = noComments(read('src/components/Stage/stage.css')).match(/@media \(max-width: (\d+)px\) \{ :root \{ --panel-w: (\d+)px; \} \}/);
+  assert.ok(narrow, 'panneau réduit sous un seuil (stage.css)');
+  return viewportW - 2 * pageX - gap - (viewportW <= Number(narrow[1]) ? Number(narrow[2]) : panel);
+}
+
+test('largeur de la colonne de scène : la grille donne ce que mesure le navigateur', () => {
+  // mesuré dans Chrome (tâche 8) : 1280×720, 1366×657, 1440×900 et 1024×768
+  for (const [vw, colW] of [[1280, 784], [1366, 870], [1440, 944], [1024, 588]]) assert.equal(stageColW(vw), colW, `${vw} px`);
 });
 
 test('transport sous le titre quand la colonne est étroite, à côté aux tailles de référence (DESIGN §12.4)', () => {
@@ -142,12 +178,12 @@ test('transport sous le titre quand la colonne est étroite, à côté aux taill
   assert.equal([...css.matchAll(/@container/g)].length, 1, 'aucune autre requête de conteneur');
   const body = atBodies(css, /@container\s+stage-col\s*\(max-width:\s*[\d.]+px\)/)[0];
   assert.match(ruleBody(body, '.now'), /grid-template-columns:\s*minmax\(0, 1fr\)/, 'le transport passe sous le titre');
-  // largeurs de colonne mesurées en navigateur (1440×900 : panneau à droite ; 1180 px et moins : panneau de 360 px)
-  for (const [name, colW] of [['1280×720', 784], ['1366×657', 870], ['1536×730', 1040], ['1440×900', 944]]) {
-    assert.ok(colW > q[0], `${name} : colonne de ${colW} px, le transport reste à côté du titre`);
+  // largeurs de colonne tirées de la grille (stageColW) : une marge, un écart ou un panneau qui change est vu ici
+  for (const vw of [1280, 1366, 1440, 1536, 1920]) {
+    assert.ok(stageColW(vw) > q[0], `${vw} px : colonne de ${stageColW(vw)} px, le transport reste à côté du titre`);
   }
-  for (const [name, colW] of [['1024×768', 588], ['901×800', 465]]) {
-    assert.ok(colW <= q[0], `${name} : colonne de ${colW} px, le transport passe sous le titre`);
+  for (const vw of [901, 1024, 1096]) {
+    assert.ok(stageColW(vw) <= q[0], `${vw} px : colonne de ${stageColW(vw)} px, le transport passe sous le titre`);
   }
   // juste au-dessus du seuil, la rose se règle sur la largeur : il reste au titre ~180 px à côté du transport (~280 px, écart 24)
   const l = layout.solveStageLayout({ colW: q[0] + 1, colH: 900, belowH: 140, viewportW: 1200 });
@@ -177,7 +213,14 @@ test('sur ordinateur, la page ne défile pas : le cadre rogne les deux axes, une
 
 test('la scène ne se rend pas à chaque charge utile : sélecteurs de primitives, pas d’objets du store', () => {
   const stage = read('src/components/Stage/Stage.tsx');
-  assert.doesNotMatch(stage, /useStore\(\(s\) => s\.(?:player\.current|me)\)/, 'player.current et me sont recréés à chaque charge utile');
+  // chaque sélecteur, quel que soit le nom de son paramètre ; un repli « ?? null » ou « || null » ne change rien
+  const selectors = [...stage.matchAll(/useStore\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*([^;]+?)\);/g)]
+    .map(([, v, body]) => body.trim().replace(new RegExp(`\\b${v}\\.`, 'g'), 's.'));
+  assert.ok(selectors.length >= 5, `sélecteurs trouvés : ${selectors.length}`);
+  for (const sel of selectors) {
+    const bare = sel.replace(/\s*(?:\?\?|\|\|)\s*(?:null|undefined)$/, '');
+    assert.doesNotMatch(bare, /^s\.(?:me|player|player\.current|player\.queue|tickBase)$/, `objet du store recréé à chaque charge utile : ${sel}`);
+  }
 });
 
 test('la région de la scène ne s’appelle « En lecture » que le jour', () => {

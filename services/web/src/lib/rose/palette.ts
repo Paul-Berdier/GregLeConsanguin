@@ -93,7 +93,8 @@ export const thumbUrl = (id: string): string => `https://i.ytimg.com/vi/${id}/hq
 
 /**
  * Pics de teinte d'un histogramme pondéré par la saturation (24 cases de 15°), trois au plus, écartés de 30°.
- * Pas de teinte exploitable (chroma moyen < 0,02) : grisaille.
+ * Pas de teinte exploitable (chroma moyen < 0,02) : grisaille. Le seuil est celui du code du prototype et de
+ * DESIGN §12.2 ; le 0,012 de DESIGN §4 date du tour 2 et a été remonté depuis.
  */
 export function paletteFromPixels(d: ArrayLike<number>): Palette {
   const bins = Array.from({ length: 24 }, () => ({ w: 0, sx: 0, sy: 0 }));

@@ -5,7 +5,9 @@
  * - La fenêtre du PROCHAIN titre est préparée pendant les temps morts, puis montée invisible
  *   (textures déjà envoyées au GPU le moment venu).
  * - Tant qu'une fenêtre n'est pas prête, l'ancienne reste affichée.
- * - Pendant un redimensionnement, rien n'est peint d'avance : la préparation attend la taille finale.
+ * - Pendant un redimensionnement, rien n'est peint d'avance : la préparation attend la taille finale,
+ *   et la repeinte attend la fin du fondu en cours.
+ * - Sans à-coup : chaque fondu repart de l'opacité rendue ; seule la fenêtre qui entre s'éclaircit.
  * Sans import runtime : les fonctions exportées sont testées (tests/rose-client.test.mjs).
  */
 import type { RoseIn, RoseOut } from './rose.worker';
@@ -24,16 +26,25 @@ export type Painted = Extract<RoseOut, { type: 'painted' }>;
 // exit : le fondu de sortie en cours (null sinon) ; tant qu'il tourne, la fenêtre n'est jamais évincée
 type Slot = { key: string; lum: RGB; bloom: HTMLDivElement; glass: HTMLDivElement; exit: Animation | null };
 export type RoseLayers = { bloom: HTMLElement; glass: HTMLElement };
+export type RoseOptions = {
+  onFail?: () => void;                 // worker hors service : la rosace statique prend le relais (spec §7)
+  createWorker?: () => Worker;         // tests : un worker factice
+};
 
 /** Clé d'une fenêtre : un titre (ou la lune) à une taille et une densité de pixels. */
 export const roseKey = (id: string | null, R: number, dpr: number): string => `${id ? `t:${id}` : 'moon'}@${R}x${dpr}`;
 export const keyFits = (key: string, R: number, dpr: number): boolean => key.endsWith(`@${R}x${dpr}`);
 export const isMoonKey = (key: string): boolean => key.startsWith('moon@');
 
-/** Fenêtres montées à retirer : ni la lune, ni celles à garder, au-delà des `max` plus récentes. */
-export function evictable(keys: string[], keep: (string | null | undefined)[], max = KEEP_OTHERS): string[] {
-  const others = keys.filter((k) => !isMoonKey(k) && !keep.includes(k));
-  return others.slice(0, Math.max(0, others.length - max));
+/**
+ * Fenêtres montées à retirer, hors celles à garder : toutes celles peintes pour une autre taille (la lune
+ * comprise), puis les titres au-delà des `max` plus récents. La lune à la taille courante reste.
+ */
+export function evictable(keys: string[], keep: (string | null | undefined)[], R: number, dpr: number, max = KEEP_OTHERS): string[] {
+  const free = keys.filter((k) => !keep.includes(k));
+  const stale = free.filter((k) => !keyFits(k, R, dpr));
+  const others = free.filter((k) => keyFits(k, R, dpr) && !isMoonKey(k));
+  return [...stale, ...others.slice(0, Math.max(0, others.length - max))];
 }
 
 /** La lumière du morceau, posée sur :root (--lumiere et --lumiere-rgb, tokens.css). */
@@ -47,6 +58,15 @@ export function roseSupported(): boolean {
   return typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap === 'function';
 }
 
+/** Opacité rendue (animations comprises) ; 0 hors du document. */
+function rendered(el: HTMLElement): number {
+  if (!el.isConnected) return 0;
+  const v = parseFloat(getComputedStyle(el).opacity);
+  return Number.isFinite(v) ? v : 1;
+}
+
+const spawn = (): Worker => new Worker(new URL('./rose.worker.ts', import.meta.url), { type: 'module' });
+
 const idle = (fn: () => void): void => {
   const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
   if (ric) ric(fn, { timeout: 1500 }); else setTimeout(fn, 1);
@@ -54,6 +74,7 @@ const idle = (fn: () => void): void => {
 
 export class RoseClient {
   private layers: RoseLayers;
+  private opts: RoseOptions;
   private worker: Worker | null = null;
   private R = 0;
   private dpr = 1;
@@ -65,17 +86,25 @@ export class RoseClient {
   private built = new Map<string, Slot>();
   private ready = new Map<string, Painted>();
   private waits = new Map<string, { p: Promise<Painted | null>; res: (d: Painted | null) => void }>();
+  private showing: string | null = null;           // fenêtre que le dernier show() attend du worker
+  private z = 0;                                   // ordre d'entrée en scène : la plus récente au-dessus
   private busyUntil = 0;
   private resizeTimer: ReturnType<typeof setTimeout> | undefined;
   private resizing = false;
   private dead = false;
 
-  constructor(layers: RoseLayers) { this.layers = layers; }
+  constructor(layers: RoseLayers, opts: RoseOptions = {}) { this.layers = layers; this.opts = opts; }
+
+  /** Peintures demandées au worker, pas encore revenues. */
+  get pending(): number { return this.waits.size; }
 
   start(): void {
     if (this.worker || this.dead) return;
-    this.worker = new Worker(new URL('./rose.worker.ts', import.meta.url), { type: 'module' });
-    this.worker.onmessage = (e: MessageEvent<RoseOut>) => this.onMessage(e.data);
+    const w = (this.opts.createWorker ?? spawn)();
+    this.worker = w;
+    w.onmessage = (e: MessageEvent<RoseOut>) => this.onMessage(e.data);
+    // module introuvable ou en erreur : aucune réponse ne viendra jamais
+    w.onerror = w.onmessageerror = (e: Event) => this.fail(e);
     this.post({ type: 'init', stoneUrl: new URL(STONE_URL, location.origin).href });
   }
 
@@ -91,6 +120,14 @@ export class RoseClient {
     this.built.clear(); this.cur = null; this.pre = null;
   }
 
+  /** Worker hors service : tout est rendu (attentes résolues, calques vidés), Rose.tsx passe à la pierre. */
+  private fail(e: Event): void {
+    if (this.dead) return;
+    console.warn('rosace : worker hors service', (e as ErrorEvent).message || e.type);
+    this.destroy();
+    this.opts.onFail?.();
+  }
+
   /**
    * Nouvelle taille : la fenêtre affichée est mise à l'échelle par la CSS jusqu'à la nouvelle peinture.
    * R change jusqu'à une fois par image quand on tire la fenêtre : la lune, l'affichée et le prochain titre
@@ -98,21 +135,27 @@ export class RoseClient {
    */
   resize(R: number): void {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (!R || (R === this.R && dpr === this.dpr)) return;
+    if (this.dead || !R || (R === this.R && dpr === this.dpr)) return;
     const first = !this.R;
     this.R = R; this.dpr = dpr;
     for (const d of this.ready.values()) this.close(d);
     this.ready.clear();
-    for (const [k, s] of this.built) if (s !== this.cur) { this.unmount(s); this.built.delete(k); }
+    // l'affichée et celles qui s'effacent encore restent jusqu'au bout de leur fondu (retire les enlève)
+    for (const [k, s] of this.built) if (s !== this.cur && !s.exit) { this.unmount(s); this.built.delete(k); }
     this.pre = null;
     this.resizing = true;
     clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
+    const settle = (): void => {
+      // la repeinte ne coupe pas un fondu en cours (jour ↔ nuit, changement de titre) : elle attend sa fin
+      const busy = this.busyUntil - performance.now();
+      if (busy > 0) { this.resizeTimer = setTimeout(settle, busy); return; }
       this.resizing = false;
       void this.request(null).then((d) => { if (d) this.build(d); });   // la lune, prête d'avance
-      void this.show(this.want, first ? 0 : RESIZE_FADE_MS);
+      // un show() qui attend déjà cette fenêtre à la bonne taille garde son propre fondu (nuit → jour)
+      if (this.showing !== roseKey(this.want, this.R, this.dpr)) void this.show(this.want, first ? 0 : RESIZE_FADE_MS);
       this.prepare(this.next);
-    }, first ? 0 : RESIZE_DEBOUNCE_MS);
+    };
+    this.resizeTimer = setTimeout(settle, first ? 0 : RESIZE_DEBOUNCE_MS);
   }
 
   /** Affiche la fenêtre d'un titre (null = clair de lune). L'ancienne reste tant que la nouvelle n'est pas peinte. */
@@ -120,11 +163,15 @@ export class RoseClient {
     this.want = id;
     if (!this.R || !this.worker) return;
     const key = roseKey(id, this.R, this.dpr), my = ++this.gen;
+    this.showing = null;
     if (this.cur?.key === key) { setLumiere(this.cur.lum); return; }
     let slot = this.built.get(key);
     if (!slot) {
+      this.showing = key;
       const d = await this.request(id);
-      if (my !== this.gen || !d || this.dead) return;
+      if (my !== this.gen) return;
+      this.showing = null;
+      if (!d || this.dead) return;
       slot = this.build(d);
     }
     if (my !== this.gen) return;
@@ -200,6 +247,12 @@ export class RoseClient {
   /** Démonte une fenêtre sans fondu resté accroché (il la rendrait invisible si on la remontait). */
   private unmount(s: Slot): void { this.stopFades(s); s.exit = null; s.bloom.remove(); s.glass.remove(); }
 
+  /** Fin du fondu de sortie : la fenêtre quitte la scène ; peinte pour une autre taille, elle ne resservira plus. */
+  private retire(s: Slot): void {
+    this.unmount(s);
+    if (!keyFits(s.key, this.R, this.dpr) && this.built.get(s.key) === s) this.built.delete(s.key);
+  }
+
   private build(d: Painted): Slot {
     const known = this.built.get(d.key);
     if (known) return known;
@@ -223,7 +276,7 @@ export class RoseClient {
     // et les deux plus récentes (retour arrière, annulation)
     const keep = [this.cur?.key, d.key, this.pre?.key];
     for (const s of this.built.values()) if (s.exit) keep.push(s.key);
-    for (const k of evictable([...this.built.keys()], keep)) {
+    for (const k of evictable([...this.built.keys()], keep, this.R, this.dpr)) {
       const s = this.built.get(k);
       if (s) this.unmount(s);
       this.built.delete(k);
@@ -231,33 +284,51 @@ export class RoseClient {
     return slot;
   }
 
+  /**
+   * Met une fenêtre en scène. Chaque fondu repart de l'opacité rendue (un fondu précédent peut tourner encore) :
+   * - la nouvelle passe au-dessus, sauf si elle est encore visible (remontrée en plein fondu) : elle garde
+   *   alors sa place, et celles au-dessus d'elle s'effacent ;
+   * - dessous, une fenêtre de même sorte reste telle quelle jusqu'à être couverte (pas de creux de lumière
+   *   entre deux titres) ; jour ↔ nuit, la lune (rose entière) et un titre (coupé au linteau) ne se
+   *   recouvrent pas : l'autre sorte s'efface ;
+   * - seule la nouvelle s'éclaircit ; les blooms (des halos, qui ne se couvrent pas) s'effacent tous.
+   */
   private swap(slot: Slot, fade: number): void {
     const old = this.cur;
+    const kind = slot.glass.dataset.kind;
+    const leaving = [...this.built.values()].filter((s) => s !== slot && (s === old || s.exit));
+    // opacités rendues, lues avant tout changement
+    const at = new Map<HTMLElement, number>();
+    for (const s of [slot, ...leaving]) for (const el of [s.bloom, s.glass]) at.set(el, rendered(el));
+    const z = (at.get(slot.glass) ?? 0) > 0.05 ? Number(slot.glass.style.zIndex) : ++this.z;
     this.cur = slot;
     if (this.pre === slot) this.pre = null;
     if (!slot.glass.isConnected) { this.layers.bloom.appendChild(slot.bloom); this.layers.glass.appendChild(slot.glass); }
     // Une fenêtre remontrée (la lune au deuxième soir, un titre rejoué, un retour arrière) garde son fondu de
-    // sortie (fill 'forwards', opacité 0), qui l'emporterait de nouveau à la fin du fondu d'entrée : on l'annule,
+    // sortie (fill 'forwards'), qui l'emporterait de nouveau à la fin du fondu d'entrée : on l'annule,
     // APRÈS le rattachement (détaché, un élément ne rend aucune animation).
     this.stopFades(slot);
     slot.exit = null;
-    for (const el of [slot.bloom, slot.glass]) { el.style.opacity = ''; el.style.zIndex = '2'; }
-    if (old) for (const el of [old.bloom, old.glass]) el.style.zIndex = '1';
+    for (const el of [slot.bloom, slot.glass]) { el.style.opacity = ''; el.style.zIndex = String(z); }
     setLumiere(slot.lum);   // instantané : caché dans le fondu de la rosace (DESIGN §5, écart 4)
-    if (fade && old) {
-      this.busyUntil = performance.now() + fade + 60;
-      // Jour ↔ nuit : la lune (rose entière) et un titre (rose coupée au linteau) ne se recouvrent pas,
-      // l'ancienne s'efface donc aussi ; entre deux titres, elle reste opaque dessous (pas de creux de lumière).
-      const out = old.glass.dataset.kind !== slot.glass.dataset.kind ? 0 : 1;
-      for (const el of [slot.bloom, slot.glass]) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: fade, easing: 'ease', fill: 'backwards' });
-      old.bloom.animate([{ opacity: 1 }, { opacity: 0 }], { duration: fade, easing: 'ease', fill: 'forwards' });
-      const exit = old.glass.animate([{ opacity: 1 }, { opacity: out }], { duration: fade, easing: 'ease', fill: 'forwards' });
-      old.exit = exit;
+    const ease = (el: HTMLElement, to: number, ms: number, fill: FillMode): Animation =>
+      el.animate([{ opacity: at.get(el) ?? 0 }, { opacity: to }], { duration: ms, easing: 'ease', fill });
+    if (!old) {
+      for (const el of [slot.bloom, slot.glass]) ease(el, 1, FIRST_FADE_MS, 'backwards');
+      return;
+    }
+    if (!fade) { for (const s of leaving) this.retire(s); return; }
+    this.busyUntil = performance.now() + fade + 60;
+    for (const el of [slot.bloom, slot.glass]) ease(el, 1, fade, 'backwards');
+    for (const s of leaving) {
+      const hold = s.glass.dataset.kind === kind && Number(s.glass.style.zIndex) < z;
+      this.stopFades(s);
+      ease(s.bloom, 0, fade, 'forwards');
+      const exit = ease(s.glass, hold ? at.get(s.glass) ?? 1 : 0, fade, 'forwards');
+      s.exit = exit;
       // ce fondu-là seulement : remontrée entre-temps (fondu annulé) ou repartie dans un autre fondu, elle reste
-      const done = (): void => { if (old.exit === exit && old !== this.cur) this.unmount(old); };
+      const done = (): void => { if (s.exit === exit && s !== this.cur) this.retire(s); };
       exit.finished.then(done, done);
-    } else if (!old) {
-      for (const el of [slot.bloom, slot.glass]) el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: FIRST_FADE_MS, easing: 'ease', fill: 'backwards' });
-    } else this.unmount(old);
+    }
   }
 }

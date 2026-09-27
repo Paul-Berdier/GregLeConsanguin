@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/hooks/usePlayer';
-import { useYouTubePlayer } from '@/hooks/useYouTubePlayer';
+import { YT_API_FAILED, useYouTubePlayer } from '@/hooks/useYouTubePlayer';
 import type { YTPlayer } from '@/hooks/useYouTubePlayer';
+import { extractVideoId } from '@/lib/format';
 import { livePosition } from '@/lib/playerUtils';
 import {
   ALIGN_AFTER_PLAYING_MS, ALIGN_THRESHOLD_S, COVERED, DRIFT_CHECK_MS, MIN_SEEK_GAP_MS, RUN_THRESHOLD_S, YT_STATE,
@@ -50,7 +51,8 @@ function Poster({ id, leaving }: { id: string; leaving: boolean }) {
 export default function Portal({ videoId, nextId, paused, offset, art }: PortalProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [cover, setCover] = useState<Cover>(COVERED);
-  const [unavailable, setUnavailable] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);   // cette vidéo refuse l'intégration (remis à chaque titre)
+  const [noApi, setNoApi] = useState(false);               // l'API YouTube n'a pas pu se charger : aucun lecteur ici
   const [posters, setPosters] = useState<{ id: string; leaving: boolean }[]>([]);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -87,7 +89,7 @@ export default function Portal({ videoId, nextId, paused, offset, art }: PortalP
       if (s === YT_STATE.PAUSED && !pausedRef.current) playerRef.current?.playVideo();
       if (s === YT_STATE.PLAYING && pausedRef.current) playerRef.current?.pauseVideo();
     },
-    onError: () => { setUnavailable(true); dispatch({ type: 'error' }); },
+    onError: (code) => { if (code === YT_API_FAILED) setNoApi(true); else setUnavailable(true); dispatch({ type: 'error' }); },
   });
   playerRef.current = player;
 
@@ -103,10 +105,12 @@ export default function Portal({ videoId, nextId, paused, offset, art }: PortalP
   }, [videoId, player, dispatch]);
 
   // Le son recule sur la même vidéo (« Reprendre au début », boucle, même titre deux fois de suite) : la vidéo
-  // est rechargée sous le poster (tech.md §5.4). Un changement de titre passe par l'effet ci-dessus.
+  // est rechargée sous le poster (tech.md §5.4). Les ids comptent, pas les liens : le bot garde le lien tel que
+  // donné, la même vidéo peut revenir sous un autre (youtu.be/X?si=… puis watch?v=X). videoRef tient encore l'id
+  // rendu : une autre vidéo passe par l'effet ci-dessus.
   useEffect(() => useStore.subscribe((s, prev) => {
     const p = playerRef.current, id = videoRef.current;
-    if (!p || !id || s.tickBase === prev.tickBase || s.player.current?.url !== prev.player.current?.url) return;
+    if (!p || !id || s.tickBase === prev.tickBase || extractVideoId(s.player.current?.url) !== id) return;
     if (!rewound(prev.tickBase, prev.player.paused, s.tickBase)) return;
     dispatch({ type: 'track' });
     try { p.loadVideoById({ videoId: id, startSeconds: loadStart(s.tickBase.pos, offsetRef.current) }); } catch {}
@@ -185,7 +189,7 @@ export default function Portal({ videoId, nextId, paused, offset, art }: PortalP
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="4" height="14"/><rect x="13.5" y="5" width="4" height="14"/></svg>
           {t('now.state.paused')}
         </div>
-        {unavailable && <p className="video-note plaque">{t('now.videoUnavailable')}</p>}
+        {(unavailable || (noApi && videoId)) && <p className="video-note plaque">{t('now.videoUnavailable')}</p>}
       </div>
     </div>
   );

@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
-const { solveStageLayout, stageCssVars, sameLayout, fOf, EXT, RHO, C_FULL, C_MAX } = await loadTs('../src/lib/stage/layout.ts');
+const {
+  solveStageLayout, stageCssVars, sameLayout, fOf, EXT, RHO, C_FULL, C_MAX, BELOW_GAP, R_MIN, HEART_GAP, nightBottom, fitNight,
+} = await loadTs('../src/lib/stage/layout.ts');
 
 // Les 8 tailles d'écran de DESIGN §12.4. Entrées mesurées sur le prototype (Chrome, ?clean&still) :
 // colonne de scène (clientWidth × clientHeight) et bloc sous le portail (offsetHeight).
@@ -60,4 +62,79 @@ test('sameLayout ignore un réveil sans changement', () => {
   assert.ok(sameLayout(a, b));
   assert.ok(!sameLayout(a, solveStageLayout(VIEWPORTS[4].in)));
   assert.ok(!sameLayout(null, a));
+});
+
+// ─── La nuit tient aussi (fitNight) ─────────────────────────────────────────────────────────────
+// Mesuré dans Chrome sur la fausse API (tâche 8) : colonne de scène, bloc du dessous (masqué la nuit, mais
+// en place) et `tail`, le texte sous l'oculus (.vl-inner moins l'oculus et sa marge). `R` : ce qu'affiche la
+// scène ; `bottom` : bas du texte de nuit mesuré, en px depuis le haut de la scène. Déconnecté, le panneau
+// est masqué : la colonne a toute la largeur.
+const NIGHTS = [
+  { vp: '1280×720, rien en lecture', in: { colW: 784, colH: 593, belowH: 136, viewportW: 1280 }, tail: 188.04, R: 244, bottom: 585 },
+  { vp: '1366×657, rien en lecture', in: { colW: 870, colH: 530, belowH: 136, viewportW: 1366 }, tail: 188.3, R: 205, bottom: 522 },
+  { vp: '1280×720, déconnecté', in: { colW: 1232, colH: 593, belowH: 136, viewportW: 1280 }, tail: 243.6, R: 210, bottom: 585 },
+  { vp: '1366×657, déconnecté', in: { colW: 1318, colH: 530, belowH: 136, viewportW: 1366 }, tail: 243.2, R: 170, bottom: 523 },
+  { vp: '1440×900, rien en lecture', in: { colW: 944, colH: 773, belowH: 143, viewportW: 1440 }, tail: 187.86, R: 321 },
+  { vp: '1024×768, rien en lecture', in: { colW: 588, colH: 641, belowH: 216, viewportW: 1024 }, tail: 187.94, R: 209 },
+];
+const room = (input) => input.colH - BELOW_GAP;
+
+for (const n of NIGHTS) {
+  test(`nuit ${n.vp} : son texte tient dans la colonne, rose jamais plus grande que le jour`, () => {
+    const day = solveStageLayout(n.in), l = fitNight(n.in, n.tail);
+    assert.equal(l.R, n.R);
+    assert.ok(nightBottom(l, n.tail) <= room(n.in), `bas de la nuit ${nightBottom(l, n.tail)} > ${room(n.in)}`);
+    assert.ok(l.R <= day.R, `R de nuit ${l.R} > R du jour ${day.R}`);
+    assert.equal(l.mobile, false);
+    if (n.bottom != null) assert.ok(Math.abs(nightBottom(l, n.tail) - n.bottom) <= 1, `calculé ${nightBottom(l, n.tail)}, mesuré ${n.bottom}`);
+  });
+}
+
+test('nuit : la plus grande rose qui la fasse tenir (aucun bloc du dessous plus petit ne tient)', () => {
+  for (const n of NIGHTS) {
+    const l = fitNight(n.in, n.tail);
+    for (let belowH = n.in.belowH; belowH <= n.in.colH; belowH += 1) {
+      const bigger = solveStageLayout({ ...n.in, belowH });
+      if (bigger.R > l.R) assert.ok(nightBottom(bigger, n.tail) > room(n.in), `${n.vp} : R ${bigger.R} tenait aussi`);
+    }
+  }
+});
+
+test('nuit : rien ne change quand elle tient déjà', () => {
+  for (const n of NIGHTS.filter((x) => x.bottom == null)) {
+    assert.deepEqual(fitNight(n.in, n.tail), solveStageLayout(n.in), n.vp);
+  }
+  assert.deepEqual(fitNight(NIGHTS[0].in, 0), solveStageLayout(NIGHTS[0].in), 'sans texte, la mise en page du jour');
+});
+
+test('nuit en une colonne (≤ 900 px) : la mise en page du jour, la page défile', () => {
+  const phone = { colW: 348, colH: 543, belowH: 233, viewportW: 390 };
+  assert.deepEqual(fitNight(phone, 176.24), solveStageLayout(phone));
+  assert.deepEqual(fitNight(phone, 5000), solveStageLayout(phone), 'même si elle déborde');
+});
+
+test('nuit : si même la plus petite rose déborde, la plus petite rose (le filet de sécurité fait défiler)', () => {
+  const input = NIGHTS[0].in;
+  const l = fitNight(input, 2000);
+  assert.equal(l.R, R_MIN);
+  assert.deepEqual(l, solveStageLayout({ ...input, belowH: input.colH }));
+  assert.ok(nightBottom(l, 2000) > room(input));
+});
+
+test('nuit : plus de texte, jamais une plus grande rose ; elle tient ou la rose est au plus petit', () => {
+  for (const n of NIGHTS) {
+    let prev = Infinity;
+    for (let tail = 0; tail <= 700; tail += 20) {
+      const l = fitNight(n.in, tail);
+      assert.ok(l.R <= prev, `${n.vp}, texte ${tail} : R ${l.R} après ${prev}`);
+      assert.ok(nightBottom(l, tail) <= room(n.in) || l.R === R_MIN, `${n.vp}, texte ${tail} : déborde avec R ${l.R}`);
+      prev = l.R;
+    }
+  }
+});
+
+test('nightBottom : l’oculus centré sur la rose, sa marge, puis le texte (night.css)', () => {
+  const l = solveStageLayout(VIEWPORTS[4].in);
+  const top = l.crown + l.cR - l.heart / 2;   // .night { top: calc(var(--crown) + var(--cR) - var(--heart) / 2) }
+  assert.equal(nightBottom(l, 100), top + l.heart + HEART_GAP * l.R + 100);
 });

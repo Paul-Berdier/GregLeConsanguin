@@ -13,7 +13,7 @@ export type RoseProps = {
 
 /**
  * La rosace (spec §4) : bloom et verre, deux calques remplis par RoseClient (canevas bitmaprenderer).
- * Décorative : aria-hidden. Moteur sans OffscreenCanvas : la pierre seule, immobile (spec §7).
+ * Décorative : aria-hidden. Moteur sans OffscreenCanvas, ou worker hors service : la pierre seule, immobile (spec §7).
  * Styles : rose.css. Le masque de l'horloge passe par --p0 / --p1 sur la racine.
  */
 export default function Rose({ videoId, nextId, R, mask }: RoseProps) {
@@ -24,7 +24,9 @@ export default function Rose({ videoId, nextId, R, mask }: RoseProps) {
 
   useEffect(() => {
     if (!roseSupported() || !bloomRef.current || !glassRef.current) { setSupported(false); return; }
-    const c = new RoseClient({ bloom: bloomRef.current, glass: glassRef.current });
+    // worker hors service (module introuvable, en erreur) : le client s'est vidé, la pierre prend le relais
+    const onFail = () => { client.current = null; setSupported(false); };
+    const c = new RoseClient({ bloom: bloomRef.current, glass: glassRef.current }, { onFail });
     client.current = c;
     c.start();
     return () => { c.destroy(); client.current = null; };

@@ -1,6 +1,6 @@
 'use client';
 
-import { useId } from 'react';
+import { useId, useRef } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, fmtOffset } from '@/lib/stage/cover';
 import { t } from '@/theme/copy';
@@ -14,7 +14,11 @@ export default function SyncOffset({ value, onChange }: { value: number; onChang
   const popId = useId();
   const helpId = useId();
   const rangeId = useId();
+  const rangeRef = useRef<HTMLInputElement>(null);
   const shown = fmtOffset(value);
+  // « Remettre à zéro » se désactive une fois cliqué : le focus passe au curseur avant, sinon il tomberait sur <body>
+  // et Échap ne fermerait plus le popover
+  const reset = () => { onChange(0); rangeRef.current?.focus(); };
 
   return (
     <div className="sync" {...wrapProps}>
@@ -29,11 +33,11 @@ export default function SyncOffset({ value, onChange }: { value: number; onChang
         <div className="sync-row">
           <label htmlFor={rangeId}>{t('now.sync.label')}</label>
           <output className="tnum" htmlFor={rangeId} aria-live="off">{t('now.sync.value', { value: shown })}</output>
-          <input id={rangeId} type="range" min={OFFSET_MIN} max={OFFSET_MAX} step={OFFSET_STEP} value={value}
+          <input ref={rangeRef} id={rangeId} type="range" min={OFFSET_MIN} max={OFFSET_MAX} step={OFFSET_STEP} value={value}
             aria-valuetext={shown} aria-describedby={helpId} onChange={(e) => onChange(Number(e.target.value))}/>
         </div>
         <p className="sync-help" id={helpId}>{t('now.sync.help')}</p>
-        <button type="button" className="sync-reset" disabled={value === 0} onClick={() => onChange(0)}>{t('now.sync.reset')}</button>
+        <button type="button" className="sync-reset" disabled={value === 0} onClick={reset}>{t('now.sync.reset')}</button>
       </div>
     </div>
   );

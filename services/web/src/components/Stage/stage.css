@@ -2,7 +2,7 @@
    NUIT GOTHIQUE : la scène (colonne, empilement, lumière de la rose) et les classes qu'elle partage.
    Repris de proto-gothique/work/refine/src/styles.css (lignes 199–204, 226–231, 285–296, 300–302,
    556–572). Les variables --R --vw --f --crown --cR --heart --ring-h --clip-day --clip-night --a0 sont
-   posées par Stage.tsx (useStageLayout ; la nuit, fitNight) ; ci-dessous, leurs valeurs avant la première mesure.
+   posées par Stage.tsx (useStageLayout ; la nuit, fitNight de layout.ts) ; ci-dessous, leurs valeurs avant la première mesure.
    Importé par globals.css avec rose.css, portal.css, now.css, clock.css et night.css.
    ═══════════════════════════════════════════════════════════════════════════ */
 @media (max-width: 1180px) { :root { --panel-w: 360px; } }
@@ -23,7 +23,7 @@
 /* la nuit (night.css) garde la largeur de son texte (.vl-inner, 460 px au plus) quand la rose rapetisse :
    centrée sur la scène, elle en déborde d'au plus 72 px de chaque côté, la place des libellés de temps que
    la colonne garde toujours (SPRING_ROOM, layout.ts). Sinon le texte, replié, allongerait la nuit, et
-   Stage.tsx (fitNight) rapetisserait encore la rose. En une colonne, la scène a déjà toute la largeur. */
+   fitNight (layout.ts) rapetisserait encore la rose. En une colonne, la scène a déjà toute la largeur. */
 @media (min-width: 901px) {
   .stage > .night { left: max(-72px, min(0px, 50% - 230px)); right: max(-72px, min(0px, 50% - 230px)); }
 }

@@ -34,13 +34,26 @@ test('poster : révélé seulement si YouTube joue encore quand la minuterie tom
 
 test('poster : un BUFFERING tardif ne le remet pas ; pause, fin, arrêt, erreur, nouveau titre le remettent', () => {
   const shown = { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true };
-  assert.equal(coverNext(shown, yt(YT_STATE.BUFFERING, 9000)), shown);
+  assert.deepEqual(coverNext(shown, yt(YT_STATE.BUFFERING, 9000)), { ...shown, playing: false });   // noté, poster levé
   const evs = [yt(YT_STATE.PAUSED), yt(YT_STATE.ENDED), yt(YT_STATE.UNSTARTED), yt(YT_STATE.CUED),
     { type: 'pause' }, { type: 'stop' }, { type: 'error' }, { type: 'track' }];
   for (const ev of evs) {
     assert.equal(coverNext(shown, ev).phase, 'covered', JSON.stringify(ev));
     assert.equal(coverNext({ ...shown, phase: 'armed' }, ev).phase, 'covered', `armé : ${JSON.stringify(ev)}`);
   }
+});
+
+test('poster : révélé, l\'état de lecture reste suivi ; un saut pendant un calage attend la reprise', () => {
+  const shown = { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true };
+  const stalled = coverNext(shown, yt(YT_STATE.BUFFERING, 9000));
+  assert.equal(coverNext(stalled, yt(YT_STATE.BUFFERING, 9100)), stalled);                         // rien de neuf : même objet
+  assert.deepEqual(coverNext(stalled, yt(YT_STATE.PLAYING, 9500)), shown);                         // reprise : toujours révélé
+  assert.equal(coverNext(shown, yt(YT_STATE.PLAYING, 9500)), shown);
+  // saut de correction alors que YouTube cale encore : réarmé, mais la minuterie ne révèle pas
+  const reArmed = coverNext(stalled, { type: 'seek', now: 20000 });
+  assert.deepEqual(reArmed, { phase: 'armed', armedAt: 20000, bySeek: true, playing: false });
+  assert.equal(coverNext(reArmed, { type: 'reveal', now: 23500 }), reArmed);
+  assert.equal(coverNext(reArmed, yt(YT_STATE.PLAYING, 24000)).phase, 'revealed');                 // reprise après l'échéance
 });
 
 test('poster : une minuterie périmée ne révèle ni un poster couvert ni un poster déjà révélé', () => {

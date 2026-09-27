@@ -72,7 +72,7 @@ export default function Home() {
 
         {/* ═══ Status ═══ */}
         <footer className="flex-shrink-0">
-          <div className={`glass-subtle px-3 py-2 text-xs transition-all duration-300 ${
+          <div className={`glass-subtle px-3 py-2 text-xs ${
             status.kind === 'ok' ? 'status-ok' : status.kind === 'err' ? 'status-err' : ''}`}>
             <div className="flex items-center justify-between">
               <span className="text-txt-muted">{status.text}</span>

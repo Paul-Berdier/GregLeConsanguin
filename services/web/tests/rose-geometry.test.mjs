@@ -35,10 +35,22 @@ test('le panneau 0 de l’horloge est centré en haut, les panneaux tournent dan
   assert.equal(p0.t1, PANE_A0);
 });
 
+test('constantes du prototype, y compris celles que seule la pierre utilise (paint.ts les cale dessus)', () => {
+  assert.deepEqual(GEO, {
+    extent: 1.06, stone: 1.045, ringIn: 0.892, ringOut: 0.958, panes: 48, paneGap: 0.0105, beadR: 0.8755, beads: 96,
+    lanIn: 0.33, lanH: 0.655, lanTip: 0.845, lanGap: 0.038, medR: 0.565, medRad: 0.092, qfR: 0.8, qfLobe: 0.026,
+    rosR: 0.235, rosRad: 0.066, heart: 0.13,
+  });
+});
+
 test('tout le verre tient dans l’anneau extérieur, chaque pièce a au moins 3 sommets', () => {
+  const inside = ([x, y]) => Math.hypot(x, y) <= GEO.ringOut + 1e-9;
   for (const o of g) {
-    for (const [x, y] of o.poly) assert.ok(Math.hypot(x, y) <= GEO.ringOut + 1e-9);
-    for (const c of o.cells) assert.ok(c.poly.length >= 3, o.kind);
+    assert.ok(o.poly.every(inside), o.kind);
+    for (const c of [...o.cells, ...(o.med ? o.med.cells : [])]) {
+      assert.ok(c.poly.length >= 3, o.kind);
+      assert.ok(c.poly.every(inside), o.kind);
+    }
   }
 });
 

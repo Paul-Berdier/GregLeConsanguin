@@ -7,8 +7,8 @@ import { useStageLayout } from '@/hooks/useStageLayout';
 import { useStageClock } from '@/hooks/useStageClock';
 import { useVideoOffset } from '@/hooks/useVideoOffset';
 import { extractVideoId } from '@/lib/format';
-import { BELOW_GAP, sameLayout, solveStageLayout, stageCssVars } from '@/lib/stage/layout';
-import type { StageInput, StageLayout } from '@/lib/stage/layout';
+import { fitNight, nightBottom, sameLayout, stageCssVars } from '@/lib/stage/layout';
+import type { StageLayout } from '@/lib/stage/layout';
 import { dialGeometry, paneMask } from '@/lib/stage/dial';
 import { stageScene } from '@/lib/stage/scene';
 import type { Scene } from '@/lib/stage/scene';
@@ -21,40 +21,14 @@ import SyncOffset from './SyncOffset';
 import NowPlaying, { NOW_TITLE_ID } from './NowPlaying';
 import Transport from './Transport';
 
-/** Marge sous l'oculus, en R : `.heart { margin-bottom: calc(var(--R) * .34) }` (night.css). */
-const HEART_GAP = 0.34;
-
-/**
- * Bas de la nuit, en px depuis le haut de la scène. night.css pose la nuit à `crown + cR - heart / 2`
- * (l'oculus centré sur le centre de la rose) ; suivent l'oculus, sa marge, puis le texte (`tail`, mesuré).
- */
-function nightBottom(l: StageLayout, tail: number): number {
-  return l.crown + l.cR + l.heart / 2 + HEART_GAP * l.R + tail;
-}
-
-/**
- * La nuit tient aussi dans la colonne (DESIGN §12.4) : son texte descend sous le portail, là où le jour
- * met le titre et le transport. On cherche le plus petit bloc du dessous qui la fait tenir ; le solveur
- * de la scène en tire R, comme le jour (la couronne s'abaisse d'abord, puis la rose rapetisse).
- * Rien ne change si elle tient déjà, ni en une colonne (la page défile).
- */
-function fitNight(input: StageInput, tail: number): StageLayout {
-  const room = input.colH - BELOW_GAP;
-  const solve = (belowH: number) => solveStageLayout({ ...input, belowH });
-  const fits = (belowH: number) => nightBottom(solve(belowH), tail) <= room;
-  let lo = input.belowH, hi = input.colH;   // lo : ne tient pas ; hi : tient (la plus petite rose)
-  const base = solve(lo);
-  if (base.mobile || fits(lo)) return base;
-  if (!fits(hi)) return solve(hi);         // même la plus petite rose déborde : le filet de sécurité fait défiler
-  while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid; }
-  return solve(hi);
-}
-
 type NightFit = { layout: StageLayout; bottom: number };
 
 /**
- * Mise en page de la nuit (fitNight), remesurée quand la colonne, le bloc du dessous ou le texte de la nuit
- * changent de taille (fenêtre, police chargée, une ligne de plus). null le jour : useStageLayout suffit.
+ * Mise en page de la nuit (fitNight, layout.ts), remesurée quand la colonne, le bloc du dessous ou le texte de
+ * la nuit changent de taille (fenêtre, police chargée, une ligne de plus). null le jour : useStageLayout suffit.
+ * Écart 10 du plan de l'étape 2 : quand le texte de nuit ne tient pas sous la rose du jour (1280 × 720 :
+ * R 280 → 244 ; 1366 × 657 : 242 → 205), la rose change de taille d'un coup en passant jour ↔ nuit, pendant
+ * le fondu de la rosace ; l'étape 4 l'animera (FLIP en transform sur la rose).
  */
 function useNightFit(scene: Scene, colRef: RefObject<HTMLElement>, stageRef: RefObject<HTMLElement>,
   belowRef: RefObject<HTMLElement>): NightFit | null {

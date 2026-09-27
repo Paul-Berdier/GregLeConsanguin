@@ -20,6 +20,7 @@ export const MOBILE_MAX = 900;    // une colonne (même seuil que la CSS)
 export const R_MIN = 110;
 export const R_MOBILE_MAX = 260;
 export const BELOW_GAP = 6;
+export const HEART_GAP = 0.34;    // marge sous l'oculus de nuit, en R : `.heart { margin-bottom: calc(var(--R) * .34) }` (night.css)
 
 export type StageInput = {
   colW: number;       // largeur intérieure de la colonne de scène (clientWidth)
@@ -82,6 +83,35 @@ export function solveStageLayout({ colW, colH, belowH, viewportW }: StageInput):
     clipNight: Number((0.11 * R).toFixed(1)),
     springs: mobile || colW < 2.12 * R + 2 * SPRING_ROOM ? 'row' : 'spring',
   };
+}
+
+/**
+ * Bas de la nuit, en px depuis le haut de la scène. night.css pose la nuit à `crown + cR - heart / 2`
+ * (l'oculus centré sur le centre de la rose) ; suivent l'oculus, sa marge, puis le texte (`tail`, mesuré).
+ */
+export function nightBottom(l: StageLayout, tail: number): number {
+  return l.crown + l.cR + l.heart / 2 + HEART_GAP * l.R + tail;
+}
+
+/**
+ * La nuit tient aussi dans la colonne (DESIGN §12.4) : son texte descend sous l'oculus, plus bas que le
+ * transport du jour. On cherche le plus petit bloc du dessous qui la fait tenir ; solveStageLayout en tire R,
+ * comme le jour (la couronne s'abaisse d'abord, puis la rose rapetisse). R ne décroît jamais quand ce bloc
+ * rapetisse : la recherche par dichotomie trouve la plus grande rose qui tienne.
+ * Rien ne change si elle tient déjà, ni en une colonne (la page défile). Si même la plus petite rose déborde,
+ * c'est elle (le filet de sécurité de Stage.tsx fait défiler la colonne).
+ * Écart 10 du plan de l'étape 2 : à 1280 × 720 et 1366 × 657, la rose change donc de taille entre jour et nuit.
+ */
+export function fitNight(input: StageInput, tail: number): StageLayout {
+  const room = input.colH - BELOW_GAP;
+  const solve = (belowH: number) => solveStageLayout({ ...input, belowH });
+  const fits = (belowH: number) => nightBottom(solve(belowH), tail) <= room;
+  let lo = input.belowH, hi = input.colH;   // lo : ne tient pas ; hi : tient (la plus petite rose)
+  const base = solve(lo);
+  if (base.mobile || fits(lo)) return base;
+  if (!fits(hi)) return solve(hi);
+  while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid; }
+  return solve(hi);
 }
 
 /** Variables CSS posées sur `.stage` (stage.css, rose.css, portal.css, now.css les lisent). */

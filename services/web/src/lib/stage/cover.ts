@@ -9,8 +9,9 @@
 export type CoverPhase = 'covered' | 'armed' | 'revealed';
 /**
  * armedAt : instant (performance.now) de l'armement ; bySeek : armé par notre propre saut (pas de nouvel alignement) ;
- * playing : YouTube joue (dernier état PLAYING, pas BUFFERING). Révélé seulement s'il joue encore quand la minuterie
- * tombe (tech.md §5.3) : un calage pendant l'armement garderait sinon la roue de chargement ou l'image noire.
+ * playing : YouTube joue (dernier état PLAYING, pas BUFFERING), suivi armé comme révélé. Révélé seulement s'il joue
+ * encore quand la minuterie tombe (tech.md §5.3) : un calage pendant l'armement garderait sinon la roue de chargement
+ * ou l'image noire. Toujours false quand le poster couvre.
  */
 export type Cover = { phase: CoverPhase; armedAt: number; bySeek: boolean; playing: boolean };
 export type CoverEvent =
@@ -47,13 +48,15 @@ export function coverNext(c: Cover, ev: CoverEvent): Cover {
     case 'yt':
       if (ev.state === YT_STATE.PLAYING) {
         if (c.phase === 'covered') return { phase: 'armed', armedAt: ev.now, bySeek: false, playing: true };
-        if (c.phase === 'revealed' || c.playing) return c;
+        if (c.playing) return c;
+        if (c.phase === 'revealed') return { ...c, playing: true };
         // armé, la lecture reprend après un calage : révélé tout de suite si l'échéance est passée
         return { ...c, phase: revealDue(c, ev.now) ? 'revealed' : 'armed', playing: true };
       }
       if (ev.state === YT_STATE.BUFFERING) {
-        // armé : la révélation attend la reprise ; révélé : un BUFFERING tardif ne remet pas le poster
-        return c.phase === 'armed' && c.playing ? { ...c, playing: false } : c;
+        // armé : la révélation attend la reprise ; révélé : un BUFFERING tardif ne remet pas le poster, mais il est
+        // noté, pour qu'un saut pendant le calage réarme sans révéler avant la reprise
+        return c.phase !== 'covered' && c.playing ? { ...c, playing: false } : c;
       }
       return c.phase === 'covered' ? c : { ...c, phase: 'covered', playing: false };   // ENDED, PAUSED, UNSTARTED, CUED
   }

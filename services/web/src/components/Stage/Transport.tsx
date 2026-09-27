@@ -25,6 +25,7 @@ export default function Transport() {
   const confirm = usePopover();
   const noRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
+  const bodyId = useId();
 
   // Le dialogue d'arrêt met le focus sur le choix sûr (DESIGN §7).
   useEffect(() => { if (confirm.open) noRef.current?.focus(); }, [confirm.open]);
@@ -47,9 +48,11 @@ export default function Transport() {
           aria-label={t('controls.stop.aria')} aria-haspopup={queued ? 'dialog' : undefined} aria-expanded={queued ? confirm.open : undefined}>
           {I.stop}<span className="tip plaque" aria-hidden="true">{t('controls.stop.tip')}</span>
         </button>
-        <div className="pop plaque confirm" role="dialog" aria-labelledby={titleId} data-open={confirm.open}>
+        {/* la conséquence est la description du dialogue : le focus va sur « Garder la musique », le lecteur
+            d'écran lit la question et ce qu'elle retire (la réplique, en aria-hidden, reste hors de l'annonce) */}
+        <div className="pop plaque confirm" role="dialog" aria-labelledby={titleId} aria-describedby={bodyId} data-open={confirm.open}>
           <h3 id={titleId}>{t('confirm.stop.title')}</h3>
-          <p>{t('confirm.stop.body', { n: queued })}</p>
+          <p id={bodyId}>{t('confirm.stop.body', { n: queued })}</p>
           <p className="quip" aria-hidden="true">{quip('confirm.stop', seedOf(String(queued)))}</p>
           <div className="row-btns">
             <button ref={noRef} type="button" className="btn-ghost" onClick={() => confirm.close(true)}>{t('confirm.stop.cancel')}</button>
