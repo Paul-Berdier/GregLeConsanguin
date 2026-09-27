@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
+import { muteCaptions, YT_STATE } from '@/lib/stage/cover';
+import type { CaptionsApi } from '@/lib/stage/cover';
 
 /**
  * Un seul lecteur YouTube pour toute la session (tech.md §5.2) : créé une fois, les titres passent par
@@ -9,7 +11,7 @@ import type { RefObject } from 'react';
  * React ne possède que l'enveloppe vide : l'iframe remplace un enfant créé ici, jamais un nœud React.
  */
 
-export type YTPlayer = {
+export type YTPlayer = CaptionsApi & {
   loadVideoById(o: { videoId: string; startSeconds?: number }): void;
   playVideo(): void;
   pauseVideo(): void;
@@ -67,9 +69,7 @@ export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: Y
       if (!alive) return;
       created = new YT.Player(host, {
         width: '100%', height: '100%',
-        // Sous-titres (écart 5 du plan) : l'iframe muette en affiche malgré cc_load_policy: 0, et dans la langue que
-        // YouTube choisit (allemand mesuré en fr-FR comme en en-US) ; hl et cc_lang_pref: 'fr', essayés, n'y changent
-        // rien (Chrome, 27/09/2026). Il resterait unloadModule, non documenté et écarté par le plan : à trancher à l'étape 4.
+        // Sous-titres : muteCaptions à chaque module chargé et à chaque départ (cover.ts).
         playerVars: {
           autoplay: 1, mute: 1, controls: 0, rel: 0, iv_load_policy: 3, disablekb: 1,
           playsinline: 1, fs: 0, cc_load_policy: 0, enablejsapi: 1, origin: location.origin,
@@ -81,7 +81,12 @@ export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: Y
             try { created.getIframe().tabIndex = -1; } catch {}   // image seule : jamais dans l'ordre de tabulation
             setPlayer(created);
           },
-          onStateChange: (e: { data: number }) => { if (alive) h.current.onState(e.data); },
+          onApiChange: () => { if (alive && created) muteCaptions(created); },
+          onStateChange: (e: { data: number }) => {
+            if (!alive) return;
+            if (e.data === YT_STATE.PLAYING && created) muteCaptions(created);   // le module revient avec chaque vidéo
+            h.current.onState(e.data);
+          },
           onError: (e: { data: number }) => { if (alive) h.current.onError(e.data); },
         },
       });

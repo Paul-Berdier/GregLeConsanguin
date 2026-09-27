@@ -1,7 +1,7 @@
 /**
  * Le poster au-dessus du lecteur YouTube persistant (tech.md §5.3) et la synchro de la vidéo (§5.4).
- * Le poster couvre l'iframe jusqu'à PLAYING + 3,5 s (si YouTube joue encore), et pendant la pause : YouTube montre son habillage
- * (titre, chaîne, icône, « Plus de vidéos ») à chaque départ, à chaque pause et à chaque saut.
+ * Le poster couvre l'iframe jusqu'à PLAYING + REVEAL_AFTER_PLAYING_MS (si YouTube joue encore), et pendant la pause :
+ * YouTube montre son habillage (titre, chaîne, icône, « Plus de vidéos ») à chaque départ, à chaque pause et à chaque saut.
  * Un saut de correction (seekTo) réarme donc le poster (mesuré : l'habillage revient ~4 s).
  * Pur, sans import runtime (tests/cover.test.mjs).
  */
@@ -22,7 +22,11 @@ export type CoverEvent =
 
 export const COVERED: Cover = { phase: 'covered', armedAt: 0, bySeek: false, playing: false };
 export const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 } as const;
-export const REVEAL_AFTER_PLAYING_MS = 3500;   // spec §4 : PLAYING + 3,5 s
+// habillage YouTube replié vers 3924 (départ), 3929 (saut), 3916 (reprise) ms, 3937 au titre suivant (loadVideoById) ;
+// sonde du 27/09/2026 (yt_probe.py, Chrome fr-FR) : vu au plus tard à 3,94 s selon les passes ; captures serrées :
+// disparu partout avant 4,02 s. Sous-titres de la même sonde : voir muteCaptions.
+// Aucun paramètre documenté ne le masque : on décale le lever du poster, la marque reste.
+export const REVEAL_AFTER_PLAYING_MS = 4250;
 export const ALIGN_AFTER_PLAYING_MS = 1200;    // alignement initial, encore sous le poster
 export const DRIFT_CHECK_MS = 4000;
 export const MIN_SEEK_GAP_MS = 15000;
@@ -110,6 +114,22 @@ export function fmtOffset(v: number): string {
   const x = parseOffset(v);
   const n = Math.abs(x).toFixed(1).replace(/\.0$/, '').replace('.', ',');
   return `${x > 0 ? '+' : x < 0 ? '−' : ''}${n} s`;
+}
+
+// ── Sous-titres ──
+/**
+ * Iframe muette : YouTube y montre une piste automatique malgré cc_load_policy: 0 (écart 5 de l'étape 2).
+ * setOption('captions', 'track', {}) vide la piste ; unloadModule (non documenté) retire le module s'il existe.
+ * Sonde du 27/09/2026 (Chrome fr-FR ; en-US à l'étape 2) : sans elle, piste allemande automatique, hl et
+ * cc_lang_pref: 'fr' sans effet ; avec elle, aucun sous-titre au départ, au saut, à la reprise ni après
+ * loadVideoById. getOption('captions', 'track') reste de-DE au premier titre (piste masquée), {} ensuite.
+ */
+export type CaptionsApi = { setOption?(module: string, option: string, value: unknown): void; unloadModule?(module: string): void };
+export function muteCaptions(p: CaptionsApi): void {
+  for (const m of ['captions', 'cc']) {
+    try { p.setOption?.(m, 'track', {}); } catch {}
+    try { p.unloadModule?.(m); } catch {}
+  }
 }
 
 // ── Posters ──

@@ -2,34 +2,34 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 const {
-  coverNext, coverVisible, revealIn, alignDue, driftSeek, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb,
+  coverNext, coverVisible, revealIn, alignDue, driftSeek, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb, muteCaptions,
   COVERED, YT_STATE, REVEAL_AFTER_PLAYING_MS, REWIND_S,
 } = await loadTs('../src/lib/stage/cover.ts');
+const R = REVEAL_AFTER_PLAYING_MS;
 
 const yt = (state, now = 0) => ({ type: 'yt', state, now });
 const run = (events, from = COVERED) => events.reduce(coverNext, from);
 
-test('poster : couvert → armé à PLAYING → révélé à +3,5 s (spec §4, tech.md §5.3)', () => {
-  assert.equal(REVEAL_AFTER_PLAYING_MS, 3500);
+test('poster : couvert → armé à PLAYING → révélé à +REVEAL_AFTER_PLAYING_MS (spec §4, tech.md §5.3)', () => {
   const armed = run([{ type: 'track' }, yt(YT_STATE.BUFFERING, 100), yt(YT_STATE.PLAYING, 1000)]);
   assert.deepEqual(armed, { phase: 'armed', armedAt: 1000, bySeek: false, playing: true });
-  assert.equal(revealIn(armed, 2000), 2500);
+  assert.equal(revealIn(armed, 2000), R - 1000);
   assert.equal(coverNext(armed, yt(YT_STATE.PLAYING, 2000)), armed);          // pas de réarmement
   assert.equal(coverNext(armed, { type: 'reveal', now: 3000 }), armed);       // trop tôt : minuterie périmée
-  assert.equal(coverNext(armed, { type: 'reveal', now: 4500 }).phase, 'revealed');
+  assert.equal(coverNext(armed, { type: 'reveal', now: 1000 + R }).phase, 'revealed');
 });
 
 test('poster : révélé seulement si YouTube joue encore quand la minuterie tombe (tech.md §5.3)', () => {
   const stalled = run([yt(YT_STATE.PLAYING, 1000), yt(YT_STATE.BUFFERING, 2000)]);
   assert.deepEqual(stalled, { phase: 'armed', armedAt: 1000, bySeek: false, playing: false });
   assert.equal(coverNext(stalled, yt(YT_STATE.BUFFERING, 2100)), stalled);
-  assert.equal(coverNext(stalled, { type: 'reveal', now: 4600 }), stalled);   // en BUFFERING : le poster reste
+  assert.equal(coverNext(stalled, { type: 'reveal', now: 1000 + R + 100 }), stalled);   // en BUFFERING : le poster reste
   // la lecture reprend après l'échéance : révélé tout de suite
-  assert.deepEqual(coverNext(stalled, yt(YT_STATE.PLAYING, 5000)), { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true });
+  assert.deepEqual(coverNext(stalled, yt(YT_STATE.PLAYING, 1000 + R + 500)), { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true });
   // la lecture reprend avant l'échéance : toujours armé, la minuterie révèle ensuite
   const resumed = coverNext(stalled, yt(YT_STATE.PLAYING, 3000));
   assert.deepEqual(resumed, { phase: 'armed', armedAt: 1000, bySeek: false, playing: true });
-  assert.equal(coverNext(resumed, { type: 'reveal', now: 4500 }).phase, 'revealed');
+  assert.equal(coverNext(resumed, { type: 'reveal', now: 1000 + R }).phase, 'revealed');
 });
 
 test('poster : un BUFFERING tardif ne le remet pas ; pause, fin, arrêt, erreur, nouveau titre le remettent', () => {
@@ -52,8 +52,20 @@ test('poster : révélé, l\'état de lecture reste suivi ; un saut pendant un c
   // saut de correction alors que YouTube cale encore : réarmé, mais la minuterie ne révèle pas
   const reArmed = coverNext(stalled, { type: 'seek', now: 20000 });
   assert.deepEqual(reArmed, { phase: 'armed', armedAt: 20000, bySeek: true, playing: false });
-  assert.equal(coverNext(reArmed, { type: 'reveal', now: 23500 }), reArmed);
-  assert.equal(coverNext(reArmed, yt(YT_STATE.PLAYING, 24000)).phase, 'revealed');                 // reprise après l'échéance
+  assert.equal(coverNext(reArmed, { type: 'reveal', now: 20000 + R }), reArmed);
+  assert.equal(coverNext(reArmed, yt(YT_STATE.PLAYING, 20000 + R + 500)).phase, 'revealed');                 // reprise après l'échéance
+});
+
+test('poster levé après le repli de l’habillage YouTube (mesuré, étape 4), jamais avant 3,5 s', () => {
+  assert.ok(R >= 3500 && R <= 5000 && R % 250 === 0, String(R));
+});
+
+test('sous-titres de l’iframe muette : piste vidée puis module déchargé, sans jamais lever', () => {
+  const calls = [];
+  muteCaptions({ setOption: (...a) => calls.push(['set', ...a]), unloadModule: (m) => calls.push(['unload', m]) });
+  assert.deepEqual(calls, [['set', 'captions', 'track', {}], ['unload', 'captions'], ['set', 'cc', 'track', {}], ['unload', 'cc']]);
+  assert.doesNotThrow(() => muteCaptions({}));
+  assert.doesNotThrow(() => muteCaptions({ setOption: () => { throw new Error('x'); }, unloadModule: () => { throw new Error('y'); } }));
 });
 
 test('poster : une minuterie périmée ne révèle ni un poster couvert ni un poster déjà révélé', () => {
