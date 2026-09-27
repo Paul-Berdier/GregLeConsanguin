@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { loadTs } from './_loadTs.mjs';
 
-const { EXTRA, tx } = await loadTs('../src/theme/copy.extra.ts');
+const { EXTRA, KEYS, tx } = await loadTs('../src/theme/copy.extra.ts');
 const deck = JSON.parse(readFileSync(new URL('../src/theme/copy.v2.json', import.meta.url), 'utf8'));
 
 function* strings(node, path = '') {
@@ -36,4 +36,21 @@ test('aucun complément ne double une clé du deck ; aucun ne couronne Greg', ()
     assert.equal(at(path), undefined, `${path} existe déjà dans le deck`);
     assert.ok(!/Greg[^.]*\b(roi|couronne|Rex)\b/i.test(s), `${path} : ${s}`);
   }
+});
+
+test('raccourcis de l’étape 4 : Espace, Maj+→, Maj+← ; ni N, ni P, ni R ; libellés au format du deck', () => {
+  const keys = KEYS.map(([k]) => k);
+  assert.deepEqual(keys.slice(0, 3), ['Espace', 'Maj+→', 'Maj+←']);
+  for (const k of ['/', '?', 'Ctrl+Z', '↑ ↓', 'Entrée', 'Alt+↑ ↓', 'Alt+Début', 'Suppr', 'Échap']) assert.ok(keys.includes(k), k);
+  for (const bad of ['N', 'P', 'R']) assert.ok(!keys.includes(bad), bad);
+  for (const [, label] of KEYS) assert.ok(label && !/ [:;!?]/.test(label) && !label.includes("'"), label);
+});
+
+test('textes de l’étape 4 : interrupteur, bulles, lien d’évitement, annonces', () => {
+  assert.equal(tx('keys.toggle'), 'Raccourcis clavier');
+  assert.equal(tx('transport.skipTip'), 'Suivant (Maj+→)');
+  assert.equal(tx('transport.restartTip'), 'Depuis le début (Maj+←)');
+  assert.equal(tx('a11y.skipToQueue'), 'Aller à la file');
+  assert.equal(tx('a11y.nowPlaying', { title: 'Africa' }), 'En lecture : Africa');
+  for (const k of ['keys.toggleHelp', 'keys.on', 'keys.off', 'transport.repeatTip', 'a11y.paused', 'a11y.resumed']) assert.notEqual(tx(k), k, k);
 });

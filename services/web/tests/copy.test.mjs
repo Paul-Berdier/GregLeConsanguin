@@ -72,6 +72,12 @@ test('casting : aucun texte ne fait de Greg un roi', () => {
   assert.match(t('brand.latin.greg'), /· REGIS · SERVVS$/);
 });
 
+test('connexion : Greg se présente en valet, plus de formule royale au-dessus de lui', () => {
+  assert.equal(t('auth.kicker'), t('brand.tagline'));
+  assert.equal(t('auth.kicker'), 'Valet de musique de Sa Majesté');
+  assert.doesNotMatch(t('auth.kicker'), /grâce|\bRe[xy]\b|\broi\b/i);
+});
+
 test('t : message { text }, pluriels ({n} ou count) et renvois { ref }', () => {
   assert.equal(t('toast.added', { title: 'X' }), fill(deck.toast.added.text, { title: 'X' }));
   assert.equal(t('header.welcome'), ''); // text null : réplique seule, sans fait

@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { spokenText, stackHeight, stackLayout } from '@/lib/herald';
 import { tx } from '@/theme/copy.extra';
-import { herald, setAnnouncer, useToasts } from './store';
+import { herald, setAnnouncer, setSpeaker, useToasts } from './store';
 
 const ICON = {
   ok: <path d="M5 12.5l4.5 4.5L19 7.5"/>,
@@ -42,14 +42,15 @@ export default function Herald({ dock }: { dock: 'panel' | 'center' }) {
   const active = (hover || focus) && shown.length > 0;
 
   useEffect(() => {
-    setAnnouncer((x) => {
-      const el = x.kind === 'err' ? alertRef.current : politeRef.current;
+    const write = (el: HTMLDivElement | null, text: string) => {   // vidée puis remplie : un texte répété est relu
       if (!el) return;
-      const text = spokenText(x, (label) => tx('herald.undoHint', { label }));
       el.textContent = '';
       setTimeout(() => { el.textContent = text; }, 40);
-    });
-    return () => setAnnouncer(null);
+    };
+    setAnnouncer((x) => write(x.kind === 'err' ? alertRef.current : politeRef.current,
+      spokenText(x, (label) => tx('herald.undoHint', { label }))));
+    setSpeaker((text, assertive) => write(assertive ? alertRef.current : politeRef.current, text));
+    return () => { setAnnouncer(null); setSpeaker(null); };
   }, []);
 
   // Une plaque retirée sous le pointeur ou avec le focus (« Annuler » cliqué) ne déclenche ni mouseleave ni

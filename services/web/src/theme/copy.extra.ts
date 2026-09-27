@@ -1,6 +1,6 @@
 /**
  * Compléments au deck v2 (copy.v2.json, repris tel quel, qu'on n'édite pas à la main) : les textes de la file,
- * de l'historique et du Héraut que le deck n'a pas encore. À reverser au deck v3.
+ * de l'historique, du Héraut, du clavier et des lecteurs d'écran que le deck n'a pas encore. À reverser au deck v3.
  * Même règles que le deck : vouvoiement du Roi, U+00A0 avant « : » et entre un nombre et son unité,
  * U+202F avant ; ! ?. Aucun humour ici : ce sont des libellés et des textes pour lecteurs d'écran.
  * Pur, sans import runtime (tests/copy-extra.test.mjs).
@@ -46,7 +46,23 @@ export const EXTRA = {
     undoHint: '{label} avec Ctrl+Z.',
     dismiss: 'Fermer la notification',
   },
+  keys: {
+    toggle: 'Raccourcis clavier',
+    toggleHelp: 'Désactivés : seules les touches des listes, Échap et Ctrl+Z restent actives.',
+    on: 'Raccourcis clavier activés.',
+    off: 'Raccourcis clavier désactivés.',
+  },
+  transport: { skipTip: 'Suivant (Maj+→)', restartTip: 'Depuis le début (Maj+←)', repeatTip: 'Boucle' },
+  a11y: { skipToQueue: 'Aller à la file', nowPlaying: 'En lecture : {title}', paused: 'En pause.', resumed: 'Lecture reprise.' },
 } satisfies Record<string, Node>;
+
+/** Raccourcis du menu du compte (DESIGN §12.7, body.html l. 54–63) : remplacent `shortcuts.items` du deck (N, P, R retirés). */
+export const KEYS: readonly (readonly [string, string])[] = [
+  ['Espace', 'Lecture / pause'], ['Maj+→', 'Titre suivant'], ['Maj+←', 'Recommencer le titre'], ['/', 'Rechercher'],
+  ['A…Z', 'Chercher en tapant'], ['?', 'Afficher cette aide'], ['Ctrl+Z', 'Annuler la dernière action'],
+  ['↑ ↓', 'Parcourir une liste'], ['Entrée', 'Jouer le titre maintenant'], ['Alt+↑ ↓', 'Déplacer le titre choisi'],
+  ['Alt+Début', 'Mettre en suivant'], ['Suppr', 'Retirer le titre'], ['Échap', 'Fermer'],
+];
 
 function at(path: string): Node | undefined {
   let node: Node | undefined = EXTRA as Node;

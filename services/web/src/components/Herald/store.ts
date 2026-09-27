@@ -22,6 +22,11 @@ export function setAnnouncer(fn: ((t: Toast) => void) | null): void {
   announcer = fn;
 }
 
+let speaker: ((text: string, assertive: boolean) => void) | null = null;
+export function setSpeaker(fn: ((text: string, assertive: boolean) => void) | null): void { speaker = fn; }
+/** Annonce sans notification visible (clavier, changement de titre), dans les régions persistantes (DESIGN §7). */
+export function speak(text: string, o: { assertive?: boolean } = {}): void { if (text) speaker?.(text, !!o.assertive); }
+
 const EMPTY: readonly Toast[] = [];
 export function useToasts(): readonly Toast[] {
   return useSyncExternalStore(herald.subscribe, herald.getSnapshot, () => EMPTY);

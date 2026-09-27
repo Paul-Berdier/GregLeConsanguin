@@ -1,5 +1,6 @@
 /**
  * Textes « valet du Roi » : deck v2 (copy.v2.json, repris tel quel, ne pas éditer à la main).
+ * Seule exception, validée par Paul (étape 4) : auth.kicker, formule de valet au lieu d'une formule royale.
  * Greg est le valet ; le Roi, c'est l'utilisateur connecté. Greg vouvoie le Roi.
  *
  * Formes du deck (voir `_meta.shape`) :
