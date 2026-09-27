@@ -17,7 +17,7 @@ export default function QueuePanel() {
         <span className="font-display font-bold text-sm">File d&apos;attente</span>
         <span className="text-xs text-txt-muted font-mono">{q.length} titre{q.length !== 1 ? 's' : ''}</span>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[40vh]">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[900px]:max-h-[40vh]">
         {!q.length ? (
           <div className="text-center text-txt-muted text-sm py-8 opacity-50">
             <Ic icon="music" size={32}/><br/>File vide

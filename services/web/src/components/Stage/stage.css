@@ -1,0 +1,82 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : la scène (colonne, empilement, lumière de la rose) et les classes qu'elle partage.
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 199–204, 226–231, 285–296, 300–302,
+   556–572). Les variables --R --vw --f --crown --cR --heart --ring-h --clip-day --clip-night --a0 sont
+   posées par Stage.tsx (useStageLayout ; la nuit, fitNight) ; ci-dessous, leurs valeurs avant la première mesure.
+   Importé par globals.css avec rose.css, portal.css, now.css, clock.css et night.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 1180px) { :root { --panel-w: 360px; } }
+
+.stage-col {
+  position: relative; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  overflow: clip; overflow-clip-margin: 72px;
+  container: stage-col / inline-size;   /* sa largeur vient de la grille, jamais de la scène : @container plus bas */
+}
+/* filet de sécurité : si la scène ne tient pas malgré la réduction, la colonne défile */
+.stage-col[data-fit=loose] { justify-content: flex-start; overflow-x: clip; overflow-y: auto; }
+.stage {
+  --R: 340px; --vw: 654px; --f: 17px; --crown: 258px; --cR: 102px; --heart: 156px;
+  --ring-h: 292.4px; --clip-day: 454.3px; --clip-night: 37.4px; --a0: -71.25;
+  position: relative; flex: none; width: calc(var(--vw) + 2 * var(--f)); max-width: 100%; padding-top: var(--crown);
+}
+/* la nuit (night.css) garde la largeur de son texte (.vl-inner, 460 px au plus) quand la rose rapetisse :
+   centrée sur la scène, elle en déborde d'au plus 72 px de chaque côté, la place des libellés de temps que
+   la colonne garde toujours (SPRING_ROOM, layout.ts). Sinon le texte, replié, allongerait la nuit, et
+   Stage.tsx (fitNight) rapetisserait encore la rose. En une colonne, la scène a déjà toute la largeur. */
+@media (min-width: 901px) {
+  .stage > .night { left: max(-72px, min(0px, 50% - 230px)); right: max(-72px, min(0px, 50% - 230px)); }
+}
+/* la lumière de la fenêtre, versée sur le seuil, le titre et le transport.
+   Écart voulu : pas de `mix-blend-mode: plus-lighter` (prototype). Un mode de mélange isole le groupe
+   qui contient aussi l'iframe YouTube : une passe de rendu de plus à chaque image de la vidéo
+   (tech.md §6.2). Sur le mur presque noir, 11 % de lumière en mélange normal donne le même éclairage. */
+.lightpool {
+  position: absolute; left: 50%; top: calc(var(--crown) - .2 * var(--R)); z-index: 1; pointer-events: none;
+  width: calc(3.4 * var(--R)); height: calc(2.6 * var(--R)); margin-left: calc(-1.7 * var(--R));
+  transition: opacity 600ms ease;
+  background: radial-gradient(50% 50% at 50% 30%, rgb(var(--lumiere-rgb) / .11), rgb(var(--lumiere-rgb) / .045) 55%, transparent 100%);
+  -webkit-mask: linear-gradient(transparent 0, #000 22%); mask: linear-gradient(transparent 0, #000 22%);
+}
+.stage[data-scene=night] .lightpool { opacity: 0; }
+
+/* sous le portail : ce qui joue et le transport, puis la note et la synchro */
+.below { position: relative; z-index: 2; display: flow-root; }   /* flow-root : la marge de .now compte dans sa hauteur mesurée */
+.stage[data-scene=night] .below { visibility: hidden; }
+.now { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; margin-top: 14px; }
+.below-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; min-height: 30px; }
+
+/* classes partagées de la scène : réplique de Greg (or, italique), boutons secondaires */
+.quip { font: italic 400 15.5px/1.35 var(--f-voice); color: var(--or); }
+:root[data-quips=off] .stage .quip { display: none; }
+.btn-ghost {
+  height: 40px; padding: 0 16px; border-radius: 8px; corner-shape: bevel; box-shadow: inset 0 0 0 1px var(--hair-2);
+  font-weight: 700; font-size: 15px; transition: transform var(--dur-press) var(--ease-out);
+}
+.btn-ghost:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .btn-ghost:hover { background: var(--voute); } }
+.btn-danger {
+  height: 38px; padding: 0 14px; border-radius: 8px; corner-shape: bevel; background: var(--gueules); color: #1c0f08;
+  font-weight: 800; font-size: 15px; transition: transform var(--dur-press) var(--ease-out);
+}
+.btn-danger:active { transform: scale(.97); }
+
+@media (prefers-reduced-motion: reduce) { .btn-ghost, .btn-danger { transition: none; } }
+
+/* colonne étroite (de 901 à ~1100 px de large, le panneau la serre) : la rose se règle sur la largeur et la
+   scène n'a plus que 310 à 490 px ; à côté du transport (~280 px), le titre ne garderait que quelques
+   lettres, le transport passe dessous. La requête porte sur la colonne, dont la largeur ne dépend pas de la
+   scène : sur la scène, empiler la rapetisserait (bloc du dessous plus haut, R plus petit) et la garderait
+   empilée. Aux tailles de référence (1280×720, 1366×657, 1536×730, 1440×900), la colonne dépasse 660 px. */
+@container stage-col (max-width: 660px) {
+  .now { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .below-foot { flex-wrap: wrap; }
+}
+
+/* une colonne : la scène d'abord, centrée, le transport sous le titre */
+@media (max-width: 900px) {
+  html { scrollbar-gutter: stable; }
+  .stage-col { justify-content: flex-start; }
+  .now { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .below-foot { flex-wrap: wrap; }
+}

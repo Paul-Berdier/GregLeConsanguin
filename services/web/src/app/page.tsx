@@ -5,7 +5,7 @@ import { usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
 import { isShortcutIgnored } from '@/lib/playerUtils';
 import Header from '@/components/Header/Header';
-import VideoPlayer from '@/components/Stage/VideoPlayer';
+import Stage from '@/components/Stage/Stage';
 import Sidebar from '@/components/Sidebar';
 
 const FOCUS_REFRESH_MIN_MS = 15000;
@@ -15,7 +15,7 @@ const FOCUS_REFRESH_MIN_MS = 15000;
 // ═══════════════════════════════
 export default function Home() {
   usePlayerInit();
-  const { status, boot, refreshMe } = usePlayer();
+  const { status, boot, refreshMe, me } = usePlayer();
   const [booted, setBooted] = useState(false);
 
   useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
@@ -50,7 +50,7 @@ export default function Home() {
   }, [refreshMe]);
 
   return (
-    <div className="relative z-10 flex flex-col h-[100dvh]">
+    <div className="page-shell">
 
       {/* ═══ Header ═══ (marges latérales : --page-x, header.css) */}
       <Header ready={booted}/>
@@ -61,13 +61,12 @@ export default function Home() {
       }}>
 
         {/* ═══ Main ═══ */}
-        <main className="flex-1 min-h-0 main-layout">
-          {/* Left: Player */}
-          <div className="glass p-4 flex flex-col min-h-0">
-            <VideoPlayer/>
-          </div>
+        {/* Scène seule une fois la déconnexion constatée ; pendant le chargement, la grille garde son panneau (pas de saut) */}
+        <main className="flex-1 min-h-0 main-layout" data-scene={booted && !me ? 'out' : 'in'}>
+          {/* Gauche : la scène (rosace, portail, horloge, transport) */}
+          <Stage booted={booted}/>
 
-          {/* Right: Sidebar */}
+          {/* Droite : file et historique (étape 3) */}
           <Sidebar/>
         </main>
 

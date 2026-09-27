@@ -1,5 +1,11 @@
 @import '../theme/tokens.css';
 @import '../components/Header/header.css';
+@import '../components/Stage/stage.css';
+@import '../components/Stage/rose.css';
+@import '../components/Stage/portal.css';
+@import '../components/Stage/now.css';
+@import '../components/Stage/clock.css';
+@import '../components/Stage/night.css';
 
 @tailwind base;
 @tailwind components;
@@ -66,102 +72,6 @@ body {
     background: var(--voute);
     border: 1px solid var(--hair);
     border-radius: 16px;
-  }
-
-  /* Video container */
-  .video-frame {
-    position: relative;
-    width: 100%;
-    aspect-ratio: 16/9;
-    border-radius: 20px;
-    overflow: hidden;
-    background: var(--plomb);
-    box-shadow: 0 20px 60px rgb(0 0 0 / .6);
-  }
-  .video-frame::after {
-    content: '';
-    position: absolute; inset: 0; z-index: 2;
-    pointer-events: none;
-    background: linear-gradient(0deg, rgb(11 9 8 / .7) 0%, transparent 30%, transparent 70%, rgb(11 9 8 / .3) 100%);
-    border-radius: 20px;
-  }
-  .video-frame iframe, .video-frame video {
-    position: absolute; inset: 0;
-    width: 100%; height: 100%;
-    border: none; z-index: 1;
-  }
-
-  /* No-video artwork fallback */
-  .artwork-hero {
-    position: absolute; inset: 0;
-    background-size: cover; background-position: center;
-    filter: blur(30px) brightness(0.4);
-    transform: scale(1.15);
-    z-index: 0;
-  }
-  .artwork-center {
-    position: relative; z-index: 1;
-    width: clamp(120px, 20vw, 200px);
-    height: clamp(120px, 20vw, 200px);
-    border-radius: 20px;
-    background-size: cover; background-position: center;
-    box-shadow: 0 16px 48px rgb(0 0 0 / .6);
-    border: 1px solid var(--hair);
-  }
-
-  /* Progress bar */
-  .progress-track {
-    width: 100%; height: 6px;
-    border-radius: 99px;
-    background: rgb(var(--pierre-rgb) / .15);
-    cursor: pointer;
-    position: relative;
-    transition: height 0.15s;
-  }
-  .progress-track:hover { height: 10px; }
-  .progress-fill {
-    height: 100%; border-radius: 99px;
-    background: linear-gradient(90deg, rgb(var(--lumiere-rgb)), var(--or));
-    will-change: width;
-    position: relative;
-  }
-  .progress-fill::after {
-    content: '';
-    position: absolute; right: -5px; top: 50%;
-    width: 14px; height: 14px;
-    border-radius: 50%;
-    background: var(--os);
-    transform: translateY(-50%) scale(0);
-    transition: transform 0.15s;
-    box-shadow: 0 0 8px rgb(var(--lumiere-rgb) / .5);
-  }
-  .progress-track:hover .progress-fill::after { transform: translateY(-50%) scale(1); }
-
-  /* Control buttons */
-  .ctrl {
-    @apply flex items-center justify-center cursor-pointer;
-    transition: background-color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out),
-      transform var(--dur-press) var(--ease-out);
-    width: 48px; height: 48px;
-    border-radius: 16px;
-    background: rgb(239 231 216 / .04);
-    border: 1px solid var(--hair);
-    color: var(--os);
-  }
-  .ctrl:hover { background: rgb(var(--lumiere-rgb) / .12); border-color: rgb(var(--lumiere-rgb) / .25); }
-  .ctrl:active { transform: scale(0.93); }
-  .ctrl-main {
-    @apply ctrl;
-    width: 60px; height: 60px;
-    border-radius: 20px;
-    background: rgb(var(--lumiere-rgb) / .2);
-    border-color: rgb(var(--lumiere-rgb) / .35);
-  }
-  .ctrl-main:hover { background: rgb(var(--lumiere-rgb) / .3); box-shadow: 0 0 20px rgb(var(--lumiere-rgb) / .2); }
-  .ctrl-active {
-    background: rgb(var(--lumiere-rgb) / .2) !important;
-    border-color: rgb(var(--lumiere-rgb) / .5) !important;
-    box-shadow: 0 0 0 3px rgb(var(--lumiere-rgb) / .12);
   }
 
   /* Buttons */
@@ -236,49 +146,33 @@ body {
     animation: spin 0.7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Waveform animation */
-  .wave-bars {
-    display: flex; align-items: flex-end; gap: 2px; height: 24px;
-  }
-  .wave-bar {
-    width: 3px; border-radius: 2px;
-    background: linear-gradient(0deg, rgb(var(--lumiere-rgb)), var(--or));
-    animation: wave-bounce 0.8s ease-in-out infinite alternate;
-  }
-  .wave-bar:nth-child(1) { height: 40%; animation-delay: 0s; }
-  .wave-bar:nth-child(2) { height: 70%; animation-delay: 0.1s; }
-  .wave-bar:nth-child(3) { height: 50%; animation-delay: 0.2s; }
-  .wave-bar:nth-child(4) { height: 90%; animation-delay: 0.3s; }
-  .wave-bar:nth-child(5) { height: 30%; animation-delay: 0.15s; }
-  @keyframes wave-bounce {
-    from { transform: scaleY(0.4); }
-    to { transform: scaleY(1); }
-  }
-  .wave-bars.paused .wave-bar { animation-play-state: paused; }
 }
 
 /* ═══ Layout grids ═══ */
+/* La page tient dans l'écran ; en une colonne, elle défile. La lumière de la rose (lightpool, bloom), qui peint
+   dans la marge de rognage de .stage-col, ne crée jamais de défilement : ni horizontal, ni vertical sur ordinateur
+   (sinon scrollIntoView, le focus ou la recherche dans la page décaleraient toute la page). */
+.page-shell { position: relative; z-index: 10; display: flex; flex-direction: column; height: 100dvh; overflow: clip; }
+/* La scène à gauche, le panneau à droite (--panel-w : tokens.css, 360 px sous 1180 px dans stage.css).
+   Déconnecté : la scène seule. Une colonne sous 900 px, comme le prototype et useStageLayout. */
 .main-layout {
   display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 28px;
   height: 100%;
   min-height: 0;
 }
+.main-layout[data-scene=out] { grid-template-columns: minmax(0, 1fr); }
+.main-layout[data-scene=out] > :not(.stage-col) { display: none; }
 
-@media (max-width: 1100px) {
+@media (max-width: 900px) {
   body { overflow: auto; overflow-x: hidden; }
+  .page-shell { height: auto; min-height: 100dvh; overflow-y: visible; }
   .main-layout {
-    display: flex;
-    flex-direction: column;
-    overflow-y: auto;
-    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    gap: 22px;
     height: auto;
   }
-}
-
-@media (max-width: 640px) {
-  .ctrl { width: 42px; height: 42px; border-radius: 14px; }
-  .ctrl-main { width: 52px; height: 52px; border-radius: 18px; }
 }

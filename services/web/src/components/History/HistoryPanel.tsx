@@ -53,7 +53,7 @@ export default function HistoryPanel() {
       </div>
 
       {/* Items */}
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[1100px]:max-h-[40vh]">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1 max-[900px]:max-h-[40vh]">
         {!historyItems.length ? (
           <div className="text-center text-txt-muted text-sm py-8 opacity-40">
             <Ic icon="music" size={28}/><br/>

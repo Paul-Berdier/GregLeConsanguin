@@ -215,7 +215,7 @@ export function enqueueSuccessText(res: any): string {
 }
 
 // ── Lecture ──
-/** Position courante (s) déduite de tickBase — même calcul que useProgress, bornée à la durée. */
+/** Position courante (s) déduite de tickBase, bornée à la durée (horloge de la scène, useStageClock, et synchro vidéo). */
 export function livePosition(tb: { pos: number; at: number; dur: number }, paused: boolean, now: number): number {
   const pos = (tb.pos || 0) + (paused ? 0 : (now - tb.at) / 1000);
   return tb.dur > 0 ? Math.min(Math.max(pos, 0), tb.dur) : Math.max(0, pos);

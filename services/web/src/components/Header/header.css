@@ -34,6 +34,8 @@
 
 /* ── recherche ── */
 .search { position: relative; min-width: 0; }
+/* déconnecté : rien à chercher, la scène porte le seul bouton de connexion (Header.tsx) */
+.top[data-auth=out] .search { visibility: hidden; }
 .field {
   position: relative; display: flex; align-items: center; height: 46px; border-radius: 10px; corner-shape: bevel;
   background: var(--voute); box-shadow: inset 0 0 0 1px var(--hair); padding: 0 6px 0 14px; gap: 10px;
@@ -211,6 +213,10 @@
   .brand { grid-area: brand; }
   .search { grid-area: search; max-width: none; }
   .top-right { grid-area: right; }
+  /* déconnecté : pas de rangée vide pour la recherche, la rose monte sous le wordmark (sur ordinateur,
+     `visibility: hidden` garde la grille à trois colonnes : l'en-tête ne saute pas à la connexion) */
+  .top[data-auth=out] { grid-template-areas: "brand . right"; }
+  .top[data-auth=out] .search { display: none; }
   .wordmark { height: 23px; }
   .wm-full { display: none; }
   .wm-short { display: block; }
