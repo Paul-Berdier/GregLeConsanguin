@@ -1,0 +1,133 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : ce qui joue (surtitre, titre Grenze, demandeur) et le transport.
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 300–368). Écarts voulus :
+   - le titre garde sa hauteur même vide : la mise en page de la scène (useStageLayout) n'en dépend pas ;
+   - transitions sur transform et opacity seulement : les survols changent de couleur sans animation ;
+   - l'icône lecture/pause se croise en opacité et échelle, sans flou (le flou vient avec la révérence, étape 4) ;
+   - « Demandé par vous » porte le sceau du Roi (l'utilisateur) : jamais Greg ;
+   - sur un écran étroit, la confirmation d'arrêt se centre sur le transport (elle sortait de l'écran),
+     et son échelle d'entrée part toujours du bouton d'arrêt (DESIGN §5) ;
+   - l'info-bulle « Tout arrêter » se tait tant que sa confirmation est ouverte (sur un écran étroit,
+     elle passait sous le dialogue, par-dessus le titre).
+   La réplique du surtitre reste en cendre, comme dans le prototype (.kicker .kq > span) : elle accompagne
+   l'état sans lui voler la vedette ; les autres répliques gardent l'or de .quip (stage.css).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.now-text { min-width: 0; }
+.kicker {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0; height: 18px;
+  font: 700 12px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase; color: rgb(var(--lumiere-rgb));
+}
+.kicker .kk { flex: none; }
+.kicker .kq {
+  flex: 1; min-width: 0; font: italic 400 15px/1 var(--f-voice); letter-spacing: 0; text-transform: none;
+  color: var(--cendre); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.kicker .eq { display: flex; gap: 2px; align-items: flex-end; height: 11px; flex: none; transform-origin: bottom; transition: transform 300ms var(--ease-out), opacity 300ms ease; }
+.kicker .eq i { width: 2px; height: 100%; background: currentColor; transform-origin: bottom; animation: eq 900ms ease-in-out infinite alternate; }
+.kicker .eq i:nth-child(2) { animation-duration: 700ms; animation-delay: -300ms; }
+.kicker .eq i:nth-child(3) { animation-duration: 1100ms; animation-delay: -600ms; }
+@keyframes eq { 0% { transform: scaleY(.25); } 100% { transform: scaleY(1); } }
+.stage[data-paused=true] .kicker .eq { transform: scaleY(.3); opacity: .6; }
+.stage[data-paused=true] .kicker .eq i { animation-play-state: paused; }
+
+/* le titre du morceau : Grenze 600, sa propre voix ; la hauteur suit la taille, avec ou sans texte */
+.title-slot {
+  --title-size: clamp(28px, calc(var(--vw) * .055), 40px);
+  margin: 8px 0 0; min-height: calc(var(--title-size) * 1.08 + 2px); padding-bottom: 2px;
+  font: 600 var(--title-size)/1.08 var(--f-title); letter-spacing: -.015em; color: var(--os);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.meta-slot {
+  display: flex; align-items: center; gap: 7px; margin: 4px 0 0; min-height: 22px;
+  font-size: 15.5px; color: var(--cendre); white-space: nowrap; overflow: hidden;
+}
+.meta-slot .artist { overflow: hidden; text-overflow: ellipsis; }
+.meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--os-2); }
+.meta-slot .seal { width: 20px; height: 20px; flex: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .6)); }
+.dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--cendre-2); flex: none; }
+
+/* transport */
+.transport { display: flex; align-items: center; gap: 6px; }
+.stop-wrap { position: relative; }
+.tbtn {
+  position: relative; width: 44px; height: 44px; border-radius: 9px; corner-shape: bevel;
+  display: grid; place-items: center; color: var(--os-2);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.tbtn svg { width: 22px; height: 22px; }
+.tbtn:active:not(:disabled) { transform: scale(.95); }
+@media (hover: hover) and (pointer: fine) { .tbtn:not(:disabled):hover { background: var(--voute); color: var(--os); } }
+.tbtn[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
+.tbtn[aria-pressed=true]::after {
+  content: ""; position: absolute; left: 50%; bottom: 4px; width: 4px; height: 4px; margin-left: -2px;
+  background: currentColor; transform: rotate(45deg);
+}
+.tbtn:disabled { opacity: .35; cursor: default; }
+/* lecture / pause : une rondelle du verre du morceau, cerclée d'un plomb */
+.tbtn.main {
+  width: 66px; height: 66px; margin: 0 6px; border-radius: 50%; corner-shape: round; color: #1a120b;
+  background:
+    radial-gradient(60% 45% at 50% 22%, rgb(255 252 244 / .55), transparent 70%),
+    repeating-linear-gradient(104deg, rgb(255 255 255 / .06) 0 3px, transparent 3px 9px),
+    radial-gradient(circle at 50% 42%, rgb(var(--lumiere-rgb)) 0 34%, color-mix(in oklab, rgb(var(--lumiere-rgb)) 58%, #0b0908) 100%);
+  box-shadow: inset 0 0 0 3px var(--plomb), inset 0 0 0 4px rgb(255 255 255 / .18), 0 0 0 1px rgb(var(--pierre-rgb) / .7),
+    0 0 0 4px rgb(11 9 8 / .9), 0 0 0 5px rgb(var(--pierre-rgb) / .28), 0 0 34px -6px rgb(var(--lumiere-rgb) / .7),
+    inset 0 -8px 14px rgb(0 0 0 / .22);
+}
+@media (hover: hover) and (pointer: fine) { .tbtn.main:not(:disabled):hover { background-color: transparent; color: #1a120b; filter: brightness(1.08); } }
+.tbtn.main svg {
+  width: 26px; height: 26px; position: absolute; left: 50%; top: 50%; margin: -13px 0 0 -13px;
+  transition: opacity var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out);
+}
+.tbtn.main svg[data-shown=false] { opacity: 0; transform: scale(.6); }
+
+/* info-bulles : la première attend 400 ms, jamais au toucher */
+.tip {
+  position: absolute; bottom: calc(100% + 10px); left: 50%; z-index: 5; white-space: nowrap; pointer-events: none;
+  font: 600 13px/1 var(--f-ui); color: var(--os); padding: 7px 9px; border-radius: 6px;
+  opacity: 0; transform: translateX(-50%) translateY(2px);
+  transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tbtn:not(:disabled):hover .tip { opacity: 1; transform: translateX(-50%); transition-delay: 400ms; }
+  /* même poids que la règle du dessus, placée après : le dialogue ouvert fait taire l'info-bulle de son bouton */
+  .tbtn[aria-expanded=true]:hover .tip { opacity: 0; transition-delay: 0ms; }
+}
+
+/* « Tout arrêter ? » s'ouvre depuis le bouton */
+.confirm {
+  top: auto; right: auto; bottom: calc(100% + 12px); left: 50%; margin-left: -155px; width: 310px; padding: 14px;
+  transform-origin: 50% calc(100% + 12px);
+}
+.confirm h3 { margin: 0 0 6px; font-size: 17px; font-weight: 700; }
+.confirm p { margin: 0 0 4px; font-size: 15px; color: var(--os-2); }
+.confirm .quip { font-size: 15px; margin: 6px 0 12px; }
+.confirm .row-btns { display: flex; gap: 8px; justify-content: flex-end; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kicker .eq i { animation: none; transform: scaleY(.6); }
+  .kicker .eq, .tbtn, .tip { transition: none; }
+  .tbtn.main svg[data-shown=false] { transform: none; }
+  .tip { transform: translateX(-50%); }
+}
+@media (max-width: 900px) {
+  .transport { justify-content: center; }
+  .title-slot { --title-size: 28px; }
+}
+/* écran étroit : centré sur son bouton (le premier du transport), « Tout arrêter ? » sortirait de l'écran
+   à gauche sous ~580 px ; il se centre alors sur le transport, sans dépasser sa largeur.
+   Son échelle part toujours du haut du bouton d'arrêt : la rangée centrée fait 4 × 44 px, plus la rondelle
+   et ses marges de 6 px, plus 4 espaces ; le bouton (44 px) est centré en hauteur sur la rondelle. */
+@media (max-width: 600px) {
+  .transport { position: relative; }
+  .stop-wrap { position: static; }
+  .confirm {
+    width: min(310px, 100%); margin-left: calc(min(310px, 100%) / -2);
+    transform-origin: calc(50% - (4 * 44px + 66px + 12px + 4 * 6px) / 2 + 22px) calc(100% + 12px + (66px - 44px) / 2);
+  }
+}
+@media (max-width: 520px) {
+  .tbtn.main { width: 60px; height: 60px; }
+  .transport { gap: 4px; }
+  .confirm { transform-origin: calc(50% - (4 * 44px + 60px + 12px + 4 * 4px) / 2 + 22px) calc(100% + 12px + (60px - 44px) / 2); }
+}
