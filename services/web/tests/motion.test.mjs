@@ -101,3 +101,22 @@ test('accalmie : 400 ms, ou 3 px de mouvement ; anti-doublon 500 ms par titre', 
   assert.equal(seen('k2', 499), false);
   assert.equal(seen('k2', 1200), false);
 });
+
+test('mouvement réduit suivi en direct, jusqu’au désabonnement', () => {
+  const ls = new Set(), mq = { matches: false, addEventListener: (_, fn) => ls.add(fn), removeEventListener: (_, fn) => ls.delete(fn) };
+  const saved = globalThis.matchMedia;
+  globalThis.matchMedia = () => mq;
+  try {
+    const seen = [], stop = M.watchReducedMotion((r) => seen.push(r));
+    mq.matches = true; for (const fn of [...ls]) fn();
+    stop();
+    mq.matches = false; for (const fn of [...ls]) fn();
+    assert.deepEqual(seen, [false, true]);
+    assert.equal(ls.size, 0);
+  } finally { globalThis.matchMedia = saved; }
+});
+
+test('sortie en cascade inversée : la dernière ligne d’abord, 20 ms, plafond 8', () => {
+  assert.deepEqual([0, 1, 2].map((i) => F.reverseStagger(i, 3)), [40, 20, 0]);
+  assert.deepEqual([F.reverseStagger(0, 12), F.reverseStagger(11, 12)], [140, 0]);
+});

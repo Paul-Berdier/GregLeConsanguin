@@ -36,3 +36,13 @@ export const STAGGER_CAP = 8;
 export function reducedMotion(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
+
+/** Suit prefers-reduced-motion en direct (DESIGN §12.6) : `fn` tout de suite, puis à chaque changement. */
+export function watchReducedMotion(fn: (reduced: boolean) => void): () => void {
+  if (typeof matchMedia !== 'function') { fn(false); return () => {}; }
+  const mq = matchMedia('(prefers-reduced-motion: reduce)');
+  const on = (): void => fn(mq.matches);
+  on();
+  mq.addEventListener('change', on);
+  return () => mq.removeEventListener('change', on);
+}

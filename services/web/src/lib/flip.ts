@@ -51,3 +51,11 @@ export function translateYOf(transform: string): number {
 export function staggerDelay(i: number, step: number, cap = 8): number {
   return Math.min(Math.max(0, i), cap) * step;
 }
+
+/**
+ * Sortie en cascade inversée (arrêt, DESIGN §5) : de la dernière ligne à la première, `step` ms. Ici `cap` compte les
+ * rangs de la cascade (0 à cap - 1, soit 140 ms au plus par défaut), quand staggerDelay plafonne l'indice lui-même (0 à cap).
+ */
+export function reverseStagger(i: number, n: number, step = 20, cap = 8): number {
+  return Math.min(Math.max(0, n - 1 - i), cap - 1) * step;
+}
