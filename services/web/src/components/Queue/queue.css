@@ -47,6 +47,8 @@
 .thumb .seal { position: absolute; right: -9px; bottom: -9px; width: 23px; height: 23px; filter: drop-shadow(0 2px 2px rgb(0 0 0 / .7)); }
 .thumb .seal::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(40% 30% at 38% 28%, rgb(255 236 220 / .55), transparent 70%); }
 .thumb .seal img { width: 100%; height: 100%; }
+/* Le Sceau : la pochette source qui vole jusqu'à la ligne du Roi (Queue/seal.ts), étirée par transform seul */
+.seal-ghost { position: fixed; left: 0; top: 0; z-index: 80; pointer-events: none; border-radius: 3px; background: #050404 center / cover no-repeat; transform-origin: 0 0; }
 
 .row .meta { min-width: 0; }
 .row .t { font-size: 15.5px; font-weight: 500; line-height: 1.28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -122,4 +124,5 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
   .row.dragging .card { transform: none; }
   .acts, .row .side, .row .card::after { transition: none; }
   .act { transition: none; }
+  .seal-ghost { display: none; }
 }

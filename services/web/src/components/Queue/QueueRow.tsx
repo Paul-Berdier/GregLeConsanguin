@@ -29,14 +29,18 @@ export type QueueRowProps = {
   sealSrc: string | null;
   picked: boolean;
   leaving: boolean;
+  /** Tabindex itinérant (QueuePanel, useRoving) : 0 pour la ligne active de la liste, -1 pour les autres. */
+  tabIndex: 0 | -1;
 };
 
 /**
  * Une ligne de la file (DESIGN §12.5) : poignée 6 points, pochette (poignée elle aussi), titre nettoyé (le brut en
  * info-bulle), artiste, blason et demandeur, durée et heure estimée ; actions rapides sur une puce opaque.
  * Les clics sont délégués à la liste (QueuePanel : data-act). Styles : queue.css.
+ * Clavier : la ligne est l'arrêt de Tab ; ses boutons restent hors de la tabulation (Entrée, Suppr et Alt+Début les
+ * remplacent, DESIGN §12.7). Le sceau du Roi se charge en différé (QueuePanel le décode au premier temps mort).
  */
-function QueueRow({ item, eta, next, sealSrc, picked, leaving }: QueueRowProps) {
+function QueueRow({ item, eta, next, sealSrc, picked, leaving, tabIndex }: QueueRowProps) {
   const p = parseTitle(item.title, item.artist);
   const song = p.song || item.title || '—';
   const mine = !!sealSrc;
@@ -49,12 +53,12 @@ function QueueRow({ item, eta, next, sealSrc, picked, leaving }: QueueRowProps) 
   const thumb = thumbOf(item);
   return (
     <li className={`row${next ? ' next' : ''}`} data-key={item.key} data-leaving={leaving || undefined}
-      data-picked={picked || undefined} aria-label={label}>
+      data-picked={picked || undefined} aria-label={label} tabIndex={tabIndex}>
       <div className="card">
         <span className="grip" aria-hidden="true">{GRIP}</span>
         <div className="thumb">
           <div className="im">{thumb && <img src={thumb} alt="" loading="lazy" decoding="async" width={72} height={41} draggable={false}/>}</div>
-          {sealSrc && <span className="seal" title={t('queue.mine.tip')}><img src={sealSrc} alt="" width={23} height={23} decoding="async" draggable={false}/></span>}
+          {sealSrc && <span className="seal" title={t('queue.mine.tip')}><img src={sealSrc} alt="" width={23} height={23} loading="lazy" decoding="async" draggable={false}/></span>}
         </div>
         <div className="meta">
           <div className="t" title={item.title}>{song}</div>
@@ -66,9 +70,9 @@ function QueueRow({ item, eta, next, sealSrc, picked, leaving }: QueueRowProps) 
         </div>
         <div className="side tnum" aria-hidden="true"><span className="dur">{fmt(item.duration)}</span><span className="eta">{eta}</span></div>
         <div className="acts">
-          <button type="button" className="act" data-act="play" aria-label={t('queue.actions.playNowAria', { title: song })} title={t('queue.actions.playNow')}>{PLAY}</button>
-          <button type="button" className="act" data-act="next" aria-label={t('queue.actions.playNextAria', { title: song })} title={t('queue.actions.playNext')}>{NEXT}</button>
-          <button type="button" className="act del" data-act="del" aria-label={t('queue.actions.removeAria', { title: song })} title={t('queue.actions.remove')}>{DEL}</button>
+          <button type="button" tabIndex={-1} className="act" data-act="play" aria-label={t('queue.actions.playNowAria', { title: song })} title={t('queue.actions.playNow')}>{PLAY}</button>
+          <button type="button" tabIndex={-1} className="act" data-act="next" aria-label={t('queue.actions.playNextAria', { title: song })} title={t('queue.actions.playNext')}>{NEXT}</button>
+          <button type="button" tabIndex={-1} className="act del" data-act="del" aria-label={t('queue.actions.removeAria', { title: song })} title={t('queue.actions.remove')}>{DEL}</button>
         </div>
         <span className="flash" aria-hidden="true"/>
       </div>

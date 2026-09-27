@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { playerActions, useStore } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
 import { EASE, reducedMotion } from '@/lib/motion';
@@ -19,6 +19,7 @@ const REFRESH = <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><pat
  * « Plus joués » est la liste du store (usePlayer.refreshHistory, aussi lue par « Souvent demandés ici ») ;
  * « Récents » reste locale. Un clic sélectionne, un double-clic ou « + » remet le titre dans la file.
  * Le demandeur n'est nommé que s'il est connu : le Roi (« vous ») ou un courtisan présent dans la file.
+ * Clavier (useRequeueList) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre ; touches décrites (history.keys).
  */
 export default function HistoryPanel() {
   const guildId = useStore((s) => s.guildId);
@@ -30,6 +31,8 @@ export default function HistoryPanel() {
   const [recent, setRecent] = useState<HistoryItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
+  const keysId = useId();
   /** Numéro du dernier chargement, avancé aussi par un changement de serveur : une réponse dépassée ne s'écrit plus. */
   const seq = useRef(0);
 
@@ -66,7 +69,7 @@ export default function HistoryPanel() {
   const nameOf = (id?: string) => (!id ? '' : id === meId ? t('history.mine') : names.get(id) || '');
 
   const items = mode === 'top' ? top : recent ?? [];
-  const list = useRequeueList(items);
+  const list = useRequeueList(items, listRef);
   const now = Date.now();
   const metaOf = (it: HistoryItem) => {
     if (mode === 'top') return tx('history.plays', { n: it.play_count ?? 0 });
@@ -90,12 +93,17 @@ export default function HistoryPanel() {
             : <div className="hstate"><h4>{t('history.empty.title')}</h4><p>{t('history.empty.body')}</p>
               <div className="quip" aria-hidden="true">{quip('history.empty', seedOf(guildId))}</div></div>
         ) : (
-          <ol className="qlist" aria-label={tx('history.list')} onClick={list.onClick} onDoubleClick={list.onDoubleClick}>
-            {items.map((it, i) => (
-              <HistoryRow key={`${it.url}-${i}`} item={it} rank={mode === 'top' ? i + 1 : 0} meta={metaOf(it)}
-                byName={nameOf(it.last_played_by)} variant="hrow" picked={list.picked === it.url}/>
-            ))}
-          </ol>
+          <>
+            <ol className="qlist" ref={listRef} aria-label={tx('history.list')} aria-describedby={keysId}
+              onClick={list.onClick} onDoubleClick={list.onDoubleClick} onKeyDown={list.onKeyDown} onFocus={list.onFocus}>
+              {items.map((it, i) => (
+                <HistoryRow key={`${it.url}-${i}`} item={it} rank={mode === 'top' ? i + 1 : 0} meta={metaOf(it)}
+                  byName={nameOf(it.last_played_by)} variant="hrow" picked={list.picked === it.url}
+                  tabIndex={list.tabIndexOf(it.url || '')}/>
+              ))}
+            </ol>
+            <p id={keysId} className="sr">{tx('history.keys')}</p>
+          </>
         )}
       </div>
     </div>
