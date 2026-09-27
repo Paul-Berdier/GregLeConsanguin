@@ -6,6 +6,7 @@
 @import '../components/Stage/now.css';
 @import '../components/Stage/clock.css';
 @import '../components/Stage/night.css';
+@import '../components/Queue/queue.css';
 @import '../components/Herald/herald.css';
 
 @tailwind base;

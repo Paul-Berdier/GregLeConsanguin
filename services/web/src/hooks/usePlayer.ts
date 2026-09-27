@@ -455,9 +455,6 @@ export const playerActions = {
   stop: () => command((g, u) => api.queueStop(g, u)),
   toggleRepeat: () => command((g, u) => api.repeat(g, u)),
   restartTrack: () => command((g, u) => api.restart(g, u)),
-  // Compat de l'ancien panneau (index de la file affichée) : retirée à la tâche 6.
-  removeFromQueue: (i: number) => removeTrack(engine.view().player.queue[i]?.key ?? ''),
-  playAt: (i: number) => playNow(engine.view().player.queue[i]?.key ?? ''),
 };
 export type PlayerActions = typeof playerActions;
 
