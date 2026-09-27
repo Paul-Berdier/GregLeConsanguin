@@ -3,8 +3,10 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
-import { isShortcutIgnored } from '@/lib/playerUtils';
-import { deck, t } from '@/theme/copy';
+import { HELP_EVENT, SHORTCUTS_STORAGE_KEY, shortcutsOn } from '@/lib/keys';
+import { t } from '@/theme/copy';
+import { KEYS, tx } from '@/theme/copy.extra';
+import { speak } from '@/components/Herald/store';
 import KingAvatar, { kingName } from './KingAvatar';
 import { usePopover } from './GuildPicker';
 
@@ -16,19 +18,24 @@ function readQuips(): boolean {
   try { return localStorage.getItem(QUIPS_KEY) !== 'off'; } catch { return true; }
 }
 
-const SHORTCUTS: [string, string][] = Array.isArray(deck.shortcuts?.items) ? deck.shortcuts.items : [];
+// Réglage « Raccourcis clavier » (WCAG 2.1.4) : 'off' coupe les raccourcis d'une touche. Reflété sur <html data-keys> :
+// page.tsx le lit à chaque touche, header.css n'affiche l'indice « / » que sous data-keys=on.
+function readKeys(): boolean { try { return shortcutsOn(localStorage.getItem(SHORTCUTS_STORAGE_KEY)); } catch { return true; } }
 
-/** Compte du Roi : avatar couronné, réglage des répliques, raccourcis, déconnexion. `?` l'ouvre. */
+/** Compte du Roi : avatar couronné, réglages (répliques, raccourcis), liste des raccourcis, déconnexion. `?` l'ouvre. */
 export default function AccountMenu() {
   const { me, logout } = usePlayer();
   const { open, setOpen, close, btnRef, wrapProps } = usePopover();
   const popRef = useRef<HTMLDivElement>(null);
   const popId = useId();
   const quipsId = useId();
+  const keysId = useId();
   const [quips, setQuips] = useState(true);
+  const [keys, setKeys] = useState(true);
 
-  useEffect(() => { setQuips(readQuips()); }, []);
+  useEffect(() => { setQuips(readQuips()); setKeys(readKeys()); }, []);
   useEffect(() => { document.documentElement.dataset.quips = quips ? 'on' : 'off'; }, [quips]);
+  useEffect(() => { document.documentElement.dataset.keys = keys ? 'on' : 'off'; }, [keys]);
 
   const toggleQuips = () => {
     const next = !quips;
@@ -36,15 +43,18 @@ export default function AccountMenu() {
     try { localStorage.setItem(QUIPS_KEY, next ? 'on' : 'off'); } catch {}
   };
 
-  // « ? » ailleurs que dans un champ : ouvre ce menu, qui porte la liste des raccourcis
+  const toggleKeys = () => {
+    const next = !keys;
+    setKeys(next);
+    try { localStorage.setItem(SHORTCUTS_STORAGE_KEY, next ? 'on' : 'off'); } catch {}
+    speak(tx(next ? 'keys.on' : 'keys.off'));
+  };
+
+  // « ? » (page.tsx) ouvre ce menu, qui porte la liste des raccourcis
   useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== '?' || isShortcutIgnored(e)) return;
-      e.preventDefault();
-      setOpen(true);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    const onHelp = () => setOpen(true);
+    document.addEventListener(HELP_EVENT, onHelp);
+    return () => document.removeEventListener(HELP_EVENT, onHelp);
   }, [setOpen]);
 
   // À l'ouverture : focus sur la première commande
@@ -85,10 +95,18 @@ export default function AccountMenu() {
           </span>
           <span className="switch" aria-hidden="true"/>
         </button>
+        <button type="button" role="switch" aria-checked={keys} className="pop-item" onClick={toggleKeys}
+          aria-labelledby={`${keysId}-l`} aria-describedby={`${keysId}-d`}>
+          <span className="two">
+            <b id={`${keysId}-l`}>{tx('keys.toggle')}</b>
+            <small id={`${keysId}-d`}>{tx('keys.toggleHelp')}</small>
+          </span>
+          <span className="switch" aria-hidden="true"/>
+        </button>
         <div className="pop-sep"/>
         <div className="pop-title">{t('shortcuts.title')}</div>
         <dl className="keys">
-          {SHORTCUTS.map(([key, label]) => (
+          {KEYS.map(([key, label]) => (
             <Fragment key={key}>
               <dt><kbd>{key}</kbd></dt>
               <dd>{label}</dd>

@@ -3,8 +3,11 @@
 import { useState, useRef, useCallback, useEffect, useId } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
 import { api } from '@/lib/api';
-import { looksLikeUrl, enterPicksSuggestion, isShortcutIgnored } from '@/lib/playerUtils';
+import { looksLikeUrl, enterPicksSuggestion } from '@/lib/playerUtils';
 import { fmt } from '@/lib/format';
+import { reducedMotion } from '@/lib/motion';
+import { sealBook } from '@/lib/queue/seal';
+import { boxOf } from '@/lib/stage/coronation';
 import { classifyLink, submitLabelKey, isBadLink } from '@/lib/links';
 import type { LinkKind } from '@/lib/links';
 import type { SearchResult } from '@/lib/types';
@@ -59,17 +62,6 @@ export default function SearchBar() {
   const uid = useId();
   const kind = classifyLink(q);
 
-  // « / » ailleurs que dans un champ : focus sur la recherche
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '/' || isShortcutIgnored(e)) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, []);
-
   const doSearch = useCallback(async (query: string) => {
     if (query.length < 2 || looksLikeUrl(query)) { setSugs([]); setOpen(false); setSearching(false); return; }
     const my = ++searchSeq.current;
@@ -100,6 +92,11 @@ export default function SearchBar() {
     timer.current = setTimeout(() => doSearch(v.trim()), 280);
   };
 
+  // Le Sceau (DESIGN §5) : l'ajout du Roi est attendu, reconnu à l'entrée de sa ligne (QueuePanel).
+  // `from` : la pochette de la suggestion, d'où part le vol du sceau (aucun vol en mouvement réduit).
+  const expectSeal = (url: string | null, from: Element | null | undefined, thumb: string | null) =>
+    sealBook.expect({ url, from: from && !reducedMotion() ? boxOf(from) : null, thumb, at: performance.now() });
+
   // `typed` : texte du champ au moment de l'envoi — gardé jusqu'au succès, restauré en cas d'échec
   const submit = async (payload: Record<string, any>, typed: string) => {
     if (busyRef.current) return;
@@ -107,8 +104,10 @@ export default function SearchBar() {
     cancelSearch(); setOpen(false); setSugs([]); setIdx(-1);
     try {
       const ok = await enqueue(payload);
+      if (!ok) sealBook.clear();   // rien n'est parti : aucune ligne ne viendra
       if (ok && qRef.current === typed) { setQ(''); qRef.current = ''; }
     } catch {
+      sealBook.clear();
       // Statut d'erreur déjà affiché par enqueue : on remet le texte si le champ a été vidé
       if (!qRef.current.trim()) { setQ(typed); qRef.current = typed; }
     } finally {
@@ -116,8 +115,10 @@ export default function SearchBar() {
     }
   };
 
-  const pick = (sug: SearchResult) => {
+  const pick = (sug: SearchResult, from?: Element | null) => {
+    if (busyRef.current) return;   // un ajout en vol : son sceau attendu reste le sien
     const url = sug.webpage_url || sug.url || '';
+    expectSeal(url || null, from, sug.thumb || sug.thumbnail || null);
     submit({ query: url || sug.title, url, webpage_url: url, title: sug.title,
       artist: sug.artist || sug.uploader || sug.channel, duration: sug.duration,
       thumb: sug.thumb || sug.thumbnail, thumbnail: sug.thumb || sug.thumbnail,
@@ -128,6 +129,8 @@ export default function SearchBar() {
   const submitTyped = () => {
     const text = q.trim();
     if (!text || busyRef.current) return;
+    // Un titre tapé : la prochaine ligne du Roi ; un lien vidéo : cette vidéo. Une playlist n'a pas de Sceau.
+    if (kind === 'none' || kind === 'video') expectSeal(kind === 'video' ? text : null, null, null);
     submit({ query: text }, q);
   };
 
@@ -136,7 +139,7 @@ export default function SearchBar() {
       e.preventDefault();
       if (busyRef.current) return;
       // Suggestion seulement si choisie au clavier (flèches) dans la liste ouverte
-      if (enterPicksSuggestion(open, idx, sugs.length, q) && sugs[idx]) pick(sugs[idx]);
+      if (enterPicksSuggestion(open, idx, sugs.length, q) && sugs[idx]) pick(sugs[idx], document.getElementById(optId(idx))?.querySelector('.th'));
       else submitTyped();
       return;
     }
@@ -190,7 +193,7 @@ export default function SearchBar() {
           const thumb = s.thumb || s.thumbnail;
           return (
             <div key={`${s.url}-${i}`} id={optId(i)} role="option" aria-selected={i === idx} className="sug-item"
-              onMouseDown={e => e.preventDefault()} onClick={() => pick(s)}>
+              onMouseDown={e => e.preventDefault()} onClick={(e) => pick(s, e.currentTarget.querySelector('.th'))}>
               <div className="th">
                 {thumb ? <img src={thumb} alt="" width={64} height={36} loading="lazy" decoding="async"/>
                   : <svg viewBox="0 0 24 24" aria-hidden="true">{I.music}</svg>}

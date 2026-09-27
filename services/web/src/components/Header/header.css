@@ -57,6 +57,9 @@
 .kbd { flex: none; font: 600 12px/1 var(--f-ui); color: var(--cendre); border: 1px solid var(--hair-2); border-radius: 5px; padding: 4px 6px; transition: opacity var(--dur-micro) ease; }
 .field[data-has-text=true] .kbd { opacity: 0; }
 @media (hover: none) { .kbd { display: none; } }
+/* Indice « / » seulement quand la touche marche : <html data-keys=on> est posé par le menu du compte, monté
+   une fois le Roi connu. Raccourcis coupés (WCAG 2.1.4), ou avant l'hydratation et la session : aucun indice. */
+:root:not([data-keys=on]) .kbd { display: none; }
 .linkpill {
   font: 700 11.5px/1 var(--f-ui); letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--lumiere-rgb)); white-space: nowrap;
   padding: 6px 8px; border-radius: 6px; background: rgb(var(--lumiere-rgb) / .1); display: none;
@@ -168,6 +171,13 @@
   transition: opacity var(--dur-pop-in) var(--ease-out), transform var(--dur-pop-in) var(--ease-out), display 0s allow-discrete;
 }
 @starting-style { .pop[data-open=true] { opacity: 0; transform: scale(.97); } }
+/* Menus de l'en-tête (serveurs, compte) bornés à la fenêtre : le compte (deux interrupteurs, treize raccourcis)
+   dépasse 600 px ; sur une fenêtre basse, il défile au lieu d'être coupé (body ne défile pas au-delà de 900 px).
+   76 px : haut du menu (≈ 64 px, sous l'avatar) et une marge en bas. */
+.top .pop {
+  max-height: calc(100dvh - 76px - env(safe-area-inset-top, 0px));
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+}
 .pop-title { padding: 9px 10px 6px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--cendre); }
 .pop-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; text-align: left; font-size: 15px; }
 .pop-item[aria-disabled=true] { cursor: default; }

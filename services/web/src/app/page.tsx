@@ -2,13 +2,31 @@
 
 import { useState, useEffect } from 'react';
 import { playerActions, usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
-import { isShortcutIgnored } from '@/lib/playerUtils';
+import { HELP_EVENT, shortcutFor } from '@/lib/keys';
+import type { Shortcut } from '@/lib/keys';
+import { watchReducedMotion } from '@/lib/motion';
+import { kingOrders, NEXT } from '@/lib/stage/coronation';
+import { tx } from '@/theme/copy.extra';
+import { speak } from '@/components/Herald/store';
 import Herald from '@/components/Herald/Herald';
 import Header from '@/components/Header/Header';
 import Stage from '@/components/Stage/Stage';
 import Sidebar from '@/components/Sidebar';
 
 const FOCUS_REFRESH_MIN_MS = 15000;
+
+// Clavier de la page (DESIGN §7 et §12.7) : cibles lues au moment de la touche
+const SEARCH = '.top .field input';
+const FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+const CONTROL = 'button, a[href], [role="button"], [role="switch"], [role="tab"], [role="slider"], [role="option"]';
+/** Commandes du lecteur : il leur faut un serveur. « / », « ? » et la saisie directe servent sans (le choix du serveur y guide). */
+const PLAYS: readonly Shortcut[] = ['togglePause', 'skip', 'restart'];
+
+/** « Aller à la file » : la ligne active de la file, sinon l'onglet File (volet Historique affiché : la ligne, cachée, refuserait le focus). */
+function focusQueue(): void {
+  const shown = document.getElementById('pane-queue')?.getAttribute('aria-hidden') !== 'true';
+  (shown && document.querySelector<HTMLElement>('.qcontent > .qlist > .row[tabindex="0"]') || document.getElementById('tab-queue'))?.focus();
+}
 
 // ═══════════════════════════════
 // Main Page
@@ -20,18 +38,38 @@ export default function Home() {
 
   useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
 
-  // Keyboard shortcuts
+  // Mouvement réduit suivi en direct (DESIGN §12.6) : <html data-motion> pour les feuilles et les chorégraphies
+  useEffect(() => watchReducedMotion((r) => { document.documentElement.dataset.motion = r ? 'reduced' : 'full'; }), []);
+
+  // Un seul gestionnaire de raccourcis (lib/keys) ; l'interrupteur du menu du compte le coupe (WCAG 2.1.4)
   useEffect(() => {
     const handler = (ev: KeyboardEvent) => {
-      // Ctrl+R / Cmd+P… restent aux raccourcis du navigateur ; rien dans les champs / select / boutons (Espace)
-      if (isShortcutIgnored(ev)) return;
-      const s = useStore.getState();
-      if (!s.me || !s.guildId) return;
+      if (ev.defaultPrevented) return;   // déjà traitée : onglets (Maj+→ y changerait aussi de titre), listes, popovers
+      const el = ev.target instanceof Element ? ev.target : null, s = useStore.getState();
+      const act = shortcutFor(ev, {
+        enabled: document.documentElement.dataset.keys !== 'off', loggedIn: !!s.me,
+        inField: !!el?.closest(FIELD), inPopover: !!el?.closest('.pop[data-open="true"]'), onRow: !!el?.closest('.qlist > .row'),
+        onControl: !!el?.closest(CONTROL), dragging: document.body.classList.contains('is-dragging'),
+      });
+      if (!act) return;
+      if (!s.guildId && PLAYS.includes(act)) return;   // sans serveur : Espace et Maj+→/← restent au navigateur
+      const search = document.querySelector<HTMLInputElement>(SEARCH);
+      // Focus pendant keydown, curseur en fin : la lettre s'ajoute au texte du champ (prototype : value += key),
+      // au lieu de tomber à l'ancien curseur ou de remplacer une sélection restée là
+      if (act === 'type') {
+        if (search) { search.focus(); const n = search.value.length; search.setSelectionRange(n, n); }
+        return;
+      }
+      ev.preventDefault();
       // Les erreurs passent par le Héraut (usePlayer) ; pause et suivant sont optimistes
-      if (ev.code === 'Space') { ev.preventDefault(); void playerActions.togglePause(); }
-      else if (ev.key === 'n') void playerActions.skip();
-      else if (ev.key === 'p') void playerActions.restartTrack();
-      else if (ev.key === 'r') void playerActions.toggleRepeat();
+      if (act === 'search') search?.focus();
+      else if (act === 'help') document.dispatchEvent(new Event(HELP_EVENT));
+      else if (act === 'togglePause') {
+        if (!s.player.current) return;
+        void playerActions.togglePause();
+        speak(tx(s.player.paused ? 'a11y.resumed' : 'a11y.paused'));
+      } else if (act === 'skip') { kingOrders.mark(NEXT, 'key', performance.now()); void playerActions.skip(); }
+      else void playerActions.restartTrack();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -52,6 +90,9 @@ export default function Home() {
 
   return (
     <div className="page-shell">
+
+      {/* Lien d'évitement (DESIGN §7) : premier arrêt de Tab, visible au focus seulement */}
+      {booted && me && <a className="skip-link" href="#pane-queue" onClick={(e) => { e.preventDefault(); focusQueue(); }}>{tx('a11y.skipToQueue')}</a>}
 
       {/* ═══ Header ═══ (marges latérales : --page-x, header.css) */}
       <Header ready={booted}/>
