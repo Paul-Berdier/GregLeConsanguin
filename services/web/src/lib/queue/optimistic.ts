@@ -109,13 +109,20 @@ export function isSatisfied(m: Mutation, s: Snapshot): boolean {
   }
 }
 
+/** Le second ordre fixe seul l'effet du premier : deux déplacements du même titre, ou deux pauses. */
+const sameTarget = (a: Mutation, b: Mutation) =>
+  (a.kind === 'move' && b.kind === 'move' && a.key === b.key) || (a.kind === 'setPaused' && b.kind === 'setPaused');
+
 /**
  * À chaque état reçu : les mutations non accusées restent (rejouées dessus) ; une mutation accusée part dès
  * que l'état la montre, ou après ACK_GRACE_MS (on croit alors le serveur).
+ * Une mutation accusée part aussi quand une plus récente de même cible est accusée : gardée, elle serait rejouée
+ * par-dessus (« Annuler » de « Jouer ensuite », ou une reprise, sans effet jusqu'au prochain état reçu).
  */
 export function reconcile(pending: readonly Mutation[], server: Snapshot, now: number): Mutation[] {
-  return pending.filter((m) => {
+  return pending.filter((m, i) => {
     if (m.status !== 'acked') return true;
+    if (pending.some((p, j) => j > i && p.status === 'acked' && sameTarget(m, p))) return false;
     if (isSatisfied(m, server)) return false;
     return now - (m.ackedAt ?? now) < ACK_GRACE_MS;
   });
@@ -123,9 +130,7 @@ export function reconcile(pending: readonly Mutation[], server: Snapshot, now: n
 
 /** Avant l'envoi : un déplacement du même titre, ou une pause, pas encore envoyés, sont remplacés par le nouveau. */
 export function enqueueMutation(pending: readonly Mutation[], m: Mutation): Mutation[] {
-  const replaced = (p: Mutation) => p.status === 'queued' && (
-    (m.kind === 'move' && p.kind === 'move' && p.key === m.key) || (m.kind === 'setPaused' && p.kind === 'setPaused'));
-  return [...pending.filter((p) => !replaced(p)), m];
+  return [...pending.filter((p) => !(p.status === 'queued' && sameTarget(p, m))), m];
 }
 
 export interface QueueEngineOptions {

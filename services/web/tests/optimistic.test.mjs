@@ -229,3 +229,35 @@ test('moteur : reset (autre serveur) vide l’attente et ignore les réponses en
   assert.equal(engine.pending().length, 0);
   assert.equal(order(engine.view()), 'z');
 });
+
+test('moteur : « Annuler » de « Jouer ensuite », le premier déplacement accusé n’est pas rejoué par-dessus', async () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  const { engine, sent, tick } = rig(snap(q));
+  engine.dispatch({ kind: 'move', key: 'c', beforeKey: 'a' });   // jouer ensuite
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(order(engine.view()), 'c,a,b');
+  engine.dispatch({ kind: 'move', key: 'c', beforeKey: null });  // Annuler : retour en fin de file
+  assert.equal(order(engine.view()), 'a,b,c');
+  assert.equal(order(sent[1].before), 'c,a,b', 'indices calculés après le premier déplacement');
+  sent[1].resolve({ ok: true });
+  await flush();
+  assert.equal(order(engine.view()), 'a,b,c', 'à l’accusé, sans état reçu entre les deux');
+  tick(500);
+  engine.receive(snap(q));                                       // le bot a fait les deux : c est de nouveau en fin
+  assert.equal(order(engine.view()), 'a,b,c');
+  assert.equal(engine.pending().length, 0);
+});
+
+test('moteur : pause puis reprise accusées sans état reçu entre les deux, la vue suit la dernière', async () => {
+  const { engine, sent } = rig(snap([T('a')], { current: T('now') }));
+  engine.dispatch({ kind: 'setPaused', paused: true });
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(engine.view().player.paused, true);
+  engine.dispatch({ kind: 'setPaused', paused: false });
+  sent[1].resolve({ ok: true });
+  await flush();
+  assert.equal(engine.view().player.paused, false, 'la pause accusée n’est pas rejouée par-dessus la reprise');
+  assert.equal(engine.pending().length, 0);
+});
