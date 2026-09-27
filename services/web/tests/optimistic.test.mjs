@@ -1,0 +1,231 @@
+// Actions optimistes (spec §5, tech.md §3) : réducteur par clé, rapprochement, moteur à une requête en vol.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadTs } from './_loadTs.mjs';
+
+const {
+  moveIndices, applyMutation, viewOf, isSatisfied, reconcile, enqueueMutation, createQueueEngine, ACK_GRACE_MS, HOLD_MAX_MS,
+} = await loadTs('../src/lib/queue/optimistic.ts');
+
+const T = (k, duration = 200) => ({ key: k, url: `https://youtu.be/${k}`, title: k.toUpperCase(), duration });
+const snap = (queue, extra = {}) => ({
+  player: { current: null, queue, paused: false, repeat: false, position: 0, duration: 0, ...extra },
+  tickBase: { pos: 0, at: 0, dur: 0 },
+});
+const order = (s) => s.player.queue.map((t) => t.key).join(',');
+let id = 0;
+const mut = (o) => ({ id: ++id, at: 1000, status: 'sent', ...o });
+
+test('moveIndices reproduit le bot : insert(dst, pop(src))', () => {
+  const q = ['a', 'b', 'c', 'd'].map((k) => T(k));
+  assert.deepEqual(moveIndices(q, 'd', 'a'), { src: 3, dst: 0 });   // en tête
+  assert.deepEqual(moveIndices(q, 'a', null), { src: 0, dst: 3 });  // en fin
+  assert.deepEqual(moveIndices(q, 'a', 'c'), { src: 0, dst: 1 });
+  assert.equal(moveIndices(q, 'a', 'b'), null);                     // déjà à sa place
+  assert.equal(moveIndices(q, 'x', 'a'), null);                     // titre absent
+  assert.equal(moveIndices(q, 'a', 'zz'), null);                    // ancre disparue : rien, le titre garde sa place
+  const bot = (arr, mv) => { const c = [...arr]; if (mv) c.splice(mv.dst, 0, c.splice(mv.src, 1)[0]); return c.map((t) => t.key).join(','); };
+  for (const [key, before] of [['a', 'c'], ['d', 'b'], ['b', null], ['c', 'a'], ['b', 'zz']]) {
+    const mv = moveIndices(q, key, before);
+    assert.equal(bot(q, mv), order(applyMutation(snap(q), mut({ kind: 'move', key, beforeKey: before }))), `${key} avant ${before}`);
+  }
+});
+
+test('déplacer : ancre disparue, titre disparu, même place', () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  const s = snap(q);
+  assert.equal(order(applyMutation(s, mut({ kind: 'move', key: 'c', beforeKey: 'zz' }))), 'a,b,c');   // ancre partie : garde sa place
+  assert.equal(applyMutation(s, mut({ kind: 'move', key: 'zz', beforeKey: 'a' })), s);                // titre parti : rien
+  assert.equal(applyMutation(s, mut({ kind: 'move', key: 'a', beforeKey: 'b' })), s);                 // même objet
+});
+
+test('retirer, jouer maintenant, passer : conditionnels, jamais de double saut', () => {
+  const [cur, n1, n2] = ['cur', 'n1', 'n2'].map((k) => T(k, 180));
+  const s0 = snap([n1, n2], { current: cur, duration: 200 });
+  assert.equal(order(applyMutation(s0, mut({ kind: 'remove', key: 'n1' }))), 'n2');
+  const played = applyMutation(s0, mut({ kind: 'playAt', key: 'n2', fromKey: 'cur', at: 5000 }));
+  assert.equal(played.player.current.key, 'n2');
+  assert.equal(order(played), 'n1');
+  assert.deepEqual(played.tickBase, { pos: 0, at: 5000, dur: 180 });
+  assert.equal(played.player.paused, false);
+  const skipped = applyMutation(s0, mut({ kind: 'skip', fromKey: 'cur' }));
+  assert.equal(skipped.player.current.key, 'n1');
+  // le bot a déjà avancé : rejouer le saut ne saute pas une deuxième fois
+  const advanced = snap([n2], { current: n1 });
+  assert.equal(viewOf(advanced, [mut({ kind: 'skip', fromKey: 'cur' })]).player.current.key, 'n1');
+  // plus rien après : la scène se vide
+  const last = applyMutation(snap([], { current: cur }), mut({ kind: 'skip', fromKey: 'cur' }));
+  assert.equal(last.player.current, null);
+  assert.equal(last.player.paused, true);
+});
+
+test('pause : l’horloge s’arrête à l’instant du clic, reprend de là', () => {
+  const cur = T('cur', 100);
+  const s0 = { player: { ...snap([], { current: cur }).player, paused: false }, tickBase: { pos: 10, at: 0, dur: 100 } };
+  const p = applyMutation(s0, { id: 1, at: 5000, status: 'queued', kind: 'setPaused', paused: true });
+  assert.equal(p.player.paused, true);
+  assert.deepEqual(p.tickBase, { pos: 15, at: 5000, dur: 100 });
+  const r = applyMutation(p, { id: 2, at: 9000, status: 'queued', kind: 'setPaused', paused: false });
+  assert.deepEqual(r.tickBase, { pos: 15, at: 9000, dur: 100 });
+  assert.equal(applyMutation(snap([]), { id: 3, at: 0, status: 'queued', kind: 'setPaused', paused: true }).player.paused, false, 'rien en lecture : rien à mettre en pause');
+});
+
+test('rapprochement : accusée et visible part, non accusée reste, accusée trop vieille part', () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const acked = { ...mut({ kind: 'remove', key: 'a' }), status: 'acked', ackedAt: 1000 };
+  const sent = mut({ kind: 'remove', key: 'b' });
+  assert.deepEqual(reconcile([acked, sent], snap([q[1]]), 1200).map((m) => m.id), [sent.id]);
+  const notYet = { ...mut({ kind: 'move', key: 'b', beforeKey: 'a' }), status: 'acked', ackedAt: 1000 };
+  assert.equal(reconcile([notYet], snap(q), 1000 + ACK_GRACE_MS - 1).length, 1);
+  assert.equal(reconcile([notYet], snap(q), 1000 + ACK_GRACE_MS).length, 0);
+  assert.ok(isSatisfied(notYet, snap([q[1], q[0]])));
+});
+
+test('regroupement : deux déplacements du même titre non envoyés, deux pauses : seul le dernier reste', () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  let p = enqueueMutation([], { ...mut({ kind: 'move', key: 'c', beforeKey: 'b' }), status: 'queued' });
+  p = enqueueMutation(p, { ...mut({ kind: 'move', key: 'c', beforeKey: 'a' }), status: 'queued' });
+  assert.equal(p.length, 1);
+  assert.equal(order(viewOf(snap(q), p)), 'c,a,b');
+  p = enqueueMutation(p, { ...mut({ kind: 'setPaused', paused: true }), status: 'queued' });
+  p = enqueueMutation(p, { ...mut({ kind: 'setPaused', paused: false }), status: 'queued' });
+  assert.deepEqual(p.map((m) => m.kind), ['move', 'setPaused']);
+});
+
+// ── Moteur ──
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject };
+}
+function rig(initial, { holdMaxMs } = {}) {
+  let now = 0;
+  const sent = [];
+  const views = [];
+  const refused = [];
+  const engine = createQueueEngine({
+    initial,
+    now: () => now,
+    holdMaxMs,
+    send: (m, before) => {
+      if (m.kind === 'remove' && before.player.queue.every((t) => t.key !== m.key)) return null;
+      const d = deferred();
+      sent.push({ m, before, ...d });
+      return d.promise;
+    },
+    onView: (v) => views.push(v),
+    onRefused: (m, e) => refused.push({ m, e }),
+  });
+  return { engine, sent, views, refused, tick: (ms) => { now += ms; } };
+}
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test('moteur : la vue change tout de suite ; sans ordre en attente, la vue est l’état reçu', async () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q));
+  assert.equal(engine.view(), engine.server());
+  const done = engine.dispatch({ kind: 'remove', key: 'b' });
+  assert.equal(order(engine.view()), 'a,c');
+  assert.equal(sent.length, 1);
+  assert.equal(order(sent[0].before), 'a,b,c', 'indices calculés sur ce que le bot voit');
+  sent[0].resolve({ ok: true });
+  assert.equal(await done, true);
+  engine.receive(snap([q[0], q[2]]));
+  assert.equal(engine.pending().length, 0);
+  assert.equal(engine.view(), engine.server());
+});
+
+test('moteur : refus de l’API = retour en arrière, onRefused appelé, promesse à false', async () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  const { engine, sent, refused } = rig(snap(q));
+  const done = engine.dispatch({ kind: 'move', key: 'c', beforeKey: 'a' });
+  assert.equal(order(engine.view()), 'c,a,b');
+  sent[0].reject(Object.assign(new Error('403'), { status: 403, payload: { error: 'PRIORITY_FORBIDDEN' } }));
+  assert.equal(await done, false);
+  assert.equal(order(engine.view()), 'a,b,c');
+  assert.equal(refused.length, 1);
+  assert.equal(refused[0].m.kind, 'move');
+});
+
+test('moteur : une requête à la fois ; la suivante voit l’effet de la précédente', async () => {
+  const q = ['a', 'b', 'c', 'd'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q));
+  engine.dispatch({ kind: 'remove', key: 'b' });
+  engine.dispatch({ kind: 'remove', key: 'd' });
+  assert.equal(order(engine.view()), 'a,c');
+  assert.equal(sent.length, 1, 'la deuxième attend');
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(sent.length, 2);
+  assert.equal(order(sent[1].before), 'a,c,d', 'index de d calculé après le retrait de b');
+});
+
+test('moteur : un état reçu pendant l’action en vol attend sa fin (pas de clignotement)', async () => {
+  const q = ['a', 'b', 'c'].map((k) => T(k));
+  const { engine, sent, views } = rig(snap(q));
+  engine.dispatch({ kind: 'move', key: 'c', beforeKey: 'a' });
+  const n = views.length;
+  engine.receive(snap([...q, T('x')]));        // quelqu'un ajoute x ; le bot n'a pas encore déplacé c
+  assert.equal(views.length, n, 'rien ne bouge pendant l’action');
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(order(engine.view()), 'c,a,b,x', 'l’état gardé est appliqué, le déplacement rejoué dessus');
+});
+
+test('moteur : au-delà de HOLD_MAX_MS, les états reçus passent (bot lent)', () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const { engine, tick } = rig(snap(q));
+  engine.dispatch({ kind: 'remove', key: 'a' });
+  tick(HOLD_MAX_MS);
+  engine.receive(snap([...q, T('x')]));
+  assert.equal(order(engine.view()), 'b,x');
+});
+
+test('moteur : glisser = états gardés jusqu’au dépôt', () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const { engine } = rig(snap(q));
+  engine.hold();
+  engine.receive(snap([...q, T('x')]));
+  assert.equal(order(engine.view()), 'a,b');
+  engine.release();
+  assert.equal(order(engine.view()), 'a,b,x');
+});
+
+test('moteur : latest() rend l’état gardé en tampon, base du tick suivant (rien ne se perd)', () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const { engine } = rig(snap(q));
+  assert.equal(engine.latest(), engine.server(), 'rien en tampon : le dernier état appliqué');
+  engine.hold();
+  const withX = snap([...q, T('x')]);
+  engine.receive(withX);                        // un courtisan ajoute x pendant le glisser : gardé
+  assert.equal(engine.latest(), withX, 'un tick calculé sur server() remplacerait cet état et effacerait x');
+  assert.equal(order(engine.server()), 'a,b');
+  engine.receive({ ...withX, tickBase: { pos: 5, at: 1000, dur: 200 } });   // le tick, calculé sur latest()
+  engine.release();
+  assert.equal(order(engine.view()), 'a,b,x');
+  assert.equal(engine.view().tickBase.pos, 5);
+  assert.equal(engine.latest(), engine.server());
+});
+
+test('moteur : ordre devenu sans effet = pas de requête, promesse à true', async () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q));
+  engine.hold();
+  engine.receive(snap([q[0]]));                // b retiré ailleurs, pas encore affiché
+  engine.release();
+  assert.equal(await engine.dispatch({ kind: 'remove', key: 'b' }), true);
+  assert.equal(sent.length, 0);
+});
+
+test('moteur : reset (autre serveur) vide l’attente et ignore les réponses en retard', async () => {
+  const q = ['a', 'b'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q));
+  const done = engine.dispatch({ kind: 'remove', key: 'a' });
+  engine.reset(snap([T('z')]));
+  assert.equal(await done, false);
+  assert.equal(order(engine.view()), 'z');
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(engine.pending().length, 0);
+  assert.equal(order(engine.view()), 'z');
+});
