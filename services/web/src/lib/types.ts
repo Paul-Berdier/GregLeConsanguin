@@ -33,11 +33,15 @@ export interface PlayerState {
   duration: number;
 }
 
-/** Ancre de l'horloge : position `pos` (s) à l'instant `at` (performance.now(), ms), durée `dur` (s). */
+/**
+ * Ancre de l'horloge : position `pos` (s) à l'instant `at` (performance.now(), ms), durée `dur` (s).
+ * `frozen` : le son n'avance pas même hors pause (titre en chargement, flux du bot bloqué : synchro son/vidéo).
+ */
 export interface TickBase {
   pos: number;
   at: number;
   dur: number;
+  frozen?: boolean;
 }
 
 /** Un état complet du lecteur : ce que l'API ou le socket envoient, ou ce que la page affiche. */

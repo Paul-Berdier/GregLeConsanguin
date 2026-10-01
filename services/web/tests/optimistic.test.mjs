@@ -47,7 +47,7 @@ test('retirer, jouer maintenant, passer : conditionnels, jamais de double saut',
   const played = applyMutation(s0, mut({ kind: 'playAt', key: 'n2', fromKey: 'cur', at: 5000 }));
   assert.equal(played.player.current.key, 'n2');
   assert.equal(order(played), 'n1');
-  assert.deepEqual(played.tickBase, { pos: 0, at: 5000, dur: 180 });
+  assert.deepEqual(played.tickBase, { pos: 0, at: 5000, dur: 180, frozen: true }, 'figée jusqu’à ce que le bot le joue');
   assert.equal(played.player.paused, false);
   const skipped = applyMutation(s0, mut({ kind: 'skip', fromKey: 'cur' }));
   assert.equal(skipped.player.current.key, 'n1');
@@ -361,4 +361,13 @@ test('moteur : pause puis reprise accusées sans état reçu entre les deux, la 
   await flush();
   assert.equal(engine.view().player.paused, false, 'la pause accusée n’est pas rejouée par-dessus la reprise');
   assert.equal(engine.pending().length, 0);
+});
+
+test('synchro son/vidéo : le saut optimiste fige l’horloge à 0, une pause ne la fait pas avancer', () => {
+  const cur = T('cur', 100), n1 = T('n1', 180);
+  const s0 = { player: { ...snap([n1], { current: cur }).player, paused: false }, tickBase: { pos: 10, at: 0, dur: 100 } };
+  const skipped = applyMutation(s0, mut({ kind: 'skip', fromKey: 'cur', at: 5000 }));
+  assert.equal(skipped.player.paused, false, 'pas en pause : seulement en attente du bot');
+  const p = applyMutation(skipped, { id: 9, at: 9000, status: 'queued', kind: 'setPaused', paused: true });
+  assert.equal(p.tickBase.pos, 0, 'figée : 4 s plus tard, toujours 0');
 });

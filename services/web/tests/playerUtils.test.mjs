@@ -346,3 +346,21 @@ test('guildJoinErrorAction : erreur d’un autre serveur (ou aucun serveur affic
   // guild_id numérique côté API : comparé en chaîne
   assert.equal(guildJoinErrorAction({ guild_id: 42, error: 'TIMEOUT' }, '42').action, 'retry');
 });
+
+// ── Synchro son/vidéo : horloge de référence dans l'instantané ──
+const { withClock } = await loadTs('../src/lib/playerUtils.ts');
+
+test('livePosition : horloge figée (chargement, blocage) même hors pause', () => {
+  assert.equal(livePosition({ pos: 12, at: 1000, dur: 200, frozen: true }, false, 61000), 12);
+  assert.equal(livePosition({ pos: 12, at: 1000, dur: 200, frozen: false }, false, 2000), 13);
+});
+
+test('withClock : position et ancre lues sur l’horloge de référence, durée gardée ; null : instantané tel quel', () => {
+  const snap = { player: { current: null, queue: [], paused: false, repeat: false, position: 83, duration: 200 }, tickBase: { pos: 83, at: 10, dur: 200 } };
+  assert.equal(withClock(snap, null), snap);
+  const out = withClock(snap, { pos: 83.46, at: 20, frozen: false });
+  assert.deepEqual(out.tickBase, { pos: 83.46, at: 20, dur: 200, frozen: false });
+  assert.equal(out.player.position, 83.46);
+  assert.equal(out.player.duration, 200);
+  assert.equal(withClock(snap, { pos: -1, at: 20, frozen: true }).tickBase.pos, 0);
+});

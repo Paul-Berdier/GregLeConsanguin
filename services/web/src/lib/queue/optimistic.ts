@@ -32,8 +32,8 @@ const idx = (q: Track[], key: string | null) => (key == null ? -1 : q.findIndex(
 
 // Position vivante de l'horloge (même calcul que livePosition, playerUtils.ts).
 function live(s: Snapshot, now: number): number {
-  const { pos, at, dur } = s.tickBase;
-  const p = pos + (s.player.paused ? 0 : (now - at) / 1000);
+  const { pos, at, dur, frozen } = s.tickBase;
+  const p = pos + (s.player.paused || frozen ? 0 : (now - at) / 1000);
   return dur > 0 ? Math.min(Math.max(p, 0), dur) : Math.max(0, p);
 }
 
@@ -47,12 +47,13 @@ export function moveIndices(q: Track[], key: string, beforeKey: string | null): 
   return b === src ? null : { src, dst: b };
 }
 
-// Le titre `next` prend la scène : horloge à zéro, lecture.
+// Le titre `next` prend la scène : horloge à zéro, figée jusqu'à ce que le bot le joue vraiment (synchro son/vidéo :
+// plus de position qui court dès le clic, la vidéo attend sous le poster).
 function crown(s: Snapshot, next: Track | null, queue: Track[], at: number): Snapshot {
   const dur = next?.duration || 0;
   return {
     player: { ...s.player, current: next, queue, paused: !next, position: 0, duration: dur },
-    tickBase: { pos: 0, at, dur },
+    tickBase: { pos: 0, at, dur, frozen: true },
   };
 }
 

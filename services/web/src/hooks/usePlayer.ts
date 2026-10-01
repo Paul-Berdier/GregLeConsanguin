@@ -2,12 +2,16 @@
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, resetSocket } from '@/lib/socket';
+import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing, startTimeSync, resetSocket } from '@/lib/socket';
 import { api, onAuthLost } from '@/lib/api';
 import {
   looksLikeUrl, errorCode, pickDefaultGuild, createSeqGate, livePosition, guildJoinErrorAction,
-  snapshotFromPayload, emptySnapshot, addedCopy, stateKind,
+  snapshotFromPayload, emptySnapshot, addedCopy, stateKind, withClock,
 } from '@/lib/playerUtils';
+import type { ClockReading } from '@/lib/playerUtils';
+import { refClock, serverNow } from '@/lib/sync/live';
+import { NO_CLOCK, clockSampleOf, clockViewOf } from '@/lib/sync/refclock';
+import type { ClockView } from '@/lib/sync/refclock';
 import { createQueueEngine, createStateOrder, moveIndices, refusalOf, viewOf } from '@/lib/queue/optimistic';
 import type { Mutation } from '@/lib/queue/optimistic';
 import { addedKeys, afterDone, boundUndo, createTurns, restorePlan } from '@/lib/queue/undo';
@@ -49,6 +53,8 @@ interface GregStore {
   /** Vue affichée : dernier état reçu + ordres du Roi pas encore confirmés (lib/queue/optimistic.ts). */
   player: PlayerState;
   tickBase: TickBase;
+  /** Horloge de référence du son (synchro son/vidéo) : play_id, statut, lien du titre joué. Jamais retenue en tampon. */
+  clock: ClockView;
   historyItems: any[];
 
   setMe: (me: UserInfo | null) => void;
@@ -67,6 +73,7 @@ export const useStore = create<GregStore>((set) => ({
   socketReady: false,
   player: EMPTY.player,
   tickBase: EMPTY.tickBase,
+  clock: NO_CLOCK,
   historyItems: [],
 
   setMe: (me) => set({ me }),
@@ -135,12 +142,31 @@ const _order = createStateOrder();
  */
 let _queueOf = '';
 
+/**
+ * Horloge de référence du son nourrie par chaque état reçu, AVANT le tampon des actions (la vidéo n'attend pas une
+ * action en vol). `url` : lien du titre d'un état complet, undefined pour un tick. Rend sa lecture à `now`.
+ */
+function feedClock(payload: any, now: number, url: string | null | undefined): ClockReading | null {
+  const sNow = serverNow(now);
+  const sample = clockSampleOf(payload, sNow);
+  if (sample && refClock.ingest(sample) !== 'stale') {
+    const prev = useStore.getState().clock;
+    const next = clockViewOf(prev, refClock.anchor(), url);
+    if (next !== prev) useStore.setState({ clock: next });
+  }
+  const a = refClock.anchor();
+  return a ? { pos: (refClock.positionAt(sNow) ?? 0) / 1000, at: now, frozen: a.status !== 'playing' } : null;
+}
+
 /** État reçu (REST ou socket) : clés, partage structurel, tampon pendant une action ou un glisser. */
 function receive(payload: any, from: 'socket' | 'rest' = 'socket'): boolean {
   const kind = stateKind(payload, useStore.getState().guildId);
   if (from === 'socket' && kind === 'other') return false;   // l'ancien serveur, sa room pas encore quittée : ni daté ni affiché
-  const snap = snapshotFromPayload(payload, engine.latest(), performance.now());   // l'état gardé compris : un tick ne l'efface pas
-  if (!snap) return false;
+  const now = performance.now();
+  const raw = snapshotFromPayload(payload, engine.latest(), performance.now());   // l'état gardé compris : un tick ne l'efface pas
+  if (!raw) return false;
+  // la barre et les minutages lisent l'horloge de référence (positions au ms près, sans transport ni secondes entières)
+  const snap = withClock(raw, feedClock(payload, now, kind === 'full' ? raw.player.current?.url ?? null : undefined));
   if (from === 'socket' && kind === 'full') _order.socket();
   engine.receive(snap);
   if (kind === 'full') _queueOf = useStore.getState().guildId;
@@ -150,6 +176,8 @@ function receive(payload: any, from: 'socket' | 'rest' = 'socket'): boolean {
 /** Autre serveur, déconnexion : vue vide, ordres en attente oubliés, « Annuler » de l'ancienne vue désarmés. */
 function resetPlayer() {
   _queueOf = '';
+  refClock.reset();
+  useStore.setState({ clock: NO_CLOCK });
   engine.reset(emptySnapshot(performance.now()));
   herald.disarm();
 }
@@ -236,6 +264,7 @@ export function usePlayerInit() {
     socket.on('playlist_update', onPlaylistUpdate);
     socket.on('guild_join_error', onGuildJoinError);
     startPing();
+    startTimeSync();
 
     return () => {
       socket.off('connect', onConnect);

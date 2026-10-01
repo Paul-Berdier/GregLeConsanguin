@@ -301,3 +301,19 @@ test('usePlayer : une réponse REST partie avant le dernier état complet du soc
   assert.ok(r.indexOf('const mark = _order.mark();') >= 0 && r.indexOf('const mark = _order.mark();') < r.indexOf('await api.getPlaylistState(gid)'), 'marque prise au départ');
   assert.match(r, /if \(_order\.fresh\(mark\) && !receive\(data, 'rest'\)\) throw/);
 });
+
+test('synchro son/vidéo : chaque état reçu nourrit l’horloge de référence avant le tampon ; time_sync à la connexion', () => {
+  const src = read('src/hooks/usePlayer.ts');
+  const recv = body(src, 'function receive(');
+  assert.ok(recv.includes('withClock(raw, feedClock(payload, now,'), 'la barre lit l’horloge de référence');
+  assert.ok(recv.indexOf('feedClock(') < recv.indexOf('engine.receive('), 'avant le tampon des actions');
+  assert.ok(body(src, 'function feedClock(').includes('refClock.ingest('));
+  assert.ok(body(src, 'function resetPlayer(').includes('refClock.reset();'), 'autre serveur : horloge oubliée');
+  assert.ok(src.includes('startTimeSync();'));
+  const sock = read('src/lib/socket.ts');
+  assert.ok(sock.includes(".emit('time_sync', { t0 }"), 'accusé {t0, ts}');
+  assert.ok(sock.includes('if (timeSyncStale && sampleOf(t0, ts, t1)) { timeSyncStale = false; timeSync.reset(); }'),
+    'reconnexion : mesures remplacées par la première nouvelle, jamais vidées avant');
+  assert.ok(!body(sock, 'export function startTimeSync(').includes('timeSync.reset()'));
+  assert.ok(sock.includes('TIME_SYNC_BURST = 5, TIME_SYNC_GAP_MS = 1000, TIME_SYNC_EVERY_MS = 30_000'));
+});

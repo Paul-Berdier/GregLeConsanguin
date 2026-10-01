@@ -189,6 +189,19 @@ export function snapshotFromPayload(payload: any, prev: Snapshot, now: number): 
   return { player, tickBase: { pos: player.position, at: now, dur: player.duration } };
 }
 
+/** Lecture de l'horloge de référence du son (lib/sync/refclock.ts) à la réception d'un état : `pos` (s) à `at` (performance.now()). */
+export type ClockReading = { pos: number; at: number; frozen: boolean };
+
+/**
+ * Instantané calé sur l'horloge de référence (synchro son/vidéo) : la barre et les minutages la lisent, sans les
+ * secondes entières ni le temps de transport du bot. null (pas encore d'horloge) : l'instantané tel quel.
+ */
+export function withClock(snap: Snapshot, r: ClockReading | null): Snapshot {
+  if (!r) return snap;
+  const pos = Math.max(0, r.pos);
+  return { player: { ...snap.player, position: pos }, tickBase: { pos, at: r.at, dur: snap.tickBase.dur, frozen: r.frozen } };
+}
+
 /** État vide (déconnecté, changement de serveur). */
 export function emptySnapshot(now = 0): Snapshot {
   return {
@@ -394,9 +407,9 @@ export function enqueueSuccessText(res: any): string {
 }
 
 // ── Lecture ──
-/** Position courante (s) déduite de tickBase, bornée à la durée (horloge de la scène, useStageClock, et synchro vidéo). */
-export function livePosition(tb: { pos: number; at: number; dur: number }, paused: boolean, now: number): number {
-  const pos = (tb.pos || 0) + (paused ? 0 : (now - tb.at) / 1000);
+/** Position courante (s) déduite de tickBase, bornée à la durée (horloge de la scène, useStageClock, file). Figée si `frozen`. */
+export function livePosition(tb: { pos: number; at: number; dur: number; frozen?: boolean }, paused: boolean, now: number): number {
+  const pos = (tb.pos || 0) + (paused || tb.frozen ? 0 : (now - tb.at) / 1000);
   return tb.dur > 0 ? Math.min(Math.max(pos, 0), tb.dur) : Math.max(0, pos);
 }
 
