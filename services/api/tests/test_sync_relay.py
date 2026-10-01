@@ -100,3 +100,29 @@ def test_rest_failure_is_not_stamped(logged_client, fake_send):
     fake_send.result = {"ok": False, "error": "TIMEOUT"}
     body = logged_client.get("/api/v1/player/state?guild_id=42").get_json()
     assert body["stale"] is True and "relay_at_ms" not in body
+
+
+# ── A3 : time_sync ──
+
+def test_time_sync_acks_with_the_api_clock(app):
+    c = socketio.test_client(app)
+    try:
+        t0 = time.time() * 1000
+        ack = c.emit("time_sync", {"t0": 1234.5}, callback=True)
+        t1 = time.time() * 1000
+        assert ack["t0"] == 1234.5
+        assert isinstance(ack["ts"], float) and t0 <= ack["ts"] <= t1
+    finally:
+        c.disconnect()
+
+
+@pytest.mark.parametrize("payload", [{"t0": "abc"}, {"t0": None}, {}, "str", [1, 2], 5, None])
+def test_time_sync_tolerates_bad_input(app, payload):
+    c = socketio.test_client(app)
+    try:
+        ack = c.emit("time_sync", callback=True) if payload is None else c.emit("time_sync", payload, callback=True)
+        assert ack["t0"] == (payload.get("t0") if isinstance(payload, dict) else None), "t0 renvoyé tel quel"
+        assert isinstance(ack["ts"], float)
+        assert c.is_connected()
+    finally:
+        c.disconnect()

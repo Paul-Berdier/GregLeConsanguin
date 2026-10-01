@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Optional
 
 from flask import request as flask_request
@@ -146,6 +147,15 @@ def on_overlay_ping(data=None):
     """Keep-alive ping."""
     data = _payload(data)
     emit("overlay_pong", {"t": data.get("t"), "sid": flask_request.sid})
+
+
+@socketio.on("time_sync")
+def on_time_sync(data=None):
+    """Synchro d'horloge du site (spec synchro §3) : {t0} → accusé {t0, ts}, ts = horloge murale de l'API (ms).
+
+    Aucune donnée sensible, aucune autorisation au-delà du socket ; t0 renvoyé tel quel, même non numérique.
+    """
+    return {"t0": _payload(data).get("t0"), "ts": time.time() * 1000}
 
 
 # ── State request ──
