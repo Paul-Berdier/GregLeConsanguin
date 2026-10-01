@@ -97,3 +97,83 @@ async def test_first_frame_logs_sync_and_emits(harness, caplog):
     await h.wait_for(lambda: len(h.bot.emits) > before, msg="pas d'état à la 1re trame")
     sync = [r.getMessage() for r in caplog.records if "[SYNC]" in r.getMessage()]
     assert len(sync) == 1 and "mode=direct" in sync[0], sync
+
+
+# ─────────────────────────── Bloc clock de get_state (B3) ───────────────────────────
+
+
+def _clock(h):
+    st = h.svc.get_state(h.gid)
+    return st, st["clock"]
+
+
+async def test_clock_status_follows_the_audio(harness):
+    """loading → playing → paused → playing → stalled → playing (spec §7)."""
+    h = harness
+    vc = h.connect_bot()
+    st, c = _clock(h)
+    assert c["status"] == "idle" and c["play_id"] is None and c["position_ms"] is None
+    h.ext.behaviour[A["url"]] = {"delay": 0.3}
+    h.seed_queue([A])
+    task = asyncio.create_task(h.svc.play_next(h.guild))
+    await h.wait_for(lambda: h.ext.calls, msg="extraction jamais lancée")
+    st, c = _clock(h)
+    assert st["current"]["url"] == A["url"]
+    assert (c["status"], c["position_ms"], st["position"], st["progress"]["elapsed"]) == ("loading", None, 0, 0)
+    await task
+    src = await _playing(h, vc, A["url"])
+    st, c = _clock(h)
+    assert c["status"] == "loading", "vc.play fait, aucune trame envoyée"
+    assert isinstance(c["play_id"], str) and len(c["play_id"]) == 8
+    int(c["play_id"], 16)
+    for _ in range(60):
+        src.read()  # 60 trames : 1,2 s
+    st, c = _clock(h)
+    assert (c["status"], c["position_ms"], st["position"], st["progress"]["elapsed"]) == ("playing", 1200.0, 1, 1)
+    assert abs(c["sampled_at_ms"] - time.time() * 1000) < 1000
+    assert await h.svc.pause(h.gid)
+    await asyncio.sleep(0.3)  # pause plus longue que le seuil de blocage
+    st, c = _clock(h)
+    assert (c["status"], c["position_ms"]) == ("paused", 1200.0)
+    assert await h.svc.resume(h.gid)
+    assert _clock(h)[1]["status"] == "playing", "la pause n'est pas un blocage"
+    src.last_read_at -= 1.0  # plus rien lu depuis 1 s : flux bloqué
+    assert _clock(h)[1]["status"] == "stalled"
+    src.read()
+    st, c = _clock(h)
+    assert (c["status"], c["position_ms"]) == ("playing", 1220.0)
+
+
+async def test_play_id_changes_on_restart(harness):
+    h = harness
+    vc = h.connect_bot()
+    h.seed_queue([A])
+    await h.svc.play_next(h.guild)
+    first = await _playing(h, vc, A["url"])
+    first.read()
+    pid = _clock(h)[1]["play_id"]
+    assert await h.svc.restart(h.gid)
+    again = await _playing(h, vc, A["url"], n=2)
+    again.read()
+    c = _clock(h)[1]
+    assert c["status"] == "playing" and c["play_id"] != pid
+    assert c["position_ms"] == 20.0, "repart de zéro"
+
+
+async def test_loading_window_does_not_inherit_the_previous_position(harness):
+    h = harness
+    vc = h.connect_bot()
+    h.ext.behaviour[B["url"]] = {"delay": 0.5}
+    h.seed_queue([A, B])
+    await h.svc.play_next(h.guild)
+    src = await _playing(h, vc, A["url"])
+    for _ in range(150):
+        src.read()  # 3 s de A
+    assert h.svc.get_state(h.gid)["position"] == 3
+    emits = len(h.bot.emits)
+    await h.svc.skip(h.gid)
+    await h.wait_for(lambda: (h.svc.now_playing.get(h.gid) or {}).get("url") == B["url"], msg="B jamais choisi")
+    st, c = _clock(h)
+    assert st["current"]["url"] == B["url"]
+    assert (c["status"], c["play_id"], c["position_ms"], st["position"]) == ("loading", None, None, 0)
+    assert len(h.bot.emits) > emits, "l'état « loading » part tout de suite"

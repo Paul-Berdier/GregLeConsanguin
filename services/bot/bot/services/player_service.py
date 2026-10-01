@@ -39,6 +39,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -295,6 +296,8 @@ class PlayerService:
         self.current_source: Dict[int, Any] = {}
         # Synchro son/vidéo : instant du choix du titre (log [SYNC] : délai jusqu'à la 1re trame).
         self._chosen_at: Dict[int, float] = {}
+        # play_id : 8 hex, nouveau à chaque vc.play (titre, « Depuis le début », boucle, reprise après coupure).
+        self.play_id: Dict[int, str] = {}
         self._progress_task: Dict[int, asyncio.Task] = {}
         # Verrou de LECTURE (play_next, tenu pendant les extractions longues)
         self._locks: Dict[int, asyncio.Lock] = {}
@@ -410,7 +413,7 @@ class PlayerService:
         self.is_playing[gid] = False
         self._explicit_stops.discard(gid)
         for d in (self.current_song, self.play_start, self.paused_since,
-                  self.paused_total, self.current_meta, self.now_playing):
+                  self.paused_total, self.current_meta, self.now_playing, self.play_id):
             d.pop(gid, None)
 
     def _emit(self, gid: int, payload: dict = None):
@@ -551,20 +554,34 @@ class PlayerService:
 
     # ─── State ───
 
+    def _clock(self, gid: int, vc) -> dict:
+        """Bloc `clock` (spec synchro §3) : position réellement lue par discord.py, horodatée (epoch ms du bot)."""
+        sampled_at_ms = int(time.time() * 1000)
+        pid = self.play_id.get(gid)
+        src = self.current_source.get(gid)
+        pos: Optional[float] = None
+        if not (self.now_playing.get(gid) or self.current_song.get(gid)):
+            status = "idle"
+        elif pid is None or not isinstance(src, CountingSource) or src.frames == 0:
+            status = "loading"   # titre choisi, aucune trame encore envoyée
+        else:
+            pos = src.position_ms()
+            if vc is not None and vc.is_paused():
+                status = "paused"
+            elif src.is_stalled():
+                status = "stalled"
+            else:
+                status = "playing"
+        return {"play_id": pid, "status": status, "position_ms": pos, "sampled_at_ms": sampled_at_ms}
+
     def get_state(self, guild_id: int) -> dict:
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
         vc = g.voice_client if g else None
         is_paused = bool(vc and vc.is_paused())
 
-        start = self.play_start.get(gid)
-        p_since = self.paused_since.get(gid)
-        p_total = self.paused_total.get(gid, 0.0)
-
-        elapsed = 0
-        if start:
-            base = p_since or time.monotonic()
-            elapsed = max(0, int(base - start - p_total))
+        clock = self._clock(gid, vc)
+        elapsed = int(clock["position_ms"] // 1000) if clock["position_ms"] else 0
 
         meta = self.current_meta.get(gid, {})
         duration = meta.get("duration")
@@ -619,6 +636,7 @@ class PlayerService:
             "repeat_all": bool(self.repeat_all.get(gid, False)),
             "requested_by_user": requested_by,
             "queue_users": queue_users,
+            "clock": clock,
         }
 
     # ─── Enqueue ───
@@ -913,6 +931,12 @@ class PlayerService:
             dur = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}
             self._chosen_at[gid] = time.monotonic()
+            # Fenêtre de chargement : clock « loading », plus aucune position héritée du titre précédent.
+            self.play_id.pop(gid, None)
+            self.play_start.pop(gid, None)
+            self.paused_since.pop(gid, None)
+            self.paused_total[gid] = 0.0
+            self._emit(gid)
 
             extractor = get_extractor(url)
             if not extractor:
@@ -1102,6 +1126,8 @@ class PlayerService:
                 logger.error("Relance après fin de piste impossible (guild %s): %s", gid, e)
 
         # play_start AVANT vc.play : un _after immédiat ne doit pas lire l'ancien départ.
+        # (Après la pré-lecture de play_next : il coïncide avec la 1re trame.)
+        self.play_id[gid] = secrets.token_hex(4)
         self.play_start[gid] = time.monotonic()
         self.paused_total[gid] = 0.0
         self.paused_since.pop(gid, None)
@@ -1321,6 +1347,9 @@ class PlayerService:
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and vc.is_paused():
+            src = self.current_source.get(gid)
+            if isinstance(src, CountingSource):
+                src.note_resume()  # AVANT vc.resume : le thread audio relit aussitôt, la pause n'est pas un blocage
             vc.resume()
             ps = self.paused_since.pop(gid, None)
             if ps:
