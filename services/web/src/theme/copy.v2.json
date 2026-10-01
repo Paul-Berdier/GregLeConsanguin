@@ -1,0 +1,1329 @@
+{
+  "_meta": {
+    "name": "Greg le Consanguin, deck de textes v2 : Greg valet du Roi",
+    "version": 2,
+    "locale": "fr-FR",
+    "persona": "research/persona-v2.md",
+    "builtBy": "research/copy_v2_build.py (ne pas éditer ce JSON à la main : modifier DECK puis relancer)",
+    "supersedes": "research/greg-copy.fr.ts (v1 : Greg roi déchu). Les codes d'erreur et le découpage restent compatibles.",
+    "shape": {
+      "message": "{ text, quips?, kind?: ok|info|warn|err, action? } ; text = le fait (lu par aria-live), quips = répliques de Greg (jamais dans un aria-label)",
+      "plural": "{ zero?, one, other } ; n = 0 → zero s'il existe, sinon one ; n = 1 → one ; n ≥ 2 → other",
+      "ref": "{ ref: 'section.cle' } = même message qu'ailleurs",
+      "null": "text null = réplique seule, sans fait (bulle à côté du portrait)"
+    },
+    "helpers": {
+      "fill": "s.replace(/\\{(\\w+)\\}/g, (m, k) => vars[k] ?? m)",
+      "address": "fusionner address.king.options[réglage] dans vars (sire, theKing, ofTheKing, REX, REGIS) avant fill",
+      "quip": "tirage au hasard, jamais deux fois de suite la même pour une clé ; aucune si le réglage « Répliques de Greg » est coupé"
+    },
+    "typography": "Déjà appliquée : ’ … U+202F avant ; ! ? et U+00A0 avant : et dans « ». Ne pas « nettoyer » ces espaces.",
+    "tokens": {
+      "sire": "Vocatif pour le Roi (celui qui regarde l'écran) : « Sire » | « Madame » | « Majesté ». Toujours en apostrophe, jamais sujet.",
+      "theKing": "« le Roi » | « la Reine » | « Sa Majesté »",
+      "ofTheKing": "« du Roi » | « de la Reine » | « de Sa Majesté »",
+      "REX": "« REX » | « REGINA » | « REX » (cartouche latin)",
+      "REGIS": "« REGIS » | « REGINÆ » | « REGIS » (génitif latin : du Roi)",
+      "yoElRey": "Formule de signature espagnole au-dessus du nom : « Yo el Rey » | « Yo la Reina » | « Yo el Rey »",
+      "kingName": "Pseudo Discord du Roi (l'utilisateur connecté)",
+      "kingInitial": "Initiale du Roi pour le sceau : 1re lettre A-Z du pseudo après suppression des accents ; repli « R »",
+      "KING_LAT": "Pseudo du Roi en capitales latines : majuscules, U→V, J→I, accents retirés, espaces → « · », hors A-Z retiré ; si vide, retirer le segment",
+      "name": "Pseudo d'un autre membre du serveur (un courtisan)",
+      "title": "Titre du morceau (déjà nettoyé)",
+      "artist": "Artiste",
+      "n": "Nombre (titres ajoutés, écoutes…)",
+      "m": "Nombre total (playlist d'origine)",
+      "k": "Nombre de vos titres dans la file",
+      "cap": "Quota maximum",
+      "dur": "Durée formatée (« 47 min », « 1 h 05 »)",
+      "q": "Texte tapé dans la recherche",
+      "guild": "Nom du serveur Discord",
+      "pos": "Position dans la file (1 = prochain)",
+      "total": "Nombre de titres dans la file",
+      "ago": "Moment relatif (« il y a 3 h »)",
+      "cur": "Temps écoulé (« 1 min 32 »)",
+      "length": "Durée totale (« 3 min 45 »)",
+      "value": "Valeur formatée (« +1,5 s » : virgule décimale, signe moins U+2212)",
+      "rank": "Libellé de rang (court.ranks.*.label)",
+      "color": "Nom de la couleur du blason"
+    },
+    "stats": {
+      "strings": 676,
+      "quips": 162,
+      "grumble": 30,
+      "errorCodes": 31
+    },
+    "migration": {
+      "cour QUIPS": {
+        "skip": "toast.skipped.quips",
+        "added": "toast.added.quips",
+        "playlist": "toast.playlistAdded.quips",
+        "pause": "toast.paused.quips",
+        "resume": "toast.resumed.quips",
+        "stop": "toast.stopped.quips",
+        "repeatOn": "toast.repeatOn.quips",
+        "repeatOff": "toast.repeatOff.quips",
+        "restart": "toast.restarted.quips",
+        "playNow": "toast.playNow.quips",
+        "next": "toast.playNext.quips",
+        "quota": "error.QUOTA_EXCEEDED.quips",
+        "forbidden": "error.PRIORITY_FORBIDDEN.quips",
+        "voice": "error.USER_NOT_IN_VOICE.quips",
+        "idle": "now.idle.quips",
+        "bite": "quips.portrait",
+        "maxims": "footer.maxims",
+        "requeue": "history.requeue.quips",
+        "login": "auth.quips",
+        "ready": "header.welcome.quips",
+        "unsupported": "error.UNSUPPORTED_SOURCE.quips",
+        "spam": "quips.skipSpam",
+        "MOTTO": "brand.tagline"
+      },
+      "scriptorium Q / ERR / REFUSAL": {
+        "mix": "toast.mixAdded.quips",
+        "noResults": "error.NO_RESULTS.quips",
+        "reAdd": "history.requeue.quips",
+        "boot": "loading.boot.quips",
+        "plLoad": "loading.playlist.quips",
+        "search": "search.searching.quips",
+        "kicker": "now.order.mine.quips | now.order.other.quips",
+        "throne": "now.idle.quips",
+        "empty": "queue.empty.quips",
+        "remote": "remote.quips",
+        "removed": "toast.removed.quips",
+        "realm": "guild.tooltip",
+        "locked": "error.PRIORITY_FORBIDDEN.quips",
+        "ERR.unsupported": "error.UNSUPPORTED_SOURCE",
+        "ERR.noResults": "error.NO_RESULTS",
+        "ERR.quota": "error.QUOTA_EXCEEDED",
+        "ERR.voice": "error.USER_NOT_IN_VOICE",
+        "REFUSAL.insufficient_rank": "error.PRIORITY_FORBIDDEN",
+        "REFUSAL.cannot_promote_to_priority_zone": "error.MOVE_PROMOTE_PRIORITY",
+        "REFUSAL.cannot_demote_from_priority_zone": "error.MOVE_DEMOTE_PRIORITY",
+        "REFUSAL.server": "error.MOVE_CONFLICT",
+        "running head GREGORIVS…REX": "brand.latin.greg (sous Greg) + brand.latin.king (sous l'avatar du Roi)"
+      },
+      "gothique Q": {
+        "kicker": "now.order.mine.quips | now.order.other.quips",
+        "playNext": "toast.playNext.quips",
+        "empty": "now.idle.quips",
+        "loading": "loading.boot.quips",
+        "medal": "quips.portrait",
+        "priority": "error.PRIORITY_FORBIDDEN.quips"
+      }
+    }
+  },
+  "address": {
+    "king": {
+      "settingLabel": "Greg vous appelle",
+      "settingHelp": "Le titre que Greg emploie dans ses répliques.",
+      "default": "sire",
+      "options": {
+        "sire": {
+          "label": "Sire",
+          "sire": "Sire",
+          "theKing": "le Roi",
+          "ofTheKing": "du Roi",
+          "REX": "REX",
+          "REGIS": "REGIS",
+          "yoElRey": "Yo el Rey"
+        },
+        "madame": {
+          "label": "Madame",
+          "sire": "Madame",
+          "theKing": "la Reine",
+          "ofTheKing": "de la Reine",
+          "REX": "REGINA",
+          "REGIS": "REGINÆ",
+          "yoElRey": "Yo la Reina"
+        },
+        "majeste": {
+          "label": "Votre Majesté",
+          "sire": "Majesté",
+          "theKing": "Sa Majesté",
+          "ofTheKing": "de Sa Majesté",
+          "REX": "REX",
+          "REGIS": "REGIS",
+          "yoElRey": "Yo el Rey"
+        }
+      },
+      "formal": "Votre Majesté",
+      "thirdPerson": "Sa Majesté",
+      "you": "vous"
+    },
+    "courtiers": {
+      "collective": "la Cour",
+      "member": "{name}",
+      "requestWord": "requête",
+      "kingRequestWord": "ordre"
+    },
+    "greg": {
+      "name": "Greg",
+      "fullName": "Greg le Consanguin",
+      "role": "valet",
+      "selfRef": "votre valet"
+    }
+  },
+  "brand": {
+    "name": "Greg le Consanguin",
+    "tagline": "Valet de musique de Sa Majesté",
+    "taglineAlts": [
+      "Pour vous servir. Enfin, il essaie.",
+      "Serviteur du Roi, à contrecœur",
+      "Porteur de plats, passeur de disques"
+    ],
+    "portraitAlt": "Greg le Consanguin, valet du Roi",
+    "docTitle": {
+      "idle": "Greg le Consanguin",
+      "playing": "▶ {title} · Greg",
+      "paused": "❚❚ {title} · Greg"
+    },
+    "metaDescription": "Donnez vos ordres à Greg : il passe la musique dans votre salon vocal Discord. Liens YouTube, recherche, file d’attente.",
+    "latin": {
+      "greg": "GREGORIVS · CONSANGVINEVS · {REGIS} · SERVVS",
+      "gregTip": "Grégoire le Consanguin, serviteur {ofTheKing}.",
+      "king": "{KING_LAT} · DEI · GRATIA · DISCORDIÆ · {REX}",
+      "kingFallback": "DEI · GRATIA · DISCORDIÆ · {REX}",
+      "kingTip": "{kingName}, par la grâce de Dieu, souverain de la Discorde."
+    }
+  },
+  "header": {
+    "account": {
+      "kicker": "Sa Majesté",
+      "name": "{kingName}",
+      "aria": "Votre compte : {kingName}",
+      "crownTip": "C’est vous, {theKing}.",
+      "blazonTip": "Votre blason : {color}"
+    },
+    "logout": "Se déconnecter",
+    "live": {
+      "on": "En direct",
+      "reconnecting": "Reconnexion…",
+      "off": "Hors ligne"
+    },
+    "shortcutsTip": "Raccourcis clavier (?)",
+    "settings": {
+      "title": "Réglages",
+      "quips": "Répliques de Greg",
+      "quipsHelp": "Désactivées : messages factuels seulement."
+    },
+    "welcome": {
+      "text": null,
+      "quips": [
+        "Vos bottes sont cirées, {sire}. Ne demandez pas avec quoi.",
+        "{sire} ! Votre valet est prêt. Presque. Je cherche mon bonnet.",
+        "Votre Majesté est de retour ! Vite, je cache le fromage.",
+        "Mes respects, {sire}. On écoute quoi ? Enfin, vous écoutez quoi ?"
+      ]
+    }
+  },
+  "auth": {
+    "kicker": "Valet de musique de Sa Majesté",
+    "title": "Greg le Consanguin",
+    "body": "Connectez-vous avec Discord pour faire jouer de la musique dans votre salon vocal.",
+    "cta": "Se connecter avec Discord",
+    "privacy": "Greg ne voit que votre pseudo, votre avatar et la liste de vos serveurs.",
+    "quips": [
+      "Qui va là ? Montrez patte blanche. Enfin, bleue : c’est le bouton.",
+      "Le souverain doit se faire annoncer. C’est l’huissier qui veut.",
+      "Entrez, entrez. Essuyez vos pieds. Moi, j’oublie toujours."
+    ]
+  },
+  "guild": {
+    "label": "Serveur",
+    "placeholder": "Choisir un serveur…",
+    "tooltip": "Votre royaume du moment",
+    "optionWithoutGreg": "{guild} · Greg absent",
+    "none": "Aucun serveur en commun avec Greg.",
+    "pickFirst": {
+      "title": "Choisissez un serveur",
+      "body": "Sélectionnez le serveur Discord où Greg doit jouer.",
+      "quips": [
+        "Quel royaume, {sire} ? Je porte les bagages.",
+        "Dites-moi où, {sire}. J’ai déjà mis mes sabots."
+      ]
+    },
+    "gregAbsent": {
+      "text": "Greg n’est pas sur « {guild} ». Invitez-le depuis Discord pour y mettre de la musique.",
+      "kind": "info"
+    },
+    "listFailed": {
+      "text": "Impossible de récupérer vos serveurs Discord. Rechargez la page.",
+      "kind": "err"
+    }
+  },
+  "search": {
+    "heading": "Ajouter un titre",
+    "headingFlavor": "Vos ordres, {sire} ?",
+    "srLabel": "Ajouter un titre",
+    "placeholder": "Collez un lien YouTube ou tapez un titre…",
+    "placeholderShort": "Lien YouTube ou titre…",
+    "linkKind": {
+      "video": "Vidéo YouTube",
+      "playlist": "Playlist YouTube",
+      "mix": "Mix YouTube",
+      "channel": "Chaîne YouTube (non prise en charge)",
+      "spotify": "Lien Spotify (non pris en charge)",
+      "unsupported": "Lien non pris en charge"
+    },
+    "submit": {
+      "default": "Ajouter",
+      "playlist": "Ajouter la playlist",
+      "mix": "Ajouter le mix",
+      "busy": "Ajout…"
+    },
+    "suggestionsTitle": "Suggestions",
+    "suggestionsHint": "Flèches pour choisir · Entrée pour ajouter · Échap pour fermer",
+    "searching": {
+      "text": "Recherche…",
+      "quips": [
+        "Je fouille la réserve…",
+        "Je regarde derrière les tonneaux…",
+        "Je demande aux cuisines…"
+      ]
+    },
+    "noSuggestion": "Aucune suggestion. Entrée pour chercher « {q} » quand même.",
+    "onlyYoutube": "Seul YouTube est pris en charge ici."
+  },
+  "now": {
+    "kicker": "En lecture",
+    "state": {
+      "paused": "En pause",
+      "looping": "En boucle"
+    },
+    "order": {
+      "mine": {
+        "plain": "Demandé par vous",
+        "kicker": "Ordre royal",
+        "executing": "Greg exécute votre ordre.",
+        "quips": [
+          "Greg s’exécute",
+          "servi chaud par Greg",
+          "exécuté sur-le-champ",
+          "Greg obéit, le plateau tremble"
+        ]
+      },
+      "other": {
+        "plain": "Demandé par {name}",
+        "kicker": "Requête signée {name}",
+        "executing": "{name} a demandé, Greg exécute.",
+        "quips": [
+          "Greg obéit aussi, moins vite",
+          "Greg s’exécute, sans zèle",
+          "servi à la Cour, en traînant des pieds"
+        ]
+      },
+      "unknown": {
+        "plain": "Ajouté depuis Discord"
+      }
+    },
+    "decree": {
+      "header": "De par {theKing}",
+      "formula": "{yoElRey}",
+      "formulaTip": "« {yoElRey} » : « Moi, {theKing} », en espagnol. C’est vous qui signez.",
+      "signature": "{kingName}",
+      "signatureCaption": "{theKing}",
+      "countersign": "Par mandement {ofTheKing}",
+      "countersignBy": "Greg, valet",
+      "gregMarkTip": "Greg ne sait pas écrire : il signe d’une croix.",
+      "seal": {
+        "legend": "SIGILLVM · {REGIS}",
+        "initial": "{kingInitial}",
+        "tip": "Sceau de Sa Majesté {kingName}"
+      },
+      "otherHeader": "Requête signée {name}"
+    },
+    "idle": {
+      "title": "Rien en lecture",
+      "body": "Collez un lien YouTube ou cherchez un titre pour lancer la musique.",
+      "cta": "Ajouter un titre",
+      "quips": [
+        "J’attends vos ordres, {sire}. Le plateau à la main.",
+        "Rien à jouer ? Je me cure les dents, {sire}.",
+        "Je garde votre trône au chaud, {sire}. Sans m’asseoir. Presque.",
+        "J’ai astiqué le luth deux fois. Je m’ennuie, {sire}."
+      ]
+    },
+    "botOffline": {
+      "title": "Greg est hors ligne",
+      "body": "La musique reprendra dès son retour.",
+      "quips": [
+        "Écriteau : « Parti au puits. Je reviens. »",
+        "Écriteau : « Greg dort. Frappez fort. »",
+        "Écriteau : « Parti chercher du pain. Et du fromage. »"
+      ]
+    },
+    "videoUnavailable": "Vidéo indisponible ici. Le son continue sur Discord.",
+    "embedMuted": "Image seulement : le son sort dans Discord.",
+    "upNext": "À suivre : {title}",
+    "upNextNone": "Rien ensuite",
+    "sync": {
+      "button": "Synchro vidéo",
+      "label": "Décalage de la vidéo",
+      "value": "{value}",
+      "reset": "Remettre à zéro",
+      "help": "À régler si l’image et le son ne vont pas ensemble."
+    },
+    "progressAria": "Progression : {cur} sur {length}"
+  },
+  "controls": {
+    "group": "Contrôles de lecture",
+    "play": {
+      "aria": "Reprendre la lecture",
+      "tip": "Lecture (Espace)"
+    },
+    "pause": {
+      "aria": "Mettre en pause",
+      "tip": "Pause (Espace)"
+    },
+    "skip": {
+      "aria": "Passer au titre suivant",
+      "tip": "Suivant (N)"
+    },
+    "restart": {
+      "aria": "Recommencer le titre",
+      "tip": "Depuis le début (P)"
+    },
+    "stop": {
+      "aria": "Arrêter la musique et vider la file",
+      "tip": "Tout arrêter"
+    },
+    "repeat": {
+      "aria": "Répéter la file en boucle",
+      "tip": "Boucle (R)"
+    }
+  },
+  "queue": {
+    "tab": {
+      "zero": "File d’attente",
+      "other": "File d’attente ({n})"
+    },
+    "title": "Les Corvées",
+    "titleAlts": [
+      "Le Registre",
+      "Les Ordres"
+    ],
+    "titleTip": "Chaque titre est une corvée pour Greg. Il les fait toutes.",
+    "subtitle": {
+      "one": "File d’attente · 1 titre",
+      "other": "File d’attente · {n} titres"
+    },
+    "durationSuffix": " · {dur}",
+    "rowMeta": "{artist} · {dur} · {name}",
+    "mine": {
+      "label": "vous",
+      "aria": "votre titre",
+      "tip": "Votre ordre"
+    },
+    "rankTip": "Rang : {rank}",
+    "actions": {
+      "playNow": "Jouer maintenant",
+      "playNext": "Jouer ensuite",
+      "remove": "Retirer",
+      "removeMine": "Retirer mes titres",
+      "playNowAria": "Jouer maintenant : {title}",
+      "playNextAria": "Jouer ensuite : {title}",
+      "removeAria": "Retirer : {title}",
+      "dragHandle": "Réordonner « {title} »"
+    },
+    "dnd": {
+      "hint": "Astuce : glissez un titre pour changer l’ordre.",
+      "keyboardHelp": "Espace pour saisir, flèches pour déplacer, Espace pour déposer, Échap pour annuler.",
+      "liveGrabbed": "{title} saisi. Position {pos} sur {total}.",
+      "liveMoved": "{title} déplacé en position {pos} sur {total}.",
+      "liveDropped": "{title} déposé en position {pos}.",
+      "liveCancelled": "Déplacement annulé : {title}.",
+      "liveRestored": "{title} remis en position {pos}."
+    },
+    "locked": "Ajouté par {name}, prioritaire sur ce serveur : vous ne pouvez pas y toucher.",
+    "quota": {
+      "label": "Vos titres : {k}/{cap}",
+      "tip": "Nombre de titres que vous pouvez avoir en même temps dans la file."
+    },
+    "empty": {
+      "title": "La file est vide",
+      "flavorTitle": "Aucune corvée",
+      "body": "Ajoutez un lien YouTube ou un titre : Greg le jouera dans votre salon vocal.",
+      "quips": [
+        "Rien à faire ? Je vais pas m’en plaindre, {sire}.",
+        "Plateau vide, ventre vide. Un ordre, {sire} ?",
+        "J’en profite pour ranger. Sous le tapis."
+      ]
+    }
+  },
+  "history": {
+    "tab": "Historique",
+    "title": "Les Annales",
+    "titleAlts": [
+      "La Chronique",
+      "Le Journal de Greg"
+    ],
+    "subtitle": "Historique du serveur",
+    "segments": {
+      "top": "Plus joués",
+      "recent": "Récents"
+    },
+    "refresh": "Actualiser",
+    "metaTop": {
+      "one": "1 écoute · {name}",
+      "other": "{n} écoutes · {name}"
+    },
+    "metaRecent": "{ago} · {name}",
+    "mine": "vous",
+    "days": {
+      "today": "Aujourd’hui",
+      "yesterday": "Hier"
+    },
+    "requeue": {
+      "aria": "Remettre dans la file",
+      "ariaTitle": "Remettre dans la file : {title}",
+      "text": "Remis dans la file : {title}",
+      "quips": [
+        "Du réchauffé ? Bien, {sire}. Je réchauffe.",
+        "Un classique, {sire}. Je le connais par cœur. Hélas."
+      ]
+    },
+    "empty": {
+      "title": "Aucun titre joué pour l’instant",
+      "body": "Les titres joués sur ce serveur apparaîtront ici.",
+      "quips": [
+        "Rien d’écrit encore. De toute façon, je sais pas lire.",
+        "Les Annales sont vides. J’y ferai un dessin."
+      ]
+    },
+    "noGuild": "Choisissez un serveur pour voir son historique.",
+    "loading": {
+      "text": "Chargement de l’historique…",
+      "quips": [
+        "Greg souffle la poussière des Annales…"
+      ]
+    }
+  },
+  "toast": {
+    "undo": "Annuler",
+    "undoAdd": "Annuler l’ajout",
+    "added": {
+      "text": "Ajouté : {title}",
+      "kind": "ok",
+      "action": "Annuler",
+      "quips": [
+        "Bien, {sire}. Je note. Enfin, je retiens.",
+        "Tout de suite, {sire} ! (Encore celle-là…)",
+        "Excellent choix, {sire}. Je dis ça à tout le monde.",
+        "C’est sur le plateau, {sire}. Faut pas le secouer.",
+        "Noté, {sire}. D’une croix, comme d’habitude."
+      ]
+    },
+    "addedAndPlaying": {
+      "text": "Lecture : {title}",
+      "kind": "ok",
+      "quips": [
+        "Place, place ! Ordre royal !",
+        "Tout de suite, {sire}. Je cours. Je trottine."
+      ]
+    },
+    "firstOrder": {
+      "text": null,
+      "quips": [
+        "Premier ordre du jour ! Je le grave au mur."
+      ]
+    },
+    "playlistAdded": {
+      "text": {
+        "one": "Playlist ajoutée : 1 titre",
+        "other": "Playlist ajoutée : {n} titres"
+      },
+      "suffixOf": " sur {m}",
+      "suffixQuota": " sur {m}, votre quota est plein",
+      "suffixLimit": " (les {n} premiers seulement)",
+      "kind": "ok",
+      "action": "Annuler l’ajout",
+      "quips": [
+        "Tout ça ? Je prends la brouette, {sire}.",
+        "Ça en fait, des corvées. Bien, {sire}.",
+        "Je porte tout, {sire}. Mon dos, lui, proteste."
+      ]
+    },
+    "mixAdded": {
+      "text": {
+        "one": "Mix ajouté : 1 titre",
+        "other": "Mix ajouté : {n} titres"
+      },
+      "kind": "ok",
+      "action": "Annuler l’ajout",
+      "quips": [
+        "YouTube a choisi pour vous, {sire}. Moi, j’aurais pas osé."
+      ]
+    },
+    "playlistPartial": {
+      "text": "Playlist illisible (privée ou trop lente) : seule la vidéo du lien a été ajoutée.",
+      "kind": "warn"
+    },
+    "skipped": {
+      "text": "Titre passé.",
+      "textWithTitle": "Titre passé : {title}",
+      "kind": "info",
+      "action": "Annuler",
+      "quips": [
+        "Dehors, celui-là ! Pardon, {sire}, je m’emporte.",
+        "Au suivant. Je le raye avec la manche.",
+        "Il vous déplaisait, {sire} ? À moi aussi, du coup."
+      ]
+    },
+    "stopped": {
+      "text": "Musique arrêtée, file vidée.",
+      "kind": "info",
+      "action": "Annuler",
+      "quips": [
+        "Je passe le balai, {sire}.",
+        "Silence royal. Je range tout. Presque tout."
+      ]
+    },
+    "paused": {
+      "text": "En pause.",
+      "kind": "info",
+      "quips": [
+        "Je pose le plateau. Je peux m’asseoir, {sire} ?",
+        "Pause. J’en profite pour me gratter."
+      ]
+    },
+    "resumed": {
+      "text": "Lecture reprise.",
+      "kind": "info",
+      "quips": [
+        "Je reprends, {sire}. J’avais pas fini ma soupe.",
+        "C’est reparti. Je retrousse mes manches. Elles collent."
+      ]
+    },
+    "repeatOn": {
+      "text": "Boucle activée.",
+      "kind": "info",
+      "quips": [
+        "En boucle, {sire} ? Bien, {sire}. Encore, {sire}.",
+        "Je vais finir par la siffler, celle-là."
+      ]
+    },
+    "repeatOff": {
+      "text": "Boucle désactivée.",
+      "kind": "info",
+      "quips": [
+        "Merci, {sire}. Mes oreilles vous saluent."
+      ]
+    },
+    "restarted": {
+      "text": "Titre repris depuis le début.",
+      "kind": "info",
+      "quips": [
+        "Du début ? Je rembobine. Avec les dents.",
+        "On recommence. J’avais pas bien écouté non plus."
+      ]
+    },
+    "removed": {
+      "text": "Retiré : {title}",
+      "kind": "info",
+      "action": "Annuler",
+      "quips": [
+        "Rayé du registre, {sire}. Proprement. Enfin, avec le pouce."
+      ]
+    },
+    "removedMine": {
+      "text": {
+        "one": "1 titre retiré (le vôtre)",
+        "other": "{n} titres retirés (les vôtres)"
+      },
+      "kind": "info",
+      "action": "Annuler"
+    },
+    "moved": {
+      "text": "Déplacé en position {pos}.",
+      "kind": "info"
+    },
+    "alreadyNext": {
+      "text": "Ce titre est déjà le prochain.",
+      "kind": "info"
+    },
+    "playNow": {
+      "text": "Lecture immédiate : {title}",
+      "kind": "ok",
+      "action": "Annuler",
+      "quips": [
+        "Place, place ! Ordre royal !",
+        "Passe-droit royal. Les autres attendront."
+      ]
+    },
+    "playNext": {
+      "text": "Prochain titre : {title}",
+      "kind": "ok",
+      "action": "Annuler",
+      "quips": [
+        "Je le glisse devant, {sire}. Les autres râleront. Pas moi.",
+        "Devant tout le monde. Discrètement. Avec mes grelots."
+      ]
+    },
+    "socketDown": {
+      "text": "Connexion temps réel perdue. Mise à jour toutes les 5 secondes.",
+      "kind": "warn"
+    },
+    "socketUp": {
+      "text": "Connexion temps réel rétablie.",
+      "kind": "info"
+    },
+    "recovered": {
+      "text": "Greg est de nouveau disponible.",
+      "kind": "ok",
+      "quips": [
+        "Me revoilà, {sire} ! J’étais au puits.",
+        "Pardon, {sire}, je m’étais endormi dans la paille."
+      ]
+    },
+    "stale": {
+      "text": "Greg est occupé : état du lecteur pas à jour.",
+      "kind": "warn"
+    },
+    "loggedOut": {
+      "text": "Déconnexion effectuée.",
+      "kind": "info",
+      "quips": [
+        "Bonne route, {sire}. Je finis vos restes ?",
+        "Le souverain s’en va. Je souffle les chandelles."
+      ]
+    }
+  },
+  "remote": {
+    "added": "{name} a ajouté : {title}",
+    "playlistAdded": {
+      "one": "{name} a ajouté une playlist : 1 titre",
+      "other": "{name} a ajouté une playlist : {n} titres"
+    },
+    "skipped": "{name} a passé le titre : {title}",
+    "paused": "{name} a mis en pause.",
+    "resumed": "{name} a relancé la lecture.",
+    "stopped": "{name} a tout arrêté.",
+    "repeatOn": "{name} a activé la boucle.",
+    "repeatOff": "{name} a désactivé la boucle.",
+    "playNow": "{name} a lancé tout de suite : {title}",
+    "removedYours": "{name} a retiré votre titre : {title}",
+    "quips": [
+      "Je dis rien, {sire}. Mais j’ai tout vu.",
+      "Sans vous demander, {sire}. Je note.",
+      "Je l’ai vu faire. Je le répète qu’à vous.",
+      "On se croit tout permis, à la Cour.",
+      "Je rapporte, {sire}. C’est mon petit plaisir."
+    ]
+  },
+  "error": {
+    "QUOTA_EXCEEDED": {
+      "text": "Quota atteint : vous avez déjà {k} titres dans la file (maximum {cap}). Attendez qu’un de vos titres passe.",
+      "textGeneric": "Quota atteint : vous avez déjà le maximum de titres dans la file. Attendez qu’un de vos titres passe.",
+      "kind": "warn",
+      "quips": [
+        "Même Votre Majesté a un quota. C’est l’étiquette, pas moi.",
+        "Mon plateau déborde, {sire}. Un de plus et je renverse tout."
+      ]
+    },
+    "PLAYLIST_UNAVAILABLE": {
+      "text": "Playlist privée ou inaccessible : Greg ne peut pas l’ouvrir. Rendez-la publique ou non répertoriée, ou ajoutez une vidéo seule.",
+      "kind": "err",
+      "quips": [
+        "Porte fermée à clé, {sire}. J’ai essayé l’épaule.",
+        "Privée, {sire}. J’ai collé l’oreille : rien."
+      ]
+    },
+    "PLAYLIST_EMPTY": {
+      "text": "Playlist vide : aucun titre lisible dedans.",
+      "kind": "err",
+      "quips": [
+        "Un coffre vide, {sire}. J’ai secoué : rien."
+      ]
+    },
+    "SPOTIFY_UNSUPPORTED": {
+      "text": "Les liens Spotify ne sont pas pris en charge. Collez un lien YouTube ou tapez le titre et l’artiste.",
+      "kind": "err",
+      "quips": [
+        "Un lien tout vert ? Pas frais, ça. J’y touche pas.",
+        "Ça vient pas de chez nous, {sire}. Je lis que YouTube."
+      ]
+    },
+    "UNSUPPORTED_SOURCE": {
+      "text": "Lien non pris en charge. Collez un lien YouTube ou tapez le titre du morceau.",
+      "kind": "err",
+      "quips": [
+        "Je sais lire que YouTube, {sire}. Et encore, les images."
+      ]
+    },
+    "CHANNEL_LINK": {
+      "text": "Une chaîne entière ne peut pas être ajoutée. Collez le lien d’une vidéo, d’une playlist ou d’un mix.",
+      "kind": "err",
+      "quips": [
+        "Toute une chaîne ? Mon dos, {sire}. Mon dos."
+      ]
+    },
+    "NO_RESULTS": {
+      "text": "Aucun résultat pour « {q} ». Vérifiez l’orthographe ou collez un lien YouTube.",
+      "textGeneric": "Aucun résultat. Vérifiez l’orthographe ou collez un lien YouTube.",
+      "kind": "err",
+      "quips": [
+        "J’ai cherché partout, {sire}. Même sous la paille.",
+        "Connais pas. Mais je suis pas une référence."
+      ]
+    },
+    "EXPAND_TIMEOUT": {
+      "text": "La playlist est trop longue à charger. Réessayez dans un moment ou ajoutez les titres un par un.",
+      "kind": "err",
+      "quips": [
+        "Trop lourd pour mon dos, {sire}. Je reviens avec un âne."
+      ]
+    },
+    "TIMEOUT": {
+      "text": "Greg met du temps à répondre. L’ajout continue peut-être en arrière-plan.",
+      "kind": "warn",
+      "quips": [
+        "J’arrive, {sire} ! Je cours. Enfin, je marche vite."
+      ]
+    },
+    "BOT_OFFLINE": {
+      "text": "Greg est hors ligne. La musique reprendra à son retour.",
+      "kind": "err",
+      "quips": [
+        "Écriteau : « Parti au puits. Je reviens. »",
+        "Écriteau : « Greg dort. Frappez fort. »"
+      ]
+    },
+    "REDIS_UNAVAILABLE": {
+      "text": "Greg est injoignable. Réessayez dans un instant.",
+      "kind": "err"
+    },
+    "USER_NOT_IN_VOICE": {
+      "text": "Rejoignez d’abord un salon vocal sur ce serveur, puis réessayez.",
+      "kind": "err",
+      "quips": [
+        "Je veux bien jouer, {sire}. Mais où êtes-vous ?",
+        "Je vous cherche avec ma chandelle, {sire}. Aucun salon.",
+        "Je joue pour qui, {sire} ? Les rats du grenier ?"
+      ]
+    },
+    "BOT_IN_OTHER_CHANNEL": {
+      "text": "Greg joue déjà dans un autre salon vocal. Rejoignez-le ou attendez la fin.",
+      "kind": "err",
+      "quips": [
+        "Deux salons à la fois ? J’ai essayé. Je me suis cogné."
+      ]
+    },
+    "GUILD_NOT_FOUND": {
+      "text": "Greg n’est pas sur ce serveur. Choisissez-en un autre.",
+      "kind": "err",
+      "quips": [
+        "On m’a pas invité là-bas, {sire}. On m’invite jamais."
+      ]
+    },
+    "VOICE_CONNECT_FAILED": {
+      "text": "Impossible de rejoindre le salon vocal. Réessayez dans un instant.",
+      "kind": "err",
+      "quips": [
+        "J’ai raté la porte, {sire}. Je réessaie."
+      ]
+    },
+    "PRIORITY_FORBIDDEN": {
+      "text": "Action impossible : ce titre a été ajouté par {name}, prioritaire sur ce serveur.",
+      "textGeneric": "Action impossible : ce titre a été ajouté par quelqu’un de prioritaire sur ce serveur.",
+      "kind": "err",
+      "quips": [
+        "C’est l’étiquette, {sire}. Moi, je porte les plats.",
+        "Préséance, {sire}. Même moi, je la subis."
+      ]
+    },
+    "NOT_AUTHENTICATED": {
+      "text": "Connectez-vous avec Discord pour contrôler la musique.",
+      "kind": "err"
+    },
+    "HTTP_401": {
+      "text": "Session expirée : reconnectez-vous.",
+      "kind": "err",
+      "quips": [
+        "Faut vous réannoncer, {sire}. C’est l’huissier, pas moi."
+      ]
+    },
+    "NOT_GUILD_MEMBER": {
+      "text": "Vous n’êtes pas membre de ce serveur.",
+      "kind": "err"
+    },
+    "MEMBER_CHECK_FAILED": {
+      "text": "Impossible de vérifier votre appartenance au serveur. Réessayez dans un instant.",
+      "kind": "err"
+    },
+    "HTTP_5XX": {
+      "text": "Le serveur ne répond pas. Réessayez dans un instant.",
+      "kind": "err",
+      "quips": [
+        "J’ai fait tomber quelque chose, {sire}. Je ramasse."
+      ]
+    },
+    "NETWORK": {
+      "text": "Connexion impossible. Vérifiez votre connexion Internet.",
+      "kind": "err"
+    },
+    "UNKNOWN": {
+      "text": "Quelque chose a échoué. Réessayez ; si ça continue, prévenez Paul.",
+      "kind": "err",
+      "quips": [
+        "Pas moi. Enfin, peut-être un peu moi.",
+        "J’ai glissé, {sire}. Rien de cassé. Je crois."
+      ]
+    },
+    "MOVE_FAILED": {
+      "text": "Déplacement refusé. Le titre revient à sa place.",
+      "kind": "err"
+    },
+    "MOVE_PROMOTE_PRIORITY": {
+      "text": "Ce titre ne peut pas passer devant les titres prioritaires.",
+      "kind": "err"
+    },
+    "MOVE_DEMOTE_PRIORITY": {
+      "text": "Un titre prioritaire ne peut pas passer derrière les autres.",
+      "kind": "err"
+    },
+    "MOVE_CONFLICT": {
+      "text": "La file a changé entre-temps : le titre revient à sa place.",
+      "kind": "err"
+    },
+    "NOT_PLAYING": {
+      "text": "Rien à mettre en pause : aucun titre en lecture.",
+      "kind": "info",
+      "quips": [
+        "Mettre le silence en pause ? Je peux essayer, {sire}."
+      ]
+    },
+    "EXPIRED": {
+      "text": "Commande abandonnée : Greg était trop occupé. Réessayez.",
+      "kind": "err",
+      "quips": [
+        "Je l’ai laissée tomber en route. Pardon, {sire}."
+      ]
+    },
+    "UNKNOWN_ACTION": {
+      "text": "Greg ne connaît pas cette action. Rechargez la page pour avoir la dernière version.",
+      "kind": "err"
+    },
+    "GUILDS_FAILED": {
+      "text": "Impossible de récupérer vos serveurs Discord. Rechargez la page.",
+      "kind": "err"
+    }
+  },
+  "loading": {
+    "boot": {
+      "text": "Chargement…",
+      "quips": [
+        "Greg enfile sa livrée…",
+        "Greg cherche son bonnet…",
+        "Greg dépoussière votre trône…",
+        "Greg se lave une main…"
+      ]
+    },
+    "link": {
+      "text": "Chargement du lien…",
+      "quips": [
+        "Je déroule le parchemin…"
+      ]
+    },
+    "playlist": {
+      "text": "Chargement de la playlist… Cela peut prendre quelques secondes.",
+      "quips": [
+        "Je charge la brouette…",
+        "Je compte les titres. Sur mes doigts.",
+        "Un, deux… beaucoup."
+      ]
+    },
+    "search": {
+      "ref": "search.searching"
+    },
+    "history": {
+      "ref": "history.loading"
+    },
+    "slow": {
+      "text": "C’est plus long que prévu, ça continue en arrière-plan.",
+      "quips": [
+        "Pardon, {sire}. C’est mes sabots, ils traînent."
+      ]
+    }
+  },
+  "confirm": {
+    "stop": {
+      "title": "Tout arrêter ?",
+      "body": {
+        "zero": "La musique s’arrête.",
+        "one": "La musique s’arrête et le titre de la file est retiré.",
+        "other": "La musique s’arrête et les {n} titres de la file sont retirés."
+      },
+      "confirm": "Tout arrêter",
+      "cancel": "Garder la musique",
+      "quips": [
+        "Je sors le balai, {sire} ?"
+      ]
+    },
+    "removeOther": {
+      "title": "Retirer le titre ajouté par {name} ?",
+      "body": "« {title} » sera retiré de la file.",
+      "confirm": "Retirer",
+      "cancel": "Garder",
+      "quips": [
+        "Je le fais disparaître, {sire}. Sans bruit."
+      ]
+    },
+    "removeMine": {
+      "title": {
+        "one": "Retirer votre titre ?",
+        "other": "Retirer vos {n} titres ?"
+      },
+      "body": {
+        "one": "Votre titre sera retiré de la file.",
+        "other": "Vos {n} titres seront retirés de la file."
+      },
+      "confirm": "Retirer mes titres",
+      "cancel": "Garder"
+    }
+  },
+  "quips": {
+    "grumble": [
+      "À vos ordres, {sire}. Comme hier. Comme demain.",
+      "Tout de suite, {sire}. Dès que j’ai fini de me gratter.",
+      "Je porte, je sers, je râle. C’est un métier.",
+      "Je me suis lavé les mains, {sire}. Enfin, une.",
+      "J’ai dormi dans la paille. Ça se voit ? Ça se sent ?",
+      "Pardon, {sire}, j’ai marché sur le luth.",
+      "Mon plateau est propre, {sire}. J’ai soufflé dessus.",
+      "Je sais pas lire, {sire}. Mais je reconnais les images.",
+      "Au village, on a tous ma mâchoire. On se reconnaît de loin.",
+      "Mon arbre généalogique ? Un poteau, {sire}.",
+      "Je range, je range… et après je retrouve plus rien.",
+      "J’ai goûté votre soupe, {sire}. Par sécurité. Deux fois.",
+      "Un valet ne se plaint jamais. Il grommelle. Nuance.",
+      "Ce bonnet sonne à chaque pas. Discret comme une vache.",
+      "Donnez-moi un ordre, {sire}. Mes mains s’ennuient.",
+      "Je m’incline bien bas, {sire}. Aïe. Trop bas. Le dos.",
+      "Ma livrée est d’époque, {sire}. Les taches aussi.",
+      "Vous m’avez sonné ? Non ? J’arrive quand même.",
+      "J’obéis toujours, {sire}. Vite ou bien, faut choisir.",
+      "J’ai fait briller votre couronne, {sire}. Avec ma manche.",
+      "On m’a appris à servir. Pas à bien servir.",
+      "Les courtisans sentent la rose. Moi, l’oignon. Chacun son truc.",
+      "Mes puces dansent en rythme. Elles, au moins, ont l’oreille.",
+      "Quand je joue du luth, les chiens s’en vont. D’où YouTube.",
+      "Service compris, {sire}. Pourboire apprécié.",
+      "Je suis qu’un gueux, {sire}. Mais un gueux ponctuel. Parfois.",
+      "Je vous sers depuis ce matin. Ou hier. J’ai pas de fenêtre.",
+      "Besoin de moi, {sire} ? Je suis là. Je suis toujours là.",
+      "Je mets les grands plats dans les petits. Et parfois par terre.",
+      "Encore une corvée ? Chic. Enfin… chic."
+    ],
+    "portrait": [
+      "Pas le bonnet, {sire}. Ça fait sonner les grelots.",
+      "Encore un clic et je renverse le plateau.",
+      "Je suis chatouilleux de la mâchoire, {sire}.",
+      "Oui, c’est ma vraie mâchoire. Non, elle se démonte pas."
+    ],
+    "skipSpam": [
+      "Doucement, {sire}. J’ai que deux pieds.",
+      "Vous zappez plus vite que je cours, {sire}."
+    ]
+  },
+  "footer": {
+    "quoteLabel": "Maxime du jour",
+    "anotherQuote": "Autre maxime",
+    "maxims": [
+      "Vous ordonnez, Greg exécute, les voisins subissent.",
+      "Qui porte le plateau mange les miettes.",
+      "Un bon valet voit tout, entend tout et répète tout.",
+      "Servir, c’est comme la soupe : ça refroidit si on traîne.",
+      "Plus je m’incline, mieux je vois vos bottes.",
+      "Un grelot, c’est pratique : on sait toujours où je suis.",
+      "J’ai une tête de roi. C’est tout ce que j’ai de roi.",
+      "L’étiquette, c’est pour les nobles. Moi, j’ai des taches.",
+      "Le silence est d’or. Moi, je suis payé en restes.",
+      "Un ordre, c’est un ordre. Une corvée, c’est un ordre qui dure."
+    ]
+  },
+  "shortcuts": {
+    "title": "Raccourcis",
+    "subtitle": "Pour les souverains pressés",
+    "items": [
+      [
+        "Espace",
+        "Lecture / pause"
+      ],
+      [
+        "N",
+        "Titre suivant"
+      ],
+      [
+        "P",
+        "Recommencer le titre"
+      ],
+      [
+        "R",
+        "Boucle"
+      ],
+      [
+        "/",
+        "Rechercher"
+      ],
+      [
+        "?",
+        "Afficher cette aide"
+      ],
+      [
+        "Échap",
+        "Fermer"
+      ]
+    ]
+  },
+  "pages": {
+    "notFound": {
+      "title": "Page introuvable",
+      "body": "Cette page n’existe pas.",
+      "cta": "Retour au lecteur",
+      "quips": [
+        "Je l’ai perdue, {sire}. Elle était sur le plateau."
+      ]
+    },
+    "crash": {
+      "title": "Greg a trébuché",
+      "body": "Rechargez la page. Si ça recommence, prévenez Paul.",
+      "cta": "Recharger",
+      "quips": [
+        "J’ai tout renversé, {sire}. Même le parquet."
+      ]
+    }
+  },
+  "easter": {
+    "familyTree": "Mon arbre généalogique, {sire}. Un tronc, pas de branches.",
+    "saintGregory": "Saint Grégoire. Aucun lien. Enfin, avec ma famille, on sait jamais.",
+    "lookalike": "On dit que je ressemble au roi d’Espagne. Au village, on lui ressemble tous.",
+    "servusServorum": "« Servus servorum Dei » : la devise du pape Grégoire le Grand. Greg n’a gardé que « servus ».",
+    "hechizado": "Mode Ensorcelé"
+  },
+  "court": {
+    "precedenceWord": "préséance",
+    "ranks": {
+      "OWNER": {
+        "weight": 10000,
+        "label": "Propriétaire",
+        "court": "Grand Maître de la Maison"
+      },
+      "ADMIN": {
+        "weight": 100,
+        "label": "Admin",
+        "court": "Chambellan"
+      },
+      "MANAGE_GUILD": {
+        "weight": 90,
+        "label": "Gestion du serveur",
+        "court": "Chambellan"
+      },
+      "DJ": {
+        "weight": 80,
+        "label": "DJ",
+        "court": "Maître de musique"
+      },
+      "VIP": {
+        "weight": 60,
+        "label": "VIP",
+        "court": "Proche de la Couronne"
+      },
+      "BOOSTER": {
+        "weight": 45,
+        "label": "Booster",
+        "court": "Mécène"
+      },
+      "DEFAULT": {
+        "weight": 10,
+        "label": "Membre",
+        "court": "Membre de la Cour"
+      }
+    }
+  },
+  "glossary": [
+    {
+      "item": "Couronne",
+      "owner": "king",
+      "where": "Sur l’avatar du Roi (en-tête) ; petit marqueur « vos titres » dans la file et l’historique. Jamais sur Greg.",
+      "keys": [
+        "header.account.crownTip",
+        "queue.mine.tip"
+      ]
+    },
+    {
+      "item": "Sceau de cire à l’initiale du Roi",
+      "owner": "king",
+      "where": "Décret en lecture, vos ajouts, bouton Ajouter (visuel seulement : le libellé reste « Ajouter »). Légende SIGILLVM · REGIS.",
+      "keys": [
+        "now.decree.seal.legend",
+        "now.decree.seal.initial",
+        "now.decree.seal.tip"
+      ]
+    },
+    {
+      "item": "Signature",
+      "owner": "king",
+      "where": "Pseudo du Roi au bas du décret, « le Roi » dessous ; « Yo el Rey » possible au-dessus.",
+      "keys": [
+        "now.decree.signature",
+        "now.decree.signatureCaption",
+        "now.decree.formula"
+      ]
+    },
+    {
+      "item": "Cartouche latin royal",
+      "owner": "king",
+      "where": "Sous l’avatar ou en titre courant : {KING_LAT} · DEI · GRATIA · DISCORDIÆ · REX.",
+      "keys": [
+        "brand.latin.king",
+        "brand.latin.kingTip"
+      ]
+    },
+    {
+      "item": "Blason, couleur",
+      "owner": "king",
+      "where": "Écu du Roi dans l’en-tête ; les courtisans ont leur couleur aussi, sans couronne.",
+      "keys": [
+        "header.account.blazonTip"
+      ]
+    },
+    {
+      "item": "Trône",
+      "owner": "king",
+      "where": "État vide : le trône attend le Roi, Greg le garde et le dépoussière.",
+      "keys": [
+        "now.idle.quips",
+        "loading.boot.quips"
+      ]
+    },
+    {
+      "item": "Vocabulaire royal : ordre, ordre royal, De par le Roi, passe-droit royal, Sire, Votre Majesté",
+      "owner": "king",
+      "where": "Titres aromatisés, décret, répliques.",
+      "keys": [
+        "now.order.mine",
+        "now.decree.header",
+        "toast.playNow.quips"
+      ]
+    },
+    {
+      "item": "Portrait (Charles II, Carreño de Miranda, domaine public)",
+      "owner": "greg",
+      "where": "Visage de Greg, présenté en valet : bonnet sur la tête, pas de couronne. Blague : il ressemble au roi d’Espagne, comme tout le village.",
+      "keys": [
+        "brand.portraitAlt",
+        "easter.lookalike"
+      ]
+    },
+    {
+      "item": "Bonnet à grelots (assets/3d/jester_cap*)",
+      "owner": "greg",
+      "where": "Sur le portrait à la place de la couronne ; peut servir de chargeur (le bonnet qui sautille) à la place de la couronne qui tourne.",
+      "keys": [
+        "quips.portrait",
+        "loading.boot.quips"
+      ]
+    },
+    {
+      "item": "Livrée",
+      "owner": "greg",
+      "where": "Signature de marque, chargement, répliques.",
+      "keys": [
+        "brand.tagline",
+        "loading.boot.quips"
+      ]
+    },
+    {
+      "item": "Plateau",
+      "owner": "greg",
+      "where": "Ajout (il sert le titre), états vides.",
+      "keys": [
+        "toast.added.quips",
+        "now.idle.quips",
+        "queue.empty.quips"
+      ]
+    },
+    {
+      "item": "Registre",
+      "owner": "greg",
+      "where": "La file est son registre de corvées ; retirer = rayer du registre.",
+      "keys": [
+        "queue.title",
+        "queue.titleAlts",
+        "toast.removed.quips"
+      ]
+    },
+    {
+      "item": "Balai",
+      "owner": "greg",
+      "where": "Tout arrêter (vider la file).",
+      "keys": [
+        "confirm.stop.quips",
+        "toast.stopped.quips"
+      ]
+    },
+    {
+      "item": "Brouette",
+      "owner": "greg",
+      "where": "Playlists et chargements longs.",
+      "keys": [
+        "toast.playlistAdded.quips",
+        "loading.playlist.quips"
+      ]
+    },
+    {
+      "item": "Chandelle",
+      "owner": "greg",
+      "where": "Recherche, pas en vocal.",
+      "keys": [
+        "error.USER_NOT_IN_VOICE.quips"
+      ]
+    },
+    {
+      "item": "Croix (sa marque)",
+      "owner": "greg",
+      "where": "Greg ne sait pas écrire : il contresigne le décret d’une croix.",
+      "keys": [
+        "now.decree.countersignBy",
+        "now.decree.gregMarkTip"
+      ]
+    },
+    {
+      "item": "Écriteau",
+      "owner": "greg",
+      "where": "Greg hors ligne : le mot laissé sur la porte.",
+      "keys": [
+        "now.botOffline.quips",
+        "error.BOT_OFFLINE.quips"
+      ]
+    },
+    {
+      "item": "Cartouche latin du valet",
+      "owner": "greg",
+      "where": "GREGORIVS · CONSANGVINEVS · REGIS · SERVVS (sous son portrait).",
+      "keys": [
+        "brand.latin.greg",
+        "brand.latin.gregTip"
+      ]
+    },
+    {
+      "item": "Paille, puits, soupe, oignon, puces, sabots",
+      "owner": "greg",
+      "where": "Répliques seulement (le côté un peu crasseux).",
+      "keys": [
+        "quips.grumble"
+      ]
+    },
+    {
+      "item": "Pseudo, pastille de rang (fonction), couleur",
+      "owner": "court",
+      "where": "Les autres membres : pas de couronne, pas de sceau. Leurs demandes sont des requêtes.",
+      "keys": [
+        "now.order.other",
+        "queue.rankTip",
+        "court.ranks"
+      ]
+    }
+  ]
+}

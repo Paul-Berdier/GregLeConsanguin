@@ -35,6 +35,35 @@ def client(app):
     return app.test_client()
 
 
+# Utilisateur Discord de la session (contrat SEC-C1 : seule source d'identité de l'API).
+SESSION_USER_ID = 777
+
+
+def _login(flask_client, user_id=SESSION_USER_ID):
+    """Ouvre une session Discord sur un client de test Flask (comme après /auth/callback)."""
+    with flask_client.session_transaction() as sess:
+        sess["discord_user"] = {"id": str(user_id), "username": "greg-fan"}
+        sess["discord_token"] = "tok"
+    return flask_client
+
+
+@pytest.fixture()
+def session_uid():
+    """Id Discord (int) de l'utilisateur connecté par `login` / `logged_client`."""
+    return SESSION_USER_ID
+
+
+@pytest.fixture()
+def login():
+    """login(flask_client, user_id=SESSION_USER_ID) → client avec une session Discord."""
+    return _login
+
+
+@pytest.fixture()
+def logged_client(client):
+    return _login(client)
+
+
 class FakeSendCommand:
     """Remplace bot_bridge.send_command : enregistre les appels, renvoie une réponse fixée."""
 
@@ -58,10 +87,8 @@ def fake_send(monkeypatch):
     """Patch send_command dans tous les modules de routes qui l'importent."""
     import api.routes.history as history_mod
     import api.routes.player as player_mod
-    import api.routes.spotify as spotify_mod
 
     fake = FakeSendCommand()
     monkeypatch.setattr(player_mod, "send_command", fake)
     monkeypatch.setattr(history_mod, "send_command", fake)
-    monkeypatch.setattr(spotify_mod, "send_command", fake)
     return fake

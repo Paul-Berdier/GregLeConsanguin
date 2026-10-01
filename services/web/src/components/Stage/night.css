@@ -1,0 +1,61 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : la nuit (rien en lecture, chargement, déconnecté), dans l'oculus de la rose entière.
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 275–295). Écarts voulus :
+   - casting (spec §1) : l'oculus porte la couronne du Roi qui l'attend, la couronne qui tourne, ou le
+     portrait de Greg coiffé du bonnet à grelots (jester-cap), jamais une couronne sur Greg ;
+   - le texte de nuit monte de 6 px en 400 ms, après la rose (+320 ms) quand on vient d'arrêter ;
+   - mouvement réduit : opacité seule ; la couronne tournante devient la couronne immobile (<picture>).
+   Variables lues : --crown --cR --heart --R (posées sur .stage).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.night {
+  position: absolute; left: 0; right: 0; top: calc(var(--crown) + var(--cR) - var(--heart) / 2); z-index: 3;
+  display: flex; justify-content: center; text-align: center; pointer-events: none;
+}
+.night .vl-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 460px; pointer-events: auto;
+  text-shadow: 0 1px 14px rgb(0 0 0 / .85);
+  animation: night-in 400ms var(--ease-out) both;
+}
+/* après le jour seulement (data-after, Stage.tsx) : au sortir du chargement, la rose est déjà la lune */
+.night[data-after=day] .vl-inner { animation-delay: 320ms; }
+@keyframes night-in { from { opacity: 0; transform: translateY(6px); } }
+.night p { margin: 0; }
+.heart { position: relative; width: var(--heart); height: var(--heart); display: grid; place-items: center; margin-bottom: calc(var(--R) * .34); }
+.heart::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: url(/gothique/grain-256.webp); opacity: .5; mix-blend-mode: overlay;
+}
+/* le trône vide : la couronne du Roi l'attend */
+.throne {
+  width: 100%; height: 100%; object-fit: contain;
+  filter: sepia(.12) saturate(.9) brightness(.96) drop-shadow(0 -1.5px 0 rgb(180 196 226 / .55)) drop-shadow(0 16px 12px rgb(0 0 0 / .75));
+}
+.loader { width: calc(var(--heart) * .64); height: calc(var(--heart) * .64); }
+.loader img { width: 100%; height: 100%; object-fit: contain; filter: sepia(.12) drop-shadow(0 10px 14px rgb(0 0 0 / .6)); }
+/* Greg, valet : son portrait, et le bonnet à grelots posé de travers sur le haut du médaillon */
+.heart.valet::after { display: none; }
+.portrait {
+  display: block; width: 100%; height: 100%; border-radius: 50%; overflow: hidden;
+  box-shadow: 0 0 0 2px var(--plomb), 0 0 0 3px rgb(var(--pierre-rgb) / .6), 0 0 0 7px var(--nuit), 0 0 0 8px rgb(207 167 90 / .3), 0 20px 50px rgb(0 0 0 / .7);
+}
+.portrait img { width: 100%; height: 100%; object-fit: cover; filter: sepia(.14) saturate(.9); }
+.valet .cap {
+  position: absolute; left: 50%; top: 0; width: 86%; height: auto; z-index: 1;
+  transform: translate(-50%, -52%) rotate(-8deg);
+  filter: sepia(.12) drop-shadow(0 6px 8px rgb(0 0 0 / .6));
+}
+.vl-kicker { font: 700 12px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--or); }
+.vl-title { margin: 0; font: 600 42px/1 var(--f-display); color: var(--os); letter-spacing: .005em; }
+.night[data-kind=out] .vl-title { font-size: 46px; }
+.vl-body { font-size: 16px; color: var(--os-2); max-width: 380px; }
+.vl-small { font-size: 13.5px; color: var(--cendre); }
+.night[data-kind=loading] .vl-body { color: var(--os); }
+.night[data-kind=loading] .quip { opacity: 0; animation: night-quip 300ms ease 400ms forwards; }
+@keyframes night-quip { to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes night-in { from { opacity: 0; } }
+}
+@media (max-width: 520px) {
+  .vl-title, .night[data-kind=out] .vl-title { font-size: 30px; }
+}

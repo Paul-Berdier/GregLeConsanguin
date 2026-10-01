@@ -1,4 +1,6 @@
 export interface Track {
+  /** Clé stable d'un titre d'un état à l'autre (assignKeys, playerUtils.ts) ; '' avant assignKeys. */
+  key: string;
   url: string;
   title: string;
   artist?: string;
@@ -31,6 +33,19 @@ export interface PlayerState {
   duration: number;
 }
 
+/** Ancre de l'horloge : position `pos` (s) à l'instant `at` (performance.now(), ms), durée `dur` (s). */
+export interface TickBase {
+  pos: number;
+  at: number;
+  dur: number;
+}
+
+/** Un état complet du lecteur : ce que l'API ou le socket envoient, ou ce que la page affiche. */
+export interface Snapshot {
+  player: PlayerState;
+  tickBase: TickBase;
+}
+
 export interface GuildInfo {
   id: string;
   name: string;
@@ -52,37 +67,6 @@ export interface SearchResult {
   thumbnail?: string | null;
   source?: string;
   provider?: string;
-}
-
-export interface SpotifyProfile {
-  id: string;
-  display_name?: string;
-  email?: string;
-  images?: { url: string }[];
-}
-
-export interface SpotifyPlaylist {
-  id: string;
-  name: string;
-  owner?: { display_name?: string; id?: string } | string;
-  tracks?: { total?: number };
-  tracks_total?: number;
-  tracksCount?: number;
-  images?: { url: string }[];
-  image?: string;
-  cover?: string;
-}
-
-export interface SpotifyTrack {
-  id: string;
-  name?: string;
-  title?: string;
-  uri?: string;
-  artists?: { name: string }[] | string;
-  artist?: string;
-  duration_ms?: number;
-  album?: { images?: { url: string }[] };
-  image?: string;
 }
 
 export type StatusKind = 'info' | 'ok' | 'err' | 'warn';

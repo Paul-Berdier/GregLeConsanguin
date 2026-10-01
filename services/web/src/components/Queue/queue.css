@@ -1,0 +1,128 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LA FILE : défilement, lignes, puce d'actions, glisser, vide, pied (DESIGN §2, §5, §12.5 ; motion.md §6.6–6.8).
+   Repris de proto-gothique/work/refine/src/styles.css : lignes 321 (.shield), 394–398, 400–427, 432–456, 460,
+   462–464, 471–474, 539–540 et 555–589 (une colonne, téléphone), sauf :
+   - les couleurs de survol changent sans transition (seuls transform et opacity s'animent) ;
+   - le mouvement réduit suit prefers-reduced-motion (le prototype : :root[data-motion=reduced]) ;
+   - pas de ligne « en cours d'ajout » ni de crochet de lot (le Sceau, étape 4) ;
+   - la file garde sous ses dernières lignes la place de la pile du Héraut (--herald-h, Herald.tsx).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.qpane { position: relative; flex: 1; height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.scroller {
+  position: relative; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 2px 10px max(12px, var(--herald-h, 0px));
+  scrollbar-width: thin; scrollbar-color: var(--voute-2) transparent;
+  -webkit-mask: linear-gradient(transparent, #000 10px, #000 calc(100% - 18px), transparent);
+  mask: linear-gradient(transparent, #000 10px, #000 calc(100% - 18px), transparent);
+}
+.qlist { position: relative; list-style: none; margin: 0; padding: 0; }
+.qlabel { padding: 6px 10px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--cendre); }
+
+.row { position: relative; list-style: none; border-radius: 8px; margin-bottom: 2px; outline-offset: -2px; }
+.row .card {
+  position: relative; display: grid; grid-template-columns: 24px 72px minmax(0, 1fr) 84px; align-items: center; gap: 12px;
+  height: 62px; padding: 0 10px 0 2px; border-radius: 8px; corner-shape: bevel;
+  transition: transform var(--spring-snap-dur) var(--spring-snap);
+}
+/* anneau de lumière et ombre de la ligne saisie : sur ::after, en opacité seulement */
+.row .card::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; corner-shape: bevel; pointer-events: none; opacity: 0;
+  transition: opacity 160ms ease;
+  box-shadow: 0 0 0 1px rgb(var(--lumiere-rgb) / .7), 0 0 0 2px var(--plomb), 0 24px 48px -12px rgb(0 0 0 / .9);
+}
+@media (hover: hover) and (pointer: fine) { .row:not(.dragging):hover .card { background: var(--voute); } }
+.row:focus-visible .card, .row[data-picked] .card { background: var(--voute); }
+
+.grip { width: 24px; height: 62px; display: grid; place-items: center; color: var(--cendre-2); cursor: grab; touch-action: none; }
+.grip svg { width: 8px; height: 14px; }
+@media (hover: hover) and (pointer: fine) { .row:hover .grip { color: var(--cendre); } .grip:hover { color: var(--os-2); } }
+.row:focus-within .grip { color: var(--cendre); }
+.grip:active { cursor: grabbing; color: rgb(var(--lumiere-rgb)); }
+
+/* la pochette : poignée elle aussi */
+.thumb { position: relative; width: 72px; aspect-ratio: 16 / 9; border-radius: 4px; overflow: visible; cursor: grab; touch-action: none; }
+.thumb .im { position: absolute; inset: 0; border-radius: 4px; overflow: hidden; background: var(--voute-2); box-shadow: 0 0 0 1px rgb(0 0 0 / .5); }
+.thumb .im img { width: 100%; height: 100%; object-fit: cover; }
+/* le titre du Roi : son sceau de cire pressé sur le coin de la pochette */
+.thumb .seal { position: absolute; right: -9px; bottom: -9px; width: 23px; height: 23px; filter: drop-shadow(0 2px 2px rgb(0 0 0 / .7)); }
+.thumb .seal::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(40% 30% at 38% 28%, rgb(255 236 220 / .55), transparent 70%); }
+.thumb .seal img { width: 100%; height: 100%; }
+/* Le Sceau : la pochette source qui vole jusqu'à la ligne du Roi (Queue/seal.ts), étirée par transform seul */
+.seal-ghost { position: fixed; left: 0; top: 0; z-index: 80; pointer-events: none; border-radius: 3px; background: #050404 center / cover no-repeat; transform-origin: 0 0; }
+
+.row .meta { min-width: 0; }
+.row .t { font-size: 15.5px; font-weight: 500; line-height: 1.28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .a { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--cendre); white-space: nowrap; overflow: hidden; margin-top: 2px; }
+.row .a .nm, .row .a .by { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row .a .nm { flex: 0 1 auto; }
+.row .a .by { flex: 0 4 auto; }   /* le nom cède avant l'artiste */
+.shield { width: 13px; height: 15px; flex: none; }
+.row .side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; transition: opacity 60ms ease-out; }
+.row .dur { font-size: 14px; color: var(--os-2); }
+.row .eta { font-size: 12.5px; color: var(--cendre); white-space: nowrap; }
+.row.next .eta { color: rgb(var(--lumiere-rgb)); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; font-size: 11.5px; }
+
+/* actions rapides : une puce opaque, rien ne transparaît pendant son fondu (asymétrique : 60 ms / 120 ms après 40 ms) */
+.acts {
+  position: absolute; right: 6px; top: 50%; display: flex; gap: 2px; padding: 3px; border-radius: 8px; corner-shape: bevel;
+  background: var(--voute-2); box-shadow: 0 0 0 1px var(--plomb);
+  transform: translateY(-50%); opacity: 0; pointer-events: none; transition: opacity 60ms ease-out;
+}
+.act { width: 32px; height: 32px; border-radius: 6px; display: grid; place-items: center; color: var(--os-2); transition: transform var(--dur-press) var(--ease-out); }
+.act svg { width: 16px; height: 16px; }
+.act:active { transform: scale(.94); }
+@media (hover: hover) and (pointer: fine) {
+  .act:hover { background: rgb(239 231 216 / .07); color: var(--os); }
+  .act.del:hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
+  .row:not(.dragging):hover .acts { opacity: 1; pointer-events: auto; transition: opacity 120ms var(--ease-out) 40ms; }
+  .row:not(.dragging):hover .side { opacity: 0; }
+}
+.row:focus-within .acts { opacity: 1; pointer-events: auto; }
+.row:focus-within .side { opacity: 0; }
+/* accalmie : une ligne qui glisse sous un pointeur immobile ne montre rien et ignore les clics */
+.qlist.settling .row .acts { opacity: 0 !important; pointer-events: none !important; transition: none !important; }
+.qlist.settling .row .side { opacity: 1 !important; }
+.qlist.settling .row .card { background: transparent !important; }
+@media (hover: none) {
+  .acts { opacity: 1; pointer-events: auto; position: static; transform: none; background: none; box-shadow: none; padding: 0; }
+  .act { width: 40px; height: 40px; }
+  .row .side { display: none; }
+  .row .card { grid-template-columns: 24px 64px minmax(0, 1fr) auto; }
+  .thumb { width: 64px; }
+}
+
+/* glisser */
+.row.dragging { z-index: 20; }
+.row.dragging .card { transform: scale(1.02); background: linear-gradient(rgb(239 231 216 / .06), rgb(239 231 216 / .06)), var(--voute-2); }
+.row.dragging .card::after { opacity: 1; }
+.row.dragging .acts { opacity: 0; }
+.row.dragging .side { opacity: 1 !important; }
+body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select: none; }
+.row .flash { position: absolute; inset: 0; border-radius: 8px; corner-shape: bevel; background: rgb(var(--lumiere-rgb) / .2); opacity: 0; pointer-events: none; }
+.row.refused .card { box-shadow: inset 0 0 0 1px var(--gueules); }
+.more-row { padding: 10px 12px; font-size: 14px; color: var(--cendre); list-style: none; }
+
+.qempty { padding: 30px 18px 10px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.qempty h4 { margin: 0; font: 600 26px/1 var(--f-display); }
+.qempty p { margin: 0; font-size: 15px; color: var(--cendre); max-width: 290px; }
+:root[data-quips=off] .qempty .quip { display: none; }
+
+.panel-foot { position: relative; display: flex; align-items: center; gap: 10px; padding: 12px 18px 14px; border-top: 1px solid var(--hair); font-size: 13.5px; color: var(--cendre); }
+.panel-foot .hint { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-foot .hint[data-shown=false] { visibility: hidden; }
+.panel-foot .hint svg { width: 8px; height: 14px; color: var(--cendre-2); flex: none; }
+
+@media (max-width: 520px) {
+  .scroller { padding-left: 6px; padding-right: 6px; }
+  .row .card { gap: 10px; }
+  .panel-foot .hint { display: none; }
+  .act[data-act=next] { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row .card { transition: none; }
+  .row.dragging .card { transform: none; }
+  .acts, .row .side, .row .card::after { transition: none; }
+  .act { transition: none; }
+  .seal-ghost { display: none; }
+}

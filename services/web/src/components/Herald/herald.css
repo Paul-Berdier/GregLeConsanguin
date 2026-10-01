@@ -1,0 +1,79 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LE HÉRAUT : notifications en plaques plombées (DESIGN §5, §12.2, §12.6 ; motion.md §6.16).
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 502–523), sauf :
+   - la pile se place au-dessus du pied du panneau d'après --panel-w et --page-x (tokens.css, header.css) ;
+   - les couleurs de survol changent sans transition (seuls transform et opacity s'animent) ;
+   - le portrait de Greg (en valet, sans couronne) ne remplace l'icône que s'il dit une réplique ;
+   - pile repliée : les plaques de derrière prennent la hauteur de celle de devant et leur contenu s'efface
+     (Sonner) ; au-delà de 3, elles ne reçoivent ni le pointeur ni le focus.
+   Les variables --y --s --o, la hauteur des plaques repliées et les attributs data-folded et data-hidden
+   sont posés par Herald.tsx (stackLayout, lib/herald.ts).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.toasts {
+  position: fixed; z-index: 90; height: 0; pointer-events: none;
+  right: calc(var(--page-x) + 12px + env(safe-area-inset-right, 0px));
+  bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  width: calc(var(--panel-w) - 24px);
+}
+.toasts[data-dock=center] {
+  right: auto; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  width: min(400px, calc(100vw - 24px)); margin-left: calc(min(400px, 100vw - 24px) / -2);
+}
+.toast {
+  position: absolute; bottom: 0; left: 0; right: 0; pointer-events: auto; cursor: default;
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 12px; align-items: start;
+  padding: 12px 12px 12px 14px;
+  transform: translateY(calc(var(--y, 0px) * -1)) scale(var(--s, 1)); opacity: var(--o, 1); transform-origin: bottom center;
+  transition: transform var(--dur-toast) ease, opacity var(--dur-toast) ease;
+}
+/* la pile dépliée garde le survol dans l'écart de 8 px entre deux plaques */
+.toast::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 8px; }
+@starting-style { .toast { transform: translateY(14px) scale(.97); opacity: 0; } }
+.toast > * { transition: opacity var(--dur-toast) ease; }
+.toast[data-folded] { overflow: hidden; }
+.toast[data-folded] > * { opacity: 0; }
+.toast[data-hidden] { pointer-events: none; }
+.toast[data-leaving] {
+  transform: translateY(calc(var(--y, 0px) * -1 + 14px)) scale(calc(var(--s, 1) * .97)); opacity: 0;
+  transition-duration: 250ms; pointer-events: none;
+}
+.toast .ic {
+  position: relative; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%; overflow: hidden;
+  display: grid; place-items: center;
+  box-shadow: inset 0 0 0 1.5px var(--plomb), 0 0 0 1px rgb(var(--pierre-rgb) / .4);
+}
+.toast .ic .ico { width: 12px; height: 12px; stroke-width: 3; }
+.toast .ic .greg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.toast .ic .greg ~ .ico { display: none; }
+.toast[data-kind=ok] .ic { background: radial-gradient(circle at 50% 35%, rgb(var(--lumiere-rgb)), color-mix(in oklab, rgb(var(--lumiere-rgb)) 55%, #0b0908)); color: #1a120b; }
+.toast[data-kind=warn] .ic { background: radial-gradient(circle at 50% 35%, #e8c27a, #8a6a2e); color: #1a120b; }
+.toast[data-kind=err] .ic { background: radial-gradient(circle at 50% 35%, #f07a5e, #8c2f1c); color: #1a0b06; }
+.toast[data-kind=info] .ic { background: radial-gradient(circle at 50% 35%, #d9d0bf, #6e665a); color: #1a120b; }
+.toast .body { min-width: 0; }
+.toast .fact { font-size: 15px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.toast .fact .x { margin-left: 6px; color: var(--cendre); font-weight: 500; }
+.toast .qp { margin-top: 3px; font: italic 400 14.5px/1.35 var(--f-voice); color: var(--or); }
+.toast .undo {
+  align-self: center; height: 32px; padding: 0 11px; border-radius: 7px; corner-shape: bevel;
+  font-size: 14px; font-weight: 700; color: var(--os); box-shadow: inset 0 0 0 1px var(--hair-2);
+  transition: transform var(--dur-press) var(--ease-out), opacity var(--dur-toast) ease;
+}
+.toast .undo:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .toast .undo:hover { background: var(--voute-2); } }
+
+/* « Répliques de Greg » coupées : le fait seul, l'icône de sa sorte */
+:root[data-quips=off] .toast .qp, :root[data-quips=off] .toast .ic .greg { display: none; }
+:root[data-quips=off] .toast .ic .greg ~ .ico { display: block; }
+
+/* une colonne : au centre, en bas de l'écran */
+@media (max-width: 900px) {
+  .toasts { right: auto; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    width: min(400px, calc(100vw - 24px)); margin-left: calc(min(400px, 100vw - 24px) / -2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: opacity var(--dur-toast) ease; }
+  @starting-style { .toast { transform: translateY(calc(var(--y, 0px) * -1)) scale(var(--s, 1)); } }
+  .toast[data-leaving] { transform: translateY(calc(var(--y, 0px) * -1)) scale(var(--s, 1)); }
+  .toast .undo { transition: opacity var(--dur-toast) ease; }
+}

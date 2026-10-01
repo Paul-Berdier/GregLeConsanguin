@@ -1,0 +1,243 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : en-tête (wordmark, recherche, serveur, avatar couronné).
+   Repris du prototype (proto-gothique, work/refine/src/styles.css, lignes 91–186,
+   et règles « responsive » de l'en-tête). Écarts voulus :
+   - pas de couronne sur le wordmark (Greg est valet) : elle passe sur l'avatar du Roi ;
+   - `.ring` du prototype renommé `.spin-ring` (`.ring` est un utilitaire Tailwind) ;
+   - bouton « Ajouter » : libellés empilés, sa largeur ne saute pas quand le lien change ;
+   - survols derrière (hover:hover) and (pointer:fine), mouvement réduit respecté.
+   Importé par globals.css, avant les couches Tailwind : CSS simple, sans @layer.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Marge latérale de la page : l'en-tête et le contenu s'alignent dessus (page.tsx). */
+:root { --page-x: 24px; }
+
+.top {
+  position: relative; z-index: 30; height: var(--header-h);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 640px) minmax(0, 1fr);
+  align-items: center; gap: 20px;
+  padding: env(safe-area-inset-top, 0px) calc(var(--page-x) + env(safe-area-inset-right, 0px)) 0 calc(var(--page-x) + env(safe-area-inset-left, 0px));
+  box-sizing: content-box;
+}
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.medal {
+  position: relative; width: 38px; height: 38px; border-radius: 50%; flex: none; overflow: hidden;
+  box-shadow: 0 0 0 1px rgb(207 167 90 / .55), 0 0 0 4px var(--nuit), 0 0 0 5px rgb(207 167 90 / .18);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.medal img { width: 100%; height: 100%; object-fit: cover; filter: sepia(.18) saturate(.85) contrast(1.05); }
+.medal:active { transform: scale(.95); }
+/* Même échelle que le prototype (34 px pour 1040 unités) sur une viewBox resserrée de 915 unités. */
+.wordmark { height: 30px; width: auto; color: var(--os); overflow: visible; flex: none; }
+.wordmark .wm-le { fill: var(--cendre); }
+.wm-short { display: none; }
+
+/* ── recherche ── */
+.search { position: relative; min-width: 0; }
+/* déconnecté : rien à chercher, la scène porte le seul bouton de connexion (Header.tsx) */
+.top[data-auth=out] .search { visibility: hidden; }
+.field {
+  position: relative; display: flex; align-items: center; height: 46px; border-radius: 10px; corner-shape: bevel;
+  background: var(--voute); box-shadow: inset 0 0 0 1px var(--hair); padding: 0 6px 0 14px; gap: 10px;
+  transition: box-shadow var(--dur-hover) ease;
+}
+.field:focus-within { box-shadow: inset 0 0 0 1px rgb(var(--lumiere-rgb) / .55), 0 0 0 4px rgb(var(--lumiere-rgb) / .08); }
+.field .ico-search { position: relative; width: 18px; height: 18px; color: var(--cendre); flex: none; }
+.field .ico-search svg, .field .ico-search .spin-ring { position: absolute; inset: 0; transition: opacity var(--dur-micro) ease; }
+.field .ico-search .spin-ring {
+  border-radius: 50%; border: 2px solid rgb(var(--lumiere-rgb) / .25); border-top-color: rgb(var(--lumiere-rgb)); opacity: 0;
+  inset: 2px; animation: spin 700ms linear infinite; animation-play-state: paused;
+}
+.field[data-searching=true] .ico-search svg { opacity: 0; }
+.field[data-searching=true] .ico-search .spin-ring { opacity: 1; animation-play-state: running; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* le champ garde toujours de quoi montrer le lien collé : c'est la pastille qui s'abrège */
+.field input { flex: 1 1 72px; min-width: 56px; height: 100%; border: 0; background: none; outline: none; font-size: 15.5px; color: var(--os); }
+.field input::placeholder { color: var(--cendre); }
+.kbd { flex: none; font: 600 12px/1 var(--f-ui); color: var(--cendre); border: 1px solid var(--hair-2); border-radius: 5px; padding: 4px 6px; transition: opacity var(--dur-micro) ease; }
+.field[data-has-text=true] .kbd { opacity: 0; }
+@media (hover: none) { .kbd { display: none; } }
+/* Indice « / » seulement quand la touche marche : <html data-keys=on> est posé par le menu du compte, monté
+   une fois le Roi connu. Raccourcis coupés (WCAG 2.1.4), ou avant l'hydratation et la session : aucun indice. */
+:root:not([data-keys=on]) .kbd { display: none; }
+.linkpill {
+  font: 700 11.5px/1 var(--f-ui); letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--lumiere-rgb)); white-space: nowrap;
+  padding: 6px 8px; border-radius: 6px; background: rgb(var(--lumiere-rgb) / .1); display: none;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.linkpill[data-kind=bad] { color: var(--gueules); background: rgb(224 88 62 / .12); }
+.field[data-link] .linkpill { display: inline-block; }
+.field[data-link] .kbd { display: none; }
+.btn-add {
+  position: relative; flex: none; height: 34px; min-width: 84px; padding: 0 14px; border-radius: 7px; corner-shape: bevel;
+  background: var(--os); color: var(--nuit); font: 700 14.5px/1 var(--f-ui); white-space: nowrap;
+  transition: transform var(--dur-press) var(--ease-out), opacity var(--dur-hover) ease;
+}
+.btn-add:active { transform: scale(.97); }
+.btn-add:disabled { opacity: .45; cursor: default; }
+/* Les trois libellés dans la même case : le bouton prend la largeur du plus long et ne saute pas. */
+.btn-add .lbls { display: grid; transition: opacity var(--dur-micro) ease; }
+.btn-add .lbls > span { grid-area: 1 / 1; visibility: hidden; }
+.btn-add .lbls > span[data-on=true] { visibility: visible; }
+.btn-add .spin {
+  position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+  border: 2px solid rgb(11 9 8 / .2); border-top-color: var(--nuit); opacity: 0; animation: spin 700ms linear infinite; animation-play-state: paused;
+}
+.btn-add[data-loading=true] .lbls { opacity: 0; }
+.btn-add[data-loading=true] .spin { opacity: 1; animation-play-state: running; }
+
+/* suggestions : se déroulent depuis le champ (révélation par clip, origine en haut) */
+.sug {
+  position: absolute; left: 0; right: 0; top: calc(100% + 8px); z-index: 40; padding: 6px; display: none; opacity: 0;
+  transform-origin: top center; clip-path: inset(-2px -2px -60px -2px);
+  transition: opacity var(--dur-pop-out) ease, display var(--dur-pop-out) allow-discrete;
+}
+.sug:not([data-open=true]) { pointer-events: none; }
+.sug[data-open=true] {
+  display: block; opacity: 1; transform: none;
+  transition: opacity var(--dur-pop-in) var(--ease-out), transform var(--dur-pop-in) var(--ease-out), display 0s allow-discrete;
+}
+@starting-style { .sug[data-open=true] { opacity: 0; transform: translateY(-4px) scale(.985); } }
+.sug-head { display: flex; justify-content: space-between; padding: 8px 10px 6px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--cendre); }
+.sug-item { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 7px 10px 7px 7px; border-radius: 7px; cursor: pointer; }
+.sug-item[aria-selected=true] { background: var(--voute-2); }
+@media (hover: hover) and (pointer: fine) {
+  .sug-item:hover { background: rgb(239 231 216 / .04); }
+  .sug-item[aria-selected=true]:hover { background: var(--voute-2); }
+}
+.sug-item .th { width: 64px; aspect-ratio: 16 / 9; border-radius: 4px; overflow: hidden; background: var(--voute-2); display: grid; place-items: center; color: var(--cendre); }
+.sug-item .th img { width: 100%; height: 100%; object-fit: cover; }
+.sug-item .th svg { width: 22px; height: 22px; }
+.sug-item .t { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sug-item .a { font-size: 13px; color: var(--cendre); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sug-item .d { font-size: 13px; color: var(--cendre); }
+.sug-foot { padding: 8px 10px 4px; font-size: 12.5px; color: var(--cendre); border-top: 1px solid var(--hair); margin-top: 4px; }
+
+/* ── droite : serveur, compte ── */
+.top-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.top-right > div { position: relative; min-width: 0; }
+.chip {
+  display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 10px 0 6px; border-radius: 9px; corner-shape: bevel;
+  transition: background-color var(--dur-hover) ease, transform var(--dur-press) var(--ease-out); min-width: 0; max-width: 100%;
+}
+.chip:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .chip:hover { background: var(--voute); } }
+.chip[aria-expanded=true] { background: var(--voute); }
+.guild-ico {
+  position: relative; width: 28px; height: 28px; border-radius: 7px; corner-shape: bevel; display: grid; place-items: center;
+  font: 700 14px/1 var(--f-ui); color: var(--nuit); flex: none;
+}
+.guild-ico img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+/* voyant de connexion (Socket.IO) posé sur l'écu du serveur */
+.guild-ico .live { position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border-radius: 50%; background: #58c48b; box-shadow: 0 0 0 2.5px var(--nuit); }
+.guild-ico .live[data-on=false] { background: var(--gueules); }
+.guild-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.chev { width: 16px; height: 16px; color: var(--cendre); flex: none; transition: transform var(--dur-pop-in) var(--ease-out); }
+.chip[aria-expanded=true] .chev { transform: rotate(180deg); }
+.ico { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: square; stroke-linejoin: miter; }
+
+/* avatar du Roi : la couronne (rendu Blender) posée en haut à droite */
+.king { position: relative; flex: none; width: 34px; height: 34px; }
+.avatar {
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; overflow: hidden;
+  font: 700 15px/1 var(--f-ui); color: #fff; background: #3a63b8; box-shadow: 0 0 0 1px rgb(255 255 255 / .12);
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.king .crown {
+  position: absolute; right: -9px; top: -11px; width: 24px; height: 24px; transform: rotate(16deg);
+  filter: drop-shadow(0 2px 2px rgb(0 0 0 / .7)); pointer-events: none;
+}
+/* surtitre « Sa Majesté » et pseudo, quand la place le permet */
+.king-id { display: none; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; margin-left: 4px; text-align: left; }
+.king-id small { font: 700 10.5px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--or); }
+.king-id b { font-size: 15px; font-weight: 500; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+@media (min-width: 1360px) { .king-id { display: flex; } }
+
+.btn-solid {
+  display: inline-flex; align-items: center; height: 40px; padding: 0 18px; border-radius: 9px; corner-shape: bevel;
+  background: var(--os); color: var(--nuit); font-weight: 800; font-size: 15px; white-space: nowrap;
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.btn-solid:active { transform: scale(.97); }
+
+/* popovers (serveurs, compte) : origine en haut à droite, fondu et échelle .97 */
+.pop {
+  position: absolute; right: 0; top: calc(100% + 8px); transform-origin: top right;
+  z-index: 60; min-width: 250px; padding: 6px; display: none; opacity: 0;
+  transition: opacity var(--dur-pop-out) ease, display var(--dur-pop-out) allow-discrete;
+}
+.pop[data-open=true] {
+  display: block; opacity: 1; transform: none;
+  transition: opacity var(--dur-pop-in) var(--ease-out), transform var(--dur-pop-in) var(--ease-out), display 0s allow-discrete;
+}
+@starting-style { .pop[data-open=true] { opacity: 0; transform: scale(.97); } }
+/* Menus de l'en-tête (serveurs, compte) bornés à la fenêtre : le compte (deux interrupteurs, treize raccourcis)
+   dépasse 600 px ; sur une fenêtre basse, il défile au lieu d'être coupé (body ne défile pas au-delà de 900 px).
+   76 px : haut du menu (≈ 64 px, sous l'avatar) et une marge en bas. */
+.top .pop {
+  max-height: calc(100dvh - 76px - env(safe-area-inset-top, 0px));
+  overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+}
+.pop-title { padding: 9px 10px 6px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--cendre); }
+.pop-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; text-align: left; font-size: 15px; }
+.pop-item[aria-disabled=true] { cursor: default; }
+.pop-item[aria-selected=true] { background: rgb(239 231 216 / .05); }
+@media (hover: hover) and (pointer: fine) { .pop-item:not([aria-disabled=true]):hover { background: var(--voute-2); } }
+.pop-item .sub { margin-left: auto; font-size: 13px; color: var(--cendre); }
+.pop-item .two { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.pop-item .two b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pop-item .two small { font-size: 12.5px; color: var(--cendre); }
+.pop-item .two small[data-greg=present] { color: var(--os-2); }
+.pop-sep { height: 1px; background: var(--hair); margin: 6px 4px; }
+.switch { margin-left: auto; width: 32px; height: 18px; border-radius: 9px; background: var(--voute-2); position: relative; box-shadow: inset 0 0 0 1px var(--hair-2); transition: background-color var(--dur-hover) ease; flex: none; }
+.switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--cendre); transition: transform var(--dur-pop-in) var(--ease-out), background-color var(--dur-hover) ease; }
+[aria-checked=true] .switch { background: rgb(var(--lumiere-rgb) / .35); }
+[aria-checked=true] .switch::after { transform: translateX(14px); background: var(--os); }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; padding: 4px 10px 10px; font-size: 14px; color: var(--os-2); margin: 0; }
+.keys dd { margin: 0; }
+.keys kbd { font: 600 12.5px/1 var(--f-ui); color: var(--os); border: 1px solid var(--hair-2); border-radius: 5px; padding: 4px 6px; justify-self: start; white-space: nowrap; }
+
+/* mouvement réduit : ni échelle ni glissement, un simple fondu */
+@media (prefers-reduced-motion: reduce) {
+  .sug[data-open=true], .pop[data-open=true] { transition: opacity var(--dur-pop-in) ease, display 0s allow-discrete; }
+  @starting-style { .sug[data-open=true], .pop[data-open=true] { transform: none; } }
+  .chev, .medal, .chip, .btn-add, .btn-solid, .field, .switch, .switch::after { transition: none; }
+  /* Les roues de chargement (.spin-ring, .spin) tournent encore : elles disent seules « en cours ». */
+}
+
+/* Sous 1320 px, deux colonnes égales ne tiennent plus la marque (≈ 284 px) : colonnes à la taille
+   de leur contenu, la recherche prend le reste (640 px au plus, centrée). */
+@media (max-width: 1320px) {
+  .top { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .search { justify-self: center; width: 100%; max-width: 640px; }
+  .guild-name { max-width: 150px; }
+}
+
+/* ═══ écrans étroits : marque et compte sur une ligne, recherche pleine largeur dessous ═══ */
+@media (max-width: 900px) {
+  :root { --header-h: auto; --page-x: 16px; }
+  .top {
+    grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "brand . right" "search search search";
+    row-gap: 10px; padding-top: calc(12px + env(safe-area-inset-top, 0px)); padding-bottom: 8px; height: auto;
+  }
+  .brand { grid-area: brand; }
+  .search { grid-area: search; max-width: none; }
+  .top-right { grid-area: right; }
+  /* déconnecté : pas de rangée vide pour la recherche, la rose monte sous le wordmark (sur ordinateur,
+     `visibility: hidden` garde la grille à trois colonnes : l'en-tête ne saute pas à la connexion) */
+  .top[data-auth=out] { grid-template-areas: "brand . right"; }
+  .top[data-auth=out] .search { display: none; }
+  .wordmark { height: 23px; }
+  .wm-full { display: none; }
+  .wm-short { display: block; }
+  .guild-name { max-width: 140px; }
+}
+@media (max-width: 520px) {
+  .medal { width: 32px; height: 32px; }
+  .guild-name { max-width: 96px; font-size: 14px; }
+  .top-right .chev { display: none; }
+  .chip { padding: 0 6px; }
+  /* sur téléphone, le bouton suit son libellé ; playlist et mix se lisent déjà sur le bouton */
+  .btn-add .lbls > span:not([data-on=true]) { display: none; }
+  .field[data-link=playlist] .linkpill, .field[data-link=mix] .linkpill { display: none; }
+}

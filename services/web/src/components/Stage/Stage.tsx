@@ -1,0 +1,175 @@
+'use client';
+
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, RefObject } from 'react';
+import { useStore } from '@/hooks/usePlayer';
+import { useStageLayout } from '@/hooks/useStageLayout';
+import { useStageClock } from '@/hooks/useStageClock';
+import { useVideoOffset } from '@/hooks/useVideoOffset';
+import { extractVideoId } from '@/lib/format';
+import { DUR, EASE, reducedMotion } from '@/lib/motion';
+import { fitNight, nightBottom, sameLayout, stageCssVars } from '@/lib/stage/layout';
+import type { StageLayout } from '@/lib/stage/layout';
+import { dialGeometry, paneMask } from '@/lib/stage/dial';
+import { stageScene } from '@/lib/stage/scene';
+import type { Scene } from '@/lib/stage/scene';
+import { t } from '@/theme/copy';
+import Rose from './Rose';
+import Clock, { TimesRow } from './Clock';
+import NightState from './NightState';
+import Portal from './Portal';
+import SyncOffset from './SyncOffset';
+import NowPlaying, { NOW_TITLE_ID } from './NowPlaying';
+import Transport from './Transport';
+import { startCoronation, useCeremony } from './coronation';
+import { flipBox, flipFrames } from './flipBox';
+import type { StageBox } from './flipBox';
+
+type NightFit = { layout: StageLayout; bottom: number };
+
+/** Boîte de mise en page (sans transform) d'un enfant de la scène, dans le repère de la rose : centre et haut de la scène. */
+function stageBox(el: HTMLElement, stage: HTMLElement): StageBox {
+  return { x: el.offsetLeft + el.offsetWidth / 2 - stage.offsetWidth / 2, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+}
+
+/**
+ * Mise en page de la nuit (fitNight, layout.ts), remesurée quand la colonne, le bloc du dessous ou le texte de
+ * la nuit changent de taille (fenêtre, police chargée, une ligne de plus). null le jour : useStageLayout suffit.
+ * Écart 10 du plan de l'étape 2 : quand le texte de nuit ne tient pas sous la rose du jour (1280 × 720 :
+ * R 280 → 244 ; 1366 × 657 : 242 → 205), la rose change de taille en passant jour ↔ nuit, pendant le fondu de
+ * la rosace ; Stage l'anime (FLIP en transform sur la rose, 420 ms).
+ */
+function useNightFit(scene: Scene, colRef: RefObject<HTMLElement>, stageRef: RefObject<HTMLElement>,
+  belowRef: RefObject<HTMLElement>): NightFit | null {
+  const [fit, setFit] = useState<NightFit | null>(null);
+
+  useLayoutEffect(() => {
+    const col = colRef.current, below = belowRef.current;
+    const inner = stageRef.current?.querySelector<HTMLElement>('.night .vl-inner');
+    const heart = inner?.querySelector<HTMLElement>('.heart');
+    if (scene === 'day' || !col || !below || !inner || !heart) { setFit(null); return; }
+    const measure = () => {
+      // le texte sous l'oculus : sa hauteur ne dépend pas de R (celles de l'oculus et de sa marge, si)
+      const tail = inner.offsetHeight - heart.offsetHeight - parseFloat(getComputedStyle(heart).marginBottom);
+      const layout = fitNight({ colW: col.clientWidth, colH: col.clientHeight, belowH: below.offsetHeight, viewportW: window.innerWidth }, tail);
+      const bottom = Math.ceil(nightBottom(layout, tail));
+      setFit((prev) => (prev && prev.bottom === bottom && sameLayout(prev.layout, layout) ? prev : { layout, bottom }));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(col);
+    ro.observe(below);
+    ro.observe(inner);
+    measure();
+    return () => ro.disconnect();
+  }, [scene, colRef, stageRef, belowRef]);
+
+  return scene === 'day' ? null : fit;
+}
+
+/**
+ * La scène (spec §4) : la rosace sur le portail de pierre, la vidéo au seuil, l'horloge dans l'anneau,
+ * et dessous le titre et le transport. Une seule mesure, R (useStageLayout), pilote tout par variables CSS ;
+ * la nuit, R vient de useNightFit, pour que son texte tienne aussi.
+ * `booted` : la session a été vérifiée (page.tsx) ; avant, c'est la nuit « chargement ».
+ * Mémoïsée : page.tsx lit tout le store (usePlayer) et se rend à chaque tick du bot ; la scène, elle,
+ * ne se rend qu'à ses propres changements (sélecteurs de primitives ci-dessous : `me` et `player.current`
+ * sont recréés à chaque charge utile), une fois par panneau de l'horloge et aux étapes du Couronnement
+ * (coronation.ts, branché ici une fois ; la cérémonie du titre en cours passe à la rosace et au portail).
+ */
+function Stage({ booted }: { booted: boolean }) {
+  const colRef = useRef<HTMLElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const belowRef = useRef<HTMLDivElement>(null);
+  const loggedIn = useStore((s) => !!s.me);
+  const hasCurrent = useStore((s) => !!s.player.current);
+  const url = useStore((s) => s.player.current?.url);
+  const thumb = useStore((s) => s.player.current?.thumb || s.player.current?.thumbnail || null);
+  const nextUrl = useStore((s) => s.player.queue[0]?.url);
+  const paused = useStore((s) => s.player.paused);
+  const currentKey = useStore((s) => s.player.current?.key ?? null);
+  const ceremony = useCeremony();
+  const crown = ceremony && ceremony.key === currentKey ? ceremony : null;
+  useEffect(() => startCoronation(), []);
+
+  const scene = stageScene({ booted, loggedIn, hasCurrent });
+  const day = scene === 'day';
+  // la scène d'avant (motif « valeur précédente ») : la nuit qui suit le jour attend la rose (night.css)
+  const [shown, setShown] = useState(scene), [prevScene, setPrevScene] = useState<Scene | null>(null);
+  if (shown !== scene) { setShown(scene); setPrevScene(shown); }
+  const measured = useStageLayout(colRef, belowRef);
+  const nightFit = useNightFit(scene, colRef, stageRef, belowRef);
+  const layout = nightFit?.layout ?? measured;
+  const dial = useMemo(() => dialGeometry(layout?.c ?? 0.3), [layout?.c]);
+  const pane = useStageClock(stageRef, dial.n);
+  const [offset, setOffset] = useVideoOffset();
+  const videoId = day ? extractVideoId(url) : null;
+  const nextId = extractVideoId(nextUrl);
+  // Titre sans vidéo YouTube (SoundCloud, que le bot joue aussi) : sa pochette tient lieu d'image.
+  const art = day && !videoId ? thumb : null;
+
+  // Écart 10 de l'étape 2 : R qui change avec la scène passe en FLIP (420 ms), pas un redimensionnement de fenêtre.
+  // Vers la nuit, le portail et la lumière s'effacent encore pleins : eux aussi gardent leur boîte d'avant, avec la rose
+  // (vers le jour, ils entrent depuis 0, à leur place).
+  const sceneAt = useRef(0), lastR = useRef(0), lastDay = useRef(day), lastBoxes = useRef<(StageBox | null)[]>([]);
+  useLayoutEffect(() => {
+    if (lastDay.current !== day) { lastDay.current = day; sceneAt.current = performance.now(); }
+    const R = layout?.R ?? 0, prev = lastR.current;
+    lastR.current = R;
+    const stage = stageRef.current;
+    const rose = stage?.querySelector<HTMLElement>('.rosace');
+    const fading = ['.portal', '.lightpool'].map((s) => stage?.querySelector<HTMLElement>(`:scope > ${s}`) ?? null);
+    const before = lastBoxes.current, boxes = fading.map((el) => (el && stage ? stageBox(el, stage) : null));
+    lastBoxes.current = boxes;
+    if (!rose || !prev || !R || Math.abs(prev - R) < 1 || performance.now() - sceneAt.current > 400 || reducedMotion()) return;
+    rose.animate([{ transform: `scale(${prev / R})` }, { transform: 'none' }], { duration: DUR.reveal, easing: EASE.out });
+    if (day) return;
+    fading.forEach((el, i) => {
+      const from = before[i], to = boxes[i];
+      if (el && from && to && to.w > 0 && to.h > 0) el.animate(flipFrames(flipBox(from, to)), { duration: DUR.reveal, easing: EASE.out });
+    });
+  }, [layout?.R, day]);
+
+  // Filet de sécurité (DESIGN §12.4) : si la scène ou sa nuit débordent malgré tout, la colonne défile.
+  useLayoutEffect(() => {
+    const col = colRef.current, stage = stageRef.current;
+    if (!col || !stage) return;
+    const night = stage.querySelector<HTMLElement>('.night');
+    const need = Math.max(stage.offsetHeight, night ? night.offsetTop + night.offsetHeight : 0);
+    col.dataset.fit = need > col.clientHeight + 1 ? 'loose' : 'tight';
+  }, [layout, scene, nightFit]);
+
+  // La nuit, la scène la contient : elle reste centrée dans la colonne et le filet de sécurité la compte.
+  const style = (layout
+    ? { ...stageCssVars(layout), '--a0': String(dial.a0), minHeight: nightFit ? `${nightFit.bottom}px` : undefined }
+    : undefined) as CSSProperties | undefined;
+
+  return (
+    <section className="stage-col" ref={colRef} aria-label={day ? t('now.kicker') : undefined}>
+      <div className="stage" ref={stageRef} style={style}
+        data-scene={day ? 'day' : 'night'} data-paused={day && paused} data-springs={layout?.springs ?? 'spring'}>
+        <Rose videoId={videoId} nextId={nextId} R={layout?.R ?? 0} mask={paneMask(day ? pane : -1)} crown={crown}/>
+        <div className="lightpool" aria-hidden="true"/>
+        <Clock dial={dial} active={day} labelledBy={NOW_TITLE_ID}/>
+        {/* une nuit par état : chargement → rien en lecture remonte la nuit, son entrée (night-in) rejoue */}
+        {scene !== 'day' && <NightState key={scene} kind={scene} afterDay={prevScene === 'day'}/>}
+        <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art} crown={crown}/>
+        <div className="below" ref={belowRef}>
+          <TimesRow/>
+          <div className="now">
+            <NowPlaying/>
+            <Transport/>
+          </div>
+          <div className="below-foot">
+            <p className="muted-note">
+              <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5.5L6.5 9H3.5v6h3l4.5 3.5z"/><path d="M15.5 9.5l5 5M20.5 9.5l-5 5"/></svg>
+              {t('now.embedMuted')}
+            </p>
+            {videoId && <SyncOffset value={offset} onChange={setOffset}/>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export default memo(Stage);

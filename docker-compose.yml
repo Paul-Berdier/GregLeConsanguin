@@ -51,6 +51,13 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - PORT=3000
+      # Origine du front compose (port publié 3001) : redirection après le login Discord
+      # + origine autorisée (CORS avec cookies, Socket.IO). En dur : un WEB_URL de prod
+      # dans .env renverrait le login vers la prod.
+      - WEB_URL=http://localhost:3001
+      # Origines autorisées en plus de WEB_URL (virgules), surchargeable depuis .env
+      # (ex. l'IP LAN du poste : http://localhost:3001,http://192.168.1.20:3001).
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3001}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
       interval: 15s

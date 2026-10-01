@@ -1,0 +1,95 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : le portail de pierre et la vidéo (lecteur YouTube persistant sous un poster).
+   Repris de proto-gothique/work/refine/src/styles.css (lignes 253–270, 327–328 ; mouvement réduit, 538–539).
+   Écarts voulus :
+   - couches de tech.md §5.3 : iframe, posters, voile de pause, badge ; le poster couvre jusqu'à
+     PLAYING + REVEAL_AFTER_PLAYING_MS et pendant la pause (data-covered, Portal.tsx) ;
+   - la Révérence (l. 258–260) : en pause, la vidéo s'incline à .97 sur le ressort --spring-settle ; mouvement réduit :
+     le voile et le badge seuls ;
+   - le Couronnement (coronation.ts) : le portail revient de la nuit en scale(.97) → 1 ; en vol, le nouveau poster
+     attend l'atterrissage sous le fantôme (data-held) et paraît sans fondu (data-cut), l'ancien part en scale(1.03) ;
+     sinon, le nouveau entre en --poster-ms (plan de la cérémonie, style en ligne de Poster) ;
+   - « Synchro vidéo » : popover plaque hors de la vidéo, jamais de flou sur l'iframe ;
+   - l'ombre du portail est une box-shadow, pas le `filter: drop-shadow` du prototype : un filtre sur un
+     ancêtre de l'iframe rejoue une passe de rendu à chaque image de la vidéo (tech.md §6.2) ; le cadre
+     de pierre est rectangulaire, l'ombre est la même ;
+   - un titre sans vidéo YouTube (SoundCloud) montre sa pochette entière (.poster.art), sur le fond opaque des
+     posters : le lecteur arrêté garde l'image de la vidéo précédente, elle ne doit pas border la pochette.
+   Variables lues : --vw --f (posées sur .stage).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.portal {
+  position: relative; z-index: 2; width: calc(var(--vw) + 2 * var(--f));
+  border: var(--f) solid transparent; border-image: url(/gothique/stone-frame-640.webp) 96 / var(--f) stretch;
+  box-shadow: 0 18px 30px rgb(0 0 0 / .6);
+  transition: opacity 500ms ease, transform 520ms var(--ease-out);
+}
+.stage[data-scene=night] .portal { opacity: 0; transform: scale(.97); pointer-events: none; }
+.video { position: relative; width: var(--vw); aspect-ratio: 16 / 9; overflow: hidden; background: #050404;
+  transition: transform var(--spring-settle-dur) var(--spring-settle); }
+.stage[data-paused=true] .video { transform: scale(.97); }
+.video .yt { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.video .yt iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* fond opaque : couvert, l'iframe ne transparaît jamais (poster pas encore chargé, marges d'une pochette carrée) */
+.video .posters { position: absolute; inset: 0; z-index: 2; background: #050404; opacity: 1; transition: opacity 200ms ease; }
+.video .posters[data-covered=false] { opacity: 0; transition-duration: var(--dur-reveal); }
+/* pas de var(--poster-ms, repli) dans la transition : le lecteur de stage-contract (animated()) coupe à la virgule du repli */
+.video .poster {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transform: scale(.96);
+  --poster-ms: var(--dur-reveal); transition: opacity var(--poster-ms) var(--ease-out), transform var(--poster-ms) var(--ease-out);
+}
+.video .poster[data-ready=true] { opacity: 1; transform: none; }
+.video .poster[data-cut] { transition: none; }
+.video .poster[data-held] { opacity: 0; }
+.video .poster[data-leaving] { opacity: 0; transform: scale(1.03); transition: opacity 200ms ease, transform 260ms var(--ease-out); }
+.video .poster.art { object-fit: contain; transform: none; }
+
+.video .veil { position: absolute; inset: 0; z-index: 3; background: #000; opacity: 0; transition: opacity 300ms ease; pointer-events: none; }
+.stage[data-paused=true] .video .veil { opacity: .36; }
+.paused-badge {
+  position: absolute; left: 50%; top: 50%; z-index: 4; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 10px 12px; font: 700 13px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase;
+  transform: translate(-50%, -50%) scale(.96); opacity: 0; pointer-events: none;
+  transition: opacity 200ms ease, transform 300ms var(--ease-out);
+}
+.paused-badge svg { width: 15px; height: 15px; }
+.stage[data-paused=true] .paused-badge { opacity: 1; transform: translate(-50%, -50%); }
+.video-note { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 4; margin: 0; padding: 8px 12px; font-size: 14px; color: var(--os-2); }
+
+/* sous le portail : « Image seulement… » et le réglage de synchro */
+.muted-note { display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font-size: 13px; color: var(--cendre); }
+.muted-note svg { width: 14px; height: 14px; flex: none; }
+/* margin-left: auto : renvoyé seul à la ligne (téléphone, colonne étroite), le bouton reste à droite ;
+   son popover, ancré à droite et large de 300 px, sortirait sinon de l'écran à gauche */
+.sync { position: relative; flex: none; margin-left: auto; }
+.sync-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 7px; corner-shape: bevel;
+  font: 600 13px/1 var(--f-ui); color: var(--cendre); box-shadow: inset 0 0 0 1px var(--hair);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.sync-btn svg { width: 15px; height: 15px; }
+.sync-btn .tnum { color: rgb(var(--lumiere-rgb)); }
+.sync-btn:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .sync-btn:hover { color: var(--os); box-shadow: inset 0 0 0 1px var(--hair-2); } }
+.sync-pop { top: auto; right: 0; bottom: calc(100% + 8px); transform-origin: bottom right; min-width: 300px; padding: 12px; }
+.sync-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 12px; font-size: 14px; color: var(--os-2); }
+.sync-row output { font-weight: 700; color: var(--os); }
+.sync-row input { grid-column: 1 / -1; width: 100%; accent-color: rgb(var(--lumiere-rgb)); }
+.sync-help { margin: 8px 0 10px; font-size: 13px; color: var(--cendre); }
+.sync-reset {
+  height: 34px; padding: 0 12px; border-radius: 7px; corner-shape: bevel; font-weight: 700; font-size: 14px;
+  box-shadow: inset 0 0 0 1px var(--hair-2); transition: transform var(--dur-press) var(--ease-out);
+}
+.sync-reset:active { transform: scale(.97); }
+.sync-reset:disabled { opacity: .4; cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .portal { transition: opacity 500ms ease; }
+  .stage[data-scene=night] .portal, .stage[data-paused=true] .video { transform: none; }
+  .video { transition: none; }
+  /* motion.md §6.10 : les posters se relaient en fondu de 200 ms (--dur-reveal n'est pas raccourci par tokens.css) */
+  .video .poster, .video .poster[data-leaving] { transform: none; transition: opacity 200ms ease; }
+  .video .posters[data-covered=false] { transition-duration: 200ms; }
+  .paused-badge, .stage[data-paused=true] .paused-badge { transform: translate(-50%, -50%); }
+  .sync-btn, .sync-reset { transition: none; }
+}
