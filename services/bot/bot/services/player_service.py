@@ -33,8 +33,10 @@ Fix v2.2 (playlists via liens + audit) :
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import logging
+import math
 import os
 import re
 import time
@@ -75,6 +77,7 @@ from greg_shared.priority import (
     validate_move,
 )
 
+from bot.services.audio_clock import CountingSource
 from bot.services.ffmpeg import detect_ffmpeg
 from bot.services.playlist_manager import PlaylistManager
 from bot.services.history_manager import HistoryManager
@@ -112,6 +115,11 @@ _MAX_CUTS_PER_TRACK = 3
 # Délai d'attente exponentiel après échec (en secondes, plafonné).
 _BACKOFF_BASE = 1.5
 _BACKOFF_MAX = 8.0
+
+# Pré-lecture de la 1re trame (synchro son/vidéo), sous le verrou de lecture : jamais sans fin. Un stop/skip la
+# coupe aussitôt ; sans trame au bout de _PREROLL_MAX_S (mode pipe : 1 à 8 s mesurés), échec de démarrage.
+_PREROLL_MAX_S = 20.0
+_PREROLL_POLL_S = 0.05
 
 # ── Budget de réponse de play_for_user (l'API attend 25 s) ──
 _EXPAND_TIMEOUT = 20.0
@@ -236,6 +244,12 @@ def _cleanup_source_off_loop(src) -> None:
         _cleanup_source(src)
 
 
+def _drop_result(fut) -> None:
+    """Tâche abandonnée (pré-lecture coupée) : son résultat est lu, asyncio ne signale aucune exception perdue."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 def _track_link_refusal(link: str) -> Optional[str]:
     """Raison (FR) pour laquelle stream() refuserait d'emblée ce lien comme titre, sinon None.
 
@@ -279,6 +293,8 @@ class PlayerService:
         self.paused_since: Dict[int, float] = {}
         self.paused_total: Dict[int, float] = {}
         self.current_source: Dict[int, Any] = {}
+        # Synchro son/vidéo : instant du choix du titre (log [SYNC] : délai jusqu'à la 1re trame).
+        self._chosen_at: Dict[int, float] = {}
         self._progress_task: Dict[int, asyncio.Task] = {}
         # Verrou de LECTURE (play_next, tenu pendant les extractions longues)
         self._locks: Dict[int, asyncio.Lock] = {}
@@ -896,6 +912,7 @@ class PlayerService:
             self.now_playing[gid] = dict(item)
             dur = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}
+            self._chosen_at[gid] = time.monotonic()
 
             extractor = get_extractor(url)
             if not extractor:
@@ -939,6 +956,30 @@ class PlayerService:
                 logger.info("[Chargement annulé] guild=%s url=%s", gid, url)
                 self._spawn(self.play_next(guild))
                 return
+
+            if srcp is not None:
+                # Horloge audio (spec synchro §4.2) : trames réellement lues ; une trame lue d'avance, AVANT
+                # vc.play, pour que play_start et la 1re trame coïncident (plus d'avance en mode pipe).
+                srcp = CountingSource(
+                    srcp, loop=loop,
+                    on_first_frame=functools.partial(self._on_first_frame, gid),
+                    on_resume_after_stall=functools.partial(self._on_stall_end, gid),
+                )
+                primed, pre_err = await self._preroll(gid, gen, srcp)
+                if self._is_stale(gid, gen):
+                    # stop/skip/play_at/restart pendant la pré-lecture : même abandon que pendant l'extraction.
+                    _cleanup_source_off_loop(srcp)
+                    logger.info("[Chargement annulé] guild=%s url=%s", gid, url)
+                    self._spawn(self.play_next(guild))
+                    return
+                if not primed:
+                    # ffmpeg n'a produit aucune trame (b''), ou rien en _PREROLL_MAX_S : échec de démarrage, même
+                    # politique qu'un extracteur KO.
+                    pre_err = pre_err or getattr(srcp, "_current_error", None)   # code de sortie de ffmpeg
+                    logger.warning("[pré-lecture KO] guild=%s url=%s: %s", gid, url, pre_err or "aucune trame")
+                    _cleanup_source_off_loop(srcp)
+                    srcp = None
+                    last_err = pre_err or RuntimeError("ffmpeg n'a produit aucune trame")
 
             if srcp is not None:
                 if title and isinstance(title, str):
@@ -1080,6 +1121,53 @@ class PlayerService:
             self._get_hm(gid).record_play(cur, played_by=added_by)
         except Exception as e:
             logger.debug("history record failed: %s", e)
+
+    async def _preroll(self, gid: int, gen: int, src: CountingSource) -> Tuple[bool, Optional[Exception]]:
+        """Pré-lit la 1re trame dans un thread ; rend (amorcée, erreur).
+
+        Le verrou de lecture n'est jamais tenu sans fin : lecture périmée (stop/skip/play_at/restart) ou ffmpeg muet
+        plus de _PREROLL_MAX_S, on rend la main sans attendre le thread ; l'appelant nettoie la source (ffmpeg et
+        yt-dlp tués), ce qui débloque read().
+        """
+        fut = asyncio.ensure_future(asyncio.to_thread(src.preroll))
+        deadline = time.monotonic() + _PREROLL_MAX_S
+        try:
+            while not fut.done() and not self._is_stale(gid, gen) and time.monotonic() < deadline:
+                await asyncio.wait({fut}, timeout=_PREROLL_POLL_S)
+        except asyncio.CancelledError:
+            fut.add_done_callback(_drop_result)
+            _cleanup_source_off_loop(src)   # play_next annulé (arrêt du bot) : ffmpeg ne reste pas en vie
+            raise
+        if not fut.done():
+            fut.add_done_callback(_drop_result)
+            if self._is_stale(gid, gen):
+                return False, None
+            return False, TimeoutError(f"aucune trame en {_PREROLL_MAX_S:g} s")
+        try:
+            return fut.result(), None
+        except Exception as e:
+            return False, e
+
+    def _on_first_frame(self, gid: int, src: CountingSource) -> None:
+        """1re trame lue par discord.py (sur la boucle, via call_soon_threadsafe) : log [SYNC] et état tout de suite."""
+        if self.current_source.get(gid) is not src:
+            return
+        chosen = self._chosen_at.get(gid)
+        g = self.bot.get_guild(gid)
+        lat = getattr(g.voice_client if g else None, "average_latency", None)
+        logger.info(
+            "[SYNC] guild=%s mode=%s choix_1re_trame_ms=%s prelecture_ms=%.0f latence_vocale_ms=%s",
+            gid, src.mode,
+            f"{(src.first_read_at - chosen) * 1000:.0f}" if chosen and src.first_read_at else "?",
+            src.preroll_ms or 0.0,
+            f"{lat * 1000:.0f}" if isinstance(lat, (int, float)) and math.isfinite(lat) else "?",
+        )
+        self._emit(gid)
+
+    def _on_stall_end(self, gid: int, src: CountingSource) -> None:
+        """Le flux repart après un blocage (sur la boucle, via call_soon_threadsafe) : état complet tout de suite."""
+        if self.current_source.get(gid) is src:
+            self._emit(gid)
 
     async def _handle_track_end(self, guild: discord.Guild, gid: int, cur: Optional[dict],
                                 elapsed: float, duration: Optional[int], was_explicit: bool,

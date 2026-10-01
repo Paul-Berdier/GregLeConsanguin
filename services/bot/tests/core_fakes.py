@@ -238,14 +238,41 @@ def fake_is_bundle_url(u: str) -> bool:
     return "list=" in u or "/playlist" in u or "/sets/" in u
 
 
+FRAME = b"\x00" * 3840  # une trame PCM de 20 ms (48 kHz stéréo s16le)
+
+
 class FakeSource:
-    def __init__(self, url: str, die_after: float, cleanup_delay: float = 0.0):
+    """Source ffmpeg factice. `frames` : trames disponibles (None = infini, 0 = ffmpeg ne produit rien) ;
+    `read_delay` : chaque read() bloque ce temps (premier octet lent, mode pipe), sauf si la source est
+    nettoyée entre-temps (ffmpeg tué : read() rend b'' tout de suite)."""
+
+    def __init__(self, url: str, die_after: float, cleanup_delay: float = 0.0,
+                 frames: Optional[int] = None, read_delay: float = 0.0):
         self.url = url
         self.die_after = die_after
         self.cleaned = False
         self._ytdlp_proc = None
         # cleanup() bloquant (comme _PipedFFmpegPCMAudio : join du thread d'écriture)
         self.cleanup_delay = cleanup_delay
+        self.frames_left = frames
+        self.read_delay = read_delay
+        self.reads = 0
+
+    def read(self) -> bytes:
+        end = time.monotonic() + self.read_delay
+        while not self.cleaned and time.monotonic() < end:
+            time.sleep(0.005)
+        if self.cleaned:
+            return b""
+        if self.frames_left is not None:
+            if self.frames_left <= 0:
+                return b""
+            self.frames_left -= 1
+        self.reads += 1
+        return FRAME
+
+    def is_opus(self) -> bool:
+        return False
 
     def cleanup(self):
         if self.cleanup_delay:
@@ -269,7 +296,8 @@ def yt_entry(i: int, **kw) -> dict:
 
 class FakeExtractor:
     """Extracteur piloté par URL :
-    {"fail", "unavailable", "pipe_tried", "delay", "die_after", "cleanup_delay", "title"}."""
+    {"fail", "unavailable", "pipe_tried", "delay", "die_after", "cleanup_delay", "title",
+     "no_audio" (ffmpeg ne produit aucune trame), "read_delay" (chaque trame lente)}."""
 
     def __init__(self, ps_module):
         self.ps = ps_module
@@ -305,7 +333,8 @@ class FakeExtractor:
             raise err
         if b.get("fail"):
             raise RuntimeError("HTTP Error 403: Forbidden")
-        src = FakeSource(url, b.get("die_after", self.default_die_after), b.get("cleanup_delay", 0.0))
+        src = FakeSource(url, b.get("die_after", self.default_die_after), b.get("cleanup_delay", 0.0),
+                         frames=0 if b.get("no_audio") else None, read_delay=b.get("read_delay", 0.0))
         self.sources.append(src)
         return src, b.get("title", f"Titre de {url}")
 
