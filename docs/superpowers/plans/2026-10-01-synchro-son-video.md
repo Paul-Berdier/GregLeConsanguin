@@ -39,6 +39,7 @@
   - Jamais de `git stash`, `reset`, `rebase`, `push --force`, ni de `checkout` d'une autre branche. Pas de push.
   - D'autres agents travaillent dans le **même arbre**. Faire `git add <nouveaux fichiers>`, puis `git commit -m "…" -- <chaque fichier créé ou modifié>`. Sur un `index.lock`, attendre quelques secondes puis réessayer.
 - **Commandes.** Git Bash, depuis la racine du dépôt.
+  - `S` = le dossier de travail de la session, `C:\Users\Paul\AppData\Local\Temp\claude\C--Users-Paul-Documents-Codage-GregLeConsanguin\0d3cb735-ae70-4238-a3f4-f9ff22e57d5f\scratchpad` (hors dépôt).
   - `PYBOT` = `"C:\Users\Paul\AppData\Local\Temp\claude\C--Users-Paul-Documents-Codage-GregLeConsanguin\0d3cb735-ae70-4238-a3f4-f9ff22e57d5f\scratchpad\venv-bot\Scripts\python.exe"`.
   - `PYAPI` = le même chemin avec `venv-api` à la place de `venv-bot`.
   - Dans les étapes, `PYBOT` et `PYAPI` désignent ces chemins **écrits en entier, entre guillemets** : l'état du shell ne persiste pas d'un appel à l'autre.
@@ -63,8 +64,8 @@
 - **Style et TDD.**
   - Commentaires en français, brefs, comme le code autour.
   - Test d'abord ; le voir échouer ; implémenter ; le voir passer ; commit.
-- **Prototype.** Le code et les tests de ce plan ont été prototypés sur une copie du dépôt (`S\syncplan`).
-  - Bot : 219 passés, stables sur 5 passes.
+- **Prototype.** Le code et les tests de ce plan ont été prototypés sur une copie du dépôt (`S\syncplan`), puis revus (`S\syncreview` : pré-lecture bornée en B2, `time_sync` en W4, garde du régulateur en W5).
+  - Bot : 220 passés, stables sur plusieurs passes.
   - API : 392 passés.
   - Site : 399 passés en natif et en transpilation, `tsc` sans erreur.
 
@@ -90,7 +91,15 @@
     - Pendant l'attente, vitesse ×1 et aucun saut.
     - Ancien bot (mode compat) : sauts seuls à 1,2 s, 15 s entre deux sauts (l'ancien régime).
     - `LOAD_COMP_S` est gardé : la spec ne remplace que `DRIFT_*` et `SEEK_COMP_S`, et l'alignement qui en dépendait.
-12. **`time_sync`.** Les mesures sont oubliées à chaque connexion (ce peut être une autre instance de l'API). Avant la première mesure, `serverNow` vaut `performance.timeOrigin + now`.
+    - Le régulateur ne cale la vidéo que si l'horloge décrit la vidéo affichée (`extractVideoId(clock.url) === videoId`). Avec un ancien bot, après un saut optimiste, l'horloge suit encore l'ancien titre jusqu'au premier état du nouveau : sans cette garde, la nouvelle vidéo serait envoyée à la position de l'ancienne. Pour la même raison, `load` démarre au début quand l'horloge décrit une autre vidéo.
+    - À chaque `load`, le régulateur repart de `CTL_INIT`, et les vitesses sont retentées : un direct YouTube les refuse, la vidéo suivante non.
+12. **`time_sync`.** À chaque connexion (ce peut être une autre instance de l'API), les anciennes mesures servent jusqu'à la première nouvelle mesure acceptée, qui les remplace. On ne les vide pas à la connexion : sinon `serverNow` retomberait le temps d'un aller-retour sur l'horloge du navigateur, et la vidéo sauterait de l'écart entre les deux horloges. Avant toute mesure (ouverture de la page), `serverNow` vaut `performance.timeOrigin + now`.
+13. **Pré-lecture bornée** (`_preroll`, B2). Elle se fait sous le verrou de lecture. Avant, un ffmpeg muet ne bloquait que le thread audio, et un skip passait aussitôt. Le thread est donc attendu par tranches de 50 ms :
+    - un stop, un skip, un play_at ou un restart (génération changée) la coupe tout de suite ;
+    - sans trame au bout de `_PREROLL_MAX_S` (20 s ; le mode pipe met 1 à 8 s), c'est un échec de démarrage, traité comme un `b''` ;
+    - dans les deux cas, la source est nettoyée : ffmpeg et yt-dlp sont tués, ce qui débloque `read()` et termine le thread.
+
+    Le message d'échec reprend le `_current_error` de ffmpeg (son code de sortie) quand il existe.
 
 ## File Structure
 
@@ -469,19 +478,21 @@ git commit -m "feat(bot): CountingSource, horloge des trames reellement lues par
 ### Task B2 : pré-lecture avant `vc.play`, source comptée, log `[SYNC]`
 
 **Files:**
-- Modify: `services/bot/bot/services/player_service.py` (imports l.35-41 et 78 ; `__init__` l.281 ; `play_next` l.898 et 943-944 ; nouvelles méthodes avant `_handle_track_end`, l.1084)
+- Modify: `services/bot/bot/services/player_service.py` (imports l.35-41 et 78 ; constantes après `_BACKOFF_MAX` l.114 ; `_drop_result` après `_cleanup_source_off_loop` l.224-237 ; `__init__` l.281 ; `play_next` l.898 et 943-944 ; nouvelles méthodes avant `_handle_track_end`, l.1084)
 - Modify: `services/bot/tests/core_fakes.py` (`FakeSource` l.241-253, docstring et `_make` de `FakeExtractor` l.271-308)
 - Create: `services/bot/tests/test_sync_clock.py`
 
 **Interfaces:**
 - Consumes: `CountingSource` (B1) : constructeur avec `loop`, `on_first_frame`, `on_resume_after_stall` ; `preroll()`, `mode`, `preroll_ms`, `first_read_at`.
 - Produces :
+  - Constantes de module `_PREROLL_MAX_S = 20.0` et `_PREROLL_POLL_S = 0.05` ; fonction de module `_drop_result(fut)`.
   - `PlayerService._chosen_at: Dict[int, float]` : instant (`time.monotonic`) du choix du titre.
+  - `PlayerService._preroll(gid: int, gen: int, src: CountingSource) -> Tuple[bool, Optional[Exception]]` : `(amorcée, erreur)` ; rend la main sans attendre le thread si la lecture devient périmée (`(False, None)`) ou après `_PREROLL_MAX_S` (`(False, TimeoutError)`), l'appelant nettoie alors la source.
   - `PlayerService._on_first_frame(gid: int, src: CountingSource) -> None` : log `[SYNC]` et `self._emit(gid)`.
   - `PlayerService._on_stall_end(gid: int, src: CountingSource) -> None` : `self._emit(gid)`.
   - Les deux handlers ne font rien si `src` n'est plus `current_source[gid]`.
   - Toute source musicale passée à `vc.play` est un `CountingSource` déjà pré-lu, rangé dans `current_source[gid]`.
-  - Dans `core_fakes`, `FakeSource` reçoit `read()`, `is_opus()`, `reads`, `frames_left` et `read_delay`. `FakeExtractor` comprend les comportements `"no_audio"` et `"read_delay"`.
+  - Dans `core_fakes`, `FakeSource` reçoit `read()`, `is_opus()`, `reads`, `frames_left` et `read_delay`. Son `read()` bloque `read_delay`, mais rend `b''` dès que la source est nettoyée (ffmpeg tué). `FakeExtractor` comprend les comportements `"no_audio"` et `"read_delay"`.
 
 - [ ] **Step 1: Faux objets et tests qui échouent**
 
@@ -493,7 +504,8 @@ FRAME = b"\x00" * 3840  # une trame PCM de 20 ms (48 kHz stéréo s16le)
 
 class FakeSource:
     """Source ffmpeg factice. `frames` : trames disponibles (None = infini, 0 = ffmpeg ne produit rien) ;
-    `read_delay` : chaque read() bloque ce temps (premier octet lent, mode pipe)."""
+    `read_delay` : chaque read() bloque ce temps (premier octet lent, mode pipe), sauf si la source est
+    nettoyée entre-temps (ffmpeg tué : read() rend b'' tout de suite)."""
 
     def __init__(self, url: str, die_after: float, cleanup_delay: float = 0.0,
                  frames: Optional[int] = None, read_delay: float = 0.0):
@@ -508,8 +520,11 @@ class FakeSource:
         self.reads = 0
 
     def read(self) -> bytes:
-        if self.read_delay:
-            time.sleep(self.read_delay)
+        end = time.monotonic() + self.read_delay
+        while not self.cleaned and time.monotonic() < end:
+            time.sleep(0.005)
+        if self.cleaned:
+            return b""
         if self.frames_left is not None:
             if self.frames_left <= 0:
                 return b""
@@ -605,18 +620,32 @@ async def test_stream_without_audio_never_reaches_vc_play(harness):
     assert A["url"] not in h.urls()
 
 
-async def test_skip_during_preroll_drops_the_source(harness):
+async def test_skip_interrupts_a_preroll_that_never_ends(harness):
     h = harness
     vc = h.connect_bot()
-    h.ext.behaviour[A["url"]] = {"read_delay": 0.3}
+    h.ext.behaviour[A["url"]] = {"read_delay": 30}  # ffmpeg muet (réseau bloqué) : read() ne rend rien
     h.seed_queue([A, B])
     task = asyncio.create_task(h.svc.play_next(h.guild))
     await h.wait_for(lambda: h.ext.sources and h.ext.sources[0].url == A["url"], msg="A pas extrait")
     await h.svc.skip(h.gid)
-    await task
+    await h.wait_for(task.done, msg="la pré-lecture garde le verrou de lecture malgré le skip")
     await _playing(h, vc, B["url"])
     assert _plays(vc, A["url"]) == 0
-    await h.wait_for(lambda: h.ext.sources[0].cleaned, msg="source de A jamais nettoyée")
+    await h.wait_for(lambda: h.ext.sources[0].cleaned, msg="ffmpeg de A jamais tué")
+
+
+async def test_silent_ffmpeg_is_a_failed_start_after_the_preroll_budget(harness, monkeypatch):
+    h = harness
+    monkeypatch.setattr(h.ps, "_PREROLL_MAX_S", 0.2, raising=False)
+    vc = h.connect_bot()
+    h.ext.behaviour[A["url"]] = {"read_delay": 30}  # ni trame ni fin de flux (b'')
+    h.seed_queue([A, B])
+    await h.svc.play_next(h.guild)
+    await _playing(h, vc, B["url"])
+    assert _plays(vc, A["url"]) == 0
+    a_srcs = [s for s in h.ext.sources if s.url == A["url"]]
+    assert len(a_srcs) == h.ps._MAX_FAILURES_PER_TRACK, "même politique d'abandon qu'un extracteur KO"
+    await h.wait_for(lambda: all(s.cleaned for s in a_srcs), msg="ffmpeg muet jamais tué")
 
 
 async def test_first_frame_logs_sync_and_emits(harness, caplog):
@@ -636,12 +665,13 @@ async def test_first_frame_logs_sync_and_emits(harness, caplog):
 - [ ] **Step 2: Les voir échouer**
 
 Run: `PYBOT -m pytest services/bot/tests/test_sync_clock.py -q -p no:cacheprovider`
-Expected : `4 failed`.
-- `assert isinstance(src, CountingSource)` échoue.
-- `_plays(vc, A["url"]) == 0` échoue, puisque A est joué sans pré-lecture.
-- Aucun `[SYNC]` n'est journalisé.
+Expected : `5 failed`, car A part sans pré-lecture.
+- `test_music_source_is_counted_and_primed_before_vc_play` : `assert isinstance(src, CountingSource)` échoue.
+- `test_stream_without_audio_never_reaches_vc_play` et `test_silent_ffmpeg_is_a_failed_start_after_the_preroll_budget` : « … jamais joué », B ne part jamais derrière A.
+- `test_skip_interrupts_a_preroll_that_never_ends` : `_plays(vc, A["url"]) == 0` échoue.
+- `test_first_frame_logs_sync_and_emits` : « pas d'état à la 1re trame ».
 
-Le reste de la suite reste vert : les faux objets gardent leur comportement par défaut.
+Le reste de la suite reste vert (`PYBOT -m pytest services/bot/tests -q -p no:cacheprovider --deselect services/bot/tests/test_sync_clock.py`) : les faux objets gardent leur comportement par défaut.
 
 - [ ] **Step 3: Implémenter** dans `services/bot/bot/services/player_service.py`
 
@@ -653,20 +683,39 @@ Faire les modifications suivantes, dans l'ordre :
 from bot.services.audio_clock import CountingSource
 ```
 
-2. **`__init__`.** Après `self.current_source: Dict[int, Any] = {}` :
+2. **Constantes.** Juste après `_BACKOFF_MAX = 8.0` (avant le bloc `# ── Budget de réponse de play_for_user …`) :
+
+```python
+
+# Pré-lecture de la 1re trame (synchro son/vidéo), sous le verrou de lecture : jamais sans fin. Un stop/skip la
+# coupe aussitôt ; sans trame au bout de _PREROLL_MAX_S (mode pipe : 1 à 8 s mesurés), échec de démarrage.
+_PREROLL_MAX_S = 20.0
+_PREROLL_POLL_S = 0.05
+```
+
+3. **`_drop_result`.** Fonction de module, entre `_cleanup_source_off_loop` et `_track_link_refusal`, avec deux lignes vides avant et après :
+
+```python
+def _drop_result(fut) -> None:
+    """Tâche abandonnée (pré-lecture coupée) : son résultat est lu, asyncio ne signale aucune exception perdue."""
+    if not fut.cancelled():
+        fut.exception()
+```
+
+4. **`__init__`.** Après `self.current_source: Dict[int, Any] = {}` :
 
 ```python
         # Synchro son/vidéo : instant du choix du titre (log [SYNC] : délai jusqu'à la 1re trame).
         self._chosen_at: Dict[int, float] = {}
 ```
 
-3. **`play_next`, choix du titre.** Après `self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}` :
+5. **`play_next`, choix du titre.** Après `self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}` :
 
 ```python
             self._chosen_at[gid] = time.monotonic()
 ```
 
-4. **`play_next`, avant la lecture.** Remplacer les deux lignes
+6. **`play_next`, avant la lecture.** Remplacer les deux lignes
 
 ```python
             if srcp is not None:
@@ -684,11 +733,7 @@ par :
                     on_first_frame=functools.partial(self._on_first_frame, gid),
                     on_resume_after_stall=functools.partial(self._on_stall_end, gid),
                 )
-                pre_err: Optional[Exception] = None
-                try:
-                    primed = await asyncio.to_thread(srcp.preroll)
-                except Exception as e:
-                    primed, pre_err = False, e
+                primed, pre_err = await self._preroll(gid, gen, srcp)
                 if self._is_stale(gid, gen):
                     # stop/skip/play_at/restart pendant la pré-lecture : même abandon que pendant l'extraction.
                     _cleanup_source_off_loop(srcp)
@@ -696,7 +741,9 @@ par :
                     self._spawn(self.play_next(guild))
                     return
                 if not primed:
-                    # ffmpeg n'a produit aucune trame (b'') : échec de démarrage, même politique qu'un extracteur KO.
+                    # ffmpeg n'a produit aucune trame (b''), ou rien en _PREROLL_MAX_S : échec de démarrage, même
+                    # politique qu'un extracteur KO.
+                    pre_err = pre_err or getattr(srcp, "_current_error", None)   # code de sortie de ffmpeg
                     logger.warning("[pré-lecture KO] guild=%s url=%s: %s", gid, url, pre_err or "aucune trame")
                     _cleanup_source_off_loop(srcp)
                     srcp = None
@@ -706,11 +753,37 @@ par :
                 if title and isinstance(title, str):
 ```
 
-La suite ne change pas : le bloc `try: await self._play_source(...)` reçoit le `CountingSource`. `srcp = None` fait tomber dans le chemin d'échec existant de l'extracteur : compteur `_track_failures`, abandon au bout de `_MAX_FAILURES_PER_TRACK`, sinon remise en tête et attente.
+La suite ne change pas : le bloc `try: await self._play_source(...)` reçoit le `CountingSource`. `srcp = None` fait tomber dans le chemin d'échec existant de l'extracteur : compteur `_track_failures`, abandon au bout de `_MAX_FAILURES_PER_TRACK`, sinon remise en tête et attente. Les deux `_cleanup_source_off_loop(srcp)` passent par l'enveloppe, qui délègue `_ytdlp_proc` et `cleanup` : ffmpeg et yt-dlp sont tués, et une pré-lecture coupée se termine.
 
-5. **Nouvelles méthodes.** Les placer juste avant `async def _handle_track_end(` :
+7. **Nouvelles méthodes.** Les placer juste avant `async def _handle_track_end(` :
 
 ```python
+    async def _preroll(self, gid: int, gen: int, src: CountingSource) -> Tuple[bool, Optional[Exception]]:
+        """Pré-lit la 1re trame dans un thread ; rend (amorcée, erreur).
+
+        Le verrou de lecture n'est jamais tenu sans fin : lecture périmée (stop/skip/play_at/restart) ou ffmpeg muet
+        plus de _PREROLL_MAX_S, on rend la main sans attendre le thread ; l'appelant nettoie la source (ffmpeg et
+        yt-dlp tués), ce qui débloque read().
+        """
+        fut = asyncio.ensure_future(asyncio.to_thread(src.preroll))
+        deadline = time.monotonic() + _PREROLL_MAX_S
+        try:
+            while not fut.done() and not self._is_stale(gid, gen) and time.monotonic() < deadline:
+                await asyncio.wait({fut}, timeout=_PREROLL_POLL_S)
+        except asyncio.CancelledError:
+            fut.add_done_callback(_drop_result)
+            _cleanup_source_off_loop(src)   # play_next annulé (arrêt du bot) : ffmpeg ne reste pas en vie
+            raise
+        if not fut.done():
+            fut.add_done_callback(_drop_result)
+            if self._is_stale(gid, gen):
+                return False, None
+            return False, TimeoutError(f"aucune trame en {_PREROLL_MAX_S:g} s")
+        try:
+            return fut.result(), None
+        except Exception as e:
+            return False, e
+
     def _on_first_frame(self, gid: int, src: CountingSource) -> None:
         """1re trame lue par discord.py (sur la boucle, via call_soon_threadsafe) : log [SYNC] et état tout de suite."""
         if self.current_source.get(gid) is not src:
@@ -735,7 +808,7 @@ La suite ne change pas : le bloc `try: await self._play_source(...)` reçoit le 
 
 - [ ] **Step 4: Les voir passer**
 
-Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 4 (213), aucun échec. Les tests existants (échecs, coupures, retries, `_plays`) passent sans changement : l'enveloppe délègue `url`, `die_after` et `cleanup`.
+Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 5 (214), aucun échec. Les tests existants (échecs, coupures, retries, `_plays`) passent sans changement : l'enveloppe délègue `url`, `die_after` et `cleanup`.
 
 - [ ] **Step 5: Commit**
 
@@ -964,7 +1037,7 @@ par :
 
 - [ ] **Step 4: Les voir passer**
 
-Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 3 (216), aucun échec.
+Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 3 (217), aucun échec.
 
 - [ ] **Step 5: Commit**
 
@@ -1151,7 +1224,7 @@ Les blocs `except asyncio.CancelledError` et `finally` qui suivent ne changent p
 
 - [ ] **Step 4: Les voir passer**
 
-Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 3 (219), aucun échec. Relancer 3 fois `PYBOT -m pytest services/bot/tests/test_sync_clock.py services/bot/tests/test_audio_clock.py -q -p no:cacheprovider` : 21 passés à chaque passe, donc pas de test instable.
+Run: `PYBOT -m pytest services/bot/tests -q -p no:cacheprovider` → base + 3 (220), aucun échec. Relancer 3 fois `PYBOT -m pytest services/bot/tests/test_sync_clock.py services/bot/tests/test_audio_clock.py -q -p no:cacheprovider` : 22 passés à chaque passe, donc pas de test instable.
 
 - [ ] **Step 5: Commit**
 
@@ -1376,7 +1449,7 @@ git commit -m "feat(api): relay_at_ms et clock relayes depuis Redis (synchro son
 **Files:**
 - Modify: `services/api/api/routes/player.py` (imports l.9 ; nouveau `_stamped` avant `play_for_user_response` l.70 ; `get_state` l.85-94)
 - Modify: `services/api/api/websocket/events.py` (import l.20 ; `_subscribe` l.62-82)
-- Test: `services/api/tests/test_sync_relay.py` (ajout), `services/api/tests/test_socketio.py` (l.149 et l.309)
+- Test: `services/api/tests/test_sync_relay.py` (ajout), `services/api/tests/test_socketio.py` (l.148 et l.309)
 
 **Interfaces:**
 - Consumes: `now_ms`, `with_relay_at` (A1).
@@ -2233,12 +2306,12 @@ git commit -m "feat(web): regulateur de la video (vitesse, sauts, attente, demar
 - Modify: `src/lib/playerUtils.ts` (CRLF ; `livePosition` l.397-401 ; nouveau `withClock` avant `emptySnapshot` l.192)
 - Modify: `src/lib/queue/optimistic.ts` (`live` l.33-38, `crown` l.50-57)
 - Modify: `src/lib/socket.ts` (import ; nouveau bloc `time_sync` avant `stopPing`)
-- Modify: `src/hooks/usePlayer.ts` (imports l.5-10 ; store l.44-77 ; `receive` l.138-143 ; `resetPlayer` l.151-153 ; `startTimeSync` après `startPing()` l.238)
+- Modify: `src/hooks/usePlayer.ts` (imports l.5-10 ; store l.44-77 ; `receive` l.138-143 ; `resetPlayer` l.151-153 ; `startTimeSync` après `startPing()` l.237)
 - Test: `tests/optimistic.test.mjs` (l.50 + ajout), `tests/playerUtils.test.mjs` (ajout, CRLF/LF mixte), `tests/player-contract.test.mjs` (ajout)
 
 **Interfaces:**
 - Consumes:
-  - `createTimeSync` (W1) ;
+  - `createTimeSync` et `sampleOf` (W1) ;
   - `createRefClock`, `clockSampleOf`, `clockViewOf`, `NO_CLOCK` et `ClockView` (W2).
 - Produces, dans `lib/sync/live.ts` :
   - `timeSync: TimeSync` et `refClock: RefClock` ;
@@ -2247,7 +2320,7 @@ git commit -m "feat(web): regulateur de la video (vitesse, sauts, attente, demar
   - `TickBase.frozen?: boolean`.
   - `playerUtils` : `type ClockReading = { pos: number; at: number; frozen: boolean }` et `withClock(snap: Snapshot, r: ClockReading | null): Snapshot`. `livePosition` reste figée si `tb.frozen`.
   - Store zustand : `clock: ClockView`. Il est mis à jour à chaque échantillon accepté, sans attendre le tampon des actions.
-  - `socket.ts` : `startTimeSync(): void`.
+  - `socket.ts` : `startTimeSync(): void`. Après une reconnexion, les mesures restent jusqu'à la première nouvelle mesure acceptée (décision 12).
 
 - [ ] **Step 1: Tests qui échouent**
 
@@ -2308,6 +2381,9 @@ test('synchro son/vidéo : chaque état reçu nourrit l’horloge de référence
   assert.ok(src.includes('startTimeSync();'));
   const sock = read('src/lib/socket.ts');
   assert.ok(sock.includes(".emit('time_sync', { t0 }"), 'accusé {t0, ts}');
+  assert.ok(sock.includes('if (timeSyncStale && sampleOf(t0, ts, t1)) { timeSyncStale = false; timeSync.reset(); }'),
+    'reconnexion : mesures remplacées par la première nouvelle, jamais vidées avant');
+  assert.ok(!body(sock, 'export function startTimeSync(').includes('timeSync.reset()'));
   assert.ok(sock.includes('TIME_SYNC_BURST = 5, TIME_SYNC_GAP_MS = 1000, TIME_SYNC_EVERY_MS = 30_000'));
 });
 ```
@@ -2414,6 +2490,7 @@ Après `import { getApiOrigin, isBrowserReachable } from './api';` :
 
 ```ts
 import { timeSync } from './sync/live';
+import { sampleOf } from './sync/timesync';
 ```
 
 Juste avant `export function stopPing() {` :
@@ -2423,6 +2500,7 @@ Juste avant `export function stopPing() {` :
 const TIME_SYNC_BURST = 5, TIME_SYNC_GAP_MS = 1000, TIME_SYNC_EVERY_MS = 30_000, TIME_SYNC_TIMEOUT_MS = 2000;
 let timeSyncInterval: ReturnType<typeof setInterval> | null = null;
 let timeSyncBurst: ReturnType<typeof setTimeout>[] = [];
+let timeSyncStale = false;   // nouvelle connexion : les mesures d'avant servent jusqu'à la première nouvelle
 
 /** Une mesure : {t0} → accusé {t0, ts} (ts : horloge de l'API, ms) ; sans réponse sous 2 s, ignorée. */
 function measureClock(s: Socket) {
@@ -2431,18 +2509,24 @@ function measureClock(s: Socket) {
   try {
     s.timeout(TIME_SYNC_TIMEOUT_MS).emit('time_sync', { t0 }, (err: unknown, res: any) => {
       if (err || !res || res.t0 !== t0) return;
-      timeSync.add(t0, Number(res.ts), performance.now());
+      const ts = Number(res.ts), t1 = performance.now();
+      if (timeSyncStale && sampleOf(t0, ts, t1)) { timeSyncStale = false; timeSync.reset(); }
+      timeSync.add(t0, ts, t1);
     });
   } catch {}
 }
 
-/** 5 mesures à chaque connexion (1 s d'écart), puis une toutes les 30 s. Nouvelle connexion : mesures oubliées. */
+/**
+ * 5 mesures à chaque connexion (1 s d'écart), puis une toutes les 30 s. Nouvelle connexion (peut-être une autre instance
+ * de l'API) : les anciennes mesures sont remplacées par la première nouvelle, jamais vidées avant (sinon l'horloge du
+ * navigateur servirait le temps d'un aller-retour, et la vidéo sauterait de son écart).
+ */
 export function startTimeSync() {
   if (timeSyncInterval) return;
   const s = getSocket();
   const burst = () => {
     timeSyncBurst.forEach(clearTimeout);
-    timeSync.reset();
+    timeSyncStale = true;
     timeSyncBurst = Array.from({ length: TIME_SYNC_BURST }, (_, i) => setTimeout(() => measureClock(s), i * TIME_SYNC_GAP_MS));
   };
   s.on('connect', burst);
@@ -2561,6 +2645,7 @@ git commit -m "feat(web): time_sync au socket, etats recus cales sur l'horloge d
 - Produces :
   - `YTPlayer.setPlaybackRate(rate: number): void` et `YTPlayer.getPlaybackRate(): number`.
   - `cover.ts` perd `ALIGN_AFTER_PLAYING_MS`, `ALIGN_THRESHOLD_S`, `DRIFT_CHECK_MS`, `MIN_SEEK_GAP_MS`, `RUN_THRESHOLD_S`, `SEEK_COMP_S`, `alignDue` et `driftSeek`. `LOAD_COMP_S` et `loadStart` restent.
+  - Portal ne cale la vidéo que sur une horloge qui décrit la vidéo affichée. Chaque `load` repart d'un régulateur neuf (`CTL_INIT`) et retente les vitesses (décision 11).
 
 - [ ] **Step 1: Tests qui échouent**
 
@@ -2576,7 +2661,9 @@ test('Portal : régulateur à 4 Hz, démarrage gardé par play_id, attente, plus
   assert.match(portal, /if \(!gateLoad\(clock, extractVideoId\(clock\.url\), videoId, loaded\.current\)\) return;/);
   assert.match(portal, /hold\.current = nextHold\(prevClock\.current, clock, performance\.now\(\), hold\.current\);/);
   assert.match(portal, /const still = paused \|\| clock\.status === 'stalled';/);
-  assert.match(portal, /ctl\.current = \{ \.\.\.ctl\.current, rate: 1 \};/, 'vitesse réappliquée après loadVideoById');
+  assert.match(portal, /ctl\.current = CTL_INIT;\s*rateOk\.current = true;/, 'vitesse réappliquée après loadVideoById, retentée à chaque vidéo');
+  assert.match(portal, /if \(extractVideoId\(useStore\.getState\(\)\.clock\.url\) !== videoId\) return;/, 'jamais calée sur un autre titre');
+  assert.match(portal, /loadStart\(here \? targetPos\(0\) \?\? 0 : 0, offsetRef\.current\)/, 'horloge d’un autre titre : départ au début');
   assert.doesNotMatch(portal, /driftSeek|alignDue|RUN_THRESHOLD_S|MIN_SEEK_GAP_MS|DRIFT_CHECK_MS|SEEK_COMP_S|clockPos\(/);
   const cover = code('src/lib/stage/cover.ts');
   assert.doesNotMatch(cover, /DRIFT_CHECK_MS|SEEK_COMP_S|RUN_THRESHOLD_S|ALIGN_THRESHOLD_S|MIN_SEEK_GAP_MS/);
@@ -2707,13 +2794,19 @@ La ligne `onError`, l'appel `useYouTubePlayer(…, !!(videoId || nextId))`, `pla
 d. **Changement de titre et recul.** Remplacer l'effet « Changement de titre » (l.118-127), puis le commentaire et la première ligne du `useStore.subscribe` du recul (l.129-135), par le bloc ci-dessous.
 
 ```tsx
-  /** Charge la vidéo à la position du son, sous le poster. loadVideoById remet la vitesse à 1 : le régulateur la réappliquera. */
+  /**
+   * Charge la vidéo sous le poster, à la position du son si l'horloge décrit cette vidéo (sinon au début : ancien bot,
+   * saut optimiste, l'ancien titre joue encore). Régulateur neuf : loadVideoById remet la vitesse à 1, le régulateur
+   * la réappliquera ; les vitesses sont retentées à chaque vidéo (un direct les refuse, pas la suivante).
+   */
   const load = useCallback((p: YTPlayer, id: string, playId: string | null) => {
     loaded.current = { id, playId };
     awaiting.current = false;
-    ctl.current = { ...ctl.current, rate: 1 };
+    ctl.current = CTL_INIT;
+    rateOk.current = true;
     asked.current = null;
-    try { p.loadVideoById({ videoId: id, startSeconds: loadStart(targetPos(0) ?? 0, offsetRef.current) }); } catch {}
+    const here = extractVideoId(useStore.getState().clock.url) === id;
+    try { p.loadVideoById({ videoId: id, startSeconds: loadStart(here ? targetPos(0) ?? 0 : 0, offsetRef.current) }); } catch {}
   }, []);
 
   // Changement de titre : le poster couvre tout de suite, la vidéo précédente s'arrête dessous.
@@ -2783,6 +2876,8 @@ e. **Pause, alignement, dérive, décalage.** Remplacer les l.141-181 : l'effet 
     if (!player || !videoId || still) return;
     const tick = (): void => {
       if (awaiting.current || document.visibilityState !== 'visible' || ytState.current !== YT_STATE.PLAYING) return;
+      // l'horloge décrit une autre vidéo (ancien bot après un saut optimiste, état du nouveau titre pas encore reçu)
+      if (extractVideoId(useStore.getState().clock.url) !== videoId) return;
       const now = performance.now();
       let reported: number | undefined;
       try { reported = player.getPlaybackRate(); } catch {}
@@ -3000,7 +3095,7 @@ git commit -m "feat(web): Synchro video au pas de 50 ms sur +/-3 s, aide sur le 
 ## Vérification finale (orchestrateur, après les trois chaînes)
 
 1. **Suites complètes.**
-   - Bot : 219 attendus.
+   - Bot : 220 attendus.
    - API : 392.
    - Site : 399, en natif et en transpilation.
    - `npx tsc --noEmit`, puis **un seul** `npx next build`.
@@ -3028,7 +3123,7 @@ git commit -m "feat(web): Synchro video au pas de 50 ms sur +/-3 s, aide sur le 
 | §3 `relay_at_ms` (Redis et RPC) | A1, A2 |
 | §3 `time_sync` `{t0}` → `{t0, ts}` | A3 (serveur), W4 (client) |
 | §4.1 comptage, `preroll`, callbacks par `call_soon_threadsafe`, délégation de `is_opus`, `cleanup`, `_current_error` et `_ytdlp_proc`, `position_ms` | B1 |
-| §4.2 enveloppe dans les deux modes ; pré-lecture ; contrôles de génération ; échec sur `b''` ; `play_start` posé après | B2 |
+| §4.2 enveloppe dans les deux modes ; pré-lecture (bornée, coupée par stop/skip) ; contrôles de génération ; échec sur `b''` ; `play_start` posé après | B2 |
 | §4.2 `play_id`, statuts, fenêtre de chargement | B3 |
 | §4.2 envois immédiats : 1re trame (B2), pause et reprise (existant, plus `note_resume` en B3), début de blocage (B4), fin de blocage (B2/B4) | B2–B4 |
 | §4.2 log `[SYNC]` : mode, délai entre choix et 1re trame, pré-lecture, `average_latency` | B2 |
@@ -3042,4 +3137,5 @@ git commit -m "feat(web): Synchro video au pas de 50 ms sur +/-3 s, aide sur le 
 | §6.2 démarrage gardé ; `crown` sans position qui court ; poster pendant `loading` | W3 (`gateLoad`), W4 (`crown`), W5 |
 | §6.2 « Synchro vidéo » : 50 ms, ±3 s, valeur stockée ramenée, aide, aperçu par le régulateur, par appareil | W6 (aperçu : W5) |
 | §7 tests : bot, API, site (dont le démarrage gardé) ; navigateur | toutes ; vérification finale |
-| §2 compatibilité : site sans `clock`, ancien site face au nouveau bot | W2 et W3 (compat), contrat additif (B, A) |
+| §2 compatibilité : site sans `clock`, ancien site face au nouveau bot | W2 et W3 (compat), W5 (garde du régulateur : jamais calé sur l'ancien titre), contrat additif (B, A) |
+| §8 pré-lecture sur le chemin critique : générations, échecs ffmpeg, nettoyage des processus, intro | B2 (`_preroll` borné et coupé par stop/skip, nettoyage sur chaque abandon, intro jamais enveloppée), B1 (`_current_error`, `cleanup`) |
