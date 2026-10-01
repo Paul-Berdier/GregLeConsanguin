@@ -89,9 +89,17 @@ def _relay_state(guild_id=42, state=None):
     t.join(5)
 
 
+def _strip(state):
+    """État émis sans relay_at_ms (horodatage de l'API, synchro son/vidéo), présent et entier."""
+    st = dict(state)
+    stamp = st.pop("relay_at_ms", None)
+    assert isinstance(stamp, int) and not isinstance(stamp, bool), state
+    return st
+
+
 def _got_relay(client):
     return [u for u in _events(client.get_received(), "playlist_update")
-            if u["args"][0] == {"queue": ["relay"]}]
+            if _strip(u["args"][0]) == {"queue": ["relay"]}]
 
 
 # ── overlay_register : toujours un overlay_ack ──
@@ -246,7 +254,7 @@ def test_redis_listener_relay_from_native_thread_reaches_room(member_sio, fake_b
 
     updates = _events(member_sio.get_received(), "playlist_update")
     assert len(updates) == 2
-    assert updates[0]["args"][0] == {"queue": [1, 2]}
+    assert _strip(updates[0]["args"][0]) == {"queue": [1, 2]}
     assert updates[1]["args"][0]["position"] == 7
 
     # Les réponses « normales » continuent d'arriver après un emit cross-thread.

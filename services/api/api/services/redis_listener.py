@@ -15,6 +15,7 @@ import redis
 from greg_shared.config import settings
 
 from api.services.authz import ROOM_AUTHENTICATED
+from api.services.relay_clock import now_ms, with_relay_at
 
 logger = logging.getLogger("greg.api.redis")
 
@@ -67,9 +68,12 @@ def start_redis_listener(socketio):
 def _handle_message(socketio, channel: str, data: dict):
     guild_id = str(data.get("guild_id", ""))
     room = f"guild:{guild_id}" if guild_id else None
+    relay_at_ms = now_ms()  # réception : le site se cale sur l'horloge de l'API (synchro son/vidéo)
 
     if channel == CHANNEL_STATE:
         state = data.get("state", data)
+        if isinstance(state, dict):
+            state = with_relay_at(state, relay_at_ms)
         # Jamais de diffusion globale : seuls les membres (room guild:<id>) reçoivent l'état.
         if room:
             socketio.emit("playlist_update", state, room=room)
@@ -85,7 +89,10 @@ def _handle_message(socketio, channel: str, data: dict):
                 "elapsed": data.get("position", 0),
                 "duration": data.get("duration"),
             },
+            "relay_at_ms": relay_at_ms,
         }
+        if isinstance(data.get("clock"), dict):
+            payload["clock"] = data["clock"]  # position réellement lue par le bot, horodatée
         if room:
             socketio.emit("playlist_update", payload, room=room)
 
