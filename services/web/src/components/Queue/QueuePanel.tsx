@@ -109,6 +109,8 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
     return true;
   };
   const songOf = (x: Track) => parseTitle(x.title, x.artist).song || x.title;
+  /** Alt+↑↓ : seul le dernier déplacement est annoncé (un précédent, remplacé ou accusé en retard, dirait une place dépassée). */
+  const moves = useRef(0);
   const roving = useRoving(listRef, shownKeys, 'key', (act, key, i) => {
     const near = shownKeys[i + 1] ?? shownKeys[i - 1] ?? null;
     if (act.kind === 'activate') return playNow(key, 'key') ? near : null;
@@ -116,8 +118,9 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
     if (act.kind === 'next') { void playerActions.playNext(key); return undefined; }
     const before = moveBefore(qKeys, key, act.dir), item = queue[i];
     if (before === undefined || !item) return undefined;
+    const n = ++moves.current;
     void playerActions.moveTrack(key, before).then((ok) => {
-      if (ok) speak(t('queue.dnd.liveMoved', { title: songOf(item), pos: i + 1 + act.dir, total: queue.length }));
+      if (ok && n === moves.current) speak(t('queue.dnd.liveMoved', { title: songOf(item), pos: i + 1 + act.dir, total: queue.length }));
     });
     return undefined;
   });

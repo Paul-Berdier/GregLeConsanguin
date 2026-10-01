@@ -16,7 +16,8 @@
   text-shadow: 0 1px 14px rgb(0 0 0 / .85);
   animation: night-in 400ms var(--ease-out) both;
 }
-.night[data-kind=empty] .vl-inner { animation-delay: 320ms; }
+/* après le jour seulement (data-after, Stage.tsx) : au sortir du chargement, la rose est déjà la lune */
+.night[data-after=day] .vl-inner { animation-delay: 320ms; }
 @keyframes night-in { from { opacity: 0; transform: translateY(6px); } }
 .night p { margin: 0; }
 .heart { position: relative; width: var(--heart); height: var(--heart); display: grid; place-items: center; margin-bottom: calc(var(--R) * .34); }

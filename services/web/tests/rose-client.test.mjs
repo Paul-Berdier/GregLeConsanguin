@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
-const { roseKey, keyFits, isMoonKey, evictable, KEEP_OTHERS, FADE_MS, RoseClient, afterFirstPaint, FIRST_PAINT_WAIT_MS } = await loadTs('../src/lib/rose/client.ts');
+const { roseKey, keyFits, isMoonKey, evictable, KEEP_OTHERS, FADE_MS, RoseClient, afterFirstPaint, FIRST_PAINT_WAIT_MS, RESIZE_DEBOUNCE_MS, watchDpr } = await loadTs('../src/lib/rose/client.ts');
 
 test('clé d’une fenêtre : titre ou lune, à une taille et une densité', () => {
   assert.equal(roseKey('dQw4w9WgXcQ', 349, 2), 't:dQw4w9WgXcQ@349x2');
@@ -427,4 +427,40 @@ test('pierre différée : déjà présentée, ou sans observateur, au premier te
   afterFirstPaint(() => after.push('start'), late)();
   late.fire(late.idles);
   assert.deepEqual(after, [], 'démonté avant le temps mort : rien ne démarre');
+});
+
+// Revue C18 : la fenêtre tirée sur un écran plus dense (ou un zoom quand R est borné) garde R ; seule la densité change.
+test('densité de pixels : un changement seul (même R) repeint à la nouvelle densité', async () => {
+  const { c, posts } = makeRose();
+  c.resize(100);
+  await until(() => posts.includes('moon@100x1'));
+  window.devicePixelRatio = 2;
+  try {
+    c.resize(100);                       // ce que l'abonnement de Rose.tsx (watchDpr) rappelle
+    await wait(RESIZE_DEBOUNCE_MS + 20);
+    await until(() => posts.includes('moon@100x2'));
+  } finally { window.devicePixelRatio = 1; c.destroy(); }
+});
+
+test('watchDpr : prévenu quand la densité change, réarmé sur la nouvelle, désabonné à la fin', () => {
+  const queries = [];
+  const mm = (q) => {
+    const mq = { q, ls: new Set(), addEventListener(_, fn) { this.ls.add(fn); }, removeEventListener(_, fn) { this.ls.delete(fn); } };
+    queries.push(mq);
+    return mq;
+  };
+  let calls = 0;
+  try {
+    const stop = watchDpr(() => { calls++; }, mm);
+    const around = (d) => `(min-resolution: ${d - 0.001}dppx) and (max-resolution: ${d + 0.001}dppx)`;
+    assert.deepEqual(queries.map((m) => m.q), [around(1)]);
+    window.devicePixelRatio = 2;
+    for (const fn of [...queries[0].ls]) fn();
+    assert.equal(calls, 1);
+    assert.deepEqual(queries.map((m) => m.q), [around(1), around(2)], 'réarmé sur la nouvelle densité');
+    assert.equal(queries[0].ls.size, 0, 'l’ancienne requête n’écoute plus');
+    stop();
+    assert.equal(queries[1].ls.size, 0, 'désabonné');
+  } finally { window.devicePixelRatio = 1; }
+  assert.doesNotThrow(() => watchDpr(() => {}, undefined)(), 'sans matchMedia (Node) : rien');
 });

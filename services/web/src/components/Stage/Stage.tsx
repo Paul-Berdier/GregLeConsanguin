@@ -22,8 +22,15 @@ import SyncOffset from './SyncOffset';
 import NowPlaying, { NOW_TITLE_ID } from './NowPlaying';
 import Transport from './Transport';
 import { startCoronation, useCeremony } from './coronation';
+import { flipBox, flipFrames } from './flipBox';
+import type { StageBox } from './flipBox';
 
 type NightFit = { layout: StageLayout; bottom: number };
+
+/** Boîte de mise en page (sans transform) d'un enfant de la scène, dans le repère de la rose : centre et haut de la scène. */
+function stageBox(el: HTMLElement, stage: HTMLElement): StageBox {
+  return { x: el.offsetLeft + el.offsetWidth / 2 - stage.offsetWidth / 2, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+}
 
 /**
  * Mise en page de la nuit (fitNight, layout.ts), remesurée quand la colonne, le bloc du dessous ou le texte de
@@ -86,6 +93,9 @@ function Stage({ booted }: { booted: boolean }) {
 
   const scene = stageScene({ booted, loggedIn, hasCurrent });
   const day = scene === 'day';
+  // la scène d'avant (motif « valeur précédente ») : la nuit qui suit le jour attend la rose (night.css)
+  const [shown, setShown] = useState(scene), [prevScene, setPrevScene] = useState<Scene | null>(null);
+  if (shown !== scene) { setShown(scene); setPrevScene(shown); }
   const measured = useStageLayout(colRef, belowRef);
   const nightFit = useNightFit(scene, colRef, stageRef, belowRef);
   const layout = nightFit?.layout ?? measured;
@@ -98,14 +108,25 @@ function Stage({ booted }: { booted: boolean }) {
   const art = day && !videoId ? thumb : null;
 
   // Écart 10 de l'étape 2 : R qui change avec la scène passe en FLIP (420 ms), pas un redimensionnement de fenêtre.
-  const sceneAt = useRef(0), lastR = useRef(0), lastDay = useRef(day);
+  // Vers la nuit, le portail et la lumière s'effacent encore pleins : eux aussi gardent leur boîte d'avant, avec la rose
+  // (vers le jour, ils entrent depuis 0, à leur place).
+  const sceneAt = useRef(0), lastR = useRef(0), lastDay = useRef(day), lastBoxes = useRef<(StageBox | null)[]>([]);
   useLayoutEffect(() => {
     if (lastDay.current !== day) { lastDay.current = day; sceneAt.current = performance.now(); }
     const R = layout?.R ?? 0, prev = lastR.current;
     lastR.current = R;
-    const rose = stageRef.current?.querySelector<HTMLElement>('.rosace');
+    const stage = stageRef.current;
+    const rose = stage?.querySelector<HTMLElement>('.rosace');
+    const fading = ['.portal', '.lightpool'].map((s) => stage?.querySelector<HTMLElement>(`:scope > ${s}`) ?? null);
+    const before = lastBoxes.current, boxes = fading.map((el) => (el && stage ? stageBox(el, stage) : null));
+    lastBoxes.current = boxes;
     if (!rose || !prev || !R || Math.abs(prev - R) < 1 || performance.now() - sceneAt.current > 400 || reducedMotion()) return;
     rose.animate([{ transform: `scale(${prev / R})` }, { transform: 'none' }], { duration: DUR.reveal, easing: EASE.out });
+    if (day) return;
+    fading.forEach((el, i) => {
+      const from = before[i], to = boxes[i];
+      if (el && from && to && to.w > 0 && to.h > 0) el.animate(flipFrames(flipBox(from, to)), { duration: DUR.reveal, easing: EASE.out });
+    });
   }, [layout?.R, day]);
 
   // Filet de sécurité (DESIGN §12.4) : si la scène ou sa nuit débordent malgré tout, la colonne défile.
@@ -129,7 +150,8 @@ function Stage({ booted }: { booted: boolean }) {
         <Rose videoId={videoId} nextId={nextId} R={layout?.R ?? 0} mask={paneMask(day ? pane : -1)} crown={crown}/>
         <div className="lightpool" aria-hidden="true"/>
         <Clock dial={dial} active={day} labelledBy={NOW_TITLE_ID}/>
-        {scene !== 'day' && <NightState kind={scene}/>}
+        {/* une nuit par état : chargement → rien en lecture remonte la nuit, son entrée (night-in) rejoue */}
+        {scene !== 'day' && <NightState key={scene} kind={scene} afterDay={prevScene === 'day'}/>}
         <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art} crown={crown}/>
         <div className="below" ref={belowRef}>
           <TimesRow/>

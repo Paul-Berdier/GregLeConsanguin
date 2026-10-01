@@ -1,7 +1,7 @@
 // Mouvement de liste (étape 3) : jetons JS = tokens.css ; présence et FLIP ; glisser, accalmie, anti-doublon.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { loadTs } from './_loadTs.mjs';
 
 const M = await loadTs('../src/lib/motion.ts');
@@ -119,4 +119,27 @@ test('mouvement réduit suivi en direct, jusqu’au désabonnement', () => {
 test('sortie en cascade inversée : la dernière ligne d’abord, 20 ms, plafond 8', () => {
   assert.deepEqual([0, 1, 2].map((i) => F.reverseStagger(i, 3)), [40, 20, 0]);
   assert.deepEqual([F.reverseStagger(0, 12), F.reverseStagger(11, 12)], [140, 0]);
+});
+
+// Revue C0 : linear() n'existe qu'à partir de Chrome 113, Firefox 112, Safari 17.2. Ailleurs (iOS 16, Safari 17.1),
+// animate() lève une TypeError sur une courbe illisible : dans un effet de mise en page, toute l'app tombe.
+test('ressorts : linear() si le moteur la lit, sinon une cubic-bezier de repli (jamais de TypeError dans animate())', () => {
+  for (const name of Object.keys(M.SPRING)) assert.equal(M.springEasing(name, true), M.SPRING[name].easing, name);
+  assert.deepEqual(['snap', 'move', 'settle', 'seal'].map((n) => M.springEasing(n, false)),
+    [M.EASE.out, M.EASE.out, M.EASE.out, M.EASE.drop]);
+  for (const name of Object.keys(M.SPRING)) assert.match(M.springEasing(name, false), /^cubic-bezier\(/, name);
+  // sans CSS.supports (Node, rendu serveur), la courbe de repli
+  assert.match(M.springEasing('move'), /^cubic-bezier\(/);
+});
+
+test('aucune courbe linear() ne part vers animate() sans passer par springEasing', () => {
+  const walk = (dir) => readdirSync(new URL(`../${dir}`, import.meta.url), { withFileTypes: true }).flatMap((e) => (e.isDirectory()
+    ? walk(`${dir}/${e.name}`) : /\.tsx?$/.test(e.name) ? [`${dir}/${e.name}`] : []));
+  const files = walk('src').filter((f) => f !== 'src/lib/motion.ts');
+  assert.ok(files.includes('src/hooks/useFlip.ts') && files.includes('src/components/Queue/seal.ts'), 'parcours de src/');
+  for (const f of files) {
+    const code = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.doesNotMatch(code, /SPRING\.\w+\.easing|SPRING\[[^\]]+\]\.easing/, `${f} : un ressort linear() sans repli`);
+    assert.doesNotMatch(code, /['"`]linear\(/, `${f} : une courbe linear() en dur`);
+  }
 });

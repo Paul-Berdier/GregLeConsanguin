@@ -93,6 +93,76 @@ test('errorCopy : chaque code mène à un texte du deck, avec son contexte', () 
   assert.deepEqual(errorCopy(err('WEIRD', 409, { message: 'Le bot refuse.' })), { key: 'error.UNKNOWN', text: 'Le bot refuse.' });
 });
 
+test('errorCopy : une recherche YouTube en échec passager (transient) ne met pas l’orthographe en cause', async () => {
+  const { tx } = await loadTs('../src/theme/copy.extra.ts');
+  const e = { status: 409, payload: { ok: false, error: 'NO_RESULTS', transient: true, message: 'La recherche YouTube met trop de temps, réessaie dans un instant.' } };
+  for (const ctx of [{ q: 'africa toto' }, {}]) {
+    const c = errorCopy(e, ctx);
+    assert.notEqual(c.path, 'error.NO_RESULTS.text');
+    assert.notEqual(c.path, 'error.NO_RESULTS.textGeneric');
+    assert.deepEqual(c, { key: 'error.SEARCH_FAILED', path: 'error.SEARCH_FAILED.text' });
+  }
+  const text = tx('error.SEARCH_FAILED.text');
+  assert.match(text, /Réessayez/);
+  assert.doesNotMatch(text, /orthographe|Aucun résultat/);
+  // une vraie absence de résultat garde le texte du deck
+  assert.equal(errorCopy({ status: 409, payload: { ok: false, error: 'NO_RESULTS', message: 'Aucun résultat pour « x ».' } }, { q: 'x' }).path, 'error.NO_RESULTS.text');
+});
+
+test('errorCopy : EXPAND_TIMEOUT d’une recherche ou d’une vidéo seule, c’est Greg occupé, pas une playlist trop longue', async () => {
+  const { tx } = await loadTs('../src/theme/copy.extra.ts');
+  const busy = { status: 409, payload: { ok: false, error: 'EXPAND_TIMEOUT', message: 'Greg est déjà occupé avec une autre demande sur ce serveur : réessaie dans un instant.' } };
+  for (const link of ['none', 'video']) assert.deepEqual(errorCopy(busy, { q: 'africa toto', link }), { key: 'error.BUSY', path: 'error.BUSY.text' }, link);
+  // une playlist (ou un mix, une chaîne) peut vraiment être trop longue : le texte du deck
+  for (const link of ['playlist', 'mix', 'channel', undefined]) assert.equal(errorCopy(busy, { link }).path, 'error.EXPAND_TIMEOUT.text', String(link));
+  const text = tx('error.BUSY.text');
+  assert.match(text, /occupé/);
+  assert.match(text, /Réessayez/);
+  assert.doesNotMatch(text, /playlist/i);
+});
+
+test('errorCopy : quota atteint avec ses nombres (count, cap de l’API), sinon le texte générique', () => {
+  const quota = (extra) => errorCopy({ status: 409, payload: { ok: false, error: 'QUOTA_EXCEEDED', message: 'Quota atteint (10/10) : …', ...extra } });
+  assert.deepEqual(quota({ count: 10, cap: 10 }), { key: 'error.QUOTA_EXCEEDED', path: 'error.QUOTA_EXCEEDED.text', vars: { k: '10', cap: '10' } });
+  assert.match(at('error.QUOTA_EXCEEDED.text'), /\{k\}.*\{cap\}/);
+  assert.equal(quota({}).path, 'error.QUOTA_EXCEEDED.textGeneric');
+  assert.equal(quota({ count: 'dix', cap: null }).path, 'error.QUOTA_EXCEEDED.textGeneric');
+  assert.equal(quota({ count: Infinity, cap: 10 }).path, 'error.QUOTA_EXCEEDED.textGeneric');
+  assert.equal(quota({ count: 1, cap: 1 }).path, 'error.QUOTA_EXCEEDED.textGeneric', 'jamais « 1 titres »');
+});
+
+test('usePlayer : l’ajout dit la nature du lien (mix, et « occupé » d’une recherche ou d’une vidéo seule)', () => {
+  const src = readFileSync(new URL('../src/hooks/usePlayer.ts', import.meta.url), 'utf8');
+  const i = src.indexOf('async function enqueue(');
+  const fn = src.slice(i, src.indexOf('\n}\n', i));
+  assert.match(fn, /const link = classifyLink\(String\(payload\?\.url \|\| payload\?\.query \|\| ''\)\);/);
+  assert.match(fn, /sayError\(e, \{ q: looksLikeUrl\(typed\) \? undefined : typed, link \}\)/);
+  assert.match(fn, /addedCopy\(res, [^;]*, link\)/);
+  const r = src.indexOf('async function restoreTrack(');
+  assert.match(src.slice(r, src.indexOf('\n}\n', r)), /sayError\(e, \{ link: 'video' \}\)/, '« Annuler » d’un retrait : un seul titre');
+});
+
+test('addedCopy : un mix se dit « Mix ajouté », avec les compléments de la playlist', async () => {
+  const { addedCopy } = await loadTs('../src/lib/playerUtils.ts');
+  const { classifyLink } = await loadTs('../src/lib/links.ts');
+  const url = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ';
+  assert.equal(classifyLink(url), 'mix');
+  const c = addedCopy({ ok: true, playlist: true, added: 25, requested: 25 }, '', classifyLink(url));
+  assert.deepEqual([c.key, c.path, c.suffix, c.action], ['toast.mixAdded', 'toast.mixAdded.text', null, 'toast.mixAdded.action']);
+  assert.deepEqual(c.vars, { n: 25, m: 25 });
+  // le deck n'a de compléments (sur m, quota, limite) que pour la playlist : un mix tronqué les garde
+  assert.equal(addedCopy({ ok: true, playlist: true, added: 25, requested: 40, truncated: 'quota' }, '', 'mix').suffix, 'toast.playlistAdded.suffixQuota');
+  assert.equal(addedCopy({ ok: true, playlist: true, added: 25, truncated: 'limit' }, '', 'mix').suffix, 'toast.playlistAdded.suffixLimit');
+  assert.equal(addedCopy({ ok: true, playlist: true, added: 12 }, '', 'playlist').key, 'toast.playlistAdded');
+  assert.equal(addedCopy({ ok: true, playlist: true, added: 12 }, '').key, 'toast.playlistAdded', 'sans nature : la playlist');
+  assert.equal(addedCopy({ ok: true, added: 1, title: 'X' }, '', 'mix').key, 'toast.added', 'mix lu comme une vidéo seule');
+  assert.equal(addedCopy({ ok: true, playlist_error: true, message: 'Playlist privée' }, 'x', 'mix').key, 'toast.playlistPartial');
+  for (const path of [c.path, c.action]) {
+    const node = at(path);
+    assert.ok(typeof node === 'string' || typeof node?.other === 'string', `${path} absent du deck`);
+  }
+});
+
 test('addedCopy : titre seul, playlist (complète, sur m, quota, limite), playlist illisible', async () => {
   const { addedCopy } = await loadTs('../src/lib/playerUtils.ts');
   const c1 = addedCopy({ ok: true, added: 1, title: 'Bohemian Rhapsody' }, 'x');

@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, MouseEvent } from 'react';
+import { focusAfterToast } from '@/lib/focus';
 import { spokenText, stackHeight, stackLayout } from '@/lib/herald';
 import { tx } from '@/theme/copy.extra';
 import { herald, setAnnouncer, setSpeaker, useToasts } from './store';
@@ -134,18 +135,28 @@ export default function Herald({ dock }: { dock: 'panel' | 'center' }) {
     layoutRef.current();
   });
 
-  // Échap : la notification qui a le focus s'en va ; le focus passe à l'« Annuler » d'une autre, s'il y en a une.
+  // Échap : la notification qui a le focus s'en va ; le focus passe à l'« Annuler » d'une autre, sinon à la file
+  // (lib/focus.ts : il ne reste pas sur une plaque invisible qui, retirée, le laisserait tomber sur <body>).
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== 'Escape') return;
     const cur = (e.target as HTMLElement).closest<HTMLElement>('.toast');
     const id = Number(cur?.dataset.id);
     if (!cur || !id) return;
     e.preventDefault();
-    const next = [...e.currentTarget.querySelectorAll<HTMLElement>('.toast:not([data-leaving]):not([data-hidden]) .undo')]
-      .find((b) => !cur.contains(b));
+    const next = focusAfterToast(e.currentTarget, cur, document);
     herald.dismiss(id);
     if (next) next.focus();
     else (e.target as HTMLElement).blur();
+  };
+  // « Annuler » au clavier (Entrée, Espace : detail 0) : de même. Au pointeur (Chrome donne le focus au bouton cliqué), le
+  // bouton le lâche : rendu à la file, il y garderait les boutons d'une ligne affichés et arrêterait les raccourcis (Espace…).
+  const undo = (e: MouseEvent<HTMLButtonElement>, id: number) => {
+    const btn = e.currentTarget, cur = btn.closest<HTMLElement>('.toast'), sec = sectionRef.current;
+    const had = document.activeElement === btn;
+    const to = had && e.detail === 0 && cur && sec ? focusAfterToast(sec, cur, document) : null;
+    herald.act(id);
+    if (to) to.focus();
+    else if (had) btn.blur();
   };
 
   return (
@@ -167,7 +178,7 @@ export default function Herald({ dock }: { dock: 'panel' | 'center' }) {
               <div className="fact">{x.fact}{x.n > 1 && <span className="x tnum">×{x.n}</span>}</div>
               {x.quip && <div className="qp" aria-hidden="true">{x.quip}</div>}
             </div>
-            {x.action && <button type="button" className="undo" onClick={() => herald.act(x.id)}>{x.action.label}</button>}
+            {x.action && <button type="button" className="undo" onClick={(e) => undo(e, x.id)}>{x.action.label}</button>}
           </div>
         ))}
       </section>

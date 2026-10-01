@@ -6,15 +6,16 @@ import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing
 import { api, onAuthLost } from '@/lib/api';
 import {
   looksLikeUrl, errorCode, pickDefaultGuild, createSeqGate, livePosition, guildJoinErrorAction,
-  snapshotFromPayload, emptySnapshot, addedCopy,
+  snapshotFromPayload, emptySnapshot, addedCopy, stateKind,
 } from '@/lib/playerUtils';
-import { createQueueEngine, moveIndices, viewOf } from '@/lib/queue/optimistic';
+import { createQueueEngine, createStateOrder, moveIndices, refusalOf, viewOf } from '@/lib/queue/optimistic';
 import type { Mutation } from '@/lib/queue/optimistic';
-import { addedKeys, restorePlan } from '@/lib/queue/undo';
+import { addedKeys, afterDone, boundUndo, createTurns, restorePlan } from '@/lib/queue/undo';
 import { reducedMotion } from '@/lib/motion';
 import { AFTER_CEREMONY_MS, kingOrders } from '@/lib/stage/coronation';
 import { requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
+import { classifyLink } from '@/lib/links';
 import { herald, say, sayError } from '@/components/Herald/store';
 import { t } from '@/theme/copy';
 import type { PlayerState, Snapshot, TickBase, Track, UserInfo, GuildInfo } from '@/lib/types';
@@ -95,11 +96,9 @@ function sendMutation(m: Mutation, before: Snapshot): Promise<unknown> | null {
   }
 }
 
-// Qui a demandé le titre visé (la scène pour sauter ou mettre en pause) : un refus PRIORITY_FORBIDDEN nomme le
-// prioritaire. Jamais le Roi lui-même : sur ses propres titres, le bot refuse pour la zone prioritaire ou la scène
-// d'un mieux placé, que la réponse ne dit pas ; le texte générique parle alors.
-function requesterName(m: Mutation, before: Snapshot): string | undefined {
-  const x = 'key' in m ? before.player.queue.find((q) => q.key === m.key) : before.player.current;
+// Qui a demandé le titre mis en cause par refusalOf : un refus PRIORITY_FORBIDDEN nomme le prioritaire. Jamais le Roi
+// lui-même : le texte générique parle alors.
+function requesterName(x: Track | null): string | undefined {
   const r = requesterOf(x?.addedBy, useStore.getState().me?.id);
   return r.kind === 'other' ? r.name : undefined;
 }
@@ -110,7 +109,10 @@ const engine = createQueueEngine({
   send: sendMutation,
   onView: (v) => useStore.setState({ player: v.player, tickBase: v.tickBase }),
   onRefused: (m, e, before) => {
-    sayError(e, { name: requesterName(m, before), action: m.kind === 'move' ? 'move' : undefined });
+    // PRIORITY_FORBIDDEN ne dit pas pourquoi : la zone prioritaire a son texte, sinon le demandeur mieux placé est nommé
+    const r = refusalOf(m, before, useStore.getState().me?.id);
+    if ('key' in r && errorCode(e).toUpperCase() === 'PRIORITY_FORBIDDEN') say(r.key);
+    else sayError(e, { name: 'blame' in r ? requesterName(r.blame) : undefined, action: m.kind === 'move' ? 'move' : undefined });
     // « Jouer maintenant » ou « Suivant » refusé : la scène revient au titre qui n'a jamais cessé de jouer. Ce retour
     // est noté comme un ordre (components/Stage/coronation.ts) : cérémonie rapide et sans annonce, le refus a parlé.
     const back = upcoming().player.current?.key;
@@ -124,17 +126,32 @@ const engine = createQueueEngine({
  */
 const upcoming = (): Snapshot => viewOf(engine.latest(), engine.pending());
 
+/** Ordre des états reçus : une réponse REST plus vieille que le dernier état complet du socket est écartée. */
+const _order = createStateOrder();
+
+/**
+ * Serveur dont la file affichée a été lue (un état complet reçu depuis le dernier reset) ; '' : pas encore. Avant, la vue
+ * est celle du reset : un ajout n'a pas de file « avant » (tous les titres du Roi y passeraient pour « ajoutés »).
+ */
+let _queueOf = '';
+
 /** État reçu (REST ou socket) : clés, partage structurel, tampon pendant une action ou un glisser. */
-function receive(payload: any): boolean {
+function receive(payload: any, from: 'socket' | 'rest' = 'socket'): boolean {
+  const kind = stateKind(payload, useStore.getState().guildId);
+  if (from === 'socket' && kind === 'other') return false;   // l'ancien serveur, sa room pas encore quittée : ni daté ni affiché
   const snap = snapshotFromPayload(payload, engine.latest(), performance.now());   // l'état gardé compris : un tick ne l'efface pas
   if (!snap) return false;
+  if (from === 'socket' && kind === 'full') _order.socket();
   engine.receive(snap);
+  if (kind === 'full') _queueOf = useStore.getState().guildId;
   return true;
 }
 
-/** Autre serveur, déconnexion : vue vide, ordres en attente oubliés. */
+/** Autre serveur, déconnexion : vue vide, ordres en attente oubliés, « Annuler » de l'ancienne vue désarmés. */
 function resetPlayer() {
+  _queueOf = '';
   engine.reset(emptySnapshot(performance.now()));
+  herald.disarm();
 }
 
 // ── Hooks ──
@@ -294,10 +311,13 @@ async function refreshGuilds() {
 async function refreshHistory() {
   const s = useStore.getState();
   if (!s.guildId) { s.setHistoryItems([]); return; }
+  const gid = s.guildId;
   try {
-    const data = await api.getHistory(s.guildId, 'top', 30);
+    const data = await api.getHistory(gid, 'top', 30);
+    if (useStore.getState().guildId !== gid) return;   // autre serveur choisi entre-temps : sa liste arrive à part
     useStore.getState().setHistoryItems(data?.items || []);
   } catch {
+    if (useStore.getState().guildId !== gid) return;
     useStore.getState().setHistoryItems([]);
   }
 }
@@ -305,7 +325,8 @@ async function refreshHistory() {
 async function setGuild(id: string) {
   const oldGid = useStore.getState().guildId;
   useStore.getState().setGuildId(id);
-  if (id !== oldGid) resetPlayer();
+  // Autre serveur : ni sa file ni ses « Souvent demandés ici » ne restent affichés le temps des deux relectures
+  if (id !== oldGid) { resetPlayer(); useStore.getState().setHistoryItems([]); }
   if (id) localStorage.setItem('greg.webplayer.guild_id', id);
   else localStorage.removeItem('greg.webplayer.guild_id');
   await refreshPlaylist().catch(() => {});
@@ -334,6 +355,15 @@ async function command(fn: (gid: string, uid: string) => Promise<unknown>) {
   await refreshPlaylist({ quiet: true }).catch(() => {});
 }
 
+/** Serveur affiché : un « Annuler » ne vaut que sur le serveur de son action (boundUndo). */
+const guildNow = () => useStore.getState().guildId;
+
+/**
+ * Un ajout (ou le rajout d'« Annuler » un retrait) à la fois : chacun relit la file après le précédent, sinon deux
+ * ajouts qui se chevauchent s'attribuent chacun les lignes de l'autre (le bot les exécute l'un après l'autre).
+ */
+const addTurn = createTurns();
+
 /**
  * Ajoute un titre / un lien / une playlist. true si l'ajout a réussi, false s'il n'a pas été envoyé ;
  * lève l'erreur API sinon (déjà annoncée par le Héraut). Le toast propose d'annuler l'ajout.
@@ -344,27 +374,36 @@ async function enqueue(payload: Record<string, any>): Promise<boolean> {
     say(s.me ? 'guild.pickFirst' : 'error.NOT_AUTHENTICATED', { text: s.me ? t('guild.pickFirst.body') : undefined, kind: 'warn' });
     return false;
   }
-  const meId = s.me.id;
-  const before = upcoming().player.queue.map((x) => x.key);
+  const gid = s.guildId, meId = s.me.id;
+  const here = () => guildNow() === gid;
   const typed = String(payload?.title || payload?.query || '');
-  let res: any;
-  try {
-    res = await api.queueAdd(s.guildId, meId, payload);
-  } catch (e) {
-    sayError(e, { q: looksLikeUrl(typed) ? undefined : typed });
-    await refreshPlaylist({ quiet: true }).catch(() => {});   // le bot a pu ajouter une partie des titres
-    throw e;
-  }
-  await refreshPlaylist({ quiet: true }).catch(() => {});
-  const keys = addedKeys(before, upcoming().player.queue, meId);
-  const c = addedCopy(res, parseTitle(typed, payload?.artist).song || typed);
-  const text = t(c.path, c.vars) + (c.suffix ? t(c.suffix, c.vars) : '');
-  say(c.key, {
-    text, vars: c.vars,
-    action: keys.length ? { label: t(c.action), run: () => { for (const k of keys) void removeTrack(k, { silent: true }); } } : null,
+  const link = classifyLink(String(payload?.url || payload?.query || ''));   // mix, playlist, vidéo seule, recherche…
+  const ok = await addTurn(async () => {
+    const before = upcoming().player.queue.map((x) => x.key);
+    // Le Roi a pu changer de serveur pendant l'ajout précédent ; file pas encore lue (démarrage, serveur tout juste
+    // choisi) : « avant » est la vue vide du reset, rien d'attribuable
+    const fromHere = here() && _queueOf === gid;
+    let res: any;
+    try {
+      res = await api.queueAdd(gid, meId, payload);
+    } catch (e) {
+      sayError(e, { q: looksLikeUrl(typed) ? undefined : typed, link });
+      if (here()) await refreshPlaylist({ quiet: true }).catch(() => {});   // le bot a pu ajouter une partie des titres
+      throw e;
+    }
+    if (here()) await refreshPlaylist({ quiet: true }).catch(() => {});
+    // Serveur changé avant ou pendant l'ajout : la file affichée n'est pas celle de l'ajout, rien à y annuler.
+    const keys = fromHere && here() ? addedKeys(before, upcoming().player.queue, meId) : [];
+    const c = addedCopy(res, parseTitle(typed, payload?.artist).song || typed, link);
+    const text = t(c.path, c.vars) + (c.suffix ? t(c.suffix, c.vars) : '');
+    say(c.key, {
+      text, vars: c.vars,
+      action: keys.length ? { label: t(c.action), run: boundUndo(gid, guildNow, () => { for (const k of keys) void removeTrack(k, { silent: true }); }) } : null,
+    });
+    return true;
   });
-  await bestEffortVoiceJoin('add');
-  return true;
+  if (here()) await bestEffortVoiceJoin('add');
+  return ok;
 }
 
 const trackPayload = (x: Track) => ({
@@ -372,16 +411,23 @@ const trackPayload = (x: Track) => ({
   provider: x.provider || 'youtube',
 });
 
-/** « Annuler » d'un retrait : le titre est rajouté (le bot n'a pas de « remettre »), puis replacé. */
-async function restoreTrack(x: Track, index: number) {
+/** « Annuler » d'un retrait : le titre est rajouté (le bot n'a pas de « remettre »), puis replacé, sur le serveur `gid` du retrait. */
+async function restoreTrack(x: Track, index: number, gid: string) {
   const s = useStore.getState();
-  if (!s.me || !s.guildId) return;
-  const before = upcoming().player.queue.map((q) => q.key);
-  try { await api.queueAdd(s.guildId, s.me.id, trackPayload(x)); } catch (e) { sayError(e); return; }
-  await refreshPlaylist({ quiet: true }).catch(() => {});
+  if (!s.me || s.guildId !== gid) return;   // autre serveur choisi depuis le retrait : rien à y remettre
+  const meId = s.me.id;
+  const here = () => guildNow() === gid;
+  const plan = await addTurn(async () => {
+    if (!here()) return null;
+    const before = upcoming().player.queue.map((q) => q.key);
+    const known = _queueOf === gid;   // file pas encore relue : place inconnue, le titre revient en fin de file
+    try { await api.queueAdd(gid, meId, trackPayload(x)); } catch (e) { sayError(e, { link: 'video' }); return null; }   // un seul titre
+    if (!here()) return null;
+    await refreshPlaylist({ quiet: true }).catch(() => {});
+    return known ? restorePlan(before, upcoming().player.queue, x.url, index) : null;
+  });
   // Le déplacement part après l'action en vol, une fois le tampon appliqué : il voit alors le titre remis.
-  const plan = restorePlan(before, upcoming().player.queue, x.url, index);
-  if (plan) await engine.dispatch({ kind: 'move', key: plan.key, beforeKey: plan.beforeKey });
+  if (plan && here()) await engine.dispatch({ kind: 'move', key: plan.key, beforeKey: plan.beforeKey });
 }
 
 async function removeTrack(key: string, o: { silent?: boolean } = {}): Promise<boolean> {
@@ -391,12 +437,15 @@ async function removeTrack(key: string, o: { silent?: boolean } = {}): Promise<b
   const i = q.findIndex((x) => x.key === key);
   if (i < 0) return false;
   const x = q[i];
+  const gid = guildNow();
+  const done = engine.dispatch({ kind: 'remove', key });
+  // « Annuler » cliqué avant la réponse du bot : le rajout attend l'issue du retrait (refusé : pas de doublon)
   const id = say('toast.removed', {
     vars: { title: songOf(x) },
-    action: { label: t('toast.removed.action'), run: () => { void restoreTrack(x, i); } },
+    action: { label: t('toast.removed.action'), run: boundUndo(gid, guildNow, afterDone(done, () => { void restoreTrack(x, i, gid); })) },
   });
-  const ok = await engine.dispatch({ kind: 'remove', key });
-  if (!ok) herald.dismiss(id);
+  const ok = await done;
+  if (!ok) herald.retract(id);   // refusé ou abandonné : ni le toast ni Ctrl+Z ne rajoutent le titre
   return ok;
 }
 
@@ -411,12 +460,13 @@ async function playNext(key: string): Promise<boolean> {
   if (i < 0) return false;
   if (i === 0) { say('toast.alreadyNext'); return true; }
   const back = q[i + 1]?.key ?? null;
+  const gid = guildNow();
   const id = say('toast.playNext', {
     vars: { title: songOf(q[i]) },
-    action: { label: t('toast.playNext.action'), run: () => { void moveTrack(key, back); } },
+    action: { label: t('toast.playNext.action'), run: boundUndo(gid, guildNow, () => { void moveTrack(key, back); }) },
   });
   const ok = await moveTrack(key, q[0].key);
-  if (!ok) herald.dismiss(id);
+  if (!ok) herald.retract(id);
   return ok;
 }
 
@@ -494,11 +544,13 @@ async function refreshPlaylist(opts?: { quiet?: boolean }) {
   if (!s.me || !s.guildId) { resetPlayer(); return; }
   const gid = s.guildId;
   const seq = ++_stateSeq;
+  const mark = _order.mark();
   _stateInFlight++;
   try {
     const data = await api.getPlaylistState(gid);
     if (!useStore.getState().me || useStore.getState().guildId !== gid || seq < _stateAppliedSeq) return;
-    if (!receive(data)) throw Object.assign(new Error('stale'), { payload: data });
+    // Un état complet du socket arrivé pendant la requête est au moins aussi récent : la réponse est écartée.
+    if (_order.fresh(mark) && !receive(data, 'rest')) throw Object.assign(new Error('stale'), { payload: data });
     _stateAppliedSeq = seq;
     _stateStale = false;
     _staleNotice = '';

@@ -3,6 +3,7 @@
  * Voir tests/playerUtils.test.mjs.
  */
 import type { Track, GuildInfo, PlayerState, Snapshot } from './types';
+import type { LinkKind } from './links';
 
 // ── Durées ──
 // Le bot envoie TOUJOURS des secondes : seules les valeurs explicitement en ms
@@ -75,6 +76,22 @@ export function buildUsersMap(p: any): Record<string, any> {
 export function isStalePayload(p: any): boolean {
   if (!p || typeof p !== 'object') return false;
   return p.stale === true || p.ok === false || (p.backend_error != null && p.backend_error !== '');
+}
+
+/**
+ * Nature d'un état reçu pour le serveur affiché `guildId` :
+ * - « other » : son guild_id en nomme un autre (socket juste après un changement de serveur : la room n'est quittée
+ *   qu'après le rendu). Le bot l'écrit en nombre (int Python) et un id Discord dépasse 2^53 : on compare les arrondis
+ *   (même écriture décimale, même arrondi) ;
+ * - « tick » (`only_elapsed`) : le temps seul, ni file ni ordre ;
+ * - « full » : un état complet (sans guild_id, rien à dire : gardé).
+ */
+export function stateKind(payload: any, guildId: string): 'other' | 'tick' | 'full' {
+  const root = payload && typeof payload === 'object' ? payload : {};
+  const p = root.state || root.pm || root.data || root;
+  const g = p?.guild_id;
+  if (g != null && g !== '' && (typeof g === 'number' ? g !== Number(guildId) : String(g) !== guildId)) return 'other';
+  return p?.only_elapsed ? 'tick' : 'full';
 }
 
 // ── Clés stables et état reçu (tech.md §3.2 ; motion.md P8, P9) ──
@@ -259,26 +276,37 @@ const DECK_ERRORS = new Set([
 export type ErrorCopy = { key: string; path: string; vars?: Record<string, string> } | { key: string; text: string };
 
 /**
- * Erreur d'API → texte du deck (vouvoiement du Roi), avec son contexte :
+ * Erreur d'API → texte du deck (vouvoiement du Roi) ou de ses compléments (copy.extra.ts), avec son contexte :
  * - `name` : qui a ajouté le titre visé (PRIORITY_FORBIDDEN nomme le prioritaire) ;
  * - `q` : texte cherché (NO_RESULTS) ;
+ * - `link` : nature du texte envoyé (links.ts) ; pour une recherche ou une vidéo seule, EXPAND_TIMEOUT n'est pas une
+ *   playlist trop longue mais l'attente derrière une autre demande (« occupé », error.BUSY) ;
  * - `action` : 'move' fait d'un refus sans code (409, file changée côté bot) un MOVE_CONFLICT ;
  *   'state' fait d'un état périmé (TIMEOUT ou cause inconnue) le « Greg est occupé » de toast.stale.
+ * NO_RESULTS `transient` (recherche lente ou bloquée) : « réessayez » (error.SEARCH_FAILED), jamais l'orthographe.
  * Code inconnu : le message français de l'API s'il y en a un, sinon HTTP_5XX, HTTP_401, NETWORK ou UNKNOWN.
  */
-export function errorCopy(e: any, ctx: { name?: string; q?: string; action?: string } = {}): ErrorCopy {
+export function errorCopy(e: any, ctx: { name?: string; q?: string; link?: LinkKind; action?: string } = {}): ErrorCopy {
   const code = errorCode(e).toUpperCase();
   const status = Number(e?.status) || 0;
+  const p = e?.payload && typeof e.payload === 'object' ? e.payload : null;
   if (code === 'PRIORITY_FORBIDDEN') {
     return ctx.name ? { key: 'error.PRIORITY_FORBIDDEN', path: 'error.PRIORITY_FORBIDDEN.text', vars: { name: ctx.name } }
       : { key: 'error.PRIORITY_FORBIDDEN', path: 'error.PRIORITY_FORBIDDEN.textGeneric' };
   }
   if (code === 'NO_RESULTS') {
+    if (p?.transient === true) return { key: 'error.SEARCH_FAILED', path: 'error.SEARCH_FAILED.text' };
     return ctx.q ? { key: 'error.NO_RESULTS', path: 'error.NO_RESULTS.text', vars: { q: ctx.q } }
       : { key: 'error.NO_RESULTS', path: 'error.NO_RESULTS.textGeneric' };
   }
-  // Le quota exact (k, cap) n'est pas dans la réponse de l'API
-  if (code === 'QUOTA_EXCEEDED') return { key: 'error.QUOTA_EXCEEDED', path: 'error.QUOTA_EXCEEDED.textGeneric' };
+  if (code === 'EXPAND_TIMEOUT' && (ctx.link === 'none' || ctx.link === 'video')) return { key: 'error.BUSY', path: 'error.BUSY.text' };
+  if (code === 'QUOTA_EXCEEDED') {
+    // count / cap du bot (_quota_failure) ; « 1 titres » n'existe pas : le générique en dessous de 2
+    const k = p?.count, cap = p?.cap;
+    return typeof k === 'number' && typeof cap === 'number' && isFinite(k) && isFinite(cap) && k >= 2
+      ? { key: 'error.QUOTA_EXCEEDED', path: 'error.QUOTA_EXCEEDED.text', vars: { k: String(k), cap: String(cap) } }
+      : { key: 'error.QUOTA_EXCEEDED', path: 'error.QUOTA_EXCEEDED.textGeneric' };
+  }
   // État du lecteur périmé (contrat C3) : « occupé » pour un TIMEOUT ou une cause inconnue
   if (ctx.action === 'state' && isStalePayload(e?.payload) && (code === 'TIMEOUT' || !DECK_ERRORS.has(code))) {
     return { key: 'toast.stale', path: 'toast.stale.text' };
@@ -286,7 +314,6 @@ export function errorCopy(e: any, ctx: { name?: string; q?: string; action?: str
   if (DECK_ERRORS.has(code)) return { key: `error.${code}`, path: `error.${code}.text` };
   if (code.startsWith('UNKNOWN_ACTION')) return { key: 'error.UNKNOWN_ACTION', path: 'error.UNKNOWN_ACTION.text' };
   if (!code && ctx.action === 'move' && status === 409) return { key: 'error.MOVE_CONFLICT', path: 'error.MOVE_CONFLICT.text' };
-  const p = e?.payload && typeof e.payload === 'object' ? e.payload : null;
   const msg = p && typeof p.message === 'string' ? p.message.trim() : '';
   if (msg) return { key: 'error.UNKNOWN', text: msg };
   if (status >= 500) return { key: 'error.HTTP_5XX', path: 'error.HTTP_5XX.text' };
@@ -432,8 +459,10 @@ export function isShortcutIgnored(ev: {
 /**
  * Toast du Héraut après un ajout réussi (contrat C2/C4 : added / requested / truncated / playlist / title),
  * en clés du deck : `path` (texte), `suffix` (complément de playlist), `vars`, `action` (libellé d'annulation).
+ * `link` : nature du lien envoyé (links.ts) ; un mix se dit « Mix ajouté » (toast.mixAdded), avec les compléments
+ * de la playlist, seuls au deck.
  */
-export function addedCopy(res: any, fallbackTitle: string): {
+export function addedCopy(res: any, fallbackTitle: string, link?: LinkKind): {
   key: string; path: string; suffix: string | null; vars: Record<string, string | number>; action: string;
 } {
   const r = res && typeof res === 'object' ? res : {};
@@ -448,7 +477,8 @@ export function addedCopy(res: any, fallbackTitle: string): {
     const suffix = r.truncated === 'quota' ? 'toast.playlistAdded.suffixQuota'
       : r.truncated === 'limit' ? 'toast.playlistAdded.suffixLimit'
         : m != null && m > n ? 'toast.playlistAdded.suffixOf' : null;
-    return { key: 'toast.playlistAdded', path: 'toast.playlistAdded.text', suffix, vars: { n, m: m ?? n }, action: 'toast.playlistAdded.action' };
+    const key = link === 'mix' ? 'toast.mixAdded' : 'toast.playlistAdded';
+    return { key, path: `${key}.text`, suffix, vars: { n, m: m ?? n }, action: `${key}.action` };
   }
   const title = (typeof r.title === 'string' && r.title.trim()) || fallbackTitle;
   return { key: 'toast.added', path: 'toast.added.text', suffix: null, vars: { title }, action: 'toast.added.action' };

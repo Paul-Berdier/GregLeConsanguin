@@ -15,14 +15,15 @@ function focusSearch(): void {
  * son oculus porte la couronne qui attend le Roi (rien en lecture), la couronne qui tourne (chargement) ou
  * le portrait de Greg en bonnet de valet (déconnecté). Greg ne porte jamais la couronne. Styles : night.css.
  */
-export default function NightState({ kind }: { kind: NightKind }) {
+export default function NightState({ kind, afterDay = false }: { kind: NightKind; afterDay?: boolean }) {
+  const after = afterDay ? 'day' : undefined;   // après le jour, le texte attend la rose (night.css)
   // Réplique tirée au montage côté client seulement (pas d'écart d'hydratation).
   const [seed, setSeed] = useState(0);
   useEffect(() => { setSeed(Math.floor(Math.random() * 1e6)); }, [kind]);
 
   if (kind === 'loading') {
     return (
-      <div className="night" data-kind="loading" role="status">
+      <div className="night" data-kind="loading" role="status" data-after={after}>
         <div className="vl-inner">
           <div className="heart">
             <picture className="loader">
@@ -39,7 +40,7 @@ export default function NightState({ kind }: { kind: NightKind }) {
 
   if (kind === 'out') {
     return (
-      <div className="night" data-kind="out">
+      <div className="night" data-kind="out" data-after={after}>
         <div className="vl-inner">
           <div className="heart valet">
             <span className="portrait"><img src="/gothique/greg-face-192.webp" alt={t('brand.portraitAlt')} width={150} height={150} decoding="async"/></span>
@@ -58,7 +59,7 @@ export default function NightState({ kind }: { kind: NightKind }) {
   }
 
   return (
-    <div className="night" data-kind="empty">
+    <div className="night" data-kind="empty" data-after={after}>
       <div className="vl-inner">
         <div className="heart"><img className="throne" src="/gothique/crown-320.webp" alt="" width={150} height={150} decoding="async"/></div>
         <h2 className="vl-title">{t('now.idle.title')}</h2>

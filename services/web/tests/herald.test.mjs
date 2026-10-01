@@ -1,10 +1,11 @@
 // Le Héraut (étape 3) : durées de vie, fusion ×N, survol, annulation, répliques espacées, pile.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadTs } from './_loadTs.mjs';
 
 const H = await loadTs('../src/lib/herald.ts');
-const { createHerald, stackLayout, stackHeight, spokenText, deckToast, errorToast, LIFE, ACTION_LIFE, RELEASE_MS, LEAVE_MS, UNDO_MS, QUIP_EVERY_MS } = H;
+const { createHerald, stackLayout, stackHeight, spokenText, deckToast, errorToast, withExtras, LIFE, ACTION_LIFE, RELEASE_MS, LEAVE_MS, UNDO_MS, QUIP_EVERY_MS } = H;
 
 // Horloge et minuteurs factices : advance(ms) déclenche dans l'ordre ce qui échoit.
 function clock() {
@@ -75,6 +76,80 @@ test('action : durée de vie allongée ; Ctrl+Z rejoue la dernière pendant 15 s
   assert.equal(h.undo(), false, 'trop tard');
   assert.equal(undone, 1);
   assert.ok(ACTION_LIFE > LIFE.info);
+});
+
+test('annulation retirée (ordre refusé ou abandonné) : Ctrl+Z ne la rejoue plus ; une simple fermeture la garde', () => {
+  const { h, c } = make();
+  let restored = 0;
+  const id = h.notify({ kind: 'info', fact: 'Retiré : X', action: { label: 'Annuler', run: () => restored++ } });
+  h.notify({ kind: 'err', fact: 'Refusé' });   // onRefused : sans action, ne remplace pas l’annulation
+  h.retract(id);
+  assert.equal(h.getSnapshot().find((t) => t.id === id).leaving, true);
+  assert.equal(h.undo(), false, 'le retrait refusé ne se « rétablit » pas');
+  assert.equal(restored, 0);
+  // déjà sortie d’elle-même (ordre lent) : retirée quand même
+  const slow = h.notify({ kind: 'info', fact: 'Retiré : W', action: { label: 'Annuler', run: () => restored++ } });
+  c.advance(ACTION_LIFE + LEAVE_MS);
+  assert.equal(h.getSnapshot().some((t) => t.id === slow), false);
+  h.retract(slow);
+  assert.equal(h.undo(), false);
+  assert.equal(restored, 0);
+  // fermée (✕) ou expirée : Ctrl+Z reste possible pendant UNDO_MS
+  const closed = h.notify({ kind: 'info', fact: 'Retiré : Y', action: { label: 'Annuler', run: () => restored++ } });
+  h.dismiss(closed);
+  assert.equal(h.undo(), true);
+  const expired = h.notify({ kind: 'info', fact: 'Retiré : V', action: { label: 'Annuler', run: () => restored++ } });
+  c.advance(ACTION_LIFE + LEAVE_MS);
+  assert.equal(h.getSnapshot().some((t) => t.id === expired), false);
+  assert.equal(h.undo(), true);
+  // retirer une autre notification ne désarme pas la dernière annulation
+  h.notify({ kind: 'info', fact: 'Retiré : Z', action: { label: 'Annuler', run: () => restored++ } });
+  h.retract(h.notify({ kind: 'err', fact: 'E' }));
+  assert.equal(h.undo(), true);
+  assert.equal(restored, 3);
+});
+
+test('usePlayer : un retrait ou un « Jouer ensuite » refusé (ou abandonné) retire son « Annuler », Ctrl+Z compris', () => {
+  const src = readFileSync(new URL('../src/hooks/usePlayer.ts', import.meta.url), 'utf8');
+  for (const head of ['async function removeTrack(', 'async function playNext(']) {
+    const i = src.indexOf(head);
+    assert.ok(i >= 0, head);
+    const fn = src.slice(i, src.indexOf('\n}\n', i));
+    assert.match(fn, /if \(!ok\) herald\.retract\(id\);/, `${head} : retract`);
+    assert.ok(!fn.includes('herald.dismiss('), `${head} : un simple dismiss laisse Ctrl+Z armé`);
+  }
+});
+
+// Autre serveur choisi (ou déconnexion) : les « Annuler » de l'ancien ne feraient plus rien (boundUndo) ; ni bouton mort
+// ni Ctrl+Z avalé sans effet.
+test('désarmer : les notifications à annulation s’en vont, Ctrl+Z ne rejoue plus rien ; les autres restent', () => {
+  const { h } = make();
+  let n = 0;
+  const removed = h.notify({ kind: 'info', fact: 'Retiré : X', action: { label: 'Annuler', run: () => n++ } });
+  const plain = h.notify({ kind: 'ok', fact: 'Fait' });
+  const closed = h.notify({ kind: 'ok', fact: 'Ajouté : Y', action: { label: 'Annuler', run: () => n++ } });
+  h.dismiss(closed);   // fermée : Ctrl+Z encore armé sur elle
+  h.disarm();
+  assert.equal(h.getSnapshot().find((t) => t.id === removed).leaving, true);
+  assert.equal(h.getSnapshot().find((t) => t.id === plain).leaving, false, 'sans action : gardée');
+  assert.equal(h.undo(), false);
+  h.act(removed);
+  assert.equal(n, 0);
+  h.disarm();   // rien à désarmer : sans effet
+  assert.equal(h.getSnapshot().find((t) => t.id === plain).leaving, false);
+  // une annulation proposée ensuite (sur le nouveau serveur) est de nouveau rejouable
+  h.notify({ kind: 'info', fact: 'Retiré : Z', action: { label: 'Annuler', run: () => n++ } });
+  assert.equal(h.undo(), true);
+  assert.equal(n, 1);
+});
+
+test('usePlayer : vue remise à zéro (autre serveur, déconnexion) : les annulations de l’ancienne sont désarmées', () => {
+  const src = readFileSync(new URL('../src/hooks/usePlayer.ts', import.meta.url), 'utf8');
+  const i = src.indexOf('function resetPlayer(');
+  assert.ok(i >= 0);
+  assert.match(src.slice(i, src.indexOf('\n}\n', i)), /herald\.disarm\(\);/);
+  const set = src.slice(src.indexOf('async function setGuild('), src.indexOf('\n}\n', src.indexOf('async function setGuild(')));
+  assert.match(set, /if \(id !== oldGid\) \{ resetPlayer\(\);/, 'changement de serveur : remise à zéro');
 });
 
 test('bouton d’action : l’action puis la sortie ; Ctrl+Z ne la rejoue pas', () => {
@@ -242,4 +317,19 @@ test('sayError : texte du deck (ou de l’API), sa sorte, « err » quand l’en
   const api = errorToast({ key: 'error.UNKNOWN', text: 'Message de l’API.' }, reader);
   assert.deepEqual([api.kind, api.fact, api.quip], ['err', 'Message de l’API.', `error.UNKNOWN#${'Message de l’API.'.length}`]);
   assert.equal(api.action, null);
+});
+
+test('le deck, puis ses compléments (copy.extra.ts) aux chemins qu’il n’a pas encore', async () => {
+  const { tx } = await loadTs('../src/theme/copy.extra.ts');
+  const d = withExtras(reader, tx);
+  for (const key of ['error.SEARCH_FAILED', 'error.BUSY']) {
+    const c = errorToast({ key, path: `${key}.text` }, d);
+    assert.equal(c.fact, tx(`${key}.text`));
+    assert.notEqual(c.fact, `${key}.text`, `${key}.text : texte des compléments`);
+    assert.equal(c.kind, 'err', 'pas de sorte : « err »');
+  }
+  assert.equal(d.t('toast.removed.text', { title: 'X' }), 'Retiré : X', 'le deck d’abord');
+  assert.equal(d.has('toast.removed.kind'), true);
+  assert.equal(d.has('error.NOPE.text'), false);
+  assert.equal(d.t('error.NOPE.text'), 'error.NOPE.text', 'absent partout : le chemin, comme t');
 });

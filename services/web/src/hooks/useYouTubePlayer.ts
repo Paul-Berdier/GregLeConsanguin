@@ -8,6 +8,7 @@ import type { CaptionsApi } from '@/lib/stage/cover';
 /**
  * Un seul lecteur YouTube pour toute la session (tech.md §5.2) : créé une fois, les titres passent par
  * loadVideoById dans la même iframe (≈ 400 ms au lieu de ≈ 690 ms, sans iframe recréée).
+ * Créé seulement quand un titre peut jouer (`enabled`) : déconnecté ou rien en file, ni lecteur ni requêtes YouTube.
  * React ne possède que l'enveloppe vide : l'iframe remplace un enfant créé ici, jamais un nœud React.
  */
 
@@ -29,11 +30,13 @@ export type YTHandlers = { onState: (state: number) => void; onError: (code: num
 export const YT_API_FAILED = -1;
 
 const API_SRC = 'https://www.youtube.com/iframe_api';
+/** Nouvel essai après un échec de l'API : 2 s, puis le double, au plus une minute (un bloqueur : un essai par minute). */
+const API_RETRY_MS = 2000, API_RETRY_MAX_MS = 60_000;
 let apiPromise: Promise<YTNamespace> | null = null;
 
 /**
  * Charge l'API une seule fois ; enchaîne un onYouTubeIframeAPIReady déjà posé. Si le script échoue, la promesse est
- * rejetée et oubliée, sa balise retirée : un prochain montage réessaie au lieu d'attendre pour toujours.
+ * rejetée et oubliée, sa balise retirée : l'essai suivant (useYouTubePlayer) recharge au lieu d'attendre pour toujours.
  */
 export function loadYouTubeApi(): Promise<YTNamespace> {
   const w = window as YTWindow;
@@ -52,21 +55,29 @@ export function loadYouTubeApi(): Promise<YTNamespace> {
   return apiPromise;
 }
 
-/** Crée le lecteur dans `wrapRef` au montage, le détruit au démontage. Renvoie null tant qu'il n'est pas prêt. */
-export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: YTHandlers): YTPlayer | null {
+/**
+ * Crée le lecteur dans `wrapRef` dès que `enabled` (un titre peut jouer), le garde ensuite même si `enabled` retombe
+ * (jamais détruit entre deux titres), le détruit au démontage. Renvoie null tant qu'il n'est pas prêt.
+ * L'API en échec (réseau, portail captif) : onError(YT_API_FAILED), puis un nouvel essai, de plus en plus rare, et tout
+ * de suite au retour du réseau (événement online).
+ */
+export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: YTHandlers, enabled: boolean): YTPlayer | null {
   const [player, setPlayer] = useState<YTPlayer | null>(null);
+  const [wanted, setWanted] = useState(enabled);
+  if (enabled && !wanted) setWanted(true);
   const h = useRef(handlers);
   h.current = handlers;
 
   useEffect(() => {
     const wrap = wrapRef.current;
-    if (!wrap) return;
+    if (!wanted || !wrap) return;
     let alive = true;
     let created: YTPlayer | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined, tries = 0;
     const host = document.createElement('div');
     wrap.appendChild(host);
-    loadYouTubeApi().then((YT) => {
-      if (!alive) return;
+    const create = (YT: YTNamespace): void => {
+      if (!alive || created) return;
       created = new YT.Player(host, {
         width: '100%', height: '100%',
         // Sous-titres : muteCaptions à chaque module chargé et à chaque départ (cover.ts).
@@ -90,14 +101,27 @@ export function useYouTubePlayer(wrapRef: RefObject<HTMLDivElement>, handlers: Y
           onError: (e: { data: number }) => { if (alive) h.current.onError(e.data); },
         },
       });
-    }).catch(() => { if (alive) h.current.onError(YT_API_FAILED); });   // le poster reste, la note le dit
+    };
+    const load = (): void => {
+      retry = undefined;
+      loadYouTubeApi().then(create).catch(() => {
+        if (!alive) return;
+        h.current.onError(YT_API_FAILED);   // le poster reste, la note le dit
+        retry = setTimeout(load, Math.min(API_RETRY_MAX_MS, API_RETRY_MS * 2 ** tries++));
+      });
+    };
+    const online = (): void => { if (retry !== undefined) { clearTimeout(retry); load(); } };
+    window.addEventListener('online', online);
+    load();
     return () => {
       alive = false;
+      clearTimeout(retry);
+      window.removeEventListener('online', online);
       try { created?.destroy(); } catch {}
       wrap.replaceChildren();
       setPlayer(null);
     };
-  }, [wrapRef]);
+  }, [wrapRef, wanted]);
 
   return player;
 }

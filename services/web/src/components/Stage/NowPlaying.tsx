@@ -44,11 +44,14 @@ export default function NowPlaying() {
   const plan = cer && cer.key === key ? cer.plan : null;
 
   // reflet d'or, une fois par cérémonie ; en vol, à l'atterrissage (landed relance l'effet)
+  const stopGlint = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!cer || cer.key !== key || cer.plan.glintAt == null || (cer.mode === 'flight' && !cer.landed)) return;
-    const tm = setTimeout(() => { if (titleRef.current) runGlint(titleRef.current); }, cer.mode === 'flight' ? 0 : cer.plan.glintAt);
+    const tm = setTimeout(() => { if (titleRef.current) stopGlint.current = runGlint(titleRef.current); }, cer.mode === 'flight' ? 0 : cer.plan.glintAt);
     return () => clearTimeout(tm);
   }, [cer, key]);
+  // le titre change (passage rapide sans reflet, arrêt, retour après refus) : le reflet en cours part avec l'ancien
+  useEffect(() => () => { stopGlint.current?.(); stopGlint.current = null; }, [key]);
 
   return (
     <div className="now-text" aria-hidden={current ? undefined : true}>

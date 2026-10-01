@@ -1,11 +1,12 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { createHerald, deckToast, errorToast } from '@/lib/herald';
+import { createHerald, deckToast, errorToast, withExtras } from '@/lib/herald';
 import type { DeckReader, SayOptions, Toast } from '@/lib/herald';
 import { errorCopy } from '@/lib/playerUtils';
 import { seedOf } from '@/lib/stage/scene';
 import { has, quip, t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 
 let announcer: ((t: Toast) => void) | null = null;
 
@@ -32,7 +33,8 @@ export function useToasts(): readonly Toast[] {
   return useSyncExternalStore(herald.subscribe, herald.getSnapshot, () => EMPTY);
 }
 
-const DECK: DeckReader = { t, has, quip, seedOf };
+// Le deck, puis ses compléments (copy.extra.ts : error.SEARCH_FAILED, error.BUSY…).
+const DECK: DeckReader = withExtras({ t, has, quip, seedOf }, tx);
 
 /**
  * Message du deck : `key` est une entrée `{ text, kind?, quips? }` (ex. 'toast.removed').
@@ -42,7 +44,10 @@ export function say(key: string, o: SayOptions = {}): number {
   return herald.notify(deckToast(key, o, DECK));
 }
 
-/** Erreur d'API → texte du deck (errorCopy) et sa sorte ; `ctx.name` nomme le demandeur d'un titre prioritaire. */
-export function sayError(e: unknown, ctx?: { name?: string; q?: string; action?: string }): number {
+/**
+ * Erreur d'API → texte du deck (errorCopy) et sa sorte ; `ctx.name` nomme le demandeur d'un titre prioritaire,
+ * `ctx.link` la nature du texte envoyé (un EXPAND_TIMEOUT de recherche ou de vidéo seule : Greg occupé).
+ */
+export function sayError(e: unknown, ctx?: Parameters<typeof errorCopy>[1]): number {
   return herald.notify(errorToast(errorCopy(e, ctx), DECK));
 }

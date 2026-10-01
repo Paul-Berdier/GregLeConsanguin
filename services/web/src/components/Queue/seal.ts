@@ -1,6 +1,6 @@
 'use client';
 
-import { EASE, SPRING, reducedMotion } from '@/lib/motion';
+import { EASE, SPRING, reducedMotion, springEasing } from '@/lib/motion';
 import { SEAL_FLIGHT_MS, SEAL_STAMP_DELAY_MS } from '@/lib/queue/seal';
 import type { SealExpect } from '@/lib/queue/seal';
 import { boxOf } from '@/lib/stage/coronation';
@@ -16,7 +16,7 @@ export function stampRow(li: HTMLElement, w: SealExpect): void {
   const reduce = reducedMotion();
   if (reduce) li.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 150, easing: 'ease', fill: 'backwards' });
   else {
-    const spring: KeyframeAnimationOptions = { duration: SPRING.seal.dur, easing: SPRING.seal.easing, fill: 'backwards' };
+    const spring: KeyframeAnimationOptions = { duration: SPRING.seal.dur, easing: springEasing('seal'), fill: 'backwards' };
     li.animate([{ opacity: 0, transform: 'scale(.9)' }, { opacity: 1, transform: 'none' }], spring);
     li.querySelector<HTMLElement>('.thumb .seal')?.animate(
       [{ opacity: 0, transform: 'scale(1.35) rotate(-14deg)' }, { opacity: 1, transform: 'none' }], { ...spring, delay: SEAL_STAMP_DELAY_MS });

@@ -4,7 +4,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { dropLeft, mergePresence, reverseStagger, staggerDelay, translateYOf } from '@/lib/flip';
 import type { Presence } from '@/lib/flip';
-import { DUR, EASE, SPRING, STAGGER_CAP, reducedMotion } from '@/lib/motion';
+import { DUR, EASE, SPRING, STAGGER_CAP, reducedMotion, springEasing } from '@/lib/motion';
 
 const EXIT_STYLE = ['position', 'top', 'left', 'right', 'margin', 'pointerEvents'] as const;
 
@@ -92,7 +92,7 @@ export function useFlip<T>(
       running?.cancel();
       const dy = shown - top;
       if (reduce || Math.abs(dy) < 0.5) continue;
-      const a = el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: SPRING.move.dur, easing: SPRING.move.easing });
+      const a = el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: SPRING.move.dur, easing: springEasing('move') });
       a.id = 'flip';
     }
     const stagger = !!optsRef.current.exitStagger && !reduce && exits.length > 1;

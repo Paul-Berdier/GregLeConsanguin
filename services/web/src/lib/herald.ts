@@ -6,7 +6,8 @@
  * - onglet caché : les minuteurs s'arrêtent et reprennent où ils en étaient (toute sa durée pour
  *   une notification arrivée entre-temps) ;
  * - un même fait sans action, encore affiché, devient « ×2 », « ×3 » ;
- * - une action d'annulation (« Annuler ») se rejoue aussi par Ctrl+Z pendant 15 s ;
+ * - une action d'annulation (« Annuler ») se rejoue aussi par Ctrl+Z pendant 15 s, sauf retirée (ordre refusé) ou
+ *   désarmée (autre serveur, déconnexion) ;
  * - au plus une réplique de Greg toutes les 30 s (le reste : le fait seul).
  * Pur, sans import runtime (tests/herald.test.mjs) : horloge, minuteurs et deck injectés.
  */
@@ -117,6 +118,19 @@ export function deckToast(key: string, o: SayOptions, d: DeckReader): ToastInput
   return { kind, fact, quip: d.quip(key, d.seedOf(fact), o.vars), action: o.action ?? null };
 }
 
+/**
+ * Le deck, puis ses compléments (`tx` de theme/copy.extra.ts) aux chemins qu'il n'a pas encore
+ * (ex. 'error.BUSY.text') : une entrée des compléments n'a ni sorte (« err » pour une erreur) ni réplique.
+ */
+export function withExtras(d: DeckReader, tx: (path: string, vars?: Record<string, string | number>) => string): DeckReader {
+  const extra = (p: string) => !d.has(p) && tx(p) !== p;
+  return {
+    ...d,
+    t: (p, vars) => (extra(p) ? tx(p, vars as Record<string, string | number> | undefined) : d.t(p, vars)),
+    has: (p) => d.has(p) || extra(p),
+  };
+}
+
 /** Erreur traduite (`errorCopy`) : son texte (du deck ou de l'API), sa sorte, ou « err » quand l'entrée n'en dit pas. */
 export function errorToast(c: ErrorCopy, d: DeckReader): ToastInput {
   const text = 'path' in c ? d.t(c.path, c.vars) : c.text;
@@ -130,7 +144,12 @@ export interface Herald {
   subscribe(fn: () => void): () => void;
   getSnapshot(): readonly Toast[];
   notify(input: ToastInput): number;
+  /** Fermeture (✕, fin de vie) : son annulation reste rejouable par Ctrl+Z pendant UNDO_MS. */
   dismiss(id: number): void;
+  /** Retrait d'une notification dont l'action ne vaut plus (ordre refusé ou abandonné) : Ctrl+Z ne la rejoue pas. */
+  retract(id: number): void;
+  /** Vue remise à zéro (autre serveur, déconnexion) : les annulations proposées ne valent plus, ni bouton ni Ctrl+Z. */
+  disarm(): void;
   /** Bouton d'action de la notification : l'action, puis la notification s'en va. */
   act(id: number): void;
   /** Ctrl+Z : la dernière annulation proposée, si elle a moins de UNDO_MS. */
@@ -227,6 +246,14 @@ export function createHerald(o: HeraldOptions): Herald {
       return t.id;
     },
     dismiss,
+    retract(id) {
+      if (lastUndo?.id === id) lastUndo = null;   // même déjà sortie d'elle-même (ordre lent)
+      dismiss(id);
+    },
+    disarm() {
+      lastUndo = null;
+      for (const t of list.filter((x) => x.action && !x.leaving)) dismiss(t.id);
+    },
     act(id) {
       const t = list.find((x) => x.id === id);
       if (!t || t.leaving || !t.action) return;

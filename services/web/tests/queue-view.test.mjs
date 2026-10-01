@@ -76,6 +76,70 @@ test('annuler l’ajout : les titres apparus, ceux du Roi seulement', () => {
   assert.deepEqual(U.addedKeys(['a', 'b', 'x', 'y', 'z'], after, '101'), []);
 });
 
+test('« Annuler » lié au serveur de l’action : sur un autre serveur, rien', () => {
+  let cur = 'A', runs = 0;
+  const undo = U.boundUndo('A', () => cur, () => { runs++; });
+  undo();
+  assert.equal(runs, 1);
+  cur = 'B';
+  undo();
+  assert.equal(runs, 1, 'autre serveur : ni retrait ni rajout dans sa file');
+  cur = 'A';
+  undo();
+  assert.equal(runs, 2, 'revenu sur le serveur de l’action : de nouveau possible');
+  // pourquoi : la file d'un autre serveur n'a aucune des clés d'avant, tous les titres du Roi y passeraient pour « ajoutés »
+  const mine = { addedBy: { id: '101', name: 'Paul' } };
+  assert.deepEqual(U.addedKeys(['a'], [T('b1', 1, mine), T('b2', 1, mine)], '101'), ['b1', 'b2']);
+});
+
+test('deux ajouts qui se chevauchent : chacun relit la file après le précédent, son « Annuler » ne retire que ses lignes', async () => {
+  const turn = U.createTurns();
+  const mine = (key) => T(key, 1, { addedBy: { id: '101', name: 'Paul' } });
+  let queue = [T('x')];
+  const keysOf = () => queue.map((t) => t.key);
+  const bot = {};
+  for (const k of ['A', 'B']) { let r; bot[k] = { promise: new Promise((res) => { r = res; }), resolve: () => r() }; }
+  // enqueue : file d'avant, queueAdd (le titre entre quand le bot répond), relecture, puis les lignes apparues
+  const add = (k) => turn(async () => {
+    const before = keysOf();
+    await bot[k].promise;
+    queue = [...queue, mine(k)];
+    return U.addedKeys(before, queue, '101');
+  });
+  const a = add('A');
+  const b = add('B');                       // « + » de l'historique pendant la recherche de A
+  bot.B.resolve();
+  bot.A.resolve();
+  assert.deepEqual(await a, ['A']);
+  assert.deepEqual(await b, ['B'], 'l’« Annuler » de B ne retire pas A');
+  const t2 = U.createTurns();
+  await assert.rejects(t2(async () => { throw new Error('refus'); }));
+  assert.equal(await t2(async () => 'ensuite'), 'ensuite', 'un ajout refusé ne bloque pas le suivant');
+});
+
+// « Retiré : X — Annuler » paraît avant la réponse du bot : cliqué tout de suite, le rajout partait avant le refus du
+// retrait (PRIORITY_FORBIDDEN), et X se retrouvait deux fois dans la file, compté dans le quota du Roi.
+test('« Annuler » un retrait encore en vol : le rajout attend son issue ; refusé ou abandonné, rien', async () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  let runs = 0, answer;
+  const undo = U.afterDone(new Promise((r) => { answer = r; }), () => { runs++; });
+  undo();
+  await flush();
+  assert.equal(runs, 0, 'pas avant la réponse du bot');
+  answer(true);
+  await flush();
+  assert.equal(runs, 1, 'retrait accusé : le titre est rajouté');
+  U.afterDone(Promise.resolve(false), () => { runs++; })();
+  await flush();
+  assert.equal(runs, 1, 'retrait refusé (ou serveur changé) : le titre n’est jamais parti');
+  const late = U.afterDone(Promise.resolve(true), () => { runs++; });
+  await flush();
+  assert.equal(runs, 1, 'rien sans clic');
+  late();
+  await flush();
+  assert.equal(runs, 2, 'cliqué après l’accusé : tout de suite');
+});
+
 test('annuler un retrait : la ligne revenue et le titre devant lequel la replacer', () => {
   const url = 'https://youtu.be/b';
   const after = [T('a'), T('c'), T('d'), { key: 'b2', url }];

@@ -13,6 +13,35 @@ export function addedKeys(beforeKeys: readonly string[], after: readonly Pick<Tr
 }
 
 /**
+ * « Annuler » lié au serveur de l'action (`gid`) : sur un autre, il ne fait rien. Sa file n'a aucune des clés d'avant
+ * (tous les titres du Roi y passeraient pour « ajoutés »), et un titre retiré ailleurs n'a pas à y entrer.
+ */
+export function boundUndo(gid: string, current: () => string, run: () => void): () => void {
+  return () => { if (current() === gid) run(); };
+}
+
+/**
+ * « Annuler » d'un ordre encore en vol (le toast paraît avant la réponse du bot) : l'annulation attend son issue (`done`).
+ * Refusé ou abandonné, rien n'a changé : rien à défaire (un retrait refusé rajouté doublerait le titre).
+ */
+export function afterDone(done: Promise<boolean>, run: () => void): () => void {
+  return () => { void done.then((ok) => { if (ok) run(); }); };
+}
+
+/**
+ * Un ajout à la fois : chaque tâche commence quand la précédente est finie (réussie ou non). La file relue « avant »
+ * contient alors les ajouts précédents, et l'« Annuler » de chacun ne retire que ses lignes.
+ */
+export function createTurns(): <T>(task: () => Promise<T>) => Promise<T> {
+  let last: Promise<unknown> = Promise.resolve();
+  return (task) => {
+    const run = last.then(task);
+    last = run.catch(() => {});
+    return run;
+  };
+}
+
+/**
  * Titre remis par « Annuler » d'un retrait : la dernière ligne nouvelle de même url, et la clé du titre devant
  * lequel la replacer (celui qui occupe son ancienne place `index` ; null : en fin de file). null si le titre
  * n'est pas revenu (refusé, quota).

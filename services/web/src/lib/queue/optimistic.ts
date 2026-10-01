@@ -133,6 +133,57 @@ export function enqueueMutation(pending: readonly Mutation[], m: Mutation): Muta
   return [...pending.filter((p) => !(p.status === 'queued' && sameTarget(p, m))), m];
 }
 
+// Poids d'un titre pour le bot (item.priority : celui de son demandeur à l'ajout) ; null : inconnu.
+function weight(x: Track | null | undefined): number | null {
+  const raw = x?.raw;
+  return raw && typeof raw === 'object' && 'priority' in raw ? Number(raw.priority) || 0 : null;
+}
+
+/** Cause d'un refus PRIORITY_FORBIDDEN : un texte du deck (zone prioritaire), ou le titre dont le demandeur est mieux placé. */
+export type Refusal = { key: 'error.MOVE_PROMOTE_PRIORITY' | 'error.MOVE_DEMOTE_PRIORITY' } | { blame: Track | null };
+
+/**
+ * Le bot refuse sans dire pourquoi (PRIORITY_FORBIDDEN) ; sur `before`, la file qu'il a vue, la cause la plus sûre :
+ * - retrait : le rang du demandeur du titre (can_edit_queue_item) ; passer, pause : celui de la scène (_ensure_can_control) ;
+ * - déplacer : la zone prioritaire (validate_move), seule cause possible pour un titre du Roi ; pour un autre, sauf si
+ *   les poids l'excluent (un titre ne change de zone qu'en doublant plus lourd, ou en passant derrière plus léger) ;
+ * - jouer maintenant (le titre remonte en tête, puis la scène change) : la zone, sinon la scène d'un autre, sauf si le
+ *   demandeur du titre pèse au moins la scène (son rang est vérifié avant).
+ */
+export function refusalOf(m: MutationBody, before: Snapshot, meId: string | null | undefined): Refusal {
+  const q = before.player.queue, cur = before.player.current;
+  const mine = (x: Track | null) => !!meId && String(x?.addedBy?.id ?? '') === String(meId);
+  // La zone peut-elle expliquer le refus de `x` déplacé de src à dst ? Poids inconnus : peut-être.
+  const zone = (x: Track, src: number, dst: number) => {
+    const w = weight(x);
+    return (dst < src ? q.slice(dst, src) : q.slice(src + 1, dst + 1)).some((y) => {
+      const v = weight(y);
+      return w == null || v == null || (dst < src ? v > w : v < w);
+    });
+  };
+  switch (m.kind) {
+    case 'remove': return { blame: q[idx(q, m.key)] ?? null };
+    case 'skip':
+    case 'setPaused': return { blame: cur };
+    case 'move': {
+      const x = q[idx(q, m.key)] ?? null;
+      const mv = moveIndices(q, m.key, m.beforeKey);
+      if (!x || !mv) return { blame: x };
+      if (mine(x) || zone(x, mv.src, mv.dst)) return { key: mv.dst < mv.src ? 'error.MOVE_PROMOTE_PRIORITY' : 'error.MOVE_DEMOTE_PRIORITY' };
+      return { blame: x };
+    }
+    case 'playAt': {
+      const i = idx(q, m.key);
+      const x = q[i] ?? null;
+      if (!x) return { blame: cur };
+      if (i > 0 && zone(x, i, 0)) return { key: 'error.MOVE_PROMOTE_PRIORITY' };
+      const wx = weight(x), wc = weight(cur);
+      if (!mine(x) && (!cur || mine(cur) || (wx != null && wc != null && wx >= wc))) return { blame: x };
+      return { blame: cur };
+    }
+  }
+}
+
 export interface QueueEngineOptions {
   initial: Snapshot;
   now: () => number;
@@ -153,7 +204,10 @@ export interface QueueEngine {
   latest(): Snapshot;
   /** État complet reçu (REST, socket) : appliqué, ou gardé en tampon pendant une action en vol ou un glisser. */
   receive(next: Snapshot): void;
-  /** Ordre du Roi : vue changée tout de suite ; résolue à true à l'accusé (ou si devenu sans effet), false au refus. */
+  /**
+   * Ordre du Roi : vue changée tout de suite ; résolue à true à l'accusé (ou si devenu sans effet), false au refus,
+   * ou pour un « Jouer maintenant » écarté (la scène a changé avant son envoi).
+   */
   dispatch(body: MutationBody): Promise<boolean>;
   /** Glisser en cours : les états reçus attendent release(). */
   hold(): void;
@@ -200,13 +254,15 @@ export function createQueueEngine(o: QueueEngineOptions): QueueEngine {
     const i = pending.findIndex((m) => m.status === 'queued');
     if (i < 0) return;
     const m = pending[i];
-    const before = viewOf(server, pending.slice(0, i));
+    // L'état gardé compris : c'est déjà celui du bot (un dépôt part avant release(), un accusé pendant un glisser).
+    const before = viewOf(held ?? server, pending.slice(0, i));
     let call: Promise<unknown> | null;
     try { call = o.send(m, before); } catch (e) { call = Promise.reject(e); }
     if (!call) {   // devenue sans effet (titre parti, déjà à sa place) : rien à envoyer
       pending = pending.filter((p) => p.id !== m.id);
       refresh();
-      resolve(m.id, true);
+      // « Jouer maintenant » écarté parce que la scène a changé : le titre n'a pas été joué, pas un succès
+      resolve(m.id, m.kind !== 'playAt' || before.player.current?.key === m.key);
       pump();
       return;
     }
@@ -268,5 +324,22 @@ export function createQueueEngine(o: QueueEngineOptions): QueueEngine {
       server = next;
       refresh();
     },
+  };
+}
+
+/**
+ * REST et socket ne reviennent pas forcément dans l'ordre où le bot les a écrits (chemins séparés). Une réponse REST
+ * demandée avant le dernier état complet du socket est peut-être plus vieille que lui : écartée, le socket suit chaque
+ * changement. Les ticks (only_elapsed) ne comptent pas : ils ne disent rien de la file.
+ */
+export function createStateOrder() {
+  let socket = 0;
+  return {
+    /** État complet reçu par le socket. */
+    socket(): void { socket++; },
+    /** Marque d'une requête REST, prise à son départ. */
+    mark(): number { return socket; },
+    /** À sa réponse : vrai si aucun état complet du socket n'est arrivé depuis. */
+    fresh(mark: number): boolean { return mark === socket; },
   };
 }

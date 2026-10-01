@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 
 const {
-  moveIndices, applyMutation, viewOf, isSatisfied, reconcile, enqueueMutation, createQueueEngine, ACK_GRACE_MS, HOLD_MAX_MS,
+  moveIndices, applyMutation, viewOf, isSatisfied, reconcile, enqueueMutation, createQueueEngine, createStateOrder,
+  ACK_GRACE_MS, HOLD_MAX_MS,
 } = await loadTs('../src/lib/queue/optimistic.ts');
 
 const T = (k, duration = 200) => ({ key: k, url: `https://youtu.be/${k}`, title: k.toUpperCase(), duration });
@@ -215,6 +216,106 @@ test('moteur : ordre devenu sans effet = pas de requête, promesse à true', asy
   engine.release();
   assert.equal(await engine.dispatch({ kind: 'remove', key: 'b' }), true);
   assert.equal(sent.length, 0);
+});
+
+// useQueueDrag : onDrop (dispatch, envoi) part AVANT onEnd (release) ; l'état reçu pendant le glisser est encore gardé.
+test('moteur : un dépôt pendant le glisser calcule ses indices sur l’état gardé (le bot a avancé)', () => {
+  const q = ['a', 'b', 'c', 'd', 'e'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q, { current: T('x') }));
+  engine.hold();                                                    // saisie (onLift)
+  engine.receive(snap(q.slice(1), { current: q[0] }));              // x fini : a passe sur la scène, état gardé
+  engine.dispatch({ kind: 'move', key: 'd', beforeKey: 'b' });      // dépôt (onDrop)
+  engine.release();                                                 // onEnd
+  assert.equal(sent.length, 1);
+  assert.equal(order(sent[0].before), 'b,c,d,e', 'indices calculés sur la file que le bot a');
+  assert.deepEqual(moveIndices(sent[0].before.player.queue, 'd', 'b'), { src: 2, dst: 0 }, 'et non {3,1}, qui déplacerait e');
+});
+
+test('moteur : l’ordre envoyé à l’accusé du précédent, pendant un glisser, part lui aussi de l’état gardé', async () => {
+  const q = ['a', 'b', 'c', 'd', 'e'].map((k) => T(k));
+  const { engine, sent } = rig(snap(q));
+  engine.dispatch({ kind: 'remove', key: 'e' });                    // en vol
+  engine.hold();                                                    // saisie
+  engine.receive(snap(q.slice(1)));                                 // a a joué : gardé (le retrait de e n'y est pas encore)
+  engine.dispatch({ kind: 'move', key: 'd', beforeKey: 'b' });      // dépôt : attend l'accusé
+  sent[0].resolve({ ok: true });
+  await flush();
+  assert.equal(sent.length, 2);
+  assert.equal(order(sent[1].before), 'b,c,d', 'l’état gardé, le retrait de e rejoué dessus');
+  assert.deepEqual(moveIndices(sent[1].before.player.queue, 'd', 'b'), { src: 2, dst: 0 });
+  engine.release();
+});
+
+// Même condition que sendMutation : « Jouer maintenant » et « Suivant » ne partent que si la scène est celle du clic.
+function stageRig(initial) {
+  const sent = [];
+  const engine = createQueueEngine({
+    initial, now: () => 0, onView: () => {},
+    send: (m, before) => {
+      const cur = before.player.current?.key ?? null;
+      if ((m.kind === 'playAt' || m.kind === 'skip') && cur !== m.fromKey) return null;
+      if (m.kind === 'playAt' && before.player.queue.every((t) => t.key !== m.key)) return null;
+      const d = deferred();
+      sent.push({ m, before, ...d });
+      return d.promise;
+    },
+  });
+  return { engine, sent };
+}
+
+test('moteur : « Jouer maintenant » écarté parce que la scène a changé entre-temps, promesse à false (pas de faux succès)', async () => {
+  const [A, X, Y] = ['A', 'X', 'Y'].map((k) => T(k));
+  const { engine, sent } = stageRig(snap([Y, X], { current: A }));
+  const paused = engine.dispatch({ kind: 'setPaused', paused: true });    // Espace : en vol
+  const played = engine.dispatch({ kind: 'playAt', key: 'X', fromKey: 'A' });   // attend son tour
+  engine.receive(snap([X], { current: Y }));                              // A fini, Y passe : gardé pendant l'action
+  sent[0].resolve({ ok: true });
+  assert.equal(await paused, true);
+  assert.equal(await played, false, 'X n’a jamais été joué : ni « Lecture immédiate » ni salon vocal');
+  assert.equal(sent.length, 1, 'rien envoyé');
+  assert.equal(engine.view().player.current.key, 'Y');
+  assert.equal(order(engine.view()), 'X');
+});
+
+test('moteur : « Suivant » refusé, le « Jouer maintenant » qui le suivait est écarté à false ; un saut déjà fait reste un succès', async () => {
+  const [A, B, X] = ['A', 'B', 'X'].map((k) => T(k));
+  const { engine, sent } = stageRig(snap([B, X], { current: A }));
+  const skipped = engine.dispatch({ kind: 'skip', fromKey: 'A' });        // N : la vue montre B
+  const played = engine.dispatch({ kind: 'playAt', key: 'X', fromKey: 'B' });
+  sent[0].reject(Object.assign(new Error('403'), { status: 403, payload: { error: 'PRIORITY_FORBIDDEN' } }));
+  assert.equal(await skipped, false);
+  assert.equal(await played, false);
+  assert.equal(engine.view().player.current.key, 'A');
+  assert.equal(order(engine.view()), 'B,X');
+  // A passé ailleurs (fin du titre, un courtisan) : « Suivant » sur A a déjà son effet
+  const again = stageRig(snap([X], { current: B }));
+  assert.equal(await again.engine.dispatch({ kind: 'skip', fromKey: 'A' }), true);
+  // X déjà sur la scène (joué par un autre) : l'ordre a son effet
+  const done = stageRig(snap([], { current: X }));
+  assert.equal(await done.engine.dispatch({ kind: 'playAt', key: 'X', fromKey: 'A' }), true);
+});
+
+// REST et socket n'arrivent pas dans l'ordre où le bot les a écrits (chemins séparés).
+test('ordre des états : une réponse REST partie avant le dernier état complet du socket est écartée', async () => {
+  const st = createStateOrder();
+  const m1 = st.mark();
+  assert.equal(st.fresh(m1), true, 'aucun état du socket pendant la requête');
+  // GET /playlist (relève de 5 s) en vol ; le Roi retire b ; l'état d'après le retrait arrive par le socket, puis la
+  // réponse REST, lue par le bot avant le retrait.
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((k) => T(k));
+  const { engine, sent } = rig(snap([a, b, c, d]));
+  const rest = st.mark();
+  engine.dispatch({ kind: 'remove', key: 'b' });
+  sent[0].resolve({ ok: true });
+  await flush();
+  st.socket();
+  engine.receive(snap([a, c, d]));
+  assert.equal(st.fresh(rest), false, 'la réponse REST est peut-être plus vieille : écartée');
+  if (st.fresh(rest)) engine.receive(snap([a, b, c, d]));
+  assert.equal(order(engine.view()), 'a,c,d', 'b ne revient pas');
+  engine.dispatch({ kind: 'remove', key: 'c' });
+  assert.equal(sent[1].before.player.queue.findIndex((t) => t.key === 'c'), 1, 'l’index de c sur la file du bot, pas d sur [a,b,c,d]');
+  assert.equal(st.fresh(st.mark()), true, 'une requête partie après lui passe');
 });
 
 test('moteur : reset (autre serveur) vide l’attente et ignore les réponses en retard', async () => {

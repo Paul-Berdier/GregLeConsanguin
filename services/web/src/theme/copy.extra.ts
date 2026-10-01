@@ -1,6 +1,6 @@
 /**
  * Compléments au deck v2 (copy.v2.json, repris tel quel, qu'on n'édite pas à la main) : les textes de la file,
- * de l'historique, du Héraut, du clavier et des lecteurs d'écran que le deck n'a pas encore. À reverser au deck v3.
+ * de l'historique, du Héraut, du clavier, des lecteurs d'écran et deux erreurs que le deck n'a pas encore. À reverser au deck v3.
  * Même règles que le deck : vouvoiement du Roi, U+00A0 avant « : » et entre un nombre et son unité,
  * U+202F avant ; ! ?. Aucun humour ici : ce sont des libellés et des textes pour lecteurs d'écran.
  * Pur, sans import runtime (tests/copy-extra.test.mjs).
@@ -54,6 +54,13 @@ export const EXTRA = {
   },
   transport: { skipTip: 'Suivant (Maj+→)', restartTip: 'Depuis le début (Maj+←)', repeatTip: 'Boucle' },
   a11y: { skipToQueue: 'Aller à la file', nowPlaying: 'En lecture : {title}', paused: 'En pause.', resumed: 'Lecture reprise.' },
+  // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
+  error: {
+    // NO_RESULTS transient : recherche trop lente ou bloquée, pas une absence de résultat
+    SEARCH_FAILED: { text: 'La recherche YouTube n’a pas abouti. Réessayez dans un instant.' },
+    // EXPAND_TIMEOUT d'une recherche ou d'une vidéo seule : l'attente derrière une autre demande
+    BUSY: { text: 'Greg est déjà occupé avec une autre demande sur ce serveur. Réessayez dans un instant.' },
+  },
 } satisfies Record<string, Node>;
 
 /** Raccourcis du menu du compte (DESIGN §12.7, body.html l. 54–63) : remplacent `shortcuts.items` du deck (N, P, R retirés). */

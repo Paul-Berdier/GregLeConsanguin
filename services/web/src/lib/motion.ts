@@ -24,6 +24,27 @@ export const SPRING = {
   settle: { dur: 750, easing: 'linear(0,.0663,.2105,.3763,.5332,.6669,.7733,.8533,.9107,.9499,.9754,.9911,1,1.0044,1.0061,1.0062,1.0055,1.0045,1.0035,1.0026,1.0018,1.0012,1.0008,1,1)' },
   seal: { dur: 700, easing: 'linear(0,.0581,.1953,.3667,.5407,.6976,.8271,.9258,.9947,1.0379,1.0605,1.0679,1.0652,1.0566,1.0451,1.0332,1.0222,1.0131,1.006,1.001,.9978,.9961,1)' },
 } as const;
+export type SpringName = keyof typeof SPRING;
+
+/** Courbe de repli d'un ressort quand le moteur ne lit pas linear() : sans rebond, la même arrivée douce. */
+const SPRING_FALLBACK: Record<SpringName, string> = { snap: EASE.out, move: EASE.out, settle: EASE.out, seal: EASE.drop };
+
+let linearOk: boolean | undefined;
+/**
+ * linear() lisible ? (Chrome 113, Firefox 112, Safari 17.2.) Sinon animate() lève une TypeError (iOS 16, Safari 17.1),
+ * dans un effet de mise en page : toute l'app tomberait. Lu une fois ; faux sans CSS.supports (rendu serveur, Node).
+ */
+export function linearEasingOk(): boolean {
+  if (linearOk === undefined) {
+    linearOk = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('transition-timing-function', 'linear(0, 1)');
+  }
+  return linearOk;
+}
+
+/** Courbe d'un ressort pour animate() : SPRING[name].easing si le moteur lit linear(), sinon une cubic-bezier. */
+export function springEasing(name: SpringName, linear: boolean = linearEasingOk()): string {
+  return linear ? SPRING[name].easing : SPRING_FALLBACK[name];
+}
 
 /** Éclair après un déplacement (Atlassian) et secousse d'un refus (motion.md §6.8). */
 export const FLASH_MS = 700;

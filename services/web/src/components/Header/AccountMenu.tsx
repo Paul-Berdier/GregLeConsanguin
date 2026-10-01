@@ -4,18 +4,17 @@ import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
 import { HELP_EVENT, SHORTCUTS_STORAGE_KEY, shortcutsOn } from '@/lib/keys';
+import { QUIPS_STORAGE_KEY, quipsOn } from '@/lib/prefs';
 import { t } from '@/theme/copy';
 import { KEYS, tx } from '@/theme/copy.extra';
 import { speak } from '@/components/Herald/store';
 import KingAvatar, { kingName } from './KingAvatar';
 import { usePopover } from './GuildPicker';
 
-// Réglage « Répliques de Greg » : 'off' les coupe (faits seulement), absent ou 'on' les garde.
-// Reflété sur <html data-quips> pour les composants qui en affichent.
-const QUIPS_KEY = 'greg.webplayer.quips';
-
+// Réglage « Répliques de Greg » (lib/prefs) : <html data-quips> est posé dès le <head> (layout.tsx), connecté ou non ;
+// le menu le bascule. Lu dès le premier rendu : un « on » par défaut écraserait un instant le « off » du <head>.
 function readQuips(): boolean {
-  try { return localStorage.getItem(QUIPS_KEY) !== 'off'; } catch { return true; }
+  try { return quipsOn(localStorage.getItem(QUIPS_STORAGE_KEY)); } catch { return true; }
 }
 
 // Réglage « Raccourcis clavier » (WCAG 2.1.4) : 'off' coupe les raccourcis d'une touche. Reflété sur <html data-keys> :
@@ -30,17 +29,17 @@ export default function AccountMenu() {
   const popId = useId();
   const quipsId = useId();
   const keysId = useId();
-  const [quips, setQuips] = useState(true);
+  const [quips, setQuips] = useState(readQuips);   // menu monté une fois le Roi connu : jamais au rendu serveur
   const [keys, setKeys] = useState(true);
 
-  useEffect(() => { setQuips(readQuips()); setKeys(readKeys()); }, []);
+  useEffect(() => { setKeys(readKeys()); }, []);
   useEffect(() => { document.documentElement.dataset.quips = quips ? 'on' : 'off'; }, [quips]);
   useEffect(() => { document.documentElement.dataset.keys = keys ? 'on' : 'off'; }, [keys]);
 
   const toggleQuips = () => {
     const next = !quips;
     setQuips(next);
-    try { localStorage.setItem(QUIPS_KEY, next ? 'on' : 'off'); } catch {}
+    try { localStorage.setItem(QUIPS_STORAGE_KEY, next ? 'on' : 'off'); } catch {}
   };
 
   const toggleKeys = () => {

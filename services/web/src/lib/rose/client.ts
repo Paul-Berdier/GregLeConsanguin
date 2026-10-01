@@ -61,6 +61,27 @@ export function roseSupported(): boolean {
   return typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap === 'function';
 }
 
+/**
+ * Densité de pixels qui change sans que R change (fenêtre tirée sur un écran plus dense, zoom quand R est borné) : `fn` à
+ * chaque changement (Rose.tsx rappelle resize(R), qui relit la densité). La requête, un étroit intervalle autour de la
+ * densité (une égalité stricte peut manquer une densité flottante, 1.100000023841858), cesse de correspondre au
+ * changement : elle est réarmée sur la nouvelle densité. Rend le désabonnement ; sans matchMedia, rien.
+ */
+export function watchDpr(fn: () => void, mm?: (query: string) => MediaQueryList): () => void {
+  const query = mm ?? (typeof matchMedia === 'function' ? (q: string) => matchMedia(q) : null);
+  if (!query) return () => {};
+  let mq: MediaQueryList | null = null;
+  const on = (): void => { arm(); fn(); };
+  const arm = (): void => {
+    mq?.removeEventListener?.('change', on);
+    const d = window.devicePixelRatio || 1;
+    mq = query(`(min-resolution: ${d - 0.001}dppx) and (max-resolution: ${d + 0.001}dppx)`);
+    mq.addEventListener?.('change', on);
+  };
+  arm();
+  return () => { mq?.removeEventListener?.('change', on); mq = null; };
+}
+
 /** Opacité rendue (animations comprises) ; 0 hors du document. */
 function rendered(el: HTMLElement): number {
   if (!el.isConnected) return 0;

@@ -110,8 +110,10 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
       if (s === YT_STATE.PLAYING && pausedRef.current) playerRef.current?.pauseVideo();
     },
     onError: (code) => { if (code === YT_API_FAILED) setNoApi(true); else setUnavailable(true); dispatch({ type: 'error' }); },
-  });
+  }, !!(videoId || nextId));   // créé au premier titre qui peut jouer (déconnecté, rien en file : aucun lecteur)
   playerRef.current = player;
+  // l'API a fini par se charger (nouvel essai, réseau revenu) : la note « vidéo indisponible » part
+  useEffect(() => { if (player) setNoApi(false); }, [player]);
 
   // Changement de titre : le poster couvre, puis loadVideoById dans la même iframe.
   useEffect(() => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { RoseClient, STONE_URL, afterFirstPaint, roseSupported } from '@/lib/rose/client';
+import { RoseClient, STONE_URL, afterFirstPaint, roseSupported, watchDpr } from '@/lib/rose/client';
 import { BUSY_MS, NIGHT_ROSE_FADE_MS } from '@/lib/stage/coronation';
 import type { Ceremony } from './coronation';
 
@@ -40,7 +40,12 @@ export default function Rose({ videoId, nextId, R, mask, crown }: RoseProps) {
     return () => { cancel(); c.destroy(); client.current = null; };
   }, []);
 
-  useEffect(() => { if (R) client.current?.resize(R); }, [R]);
+  // la densité de pixels peut changer seule (autre écran, zoom) : resize(R) la relit et repeint, net
+  useEffect(() => {
+    if (!R) return;
+    client.current?.resize(R);
+    return watchDpr(() => client.current?.resize(R));
+  }, [R]);
 
   const crownRef = useRef(crown);
   crownRef.current = crown;
