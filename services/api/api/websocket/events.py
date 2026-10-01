@@ -19,6 +19,7 @@ from flask_socketio import emit, join_room, leave_room
 from api import socketio
 from api.services import bot_bridge
 from api.services.authz import MSG_NOT_AUTHENTICATED, ROOM_AUTHENTICATED, session_user_id
+from api.services.relay_clock import now_ms, with_relay_at
 
 logger = logging.getLogger("greg.api.ws")
 
@@ -69,6 +70,7 @@ def _subscribe(gid: int) -> bool:
         logger.error("Abonnement guild %s impossible: %s", gid, e)
         _deny(gid, "REDIS_UNAVAILABLE", _MSG_BRIDGE_ERROR, True)
         return False
+    at_ms = now_ms()  # réception de la réponse du bot (synchro son/vidéo)
     if not isinstance(res, dict) or not res.get("ok"):
         res = res if isinstance(res, dict) else {}
         err = str(res.get("error") or "UNKNOWN")
@@ -78,7 +80,8 @@ def _subscribe(gid: int) -> bool:
     room = f"guild:{gid}"
     join_room(room)
     logger.debug("Client %s joined room %s", flask_request.sid, room)
-    emit("playlist_update", res.get("state", res))
+    state = res.get("state", res)
+    emit("playlist_update", with_relay_at(state, at_ms) if isinstance(state, dict) else state)
     return True
 
 

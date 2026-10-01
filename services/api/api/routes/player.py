@@ -7,6 +7,7 @@ from flask import Blueprint, jsonify, request
 
 from api.services.authz import require_session_user, session_user_id
 from api.services.bot_bridge import send_command
+from api.services.relay_clock import now_ms, with_relay_at
 
 bp = Blueprint("player", __name__)
 
@@ -68,6 +69,12 @@ def error_status(res: dict[str, Any], default: int = 409) -> int:
     return default
 
 
+def _stamped(res: dict[str, Any], at_ms: int) -> dict[str, Any]:
+    """relay_at_ms (synchro son/vidéo) là où le site lit `clock` : dans `state`, sinon à la racine."""
+    st = res.get("state")
+    return {**res, "state": with_relay_at(st, at_ms)} if isinstance(st, dict) else with_relay_at(res, at_ms)
+
+
 def play_for_user_response(gid: int, uid: int, item: dict[str, Any]):
     """Envoie play_for_user au bot et construit la réponse HTTP (contrats C2/C3).
 
@@ -90,9 +97,10 @@ def get_state():
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
 
     res = send_command("get_state", gid, _uid(), timeout=8)
+    at_ms = now_ms()  # réception de la réponse du bot
 
     if res.get("ok"):
-        return jsonify(res), 200
+        return jsonify(_stamped(res, at_ms)), 200
 
     # Accès refusé (SEC-C1/C2) : pas un état « périmé », une vraie erreur 401/403.
     if res.get("error") in ("NOT_AUTHENTICATED", "NOT_GUILD_MEMBER"):

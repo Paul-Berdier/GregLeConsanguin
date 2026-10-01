@@ -153,7 +153,7 @@ def test_member_joins_room_and_gets_state(member_sio, fake_bot, session_uid, eve
     received = member_sio.get_received()
     assert not _events(received, "guild_join_error")
     ups = _events(received, "playlist_update")
-    assert ups and ups[0]["args"][0] == STATE
+    assert ups and _strip(ups[0]["args"][0]) == STATE
 
     assert fake_bot.calls == [{"action": "get_state", "guild_id": 42, "user_id": session_uid,
                                "data": None, "timeout": 5}]
@@ -314,4 +314,4 @@ def test_request_state_emits_state(member_sio, fake_bot):
     fake_bot.result = {"ok": True, "state": {"current": None, "queue": []}}
     member_sio.emit("request_state", {"guild_id": "42"})
     ups = _events(member_sio.get_received(), "playlist_update")
-    assert ups and ups[0]["args"][0] == {"current": None, "queue": []}
+    assert ups and _strip(ups[0]["args"][0]) == {"current": None, "queue": []}

@@ -73,3 +73,30 @@ def test_progress_without_a_clock_object_keeps_the_old_payload(clock):
     (_, out, _), = sio.emits
     assert "clock" not in out and isinstance(out["relay_at_ms"], int)
     assert out["position"] == 7 and out["progress"] == {"elapsed": 7, "duration": 100}
+
+
+# ── A2 : états lus par RPC (REST) ──
+
+@pytest.mark.parametrize("path", ["/player/state", "/playlist"])
+def test_rest_state_is_stamped_at_the_bot_reply(logged_client, fake_send, path):
+    state = {"current": {"title": "a"}, "queue": [], "position": 83, "clock": CLOCK}
+    fake_send.result = {"ok": True, "state": state}
+    t0 = now_ms()
+    body = logged_client.get(f"/api/v1{path}?guild_id=42").get_json()
+    t1 = now_ms()
+    assert body["ok"] is True
+    assert _between(body["state"].pop("relay_at_ms"), t0, t1)
+    assert body["state"] == state, "clock et champs du bot intacts"
+    assert "relay_at_ms" not in body
+
+
+def test_rest_reply_without_state_is_stamped_at_its_root(logged_client, fake_send):
+    fake_send.result = {"ok": True, "current": None, "queue": []}
+    body = logged_client.get("/api/v1/player/state?guild_id=42").get_json()
+    assert isinstance(body["relay_at_ms"], int)
+
+
+def test_rest_failure_is_not_stamped(logged_client, fake_send):
+    fake_send.result = {"ok": False, "error": "TIMEOUT"}
+    body = logged_client.get("/api/v1/player/state?guild_id=42").get_json()
+    assert body["stale"] is True and "relay_at_ms" not in body
