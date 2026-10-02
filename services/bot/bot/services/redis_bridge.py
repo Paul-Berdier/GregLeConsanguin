@@ -498,14 +498,18 @@ class RedisBridge:
             "state": state,
         })
 
-    async def publish_progress(self, guild_id: int, position: int, duration: Optional[int], paused: bool):
-        """Publie un tick de progression."""
-        await self._publish(CHANNEL_PROGRESS, {
+    async def publish_progress(self, guild_id: int, position: int, duration: Optional[int], paused: bool,
+                               clock: Optional[dict] = None):
+        """Publie un tick de progression (+ bloc `clock` de la synchro son/vidéo, si fourni)."""
+        data = {
             "guild_id": guild_id,
             "position": position,
             "duration": duration,
             "paused": paused,
-        })
+        }
+        if clock is not None:
+            data["clock"] = clock
+        await self._publish(CHANNEL_PROGRESS, data)
 
     async def publish_bot_ready(self):
         """Signale que le bot est prêt."""

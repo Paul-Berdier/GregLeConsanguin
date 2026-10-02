@@ -257,3 +257,47 @@ async def test_late_after_judges_its_own_title_not_the_next_one(harness):
     await h.settle(0.2)
     assert (h.gid, B["url"]) not in h.svc._track_failures, "échec compté au titre suivant"
     assert h.urls() == [], "titre suivant remis en tête en double"
+
+
+# ─────────────────────────── Ticker et envois immédiats (B4) ───────────────────────────
+
+
+@pytest.fixture
+def fast_ticker(harness, monkeypatch):
+    monkeypatch.setattr(harness.ps, "_TICK_S", 0.02)
+    monkeypatch.setattr(harness.ps, "_PROGRESS_EVERY_S", 0.05)
+    return harness
+
+
+async def test_ticker_publishes_the_clock_with_integer_positions(fast_ticker):
+    h = fast_ticker
+    vc = h.connect_bot()
+    h.seed_queue([A])
+    await h.svc.play_next(h.guild)
+    src = await _playing(h, vc, A["url"])
+    for _ in range(75):
+        src.read()  # 1,5 s
+    n = len(h.bot.redis_bridge.ticks)
+    await h.wait_for(lambda: len(h.bot.redis_bridge.ticks) > n, msg="aucun tick")
+    (gid, position, duration, paused), kw = h.bot.redis_bridge.ticks[-1]
+    assert (gid, position, duration, paused) == (h.gid, 1, 180, False)
+    c = kw["clock"]
+    assert (c["status"], c["position_ms"], c["play_id"]) == ("playing", 1500.0, h.svc.play_id[h.gid])
+
+
+async def test_stall_start_and_end_are_pushed_at_once(fast_ticker):
+    h = fast_ticker
+    vc = h.connect_bot()
+    h.seed_queue([A])
+    await h.svc.play_next(h.guild)
+    src = await _playing(h, vc, A["url"])
+    src.read()
+    await h.settle(0.1)
+    emits = len(h.bot.emits)
+    src.last_read_at -= 1.0  # ffmpeg ne rend plus rien
+    await h.wait_for(lambda: len(h.bot.emits) > emits, msg="début du blocage non publié")
+    assert h.svc.get_state(h.gid)["clock"]["status"] == "stalled"
+    emits = len(h.bot.emits)
+    src.read()  # le flux repart
+    await h.wait_for(lambda: len(h.bot.emits) > emits, msg="fin du blocage non publiée")
+    assert h.svc.get_state(h.gid)["clock"]["status"] == "playing"

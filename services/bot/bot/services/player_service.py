@@ -141,6 +141,12 @@ _VOICE_RESUME_TIMEOUT = 30.0
 
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
+# ── Ticker de progression (synchro son/vidéo) ──
+# Échantillon toutes les _TICK_S : un blocage du flux (> 250 ms sans trame) est vu vite ;
+# un tick publié toutes les _PROGRESS_EVERY_S, comme avant.
+_TICK_S = 0.25
+_PROGRESS_EVERY_S = 1.0
+
 _ERROR_MESSAGES = {
     "GUILD_NOT_FOUND": "Greg n'est pas (ou plus) sur ce serveur.",
     "USER_NOT_IN_VOICE": "Rejoins d'abord un salon vocal, après on cause.",
@@ -1744,6 +1750,8 @@ class PlayerService:
             return
 
         async def _run():
+            last_pub: Optional[float] = None
+            was_stalled = False
             try:
                 while True:
                     g = self.bot.get_guild(gid)
@@ -1751,25 +1759,29 @@ class PlayerService:
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
 
-                    start = self.play_start.get(gid)
-                    p_since = self.paused_since.get(gid)
-                    p_total = self.paused_total.get(gid, 0.0)
-                    elapsed = max(0, int((p_since or time.monotonic()) - start - p_total)) if start else 0
+                    clock = self._clock(gid, vc)
+                    stalled = clock["status"] == "stalled"
+                    if stalled and not was_stalled:
+                        self._emit(gid)  # début d'un blocage : le site fige sa référence tout de suite
+                    was_stalled = stalled
 
-                    meta = self.current_meta.get(gid, {})
-                    dur = meta.get("duration")
-                    if dur is None:
-                        cs = self.current_song.get(gid, {})
-                        dur = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+                    now = time.monotonic()
+                    if last_pub is None or now - last_pub >= _PROGRESS_EVERY_S:
+                        last_pub = now
+                        elapsed = int(clock["position_ms"] // 1000) if clock["position_ms"] else 0
+                        meta = self.current_meta.get(gid, {})
+                        dur = meta.get("duration")
+                        if dur is None:
+                            cs = self.current_song.get(gid, {})
+                            dur = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+                        try:
+                            await self.bot.redis_bridge.publish_progress(
+                                gid, elapsed, dur, bool(vc.is_paused()), clock=clock,
+                            )
+                        except Exception:
+                            pass
 
-                    try:
-                        await self.bot.redis_bridge.publish_progress(
-                            gid, elapsed, dur, bool(vc.is_paused()),
-                        )
-                    except Exception:
-                        pass
-
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(_TICK_S)
             except asyncio.CancelledError:
                 pass
             finally:

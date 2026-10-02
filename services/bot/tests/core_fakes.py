@@ -177,9 +177,11 @@ class FakeGuild:
 class FakeBridge:
     def __init__(self):
         self.progress = 0
+        self.ticks: List[tuple] = []  # (args, kwargs) de chaque publish_progress
 
     async def publish_progress(self, *a, **k):
         self.progress += 1
+        self.ticks.append((a, k))
 
 
 class FakeBot:
