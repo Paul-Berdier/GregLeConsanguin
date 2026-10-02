@@ -926,13 +926,14 @@ class PlayerService:
                 return
 
             url = item.get("url")
+            # Fenêtre de chargement : clock « loading », plus aucune position héritée du titre précédent.
+            # play_id retiré EN PREMIER : un _after tardif qui le voit encore a lu l'état de SA lecture.
+            self.play_id.pop(gid, None)
             self.current_song[gid] = dict(item)
             self.now_playing[gid] = dict(item)
             dur = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}
             self._chosen_at[gid] = time.monotonic()
-            # Fenêtre de chargement : clock « loading », plus aucune position héritée du titre précédent.
-            self.play_id.pop(gid, None)
             self.play_start.pop(gid, None)
             self.paused_since.pop(gid, None)
             self.paused_total[gid] = 0.0
@@ -1081,6 +1082,12 @@ class PlayerService:
         self.current_source[gid] = srcp
         # Génération au démarrage : un stop/skip/restart ultérieur la rend périmée.
         gen = self._generation.get(gid, 0)
+        # Figés au vc.play : si le titre suivant est déjà choisi quand _after arrive (fin naturelle, play_next passé
+        # entre la fin du flux et l'appel d'after), les dicts partagés sont les siens, pas ceux de cette lecture.
+        pid = secrets.token_hex(4)
+        song = dict(self.current_song.get(gid) or {}) or None
+        song_dur = (self.current_meta.get(gid) or {}).get("duration")
+        started = time.monotonic()
 
         def _after(err):
             # ── Nettoyage de SA source (jamais celle du morceau suivant) ────
@@ -1109,10 +1116,17 @@ class PlayerService:
             ps = self.paused_since.get(gid)
             if ps:
                 paused += ended - ps
-            elapsed = max(0.0, ended - start - paused)
             # Durée figée ICI (le morceau suivant peut réécrire current_meta avant
             # que la suite ne s'exécute sur la boucle).
             duration = (self.current_meta.get(gid) or {}).get("duration")
+            # play_id relu APRÈS l'état (la fenêtre de chargement le retire en premier) : encore le nôtre → l'état lu
+            # est celui de cette lecture.
+            if self.play_id.get(gid) == pid:
+                self.play_id.pop(gid, None)   # plus de trame : « loading » sans play_id jusqu'au prochain vc.play
+            elif cur:
+                # Titre suivant déjà choisi (ou relancé) : on juge CETTE lecture (pauses perdues, comptées 0).
+                cur, start, paused, duration = song, started, 0.0, song_dur
+            elapsed = max(0.0, ended - start - paused)
             if not duration and cur and isinstance(cur.get("duration"), (int, float)):
                 duration = int(cur["duration"])
             if err:
@@ -1127,8 +1141,8 @@ class PlayerService:
 
         # play_start AVANT vc.play : un _after immédiat ne doit pas lire l'ancien départ.
         # (Après la pré-lecture de play_next : il coïncide avec la 1re trame.)
-        self.play_id[gid] = secrets.token_hex(4)
-        self.play_start[gid] = time.monotonic()
+        self.play_id[gid] = pid
+        self.play_start[gid] = started
         self.paused_total[gid] = 0.0
         self.paused_since.pop(gid, None)
         try:

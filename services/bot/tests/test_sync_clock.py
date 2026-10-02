@@ -160,6 +160,31 @@ async def test_play_id_changes_on_restart(harness):
     assert c["position_ms"] == 20.0, "repart de zéro"
 
 
+def _record_emits(h):
+    """(url, statut, play_id) de chaque état émis : compter les émissions ne prouve rien (skip émet lui-même)."""
+    seen = []
+
+    def _emit(gid, payload=None):
+        st = h.svc.get_state(gid)
+        seen.append(((st["current"] or {}).get("url"), st["clock"]["status"], st["clock"]["play_id"]))
+
+    h.bot.emit_state_update = _emit
+    return seen
+
+
+def _hold_after(vc):
+    """vc.play sans appel automatique de `after` : le test le déclenche lui-même (fin de flux simulée)."""
+    afters = []
+    play = vc.play
+
+    def _play(source, *, after=None, **kw):
+        afters.append(after)
+        return play(source, after=None, **kw)
+
+    vc.play = _play
+    return afters
+
+
 async def test_loading_window_does_not_inherit_the_previous_position(harness):
     h = harness
     vc = h.connect_bot()
@@ -170,10 +195,65 @@ async def test_loading_window_does_not_inherit_the_previous_position(harness):
     for _ in range(150):
         src.read()  # 3 s de A
     assert h.svc.get_state(h.gid)["position"] == 3
-    emits = len(h.bot.emits)
+    assert await h.svc.pause(h.gid)
+    h.svc.paused_total[h.gid] = 1.5  # pauses antérieures de A
+    seen = _record_emits(h)
     await h.svc.skip(h.gid)
     await h.wait_for(lambda: (h.svc.now_playing.get(h.gid) or {}).get("url") == B["url"], msg="B jamais choisi")
     st, c = _clock(h)
     assert st["current"]["url"] == B["url"]
     assert (c["status"], c["play_id"], c["position_ms"], st["position"]) == ("loading", None, None, 0)
-    assert len(h.bot.emits) > emits, "l'état « loading » part tout de suite"
+    assert (h.svc.play_start.get(h.gid), h.svc.paused_since.get(h.gid), h.svc.paused_total.get(h.gid)) == (
+        None, None, 0.0), "départ et pauses de A remis à zéro"
+    assert (B["url"], "loading", None) in seen, "l'état « loading » part dès le choix du titre"
+
+
+async def test_stop_clears_the_clock(harness):
+    h = harness
+    vc = h.connect_bot()
+    _hold_after(vc)  # aucun _after : seul stop() remet l'horloge à zéro
+    h.seed_queue([A])
+    await h.svc.play_next(h.guild)
+    (await _playing(h, vc, A["url"])).read()
+    assert _clock(h)[1]["status"] == "playing"
+    assert await h.svc.stop(h.gid)
+    c = _clock(h)[1]
+    assert (c["status"], c["play_id"], c["position_ms"]) == ("idle", None, None)
+
+
+async def test_loading_after_the_source_ended_has_no_play_id(harness, monkeypatch):
+    """Flux mort, réessai après backoff : titre toujours affiché, plus de source → « loading » sans play_id."""
+    h = harness
+    monkeypatch.setattr(h.ps, "_BACKOFF_MAX", 3.0)
+    vc = h.connect_bot()
+    h.ext.behaviour[A["url"]] = {"die_after": 0.2}
+    h.seed_queue([A])
+    await h.svc.play_next(h.guild)
+    (await _playing(h, vc, A["url"])).read()
+    assert _clock(h)[1]["play_id"]
+    await h.wait_for(lambda: h.gid in h.svc._retry_tasks, msg="pas de réessai programmé")
+    st, c = _clock(h)
+    assert st["current"]["url"] == A["url"]
+    assert (c["status"], c["play_id"], c["position_ms"]) == ("loading", None, None)
+
+
+async def test_late_after_judges_its_own_title_not_the_next_one(harness):
+    """Fin naturelle : discord.py lève _end un instant avant d'appeler after. Un play_next (ajout en file) qui passe
+    dans ce trou choisit déjà le titre suivant : l'after tardif ne doit pas compter un échec au titre suivant."""
+    h = harness
+    vc = h.connect_bot()
+    afters = _hold_after(vc)
+    short = yt_entry(3, title="C", duration=5)
+    h.ext.behaviour[B["url"]] = {"delay": 0.3}
+    h.seed_queue([short, B])
+    await h.svc.play_next(h.guild)
+    (await _playing(h, vc, short["url"])).read()
+    vc.stop()  # fin du flux : is_playing() faux, after pas encore appelé
+    task = asyncio.create_task(h.svc.play_next(h.guild))
+    await h.wait_for(lambda: (h.svc.now_playing.get(h.gid) or {}).get("url") == B["url"], msg="B jamais choisi")
+    await asyncio.to_thread(afters[0], None)
+    await task
+    await _playing(h, vc, B["url"])
+    await h.settle(0.2)
+    assert (h.gid, B["url"]) not in h.svc._track_failures, "échec compté au titre suivant"
+    assert h.urls() == [], "titre suivant remis en tête en double"
