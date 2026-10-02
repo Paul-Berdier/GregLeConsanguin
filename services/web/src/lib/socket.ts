@@ -1,5 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 import { getApiOrigin, isBrowserReachable } from './api';
+import { timeSync } from './sync/live';
+import { sampleOf } from './sync/timesync';
 
 // Socket connects to the API service, not the Next.js frontend.
 // On Railway, they're separate services so we need the API origin.
@@ -103,6 +105,44 @@ export function startPing() {
       });
     } catch {}
   }, 25000);
+}
+
+// ── Synchro d'horloge (spec synchro son/vidéo §3, §6.2) ──
+const TIME_SYNC_BURST = 5, TIME_SYNC_GAP_MS = 1000, TIME_SYNC_EVERY_MS = 30_000, TIME_SYNC_TIMEOUT_MS = 2000;
+let timeSyncInterval: ReturnType<typeof setInterval> | null = null;
+let timeSyncBurst: ReturnType<typeof setTimeout>[] = [];
+let timeSyncStale = false;   // nouvelle connexion : les mesures d'avant servent jusqu'à la première nouvelle
+
+/** Une mesure : {t0} → accusé {t0, ts} (ts : horloge de l'API, ms) ; sans réponse sous 2 s, ignorée. */
+function measureClock(s: Socket) {
+  if (!s.connected) return;
+  const t0 = performance.now();
+  try {
+    s.timeout(TIME_SYNC_TIMEOUT_MS).emit('time_sync', { t0 }, (err: unknown, res: any) => {
+      if (err || !res || res.t0 !== t0) return;
+      const ts = Number(res.ts), t1 = performance.now();
+      if (timeSyncStale && sampleOf(t0, ts, t1)) { timeSyncStale = false; timeSync.reset(); }
+      timeSync.add(t0, ts, t1);
+    });
+  } catch {}
+}
+
+/**
+ * 5 mesures à chaque connexion (1 s d'écart), puis une toutes les 30 s. Nouvelle connexion (peut-être une autre instance
+ * de l'API) : les anciennes mesures sont remplacées par la première nouvelle, jamais vidées avant (sinon l'horloge du
+ * navigateur servirait le temps d'un aller-retour, et la vidéo sauterait de son écart).
+ */
+export function startTimeSync() {
+  if (timeSyncInterval) return;
+  const s = getSocket();
+  const burst = () => {
+    timeSyncBurst.forEach(clearTimeout);
+    timeSyncStale = true;
+    timeSyncBurst = Array.from({ length: TIME_SYNC_BURST }, (_, i) => setTimeout(() => measureClock(s), i * TIME_SYNC_GAP_MS));
+  };
+  s.on('connect', burst);
+  if (s.connected) burst();
+  timeSyncInterval = setInterval(() => measureClock(s), TIME_SYNC_EVERY_MS);
 }
 
 export function stopPing() {

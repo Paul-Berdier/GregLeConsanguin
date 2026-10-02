@@ -90,3 +90,33 @@ test('API YouTube en échec (réseau, portail captif) : nouvel essai, de plus en
   // le lecteur créé après coup : la note « vidéo indisponible » part
   assert.match(code('src/components/Stage/Portal.tsx'), /useEffect\(\(\) => \{ if \(player\) setNoApi\(false\); \}, \[player\]\);/);
 });
+
+// ─── Synchro son/vidéo (spec §6.2) : régulateur, démarrage gardé, plus de sauts à seuils fixes ───
+test('Portal : régulateur à 4 Hz, démarrage gardé par play_id, attente, plus d’ancien correcteur', () => {
+  const portal = code('src/components/Stage/Portal.tsx');
+  assert.match(portal, /const id = setInterval\(tick, CTL_TICK_MS\);/);
+  assert.match(portal, /if \(awaiting\.current\) return;[\s\S]*?if \(ytState\.current !== YT_STATE\.PLAYING\) return;/);
+  assert.match(portal, /if \(!gateLoad\(clock, extractVideoId\(clock\.url\), videoId, loaded\.current\)\) return;/);
+  assert.match(portal, /hold\.current = nextHold\(prevClock\.current, clock, performance\.now\(\), hold\.current\);/);
+  assert.match(portal, /const still = paused \|\| clock\.status === 'stalled';/);
+  assert.match(portal, /ctl\.current = CTL_INIT;\s*rateOk\.current = true;/, 'vitesse réappliquée après loadVideoById, retentée à chaque vidéo');
+  assert.match(portal, /if \(extractVideoId\(useStore\.getState\(\)\.clock\.url\) !== videoId\) return;/, 'jamais calée sur un autre titre');
+  assert.match(portal, /loadStart\(here \? targetPos\(0\) \?\? 0 : 0, offsetRef\.current\)/, 'horloge d’un autre titre : départ au début');
+  assert.doesNotMatch(portal, /driftSeek|alignDue|RUN_THRESHOLD_S|MIN_SEEK_GAP_MS|DRIFT_CHECK_MS|SEEK_COMP_S|clockPos\(/);
+  const cover = code('src/lib/stage/cover.ts');
+  assert.doesNotMatch(cover, /DRIFT_CHECK_MS|SEEK_COMP_S|RUN_THRESHOLD_S|ALIGN_THRESHOLD_S|MIN_SEEK_GAP_MS/);
+  assert.match(code('src/hooks/useYouTubePlayer.ts'), /setPlaybackRate\(rate: number\): void;\s*getPlaybackRate\(\): number;/);
+});
+
+test('Portal : onglet caché, la vitesse revient à ×1 ; au retour, recalage tout de suite', () => {
+  const portal = code('src/components/Stage/Portal.tsx');
+  // caché : plus de correction, mais une vitesse ×0,90 à ×1,10 laissée là creuserait l'écart jusqu'au retour
+  assert.match(portal, /if \(document\.visibilityState !== 'visible'\) \{ const d = whenHidden\(ctl\.current\); if \(d\) apply\(d, performance\.now\(\)\); return; \}/);
+  // les deux sens : ×1 dès que l'onglet est caché, recalage dès son retour
+  assert.match(portal, /const onVisibility = \(\): void => \{ if \(document\.visibilityState === 'visible'\) hold\.current = 0; tick\(\); \};/);
+  assert.match(portal, /document\.addEventListener\('visibilitychange', onVisibility\);/);
+  assert.match(portal, /document\.removeEventListener\('visibilitychange', onVisibility\);/);
+  // une seule application des décisions : vitesse à confirmer (asked), état du régulateur suivi
+  assert.match(portal, /const apply = \(d: Decision, now: number\): void => \{[\s\S]*?asked\.current = \{ rate: d\.rate, at: now \};[\s\S]*?ctl\.current = afterDecision\(ctl\.current, d, now\);/);
+  assert.match(portal, /if \(d\) apply\(d, now\);/);
+});

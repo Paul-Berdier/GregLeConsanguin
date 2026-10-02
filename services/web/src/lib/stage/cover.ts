@@ -27,12 +27,7 @@ export const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFER
 // disparu partout avant 4,02 s. Sous-titres de la même sonde : voir muteCaptions.
 // Aucun paramètre documenté ne le masque : on décale le lever du poster, la marque reste.
 export const REVEAL_AFTER_PLAYING_MS = 4250;
-export const ALIGN_AFTER_PLAYING_MS = 1200;    // alignement initial, encore sous le poster
-export const DRIFT_CHECK_MS = 4000;
-export const MIN_SEEK_GAP_MS = 15000;
-export const ALIGN_THRESHOLD_S = 0.25;
-export const RUN_THRESHOLD_S = 1.2;
-export const SEEK_COMP_S = 0.45;               // seekTo met ~474 ms à reprendre
+// La dérive est corrigée par le régulateur (lib/sync/controller.ts) : vitesse, ou saut sans surcompensation.
 export const LOAD_COMP_S = 0.4;                // loadVideoById met ~404 ms à jouer
 const TIMER_SLACK_MS = 50;
 
@@ -70,16 +65,6 @@ export function coverNext(c: Cover, ev: CoverEvent): Cover {
 export const coverVisible = (c: Cover, paused: boolean): boolean => c.phase !== 'revealed' || paused;
 /** Délai avant la révélation d'un poster armé. */
 export const revealIn = (c: Cover, now: number): number => Math.max(0, c.armedAt + REVEAL_AFTER_PLAYING_MS - now);
-/** Alignement initial dû : armé par un vrai départ (pas par notre propre saut, sinon on bouclerait). */
-export const alignDue = (c: Cover): boolean => c.phase === 'armed' && !c.bySeek;
-
-/** Cible d'un seekTo si l'écart vidéo ↔ son (+ décalage) dépasse le seuil ; null sinon. */
-export function driftSeek(ytTime: number, clockPos: number, offset: number, threshold: number): number | null {
-  const target = clockPos + offset;
-  const drift = ytTime - target;
-  if (!Number.isFinite(drift) || Math.abs(drift) <= threshold) return null;
-  return Math.max(0, target + SEEK_COMP_S);
-}
 
 /** Position de départ d'un loadVideoById, compensée du temps de chargement. */
 export const loadStart = (clockPos: number, offset: number): number => Math.max(0, clockPos + offset + LOAD_COMP_S);
@@ -97,23 +82,27 @@ export function rewound(prev: { pos: number; at: number }, prevPaused: boolean, 
   return Number.isFinite(next.pos) && next.pos < expected - REWIND_S;
 }
 
-// ── Décalage de la vidéo (réglage du Roi, gardé dans localStorage) ──
+// ── Décalage de la vidéo (réglage du Roi, gardé dans localStorage, par appareil) ──
+// Synchro son/vidéo : le bot publie la position réellement lue ; reste le retard propre à Discord (serveur vocal,
+// tampon du client, casque : 80 à 250 ms filaire, jusqu'à 500 ms en Bluetooth). Pas de 50 ms, ±3 s.
 export const OFFSET_KEY = 'greg.webplayer.video_offset';
-export const OFFSET_MIN = -10, OFFSET_MAX = 10, OFFSET_STEP = 0.5;
+export const OFFSET_MIN = -3, OFFSET_MAX = 3, OFFSET_STEP = 0.05;
+const PER_S = 20;   // 1 / OFFSET_STEP, entier : arrondi sans reste flottant (1,15 et non 1,1500000000000001)
 
+/** Réglage lu (localStorage, curseur) : borné, arrondi au pas de 50 ms (demi-pas loin de 0), 0 si illisible. */
 export function parseOffset(raw: string | number | null | undefined): number {
   const v = typeof raw === 'number' ? raw : raw == null || String(raw).trim() === '' ? NaN : Number(raw);
   if (!Number.isFinite(v)) return 0;
   const c = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, v));
-  const stepped = Math.sign(c) * Math.round(Math.abs(c) / OFFSET_STEP) * OFFSET_STEP;   // demi-pas loin de 0, des deux côtés
+  const stepped = (Math.sign(c) * Math.round(Math.abs(c) * PER_S)) / PER_S;   // demi-pas loin de 0, des deux côtés
   return stepped + 0;   // pas de −0
 }
 
-/** « 0 s », « +1,5 s », « −2 s » : virgule décimale, signe moins U+2212, espace insécable avant l'unité. */
+/** « 0 s », « +0,15 s », « −2 s » : virgule décimale, signe moins U+2212, espace insécable avant l'unité. */
 export function fmtOffset(v: number): string {
   const x = parseOffset(v);
-  const n = Math.abs(x).toFixed(1).replace(/\.0$/, '').replace('.', ',');
-  return `${x > 0 ? '+' : x < 0 ? '−' : ''}${n} s`;
+  const n = Math.abs(x).toFixed(2).replace(/\.?0+$/, '').replace('.', ',');
+  return `${x > 0 ? '+' : x < 0 ? '−' : ''}${n}\u00a0s`;
 }
 
 // ── Sous-titres ──

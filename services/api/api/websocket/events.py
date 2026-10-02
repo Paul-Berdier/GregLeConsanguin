@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Optional
 
 from flask import request as flask_request
@@ -19,6 +20,7 @@ from flask_socketio import emit, join_room, leave_room
 from api import socketio
 from api.services import bot_bridge
 from api.services.authz import MSG_NOT_AUTHENTICATED, ROOM_AUTHENTICATED, session_user_id
+from api.services.relay_clock import now_ms, with_relay_at
 
 logger = logging.getLogger("greg.api.ws")
 
@@ -69,6 +71,7 @@ def _subscribe(gid: int) -> bool:
         logger.error("Abonnement guild %s impossible: %s", gid, e)
         _deny(gid, "REDIS_UNAVAILABLE", _MSG_BRIDGE_ERROR, True)
         return False
+    at_ms = now_ms()  # réception de la réponse du bot (synchro son/vidéo)
     if not isinstance(res, dict) or not res.get("ok"):
         res = res if isinstance(res, dict) else {}
         err = str(res.get("error") or "UNKNOWN")
@@ -78,7 +81,8 @@ def _subscribe(gid: int) -> bool:
     room = f"guild:{gid}"
     join_room(room)
     logger.debug("Client %s joined room %s", flask_request.sid, room)
-    emit("playlist_update", res.get("state", res))
+    state = res.get("state", res)
+    emit("playlist_update", with_relay_at(state, at_ms) if isinstance(state, dict) else state)
     return True
 
 
@@ -143,6 +147,15 @@ def on_overlay_ping(data=None):
     """Keep-alive ping."""
     data = _payload(data)
     emit("overlay_pong", {"t": data.get("t"), "sid": flask_request.sid})
+
+
+@socketio.on("time_sync")
+def on_time_sync(data=None):
+    """Synchro d'horloge du site (spec synchro §3) : {t0} → accusé {t0, ts}, ts = horloge murale de l'API (ms).
+
+    Aucune donnée sensible, aucune autorisation au-delà du socket ; t0 renvoyé tel quel, même non numérique.
+    """
+    return {"t0": _payload(data).get("t0"), "ts": time.time() * 1000}
 
 
 # ── State request ──

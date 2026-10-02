@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 const {
-  coverNext, coverVisible, revealIn, alignDue, driftSeek, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb, muteCaptions,
-  COVERED, YT_STATE, REVEAL_AFTER_PLAYING_MS, REWIND_S,
+  coverNext, coverVisible, revealIn, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb, muteCaptions,
+  COVERED, YT_STATE, REVEAL_AFTER_PLAYING_MS, REWIND_S, OFFSET_MIN, OFFSET_MAX, OFFSET_STEP,
 } = await loadTs('../src/lib/stage/cover.ts');
 const R = REVEAL_AFTER_PLAYING_MS;
 
@@ -74,19 +74,16 @@ test('poster : une minuterie périmée ne révèle ni un poster couvert ni un po
   assert.equal(coverNext(shown, { type: 'reveal', now: 1e6 }), shown);
 });
 
-test('poster : un saut de correction réarme (YouTube remontre son habillage), sans réalignement', () => {
+test('poster : un saut de correction réarme (YouTube remontre son habillage)', () => {
   const shown = { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true };
   const reArmed = coverNext(shown, { type: 'seek', now: 20000 });
   assert.deepEqual(reArmed, { phase: 'armed', armedAt: 20000, bySeek: true, playing: true });
-  assert.equal(alignDue(reArmed), false);
-  assert.equal(alignDue({ phase: 'armed', armedAt: 1000, bySeek: false, playing: true }), true);
   assert.equal(coverNext(COVERED, { type: 'seek', now: 5 }), COVERED);        // couvert : rien à réarmer
 });
 
-test('poster : pause puis reprise après un saut, nouvel alignement dû (tech.md §5.4)', () => {
+test('poster : pause puis reprise après un saut, réarmé par le vrai départ', () => {
   const back = run([yt(YT_STATE.PLAYING, 0), { type: 'seek', now: 10 }, { type: 'pause' }, yt(YT_STATE.PLAYING, 20)]);
   assert.deepEqual(back, { phase: 'armed', armedAt: 20, bySeek: false, playing: true });
-  assert.equal(alignDue(back), true);
 });
 
 test('poster visible pendant la pause, même révélé', () => {
@@ -95,13 +92,7 @@ test('poster visible pendant la pause, même révélé', () => {
   assert.equal(coverVisible({ phase: 'armed', armedAt: 0, bySeek: false, playing: true }, false), true);
 });
 
-test('dérive : saut seulement au-delà du seuil, compensé de 0,45 s', () => {
-  assert.equal(driftSeek(10.1, 10, 0, 0.25), null);
-  assert.equal(driftSeek(11, 10, 0, 0.25), 10.45);
-  assert.equal(driftSeek(9, 10, 0.5, 1.2), 10.95);
-  assert.equal(driftSeek(9.5, 10, 0.5, 1.2), null);
-  assert.equal(driftSeek(5, 0, -2, 0.25), 0);                 // jamais négatif
-  assert.equal(driftSeek(Number.NaN, 10, 0, 0.25), null);
+test('chargement : compensé du temps de loadVideoById, jamais négatif', () => {
   assert.equal(loadStart(42, 1.5), 43.9);
   assert.equal(loadStart(0, -3), 0);
 });
@@ -117,30 +108,36 @@ test('recul du son sur la même vidéo (reprendre au début, boucle, même titre
   assert.equal(rewound(tb, false, { pos: Number.NaN, at: 3000 }), false);
 });
 
-test('décalage : borné à ±10 s, pas de 0,5 s, 0 si illisible', () => {
-  assert.equal(parseOffset('1.5'), 1.5);
-  assert.equal(parseOffset('1.3'), 1.5);
-  assert.equal(parseOffset('42'), 10);
-  assert.equal(parseOffset('-11'), -10);
+test('décalage : borné à ±3 s, pas de 50 ms, 0 si illisible ; un ancien réglage est ramené', () => {
+  assert.deepEqual([OFFSET_MIN, OFFSET_MAX, OFFSET_STEP], [-3, 3, 0.05]);
+  assert.equal(parseOffset('0.15'), 0.15);
+  assert.equal(parseOffset('1.3'), 1.3);
+  assert.equal(parseOffset('0.123'), 0.1);
+  assert.equal(parseOffset('-0.27'), -0.25);
+  assert.equal(parseOffset('7.5'), 3, 'ancien réglage (±10 s) : borné');
+  assert.equal(parseOffset('-11'), -3);
   assert.equal(parseOffset('abc'), 0);
   assert.equal(parseOffset(null), 0);
   assert.equal(parseOffset(''), 0);
-  assert.ok(Object.is(parseOffset('-0.1'), 0));
+  assert.ok(Object.is(parseOffset('-0.01'), 0));
 });
 
-test('décalage : arrondi au pas symétrique autour de 0', () => {
-  assert.equal(parseOffset('0.75'), 1);
-  assert.equal(parseOffset('-0.75'), -1);
-  assert.equal(parseOffset('1.25'), 1.5);
-  assert.equal(parseOffset('-1.25'), -1.5);
-  assert.equal(parseOffset('0.25'), 0.5);                    // demi-pas : loin de 0, des deux côtés
-  assert.equal(parseOffset('-0.25'), -0.5);
+test('décalage : arrondi au pas symétrique autour de 0, sans reste flottant', () => {
+  assert.equal(parseOffset('0.025'), 0.05);                  // demi-pas : loin de 0, des deux côtés
+  assert.equal(parseOffset('-0.025'), -0.05);
+  assert.equal(parseOffset('0.075'), 0.1);
+  assert.equal(parseOffset('-0.075'), -0.1);
+  assert.equal(parseOffset(1.15), 1.15);
+  assert.equal(parseOffset(2.95), 2.95);
 });
 
 test('décalage affiché à la française', () => {
-  assert.equal(fmtOffset(0), '0 s');
-  assert.equal(fmtOffset(1.5), '+1,5 s');
-  assert.equal(fmtOffset(-2), '−2 s');
+  assert.equal(fmtOffset(0), '0\u00a0s');
+  assert.equal(fmtOffset(1.5), '+1,5\u00a0s');
+  assert.equal(fmtOffset(-2), '−2\u00a0s');
+  assert.equal(fmtOffset(0.15), '+0,15\u00a0s');
+  assert.equal(fmtOffset(-0.05), '−0,05\u00a0s');
+  assert.equal(fmtOffset(3), '+3\u00a0s');
 });
 
 test('posters : maxresdefault puis hqdefault si vignette grise', () => {

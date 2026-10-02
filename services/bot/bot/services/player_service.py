@@ -33,10 +33,13 @@ Fix v2.2 (playlists via liens + audit) :
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import logging
+import math
 import os
 import re
+import secrets
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -75,6 +78,7 @@ from greg_shared.priority import (
     validate_move,
 )
 
+from bot.services.audio_clock import CountingSource
 from bot.services.ffmpeg import detect_ffmpeg
 from bot.services.playlist_manager import PlaylistManager
 from bot.services.history_manager import HistoryManager
@@ -113,6 +117,11 @@ _MAX_CUTS_PER_TRACK = 3
 _BACKOFF_BASE = 1.5
 _BACKOFF_MAX = 8.0
 
+# Pré-lecture de la 1re trame (synchro son/vidéo), sous le verrou de lecture : jamais sans fin. Un stop/skip la
+# coupe aussitôt ; sans trame au bout de _PREROLL_MAX_S (mode pipe : 1 à 8 s mesurés), échec de démarrage.
+_PREROLL_MAX_S = 20.0
+_PREROLL_POLL_S = 0.05
+
 # ── Budget de réponse de play_for_user (l'API attend 25 s) ──
 _EXPAND_TIMEOUT = 20.0
 _SEARCH_TIMEOUT = 15.0
@@ -131,6 +140,12 @@ _VOICE_CONNECT_TIMEOUT = 10.0
 _VOICE_RESUME_TIMEOUT = 30.0
 
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+# ── Ticker de progression (synchro son/vidéo) ──
+# Échantillon toutes les _TICK_S : un blocage du flux (> 250 ms sans trame) est vu vite ;
+# un tick publié toutes les _PROGRESS_EVERY_S, comme avant.
+_TICK_S = 0.25
+_PROGRESS_EVERY_S = 1.0
 
 _ERROR_MESSAGES = {
     "GUILD_NOT_FOUND": "Greg n'est pas (ou plus) sur ce serveur.",
@@ -236,6 +251,12 @@ def _cleanup_source_off_loop(src) -> None:
         _cleanup_source(src)
 
 
+def _drop_result(fut) -> None:
+    """Tâche abandonnée (pré-lecture coupée) : son résultat est lu, asyncio ne signale aucune exception perdue."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 def _track_link_refusal(link: str) -> Optional[str]:
     """Raison (FR) pour laquelle stream() refuserait d'emblée ce lien comme titre, sinon None.
 
@@ -279,6 +300,10 @@ class PlayerService:
         self.paused_since: Dict[int, float] = {}
         self.paused_total: Dict[int, float] = {}
         self.current_source: Dict[int, Any] = {}
+        # Synchro son/vidéo : instant du choix du titre (log [SYNC] : délai jusqu'à la 1re trame).
+        self._chosen_at: Dict[int, float] = {}
+        # play_id : 8 hex, nouveau à chaque vc.play (titre, « Depuis le début », boucle, reprise après coupure).
+        self.play_id: Dict[int, str] = {}
         self._progress_task: Dict[int, asyncio.Task] = {}
         # Verrou de LECTURE (play_next, tenu pendant les extractions longues)
         self._locks: Dict[int, asyncio.Lock] = {}
@@ -394,7 +419,7 @@ class PlayerService:
         self.is_playing[gid] = False
         self._explicit_stops.discard(gid)
         for d in (self.current_song, self.play_start, self.paused_since,
-                  self.paused_total, self.current_meta, self.now_playing):
+                  self.paused_total, self.current_meta, self.now_playing, self.play_id):
             d.pop(gid, None)
 
     def _emit(self, gid: int, payload: dict = None):
@@ -535,20 +560,34 @@ class PlayerService:
 
     # ─── State ───
 
+    def _clock(self, gid: int, vc) -> dict:
+        """Bloc `clock` (spec synchro §3) : position réellement lue par discord.py, horodatée (epoch ms du bot)."""
+        sampled_at_ms = int(time.time() * 1000)
+        pid = self.play_id.get(gid)
+        src = self.current_source.get(gid)
+        pos: Optional[float] = None
+        if not (self.now_playing.get(gid) or self.current_song.get(gid)):
+            status = "idle"
+        elif pid is None or not isinstance(src, CountingSource) or src.frames == 0:
+            status = "loading"   # titre choisi, aucune trame encore envoyée
+        else:
+            pos = src.position_ms()
+            if vc is not None and vc.is_paused():
+                status = "paused"
+            elif src.is_stalled():
+                status = "stalled"
+            else:
+                status = "playing"
+        return {"play_id": pid, "status": status, "position_ms": pos, "sampled_at_ms": sampled_at_ms}
+
     def get_state(self, guild_id: int) -> dict:
         gid = int(guild_id)
         g = self.bot.get_guild(gid)
         vc = g.voice_client if g else None
         is_paused = bool(vc and vc.is_paused())
 
-        start = self.play_start.get(gid)
-        p_since = self.paused_since.get(gid)
-        p_total = self.paused_total.get(gid, 0.0)
-
-        elapsed = 0
-        if start:
-            base = p_since or time.monotonic()
-            elapsed = max(0, int(base - start - p_total))
+        clock = self._clock(gid, vc)
+        elapsed = int(clock["position_ms"] // 1000) if clock["position_ms"] else 0
 
         meta = self.current_meta.get(gid, {})
         duration = meta.get("duration")
@@ -603,6 +642,7 @@ class PlayerService:
             "repeat_all": bool(self.repeat_all.get(gid, False)),
             "requested_by_user": requested_by,
             "queue_users": queue_users,
+            "clock": clock,
         }
 
     # ─── Enqueue ───
@@ -892,10 +932,18 @@ class PlayerService:
                 return
 
             url = item.get("url")
+            # Fenêtre de chargement : clock « loading », plus aucune position héritée du titre précédent.
+            # play_id retiré EN PREMIER : un _after tardif qui le voit encore a lu l'état de SA lecture.
+            self.play_id.pop(gid, None)
             self.current_song[gid] = dict(item)
             self.now_playing[gid] = dict(item)
             dur = int(item["duration"]) if isinstance(item.get("duration"), (int, float)) else None
             self.current_meta[gid] = {"duration": dur, "thumbnail": item.get("thumb")}
+            self._chosen_at[gid] = time.monotonic()
+            self.play_start.pop(gid, None)
+            self.paused_since.pop(gid, None)
+            self.paused_total[gid] = 0.0
+            self._emit(gid)
 
             extractor = get_extractor(url)
             if not extractor:
@@ -939,6 +987,30 @@ class PlayerService:
                 logger.info("[Chargement annulé] guild=%s url=%s", gid, url)
                 self._spawn(self.play_next(guild))
                 return
+
+            if srcp is not None:
+                # Horloge audio (spec synchro §4.2) : trames réellement lues ; une trame lue d'avance, AVANT
+                # vc.play, pour que play_start et la 1re trame coïncident (plus d'avance en mode pipe).
+                srcp = CountingSource(
+                    srcp, loop=loop,
+                    on_first_frame=functools.partial(self._on_first_frame, gid),
+                    on_resume_after_stall=functools.partial(self._on_stall_end, gid),
+                )
+                primed, pre_err = await self._preroll(gid, gen, srcp)
+                if self._is_stale(gid, gen):
+                    # stop/skip/play_at/restart pendant la pré-lecture : même abandon que pendant l'extraction.
+                    _cleanup_source_off_loop(srcp)
+                    logger.info("[Chargement annulé] guild=%s url=%s", gid, url)
+                    self._spawn(self.play_next(guild))
+                    return
+                if not primed:
+                    # ffmpeg n'a produit aucune trame (b''), ou rien en _PREROLL_MAX_S : échec de démarrage, même
+                    # politique qu'un extracteur KO.
+                    pre_err = pre_err or getattr(srcp, "_current_error", None)   # code de sortie de ffmpeg
+                    logger.warning("[pré-lecture KO] guild=%s url=%s: %s", gid, url, pre_err or "aucune trame")
+                    _cleanup_source_off_loop(srcp)
+                    srcp = None
+                    last_err = pre_err or RuntimeError("ffmpeg n'a produit aucune trame")
 
             if srcp is not None:
                 if title and isinstance(title, str):
@@ -1016,6 +1088,12 @@ class PlayerService:
         self.current_source[gid] = srcp
         # Génération au démarrage : un stop/skip/restart ultérieur la rend périmée.
         gen = self._generation.get(gid, 0)
+        # Figés au vc.play : si le titre suivant est déjà choisi quand _after arrive (fin naturelle, play_next passé
+        # entre la fin du flux et l'appel d'after), les dicts partagés sont les siens, pas ceux de cette lecture.
+        pid = secrets.token_hex(4)
+        song = dict(self.current_song.get(gid) or {}) or None
+        song_dur = (self.current_meta.get(gid) or {}).get("duration")
+        started = time.monotonic()
 
         def _after(err):
             # ── Nettoyage de SA source (jamais celle du morceau suivant) ────
@@ -1044,10 +1122,17 @@ class PlayerService:
             ps = self.paused_since.get(gid)
             if ps:
                 paused += ended - ps
-            elapsed = max(0.0, ended - start - paused)
             # Durée figée ICI (le morceau suivant peut réécrire current_meta avant
             # que la suite ne s'exécute sur la boucle).
             duration = (self.current_meta.get(gid) or {}).get("duration")
+            # play_id relu APRÈS l'état (la fenêtre de chargement le retire en premier) : encore le nôtre → l'état lu
+            # est celui de cette lecture.
+            if self.play_id.get(gid) == pid:
+                self.play_id.pop(gid, None)   # plus de trame : « loading » sans play_id jusqu'au prochain vc.play
+            elif cur:
+                # Titre suivant déjà choisi (ou relancé) : on juge CETTE lecture (pauses perdues, comptées 0).
+                cur, start, paused, duration = song, started, 0.0, song_dur
+            elapsed = max(0.0, ended - start - paused)
             if not duration and cur and isinstance(cur.get("duration"), (int, float)):
                 duration = int(cur["duration"])
             if err:
@@ -1061,7 +1146,9 @@ class PlayerService:
                 logger.error("Relance après fin de piste impossible (guild %s): %s", gid, e)
 
         # play_start AVANT vc.play : un _after immédiat ne doit pas lire l'ancien départ.
-        self.play_start[gid] = time.monotonic()
+        # (Après la pré-lecture de play_next : il coïncide avec la 1re trame.)
+        self.play_id[gid] = pid
+        self.play_start[gid] = started
         self.paused_total[gid] = 0.0
         self.paused_since.pop(gid, None)
         try:
@@ -1080,6 +1167,53 @@ class PlayerService:
             self._get_hm(gid).record_play(cur, played_by=added_by)
         except Exception as e:
             logger.debug("history record failed: %s", e)
+
+    async def _preroll(self, gid: int, gen: int, src: CountingSource) -> Tuple[bool, Optional[Exception]]:
+        """Pré-lit la 1re trame dans un thread ; rend (amorcée, erreur).
+
+        Le verrou de lecture n'est jamais tenu sans fin : lecture périmée (stop/skip/play_at/restart) ou ffmpeg muet
+        plus de _PREROLL_MAX_S, on rend la main sans attendre le thread ; l'appelant nettoie la source (ffmpeg et
+        yt-dlp tués), ce qui débloque read().
+        """
+        fut = asyncio.ensure_future(asyncio.to_thread(src.preroll))
+        deadline = time.monotonic() + _PREROLL_MAX_S
+        try:
+            while not fut.done() and not self._is_stale(gid, gen) and time.monotonic() < deadline:
+                await asyncio.wait({fut}, timeout=_PREROLL_POLL_S)
+        except asyncio.CancelledError:
+            fut.add_done_callback(_drop_result)
+            _cleanup_source_off_loop(src)   # play_next annulé (arrêt du bot) : ffmpeg ne reste pas en vie
+            raise
+        if not fut.done():
+            fut.add_done_callback(_drop_result)
+            if self._is_stale(gid, gen):
+                return False, None
+            return False, TimeoutError(f"aucune trame en {_PREROLL_MAX_S:g} s")
+        try:
+            return fut.result(), None
+        except Exception as e:
+            return False, e
+
+    def _on_first_frame(self, gid: int, src: CountingSource) -> None:
+        """1re trame lue par discord.py (sur la boucle, via call_soon_threadsafe) : log [SYNC] et état tout de suite."""
+        if self.current_source.get(gid) is not src:
+            return
+        chosen = self._chosen_at.get(gid)
+        g = self.bot.get_guild(gid)
+        lat = getattr(g.voice_client if g else None, "average_latency", None)
+        logger.info(
+            "[SYNC] guild=%s mode=%s choix_1re_trame_ms=%s prelecture_ms=%.0f latence_vocale_ms=%s",
+            gid, src.mode,
+            f"{(src.first_read_at - chosen) * 1000:.0f}" if chosen and src.first_read_at else "?",
+            src.preroll_ms or 0.0,
+            f"{lat * 1000:.0f}" if isinstance(lat, (int, float)) and math.isfinite(lat) else "?",
+        )
+        self._emit(gid)
+
+    def _on_stall_end(self, gid: int, src: CountingSource) -> None:
+        """Le flux repart après un blocage (sur la boucle, via call_soon_threadsafe) : état complet tout de suite."""
+        if self.current_source.get(gid) is src:
+            self._emit(gid)
 
     async def _handle_track_end(self, guild: discord.Guild, gid: int, cur: Optional[dict],
                                 elapsed: float, duration: Optional[int], was_explicit: bool,
@@ -1233,6 +1367,9 @@ class PlayerService:
         g = self.bot.get_guild(gid)
         vc = g and g.voice_client
         if vc and vc.is_paused():
+            src = self.current_source.get(gid)
+            if isinstance(src, CountingSource):
+                src.note_resume()  # AVANT vc.resume : le thread audio relit aussitôt, la pause n'est pas un blocage
             vc.resume()
             ps = self.paused_since.pop(gid, None)
             if ps:
@@ -1613,6 +1750,8 @@ class PlayerService:
             return
 
         async def _run():
+            last_pub: Optional[float] = None
+            was_stalled = False
             try:
                 while True:
                     g = self.bot.get_guild(gid)
@@ -1620,25 +1759,29 @@ class PlayerService:
                     if not vc or (not vc.is_playing() and not vc.is_paused()):
                         break
 
-                    start = self.play_start.get(gid)
-                    p_since = self.paused_since.get(gid)
-                    p_total = self.paused_total.get(gid, 0.0)
-                    elapsed = max(0, int((p_since or time.monotonic()) - start - p_total)) if start else 0
+                    clock = self._clock(gid, vc)
+                    stalled = clock["status"] == "stalled"
+                    if stalled and not was_stalled:
+                        self._emit(gid)  # début d'un blocage : le site fige sa référence tout de suite
+                    was_stalled = stalled
 
-                    meta = self.current_meta.get(gid, {})
-                    dur = meta.get("duration")
-                    if dur is None:
-                        cs = self.current_song.get(gid, {})
-                        dur = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+                    now = time.monotonic()
+                    if last_pub is None or now - last_pub >= _PROGRESS_EVERY_S:
+                        last_pub = now
+                        elapsed = int(clock["position_ms"] // 1000) if clock["position_ms"] else 0
+                        meta = self.current_meta.get(gid, {})
+                        dur = meta.get("duration")
+                        if dur is None:
+                            cs = self.current_song.get(gid, {})
+                            dur = int(cs["duration"]) if isinstance(cs.get("duration"), (int, float)) else None
+                        try:
+                            await self.bot.redis_bridge.publish_progress(
+                                gid, elapsed, dur, bool(vc.is_paused()), clock=clock,
+                            )
+                        except Exception:
+                            pass
 
-                    try:
-                        await self.bot.redis_bridge.publish_progress(
-                            gid, elapsed, dur, bool(vc.is_paused()),
-                        )
-                    except Exception:
-                        pass
-
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(_TICK_S)
             except asyncio.CancelledError:
                 pass
             finally:

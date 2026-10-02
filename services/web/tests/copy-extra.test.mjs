@@ -54,3 +54,10 @@ test('textes de l’étape 4 : interrupteur, bulles, lien d’évitement, annonc
   assert.equal(tx('a11y.nowPlaying', { title: 'Africa' }), 'En lecture : Africa');
   for (const k of ['keys.toggleHelp', 'keys.on', 'keys.off', 'transport.repeatTip', 'a11y.paused', 'a11y.resumed']) assert.notEqual(tx(k), k, k);
 });
+
+test('Synchro vidéo : l’aide dit le sens du réglage', () => {
+  const help = tx('sync.help');
+  assert.match(help, /avance[^.]*−/);
+  assert.match(help, /retard[^.]*\+/);
+  assert.match(readFileSync(new URL('../src/components/Stage/SyncOffset.tsx', import.meta.url), 'utf8'), /\{tx\('sync\.help'\)\}/);
+});

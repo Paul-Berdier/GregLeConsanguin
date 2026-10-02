@@ -671,3 +671,16 @@ async def test_arrival_order_is_kept_when_claims_answer_out_of_order(bridge):
     t = bridge._dispatch(_cmd("stop", rid="s"))
     await asyncio.wait_for(t, 1)
     assert [e[0] for e in svc.log] == ["play_for_user:start", "play_for_user:end", "skip", "stop"]
+
+
+# ─────────────────────────── Synchro son/vidéo : tick + clock ───────────────────────────
+
+
+async def test_publish_progress_carries_the_clock_and_keeps_its_fields(bridge):
+    clock = {"play_id": "a1b2c3d4", "status": "playing", "position_ms": 83460.0, "sampled_at_ms": 1790846494123}
+    await bridge.publish_progress(1, 83, 200, False, clock=clock)
+    await bridge.publish_progress(1, 84, 200, True)
+    (ch1, d1), (ch2, d2) = bridge.published
+    assert ch1 == ch2 == rb.CHANNEL_PROGRESS
+    assert d1 == {"guild_id": 1, "position": 83, "duration": 200, "paused": False, "clock": clock}
+    assert d2 == {"guild_id": 1, "position": 84, "duration": 200, "paused": True}, "sans clock : payload d'avant"

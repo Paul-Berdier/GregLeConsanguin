@@ -89,9 +89,17 @@ def _relay_state(guild_id=42, state=None):
     t.join(5)
 
 
+def _strip(state):
+    """État émis sans relay_at_ms (horodatage de l'API, synchro son/vidéo), présent et entier."""
+    st = dict(state)
+    stamp = st.pop("relay_at_ms", None)
+    assert isinstance(stamp, int) and not isinstance(stamp, bool), state
+    return st
+
+
 def _got_relay(client):
     return [u for u in _events(client.get_received(), "playlist_update")
-            if u["args"][0] == {"queue": ["relay"]}]
+            if _strip(u["args"][0]) == {"queue": ["relay"]}]
 
 
 # ── overlay_register : toujours un overlay_ack ──
@@ -145,7 +153,7 @@ def test_member_joins_room_and_gets_state(member_sio, fake_bot, session_uid, eve
     received = member_sio.get_received()
     assert not _events(received, "guild_join_error")
     ups = _events(received, "playlist_update")
-    assert ups and ups[0]["args"][0] == STATE
+    assert ups and _strip(ups[0]["args"][0]) == STATE
 
     assert fake_bot.calls == [{"action": "get_state", "guild_id": 42, "user_id": session_uid,
                                "data": None, "timeout": 5}]
@@ -246,7 +254,7 @@ def test_redis_listener_relay_from_native_thread_reaches_room(member_sio, fake_b
 
     updates = _events(member_sio.get_received(), "playlist_update")
     assert len(updates) == 2
-    assert updates[0]["args"][0] == {"queue": [1, 2]}
+    assert _strip(updates[0]["args"][0]) == {"queue": [1, 2]}
     assert updates[1]["args"][0]["position"] == 7
 
     # Les réponses « normales » continuent d'arriver après un emit cross-thread.
@@ -306,4 +314,4 @@ def test_request_state_emits_state(member_sio, fake_bot):
     fake_bot.result = {"ok": True, "state": {"current": None, "queue": []}}
     member_sio.emit("request_state", {"guild_id": "42"})
     ups = _events(member_sio.get_received(), "playlist_update")
-    assert ups and ups[0]["args"][0] == {"current": None, "queue": []}
+    assert ups and _strip(ups[0]["args"][0]) == {"current": None, "queue": []}

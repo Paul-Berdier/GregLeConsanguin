@@ -4,10 +4,12 @@ import { useId, useRef } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, fmtOffset } from '@/lib/stage/cover';
 import { t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 
 /**
- * Réglage « Synchro vidéo » : décale l'image par rapport au son de Discord (−10 à +10 s, pas de 0,5 s).
- * Popover plaque hors de la vidéo (tech.md §5.4 : jamais de flou d'arrière-plan sur l'iframe).
+ * Réglage « Synchro vidéo » : le retard propre à Discord sur cet appareil (−3 à +3 s, pas de 50 ms). La vidéo y va
+ * par le régulateur (vitesse, pas de saut brut). Popover plaque hors de la vidéo (tech.md §5.4 : jamais de flou
+ * d'arrière-plan sur l'iframe).
  */
 export default function SyncOffset({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   const { open, setOpen, btnRef, wrapProps } = usePopover();
@@ -36,7 +38,7 @@ export default function SyncOffset({ value, onChange }: { value: number; onChang
           <input ref={rangeRef} id={rangeId} type="range" min={OFFSET_MIN} max={OFFSET_MAX} step={OFFSET_STEP} value={value}
             aria-valuetext={shown} aria-describedby={helpId} onChange={(e) => onChange(Number(e.target.value))}/>
         </div>
-        <p className="sync-help" id={helpId}>{t('now.sync.help')}</p>
+        <p className="sync-help" id={helpId}>{tx('sync.help')}</p>
         <button type="button" className="sync-reset" disabled={value === 0} onClick={reset}>{t('now.sync.reset')}</button>
       </div>
     </div>
