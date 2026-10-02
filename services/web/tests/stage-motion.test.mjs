@@ -90,3 +90,20 @@ test('API YouTube en échec (réseau, portail captif) : nouvel essai, de plus en
   // le lecteur créé après coup : la note « vidéo indisponible » part
   assert.match(code('src/components/Stage/Portal.tsx'), /useEffect\(\(\) => \{ if \(player\) setNoApi\(false\); \}, \[player\]\);/);
 });
+
+// ─── Synchro son/vidéo (spec §6.2) : régulateur, démarrage gardé, plus de sauts à seuils fixes ───
+test('Portal : régulateur à 4 Hz, démarrage gardé par play_id, attente, plus d’ancien correcteur', () => {
+  const portal = code('src/components/Stage/Portal.tsx');
+  assert.match(portal, /const id = setInterval\(tick, CTL_TICK_MS\);/);
+  assert.match(portal, /if \(awaiting\.current \|\| document\.visibilityState !== 'visible' \|\| ytState\.current !== YT_STATE\.PLAYING\) return;/);
+  assert.match(portal, /if \(!gateLoad\(clock, extractVideoId\(clock\.url\), videoId, loaded\.current\)\) return;/);
+  assert.match(portal, /hold\.current = nextHold\(prevClock\.current, clock, performance\.now\(\), hold\.current\);/);
+  assert.match(portal, /const still = paused \|\| clock\.status === 'stalled';/);
+  assert.match(portal, /ctl\.current = CTL_INIT;\s*rateOk\.current = true;/, 'vitesse réappliquée après loadVideoById, retentée à chaque vidéo');
+  assert.match(portal, /if \(extractVideoId\(useStore\.getState\(\)\.clock\.url\) !== videoId\) return;/, 'jamais calée sur un autre titre');
+  assert.match(portal, /loadStart\(here \? targetPos\(0\) \?\? 0 : 0, offsetRef\.current\)/, 'horloge d’un autre titre : départ au début');
+  assert.doesNotMatch(portal, /driftSeek|alignDue|RUN_THRESHOLD_S|MIN_SEEK_GAP_MS|DRIFT_CHECK_MS|SEEK_COMP_S|clockPos\(/);
+  const cover = code('src/lib/stage/cover.ts');
+  assert.doesNotMatch(cover, /DRIFT_CHECK_MS|SEEK_COMP_S|RUN_THRESHOLD_S|ALIGN_THRESHOLD_S|MIN_SEEK_GAP_MS/);
+  assert.match(code('src/hooks/useYouTubePlayer.ts'), /setPlaybackRate\(rate: number\): void;\s*getPlaybackRate\(\): number;/);
+});

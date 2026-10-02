@@ -19,6 +19,9 @@ export type YTPlayer = CaptionsApi & {
   stopVideo(): void;
   seekTo(seconds: number, allowSeekAhead: boolean): void;
   getCurrentTime(): number;
+  /** Vitesse suggérée (synchro son/vidéo) : YouTube peut l'arrondir, getPlaybackRate() dit ce qu'il applique. */
+  setPlaybackRate(rate: number): void;
+  getPlaybackRate(): number;
   mute(): void;
   getIframe(): HTMLIFrameElement;
   destroy(): void;

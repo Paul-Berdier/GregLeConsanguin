@@ -27,12 +27,7 @@ export const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFER
 // disparu partout avant 4,02 s. Sous-titres de la même sonde : voir muteCaptions.
 // Aucun paramètre documenté ne le masque : on décale le lever du poster, la marque reste.
 export const REVEAL_AFTER_PLAYING_MS = 4250;
-export const ALIGN_AFTER_PLAYING_MS = 1200;    // alignement initial, encore sous le poster
-export const DRIFT_CHECK_MS = 4000;
-export const MIN_SEEK_GAP_MS = 15000;
-export const ALIGN_THRESHOLD_S = 0.25;
-export const RUN_THRESHOLD_S = 1.2;
-export const SEEK_COMP_S = 0.45;               // seekTo met ~474 ms à reprendre
+// La dérive est corrigée par le régulateur (lib/sync/controller.ts) : vitesse, ou saut sans surcompensation.
 export const LOAD_COMP_S = 0.4;                // loadVideoById met ~404 ms à jouer
 const TIMER_SLACK_MS = 50;
 
@@ -70,16 +65,6 @@ export function coverNext(c: Cover, ev: CoverEvent): Cover {
 export const coverVisible = (c: Cover, paused: boolean): boolean => c.phase !== 'revealed' || paused;
 /** Délai avant la révélation d'un poster armé. */
 export const revealIn = (c: Cover, now: number): number => Math.max(0, c.armedAt + REVEAL_AFTER_PLAYING_MS - now);
-/** Alignement initial dû : armé par un vrai départ (pas par notre propre saut, sinon on bouclerait). */
-export const alignDue = (c: Cover): boolean => c.phase === 'armed' && !c.bySeek;
-
-/** Cible d'un seekTo si l'écart vidéo ↔ son (+ décalage) dépasse le seuil ; null sinon. */
-export function driftSeek(ytTime: number, clockPos: number, offset: number, threshold: number): number | null {
-  const target = clockPos + offset;
-  const drift = ytTime - target;
-  if (!Number.isFinite(drift) || Math.abs(drift) <= threshold) return null;
-  return Math.max(0, target + SEEK_COMP_S);
-}
 
 /** Position de départ d'un loadVideoById, compensée du temps de chargement. */
 export const loadStart = (clockPos: number, offset: number): number => Math.max(0, clockPos + offset + LOAD_COMP_S);

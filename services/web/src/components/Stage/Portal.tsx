@@ -6,12 +6,12 @@ import { useStore } from '@/hooks/usePlayer';
 import { YT_API_FAILED, useYouTubePlayer } from '@/hooks/useYouTubePlayer';
 import type { YTPlayer } from '@/hooks/useYouTubePlayer';
 import { extractVideoId } from '@/lib/format';
-import { livePosition } from '@/lib/playerUtils';
-import {
-  ALIGN_AFTER_PLAYING_MS, ALIGN_THRESHOLD_S, COVERED, DRIFT_CHECK_MS, MIN_SEEK_GAP_MS, RUN_THRESHOLD_S, YT_STATE,
-  alignDue, coverNext, coverVisible, driftSeek, isPlaceholderThumb, loadStart, posterUrl, revealIn, rewound,
-} from '@/lib/stage/cover';
+import { COVERED, YT_STATE, coverNext, coverVisible, isPlaceholderThumb, loadStart, posterUrl, revealIn, rewound } from '@/lib/stage/cover';
 import type { Cover, CoverEvent } from '@/lib/stage/cover';
+import { CTL_INIT, CTL_TICK_MS, afterDecision, decide, gateLoad, nextHold, rateCheck } from '@/lib/sync/controller';
+import type { CtlState } from '@/lib/sync/controller';
+import { refClock, serverNow } from '@/lib/sync/live';
+import type { ClockView } from '@/lib/sync/refclock';
 import type { CrownMode } from '@/lib/stage/coronation';
 import { t } from '@/theme/copy';
 import type { Ceremony } from './coronation';
@@ -35,10 +35,10 @@ export const decodedPosters = new Map<string, string>();
 const decodedImages = new Map<string, HTMLImageElement>();
 const DECODED_MAX = 8;
 
-/** Position du son (s) d'après le store, comme l'horloge. */
-function clockPos(): number {
-  const s = useStore.getState();
-  return livePosition(s.tickBase, s.player.paused, performance.now());
+/** Cible de la vidéo (s) : la position du son selon l'horloge de référence (refclock), plus le réglage. null : aucun son. */
+function targetPos(offset: number): number | null {
+  const ms = refClock.positionAt(serverNow(performance.now()));
+  return ms == null ? null : Math.max(0, ms / 1000 + offset);
 }
 
 /**
@@ -72,42 +72,36 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
   const [unavailable, setUnavailable] = useState(false);   // cette vidéo refuse l'intégration (remis à chaque titre)
   const [noApi, setNoApi] = useState(false);               // l'API YouTube n'a pas pu se charger : aucun lecteur ici
   const [posters, setPosters] = useState<PosterEntry[]>([]);
+  const clock = useStore((s) => s.clock);   // horloge de référence : play_id, statut, lien du titre joué
+  const still = paused || clock.status === 'stalled';   // pause, ou flux du bot bloqué : la vidéo attend
   const crownRef = useRef(crown);
   crownRef.current = crown;
-  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
+  const stillRef = useRef(still);
+  stillRef.current = still;
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const videoRef = useRef(videoId);
   videoRef.current = videoId;
   const playerRef = useRef<YTPlayer | null>(null);
   const ytState = useRef<number>(YT_STATE.UNSTARTED);
-  const lastSeek = useRef(-Infinity);   // aucun saut encore : pas 0, qui muselait la dérive 15 s après le chargement
+  const loaded = useRef<{ id: string | null; playId: string | null }>({ id: null, playId: null });   // vidéo chargée, pour quel play_id
+  const awaiting = useRef(false);   // titre choisi, le bot ne le joue pas encore : vidéo arrêtée sous le poster
+  const ctl = useRef<CtlState>(CTL_INIT);
+  const hold = useRef(0);           // pas de correction avant (performance.now)
+  const rateOk = useRef(true);      // YouTube applique les vitesses demandées (sinon : sauts seuls)
+  const asked = useRef<{ rate: number; at: number } | null>(null);   // vitesse demandée, à confirmer
 
   const dispatch = useCallback((ev: CoverEvent) => setCover((c) => coverNext(c, ev)), []);
-  /** Saut réel seulement : sans lecteur (décalage relu au montage), rien n'est noté, la dérive n'est pas muselée 15 s. */
-  const seek = useCallback((to: number) => {
-    const p = playerRef.current;
-    if (!p) return;
-    try { p.seekTo(to, true); lastSeek.current = performance.now(); } catch {}
-  }, []);
-  /** Saut de correction : YouTube remontre son habillage, le poster revient le temps qu'il parte. */
-  const correct = useCallback((threshold: number) => {
-    const p = playerRef.current;
-    if (!p) return;
-    const to = driftSeek(p.getCurrentTime(), clockPos(), offsetRef.current, threshold);
-    if (to == null) return;
-    seek(to);
-    dispatch({ type: 'seek', now: performance.now() });
-  }, [dispatch, seek]);
 
   const player = useYouTubePlayer(wrapRef, {
     onState: (s) => {
       ytState.current = s;
       dispatch({ type: 'yt', state: s, now: performance.now() });
-      // l'iframe ne suit que le son : relancée si elle s'arrête seule, arrêtée si elle part pendant la pause
-      if (s === YT_STATE.PAUSED && !pausedRef.current) playerRef.current?.playVideo();
-      if (s === YT_STATE.PLAYING && pausedRef.current) playerRef.current?.pauseVideo();
+      // l'iframe ne suit que le son : relancée si elle s'arrête seule, arrêtée si elle part pendant la pause ou un
+      // blocage ; rien tant que le bot n'a pas commencé ce titre
+      if (awaiting.current) return;
+      if (s === YT_STATE.PAUSED && !stillRef.current) playerRef.current?.playVideo();
+      if (s === YT_STATE.PLAYING && stillRef.current) playerRef.current?.pauseVideo();
     },
     onError: (code) => { if (code === YT_API_FAILED) setNoApi(true); else setUnavailable(true); dispatch({ type: 'error' }); },
   }, !!(videoId || nextId));   // créé au premier titre qui peut jouer (déconnecté, rien en file : aucun lecteur)
@@ -115,70 +109,114 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
   // l'API a fini par se charger (nouvel essai, réseau revenu) : la note « vidéo indisponible » part
   useEffect(() => { if (player) setNoApi(false); }, [player]);
 
-  // Changement de titre : le poster couvre, puis loadVideoById dans la même iframe.
+  /**
+   * Charge la vidéo sous le poster, à la position du son si l'horloge décrit cette vidéo (sinon au début : ancien bot,
+   * saut optimiste, l'ancien titre joue encore). Régulateur neuf : loadVideoById remet la vitesse à 1, le régulateur
+   * la réappliquera ; les vitesses sont retentées à chaque vidéo (un direct les refuse, pas la suivante).
+   */
+  const load = useCallback((p: YTPlayer, id: string, playId: string | null) => {
+    loaded.current = { id, playId };
+    awaiting.current = false;
+    ctl.current = CTL_INIT;
+    rateOk.current = true;
+    asked.current = null;
+    const here = extractVideoId(useStore.getState().clock.url) === id;
+    try { p.loadVideoById({ videoId: id, startSeconds: loadStart(here ? targetPos(0) ?? 0 : 0, offsetRef.current) }); } catch {}
+  }, []);
+
+  // Changement de titre : le poster couvre tout de suite, la vidéo précédente s'arrête dessous.
   useEffect(() => {
     setUnavailable(false);
     dispatch({ type: videoId ? 'track' : 'stop' });
+    loaded.current = { id: null, playId: null };
+    awaiting.current = !!videoId;
     if (!player) return;
-    try {
-      if (videoId) player.loadVideoById({ videoId, startSeconds: loadStart(clockPos(), offsetRef.current) });
-      else player.stopVideo();
-    } catch {}
+    try { player.stopVideo(); } catch {}
   }, [videoId, player, dispatch]);
 
-  // Le son recule sur la même vidéo (« Reprendre au début », boucle, même titre deux fois de suite) : la vidéo
-  // est rechargée sous le poster (tech.md §5.4). Les ids comptent, pas les liens : le bot garde le lien tel que
-  // donné, la même vidéo peut revenir sous un autre (youtu.be/X?si=… puis watch?v=X). videoRef tient encore l'id
-  // rendu : une autre vidéo passe par l'effet ci-dessus.
+  // Démarrage gardé (gateLoad) : la vidéo part quand le bot joue vraiment ce titre (statut playing, nouveau play_id) ;
+  // un ancien bot (sans clock) : tout de suite, comme avant. Le bot recharge la même vidéo (« Depuis le début »,
+  // boucle, reprise après coupure) : elle attend sous le poster. Les ids comptent, pas les liens : le bot garde le
+  // lien tel que donné, la même vidéo peut revenir sous un autre (youtu.be/X?si=… puis watch?v=X).
+  useEffect(() => {
+    if (!player || !videoId) return;
+    if (!clock.compat && clock.status === 'loading' && loaded.current.id === videoId && !awaiting.current) {
+      awaiting.current = true;
+      dispatch({ type: 'track' });
+      try { player.stopVideo(); } catch {}
+      return;
+    }
+    if (!gateLoad(clock, extractVideoId(clock.url), videoId, loaded.current)) return;
+    if (loaded.current.id === videoId) dispatch({ type: 'track' });   // même vidéo, nouvelle lecture
+    load(player, videoId, clock.playId);
+  }, [videoId, player, clock, dispatch, load]);
+
+  // Ancien bot (sans clock) : le son recule sur la même vidéo → rechargée sous le poster (tech.md §5.4). Avec clock,
+  // le nouveau play_id s'en charge (démarrage gardé). videoRef tient encore l'id rendu.
   useEffect(() => useStore.subscribe((s, prev) => {
     const p = playerRef.current, id = videoRef.current;
-    if (!p || !id || s.tickBase === prev.tickBase || extractVideoId(s.player.current?.url) !== id) return;
+    if (!s.clock.compat || !p || !id || s.tickBase === prev.tickBase || extractVideoId(s.player.current?.url) !== id) return;
     if (!rewound(prev.tickBase, prev.player.paused, s.tickBase)) return;
     dispatch({ type: 'track' });
     try { p.loadVideoById({ videoId: id, startSeconds: loadStart(s.tickBase.pos, offsetRef.current) }); } catch {}
   }), [dispatch]);
 
-  // Pause et reprise suivent le son ; le poster revient pendant la pause.
+  // Pause, ou flux du bot bloqué : la vidéo attend sous le poster, puis repart avec le son.
   useEffect(() => {
-    if (!player || !videoId) return;
-    try { if (paused) player.pauseVideo(); else player.playVideo(); } catch {}
-    if (paused) dispatch({ type: 'pause' });
-  }, [paused, player, videoId, dispatch]);
+    if (!player || !videoId || awaiting.current) return;
+    try { if (still) player.pauseVideo(); else player.playVideo(); } catch {}
+    if (still) dispatch({ type: 'pause' });
+  }, [still, player, videoId, dispatch]);
 
-  // Armé : alignement une fois à armedAt + 1,2 s (encore caché), révélation à armedAt + REVEAL_AFTER_PLAYING_MS.
-  // Les deux échéances partent de l'armement : un calage (BUFFERING puis PLAYING) change `cover` et relance l'effet
-  // sans les repousser.
-  const alignedFor = useRef<number | null>(null);   // armedAt du dernier alignement fait
+  // Armé : révélation à armedAt + REVEAL_AFTER_PLAYING_MS ; un calage (BUFFERING puis PLAYING) change `cover` et relance
+  // l'effet sans la repousser.
   useEffect(() => {
     if (cover.phase !== 'armed') return;
-    const now = performance.now();
-    const reveal = setTimeout(() => dispatch({ type: 'reveal', now: performance.now() }), revealIn(cover, now));
-    const align = alignDue(cover) && alignedFor.current !== cover.armedAt
-      ? setTimeout(() => { alignedFor.current = cover.armedAt; correct(ALIGN_THRESHOLD_S); },
-        Math.max(0, cover.armedAt + ALIGN_AFTER_PLAYING_MS - now))
-      : undefined;
-    return () => { clearTimeout(reveal); clearTimeout(align); };
-  }, [cover, correct, dispatch]);   // coverNext rend le même objet tant que rien ne change
+    const reveal = setTimeout(() => dispatch({ type: 'reveal', now: performance.now() }), revealIn(cover, performance.now()));
+    return () => clearTimeout(reveal);
+  }, [cover, dispatch]);   // coverNext rend le même objet tant que rien ne change
 
-  // Révélé : dérive vérifiée toutes les 4 s (onglet visible, pas en BUFFERING, pas de saut depuis 15 s).
+  // Attente après une reprise, un blocage ou un nouveau play_id : le client Discord se recale (nextHold).
+  const prevClock = useRef<ClockView | null>(null);
   useEffect(() => {
-    if (cover.phase !== 'revealed' || paused) return;
-    const check = () => {
-      if (document.visibilityState !== 'visible' || ytState.current === YT_STATE.BUFFERING) return;
-      if (performance.now() - lastSeek.current < MIN_SEEK_GAP_MS) return;
-      correct(RUN_THRESHOLD_S);
+    hold.current = nextHold(prevClock.current, clock, performance.now(), hold.current);
+    prevClock.current = clock;
+  }, [clock]);
+
+  // Régulateur à 4 Hz tant que YouTube joue et que l'onglet est visible (decide) : vitesse ×0,90 à ×1,10, ou saut au-delà
+  // de 2 s (le poster revient le temps que l'habillage YouTube parte). Le réglage « Synchro vidéo » passe par lui aussi.
+  useEffect(() => {
+    if (!player || !videoId || still) return;
+    const tick = (): void => {
+      if (awaiting.current || document.visibilityState !== 'visible' || ytState.current !== YT_STATE.PLAYING) return;
+      // l'horloge décrit une autre vidéo (ancien bot après un saut optimiste, état du nouveau titre pas encore reçu)
+      if (extractVideoId(useStore.getState().clock.url) !== videoId) return;
+      const now = performance.now();
+      let reported: number | undefined;
+      try { reported = player.getPlaybackRate(); } catch {}
+      const check = rateCheck(asked.current, reported, now);
+      if (check !== 'wait') asked.current = null;
+      if (check === 'failed') rateOk.current = false;   // vitesse non confirmée : sauts seuls
+      const target = targetPos(offsetRef.current);
+      if (target == null) return;
+      const d = decide({ target, current: player.getCurrentTime(), state: ctl.current, rateOk: rateOk.current,
+        holdUntil: hold.current, now, compat: useStore.getState().clock.compat });
+      if (!d) return;
+      if ('seek' in d) {
+        try { player.seekTo(d.seek, true); } catch {}
+        dispatch({ type: 'seek', now });
+      } else {
+        try { player.setPlaybackRate(d.rate); } catch {}
+        asked.current = { rate: d.rate, at: now };
+      }
+      ctl.current = afterDecision(ctl.current, d, now);
     };
-    const id = setInterval(check, DRIFT_CHECK_MS);
-    document.addEventListener('visibilitychange', check);
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', check); };
-  }, [cover.phase, paused, correct]);
-
-  // Réglage du décalage : la vidéo saute tout de suite à la nouvelle position, sans poster (on la regarde).
-  const firstOffset = useRef(true);
-  useEffect(() => {
-    if (firstOffset.current) { firstOffset.current = false; return; }
-    if (videoRef.current) seek(Math.max(0, clockPos() + offset));
-  }, [offset, seek]);
+    const id = setInterval(tick, CTL_TICK_MS);
+    // retour sur l'onglet : recalage tout de suite, sans attente
+    const back = (): void => { if (document.visibilityState === 'visible') { hold.current = 0; tick(); } };
+    document.addEventListener('visibilitychange', back);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', back); };
+  }, [player, videoId, still, dispatch]);
 
   // Posters : le nouveau s'allume une fois chargé, l'ancien s'efface en 200 ms. La cérémonie est lue ici, avant
   // setPosters (dont la fonction tourne au rendu suivant, quand crownRef a pu changer).
@@ -219,7 +257,7 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
     <div className="portal">
       <div className="video">
         <div className="yt" ref={wrapRef} aria-hidden="true"/>
-        <div className="posters" data-covered={coverVisible(cover, paused)}>
+        <div className="posters" data-covered={coverVisible(cover, still)}>
           {posters.map((p) => <Poster key={p.id} id={p.id} leaving={p.leaving} held={!p.leaving && p.mode === 'flight' && flying}
             cut={p.mode === 'flight'} ms={p.ms}/>)}
           {!videoId && art && <img className="poster art" src={art} alt="" decoding="async" draggable={false} data-ready="true"/>}

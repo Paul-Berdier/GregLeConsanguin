@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 const {
-  coverNext, coverVisible, revealIn, alignDue, driftSeek, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb, muteCaptions,
+  coverNext, coverVisible, revealIn, loadStart, rewound, parseOffset, fmtOffset, posterUrl, isPlaceholderThumb, muteCaptions,
   COVERED, YT_STATE, REVEAL_AFTER_PLAYING_MS, REWIND_S,
 } = await loadTs('../src/lib/stage/cover.ts');
 const R = REVEAL_AFTER_PLAYING_MS;
@@ -74,19 +74,16 @@ test('poster : une minuterie périmée ne révèle ni un poster couvert ni un po
   assert.equal(coverNext(shown, { type: 'reveal', now: 1e6 }), shown);
 });
 
-test('poster : un saut de correction réarme (YouTube remontre son habillage), sans réalignement', () => {
+test('poster : un saut de correction réarme (YouTube remontre son habillage)', () => {
   const shown = { phase: 'revealed', armedAt: 1000, bySeek: false, playing: true };
   const reArmed = coverNext(shown, { type: 'seek', now: 20000 });
   assert.deepEqual(reArmed, { phase: 'armed', armedAt: 20000, bySeek: true, playing: true });
-  assert.equal(alignDue(reArmed), false);
-  assert.equal(alignDue({ phase: 'armed', armedAt: 1000, bySeek: false, playing: true }), true);
   assert.equal(coverNext(COVERED, { type: 'seek', now: 5 }), COVERED);        // couvert : rien à réarmer
 });
 
-test('poster : pause puis reprise après un saut, nouvel alignement dû (tech.md §5.4)', () => {
+test('poster : pause puis reprise après un saut, réarmé par le vrai départ', () => {
   const back = run([yt(YT_STATE.PLAYING, 0), { type: 'seek', now: 10 }, { type: 'pause' }, yt(YT_STATE.PLAYING, 20)]);
   assert.deepEqual(back, { phase: 'armed', armedAt: 20, bySeek: false, playing: true });
-  assert.equal(alignDue(back), true);
 });
 
 test('poster visible pendant la pause, même révélé', () => {
@@ -95,13 +92,7 @@ test('poster visible pendant la pause, même révélé', () => {
   assert.equal(coverVisible({ phase: 'armed', armedAt: 0, bySeek: false, playing: true }, false), true);
 });
 
-test('dérive : saut seulement au-delà du seuil, compensé de 0,45 s', () => {
-  assert.equal(driftSeek(10.1, 10, 0, 0.25), null);
-  assert.equal(driftSeek(11, 10, 0, 0.25), 10.45);
-  assert.equal(driftSeek(9, 10, 0.5, 1.2), 10.95);
-  assert.equal(driftSeek(9.5, 10, 0.5, 1.2), null);
-  assert.equal(driftSeek(5, 0, -2, 0.25), 0);                 // jamais négatif
-  assert.equal(driftSeek(Number.NaN, 10, 0, 0.25), null);
+test('chargement : compensé du temps de loadVideoById, jamais négatif', () => {
   assert.equal(loadStart(42, 1.5), 43.9);
   assert.equal(loadStart(0, -3), 0);
 });
