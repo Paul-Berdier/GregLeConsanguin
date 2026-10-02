@@ -82,23 +82,27 @@ export function rewound(prev: { pos: number; at: number }, prevPaused: boolean, 
   return Number.isFinite(next.pos) && next.pos < expected - REWIND_S;
 }
 
-// ── Décalage de la vidéo (réglage du Roi, gardé dans localStorage) ──
+// ── Décalage de la vidéo (réglage du Roi, gardé dans localStorage, par appareil) ──
+// Synchro son/vidéo : le bot publie la position réellement lue ; reste le retard propre à Discord (serveur vocal,
+// tampon du client, casque : 80 à 250 ms filaire, jusqu'à 500 ms en Bluetooth). Pas de 50 ms, ±3 s.
 export const OFFSET_KEY = 'greg.webplayer.video_offset';
-export const OFFSET_MIN = -10, OFFSET_MAX = 10, OFFSET_STEP = 0.5;
+export const OFFSET_MIN = -3, OFFSET_MAX = 3, OFFSET_STEP = 0.05;
+const PER_S = 20;   // 1 / OFFSET_STEP, entier : arrondi sans reste flottant (1,15 et non 1,1500000000000001)
 
+/** Réglage lu (localStorage, curseur) : borné, arrondi au pas de 50 ms (demi-pas loin de 0), 0 si illisible. */
 export function parseOffset(raw: string | number | null | undefined): number {
   const v = typeof raw === 'number' ? raw : raw == null || String(raw).trim() === '' ? NaN : Number(raw);
   if (!Number.isFinite(v)) return 0;
   const c = Math.min(OFFSET_MAX, Math.max(OFFSET_MIN, v));
-  const stepped = Math.sign(c) * Math.round(Math.abs(c) / OFFSET_STEP) * OFFSET_STEP;   // demi-pas loin de 0, des deux côtés
+  const stepped = (Math.sign(c) * Math.round(Math.abs(c) * PER_S)) / PER_S;   // demi-pas loin de 0, des deux côtés
   return stepped + 0;   // pas de −0
 }
 
-/** « 0 s », « +1,5 s », « −2 s » : virgule décimale, signe moins U+2212, espace insécable avant l'unité. */
+/** « 0 s », « +0,15 s », « −2 s » : virgule décimale, signe moins U+2212, espace insécable avant l'unité. */
 export function fmtOffset(v: number): string {
   const x = parseOffset(v);
-  const n = Math.abs(x).toFixed(1).replace(/\.0$/, '').replace('.', ',');
-  return `${x > 0 ? '+' : x < 0 ? '−' : ''}${n} s`;
+  const n = Math.abs(x).toFixed(2).replace(/\.?0+$/, '').replace('.', ',');
+  return `${x > 0 ? '+' : x < 0 ? '−' : ''}${n}\u00a0s`;
 }
 
 // ── Sous-titres ──

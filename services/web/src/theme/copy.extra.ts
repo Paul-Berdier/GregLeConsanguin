@@ -53,6 +53,9 @@ export const EXTRA = {
     off: 'Raccourcis clavier désactivés.',
   },
   transport: { skipTip: 'Suivant (Maj+→)', restartTip: 'Depuis le début (Maj+←)', repeatTip: 'Boucle' },
+  sync: {
+    help: 'Compense le retard de Discord sur cet appareil. Image en avance sur le son\u00a0: glissez vers −. Image en retard\u00a0: vers +.',
+  },
   a11y: { skipToQueue: 'Aller à la file', nowPlaying: 'En lecture : {title}', paused: 'En pause.', resumed: 'Lecture reprise.' },
   // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
   error: {
