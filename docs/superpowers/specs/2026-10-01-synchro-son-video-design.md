@@ -55,7 +55,7 @@ Chaque état complet (`greg:player:state` → socket `playlist_update`, REST `/p
 
 Règles :
 - `position` et `progress.elapsed`, en secondes entières, restent publiés, maintenant dérivés de `position_ms`.
-- **Le site se cale sur l'horloge de l'API.** Il utilise `relay_at_ms`, avec `sampled_at_ms` en repli. L'écart Redis entre les deux est de l'ordre de 1 à 5 ms. On évite ainsi tout décalage d'horloge entre les conteneurs bot et API.
+- **Le site se cale sur l'horloge de l'API.** Il utilise `relay_at_ms`. L'écart Redis avec `sampled_at_ms` est de l'ordre de 1 à 5 ms. On évite ainsi tout décalage d'horloge entre les conteneurs bot et API. Un bloc `clock` sans `relay_at_ms` (ancienne API pendant un déploiement : ses ticks arrivent sans `clock`) est lu en mode compatibilité, comme un ancien bot.
 - `status = stalled` : le flux est bloqué, plus de 250 ms sans lecture alors que rien n'est en pause. Le site fige alors sa référence.
 - `loading` : un titre est choisi mais aucune trame n'est encore sortie. `position_ms` vaut `null` et le site garde le poster.
 
@@ -115,7 +115,7 @@ Synchro d'horloge :
     - ignore un échantillon plus ancien que l'ancre ;
     - recale l'ancre sur un changement de `play_id` ou de `status`, ou si la position prédite s'écarte de plus de 40 ms ;
   - `positionAt(serverNow)` vaut `position_ms + (serverNow − at)` si `playing`, et `position_ms` figée sinon ;
-  - sans bloc `clock`, l'horloge passe en mode compatibilité : ancre à la réception, comme aujourd'hui.
+  - sans bloc `clock` ou sans `relay_at_ms`, l'horloge passe en mode compatibilité : ancre à la réception, comme aujourd'hui.
 - **`lib/sync/controller.ts`** — `decide({target, current, state, rateOk, holdUntil, now})` renvoie `{rate}`, `{seek}` ou rien :
   - **seuils** (écart = position vidéo − cible ; la vidéo ralentit quand elle est en avance et accélère quand elle est en retard) :
 

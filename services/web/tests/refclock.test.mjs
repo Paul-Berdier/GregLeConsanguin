@@ -9,16 +9,39 @@ const T = 1_790_846_494_000;
 const S = (o = {}) => ({ play_id: 'p1', status: 'playing', position_ms: 10_000, at: T, compat: false, ...o });
 const state = (clock, extra = {}) => ({ current: { url: 'https://youtu.be/aaaaaaaaaaa' }, position: 10, clock, ...extra });
 
-test('échantillon d’un état : clock, relay_at_ms d’abord, sampled_at_ms en repli', () => {
+test('échantillon d’un état : clock daté par l’API (relay_at_ms)', () => {
   const clock = { play_id: 'a1b2c3d4', status: 'playing', position_ms: 83_460, sampled_at_ms: T };
   assert.deepEqual(clockSampleOf(state(clock, { relay_at_ms: T + 3 }), 0),
     { play_id: 'a1b2c3d4', status: 'playing', position_ms: 83_460, at: T + 3, compat: false });
-  assert.equal(clockSampleOf(state(clock), 0).at, T);
   // REST : { ok, state: {…} } ; tick : only_elapsed
   assert.equal(clockSampleOf({ ok: true, state: state(clock, { relay_at_ms: T + 9 }) }, 0).at, T + 9);
   assert.equal(clockSampleOf({ only_elapsed: true, position: 83, clock, relay_at_ms: T + 1 }, 0).position_ms, 83_460);
   // chargement : position null
-  assert.equal(clockSampleOf(state({ ...clock, status: 'loading', position_ms: null, play_id: null }), 0).position_ms, null);
+  assert.equal(clockSampleOf(state({ ...clock, status: 'loading', position_ms: null, play_id: null }, { relay_at_ms: T }), 0).position_ms, null);
+});
+
+test('clock sans relay_at_ms (ancienne API pendant un déploiement) : compatibilité, comme les ticks qu’elle relaie', () => {
+  const URL = 'https://youtu.be/aaaaaaaaaaa';
+  const clock = { play_id: 'a1b2c3d4', status: 'playing', position_ms: 10_460, sampled_at_ms: T };
+  // l'horloge du bot n'est pas celle de l'API (time_sync sans réponse) : ancré à la réception, en secondes entières
+  assert.deepEqual(clockSampleOf(state(clock), 5000), { play_id: null, status: 'playing', position_ms: 10_000, at: 5000, compat: true });
+  // états complets (clock sans relay_at_ms) et ticks reconstruits sans clock, en alternance : un seul mode, le lien reste
+  const rc = createRefClock();
+  let view = NO_CLOCK;
+  const feed = (payload, now, url) => {
+    const s = clockSampleOf(payload, now);
+    if (s && rc.ingest(s) !== 'stale') view = clockViewOf(view, rc.anchor(), url);
+  };
+  const want = { playId: null, status: 'playing', compat: true, url: URL };
+  feed(state(clock), 1000, URL);
+  assert.deepEqual(view, want);
+  for (let i = 1; i <= 3; i++) {
+    feed({ only_elapsed: true, position: 10 + i, paused: false, is_paused: false }, 1000 + i * 1000, undefined);
+    assert.deepEqual(view, want, `tick ${i}`);
+    feed(state({ ...clock, position_ms: 10_460 + i * 1000, sampled_at_ms: T + i * 1000 }, { position: 10 + i }), 1100 + i * 1000, URL);
+    assert.deepEqual(view, want, `état ${i}`);
+  }
+  assert.equal(rc.positionAt(4600), 13_500);
 });
 
 test('échantillon : état périmé ou illisible → null ; sans clock → compatibilité, ancré à la réception', () => {

@@ -54,6 +54,14 @@ export function afterDecision(s: CtlState, d: Decision | null, now: number): Ctl
   return 'seek' in d ? { ...s, lastSeekAt: now } : { ...s, rate: d.rate };
 }
 
+/**
+ * Onglet caché : aucune correction, et une vitesse ≠ ×1 revient à ×1. Laissée à ×1,10, la vidéo muette (qui joue
+ * encore en arrière-plan) prendrait 6 s par minute cachée, rattrapées au retour par un saut sous le poster.
+ */
+export function whenHidden(s: CtlState): Decision | null {
+  return s.rate !== 1 ? { rate: 1 } : null;
+}
+
 type HoldKey = { playId: string | null; status: string | null };
 /** Fin de l'attente : HOLD_MS à chaque entrée en lecture (reprise, fin de blocage, départ) ou nouveau play_id. */
 export function nextHold(prev: HoldKey | null, next: HoldKey, now: number, hold: number): number {

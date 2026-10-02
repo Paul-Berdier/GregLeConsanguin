@@ -8,8 +8,8 @@ import type { YTPlayer } from '@/hooks/useYouTubePlayer';
 import { extractVideoId } from '@/lib/format';
 import { COVERED, YT_STATE, coverNext, coverVisible, isPlaceholderThumb, loadStart, posterUrl, revealIn, rewound } from '@/lib/stage/cover';
 import type { Cover, CoverEvent } from '@/lib/stage/cover';
-import { CTL_INIT, CTL_TICK_MS, afterDecision, decide, gateLoad, nextHold, rateCheck } from '@/lib/sync/controller';
-import type { CtlState } from '@/lib/sync/controller';
+import { CTL_INIT, CTL_TICK_MS, afterDecision, decide, gateLoad, nextHold, rateCheck, whenHidden } from '@/lib/sync/controller';
+import type { CtlState, Decision } from '@/lib/sync/controller';
 import { refClock, serverNow } from '@/lib/sync/live';
 import type { ClockView } from '@/lib/sync/refclock';
 import type { CrownMode } from '@/lib/stage/coronation';
@@ -187,8 +187,21 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
   // de 2 s (le poster revient le temps que l'habillage YouTube parte). Le réglage « Synchro vidéo » passe par lui aussi.
   useEffect(() => {
     if (!player || !videoId || still) return;
+    const apply = (d: Decision, now: number): void => {
+      if ('seek' in d) {
+        try { player.seekTo(d.seek, true); } catch {}
+        dispatch({ type: 'seek', now });
+      } else {
+        try { player.setPlaybackRate(d.rate); } catch {}
+        asked.current = { rate: d.rate, at: now };
+      }
+      ctl.current = afterDecision(ctl.current, d, now);
+    };
     const tick = (): void => {
-      if (awaiting.current || document.visibilityState !== 'visible' || ytState.current !== YT_STATE.PLAYING) return;
+      if (awaiting.current) return;
+      // onglet caché : plus de correction, la vitesse revient à ×1 (whenHidden)
+      if (document.visibilityState !== 'visible') { const d = whenHidden(ctl.current); if (d) apply(d, performance.now()); return; }
+      if (ytState.current !== YT_STATE.PLAYING) return;
       // l'horloge décrit une autre vidéo (ancien bot après un saut optimiste, état du nouveau titre pas encore reçu)
       if (extractVideoId(useStore.getState().clock.url) !== videoId) return;
       const now = performance.now();
@@ -201,21 +214,13 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
       if (target == null) return;
       const d = decide({ target, current: player.getCurrentTime(), state: ctl.current, rateOk: rateOk.current,
         holdUntil: hold.current, now, compat: useStore.getState().clock.compat });
-      if (!d) return;
-      if ('seek' in d) {
-        try { player.seekTo(d.seek, true); } catch {}
-        dispatch({ type: 'seek', now });
-      } else {
-        try { player.setPlaybackRate(d.rate); } catch {}
-        asked.current = { rate: d.rate, at: now };
-      }
-      ctl.current = afterDecision(ctl.current, d, now);
+      if (d) apply(d, now);
     };
     const id = setInterval(tick, CTL_TICK_MS);
-    // retour sur l'onglet : recalage tout de suite, sans attente
-    const back = (): void => { if (document.visibilityState === 'visible') { hold.current = 0; tick(); } };
-    document.addEventListener('visibilitychange', back);
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', back); };
+    // onglet caché : ×1 tout de suite ; retour : recalage tout de suite, sans attente
+    const onVisibility = (): void => { if (document.visibilityState === 'visible') hold.current = 0; tick(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisibility); };
   }, [player, videoId, still, dispatch]);
 
   // Posters : le nouveau s'allume une fois chargé, l'ancien s'efface en 200 ms. La cérémonie est lue ici, avant

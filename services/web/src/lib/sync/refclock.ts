@@ -1,10 +1,11 @@
 /**
  * Horloge de référence du son (spec synchro son/vidéo §3, §6.1). Une ancre {play_id, status, position_ms, at} :
- * `at` est l'heure de l'API (ms epoch) de l'échantillon, relay_at_ms sinon sampled_at_ms. Elle n'est recalée que sur
- * un changement de play_id ou de statut, ou quand un échantillon s'écarte de plus de REANCHOR_MS de la prédiction :
- * les ticks et les relectures REST ne la font plus sauter. Un échantillon plus ancien que l'ancre est ignoré.
- * Sans bloc `clock` (ancien bot) : mode compatibilité, ancre à la réception (`at` = heure de l'API à la réception),
- * recalée à chaque état, comme avant. Pur, sans import runtime (tests/refclock.test.mjs).
+ * `at` est l'heure de l'API (ms epoch) de l'échantillon, relay_at_ms. Elle n'est recalée que sur un changement de
+ * play_id ou de statut, ou quand un échantillon s'écarte de plus de REANCHOR_MS de la prédiction : les ticks et les
+ * relectures REST ne la font plus sauter. Un échantillon plus ancien que l'ancre est ignoré.
+ * Sans bloc `clock` (ancien bot), ou sans relay_at_ms (ancienne API pendant un déploiement : ses ticks arrivent sans
+ * `clock`, et sampled_at_ms est l'horloge du bot, pas la sienne) : mode compatibilité, ancre à la réception (`at` =
+ * heure de l'API à la réception), recalée à chaque état, comme avant. Pur, sans import runtime (tests/refclock.test.mjs).
  */
 
 export type ClockStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'stalled';
@@ -31,7 +32,8 @@ export function clockSampleOf(payload: any, recvNow: number): ClockSample | null
   if (!p || typeof p !== 'object') return null;
   const c = p.clock;
   if (c && typeof c === 'object' && STATUSES.includes(c.status)) {
-    const at = num(p.relay_at_ms) ?? num(c.sampled_at_ms);
+    // sans relay_at_ms : ancienne API, états datés et ticks sans clock alterneraient (vue et régulateur relancés)
+    const at = num(p.relay_at_ms);
     if (at != null) {
       return {
         play_id: typeof c.play_id === 'string' ? c.play_id : null,

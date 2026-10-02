@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 
 const {
-  decide, afterDecision, nextHold, rateCheck, gateLoad, CTL_INIT, CTL_TICK_MS, HOLD_MS, SEEK_SETTLE_MS,
+  decide, afterDecision, whenHidden, nextHold, rateCheck, gateLoad, CTL_INIT, CTL_TICK_MS, HOLD_MS, SEEK_SETTLE_MS,
   NORATE_GAP_MS, COMPAT_GAP_MS, RATE_CONFIRM_MS,
 } = await loadTs('../src/lib/sync/controller.ts');
 
@@ -74,6 +74,14 @@ test('afterDecision : vitesse retenue, instant du saut noté', () => {
   assert.equal(afterDecision(CTL_INIT, null, NOW), CTL_INIT);
   assert.deepEqual(afterDecision(CTL_INIT, { rate: 1.05 }, NOW), { rate: 1.05, lastSeekAt: -Infinity });
   assert.deepEqual(afterDecision({ rate: 1.05, lastSeekAt: 0 }, { seek: 12 }, NOW), { rate: 1.05, lastSeekAt: NOW });
+});
+
+test('onglet caché : aucune correction, une vitesse ≠ ×1 revient à ×1 (l’écart ne se creuse pas jusqu’au retour)', () => {
+  assert.equal(whenHidden(CTL_INIT), null);
+  for (const rate of [0.9, 0.95, 1.05, 1.1]) assert.deepEqual(whenHidden({ ...CTL_INIT, rate }), { rate: 1 }, `×${rate}`);
+  const s = { rate: 1.1, lastSeekAt: 7 };
+  assert.equal(whenHidden(afterDecision(s, whenHidden(s), NOW)), null, 'une fois suffit');
+  assert.equal(afterDecision(s, whenHidden(s), NOW).lastSeekAt, 7, 'aucun saut');
 });
 
 test('nextHold : à chaque entrée en lecture et à chaque nouveau play_id', () => {
