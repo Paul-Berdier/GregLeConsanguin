@@ -15,6 +15,16 @@ export const EXTRA = {
     tabs: 'Vues',
     queueTab: 'File',
   },
+  // Choix du serveur (spec 2026-11-23 §1) : champ de recherche, intertitres, présence de Greg, état vide, décompte annoncé
+  guildFilter: {
+    label: 'Chercher un serveur',
+    placeholder: 'Chercher un serveur…',
+    present: 'Greg présent',
+    absent: 'Greg absent',
+    group: { present: 'Greg présent', absent: 'Sans Greg' },
+    empty: 'Aucun serveur ne correspond à « {q} ».',
+    count: { one: '1 serveur trouvé', other: '{n} serveurs trouvés' },
+  },
   queue: {
     list: 'Titres de la file',
     endsAt: 'fin vers {time}',
