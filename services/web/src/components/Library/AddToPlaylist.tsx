@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { libraryActions, useLibrary } from '@/hooks/useLibrary';
@@ -35,16 +35,28 @@ export default function AddToPlaylist({ track, className = 'nbtn' }: { track: Tr
   })), [lib, k]);
 
   const { open, close } = pop;
+  const wrapRef = pop.wrapProps.ref, btnRef = pop.btnRef;
+  // ouvert : la plaque reste dans la fenêtre (16 px de marge). Ancrée au bouton, elle se décale vers la gauche quand
+  // le bouton finit une longue ligne (sur un téléphone, elle sortait de l'écran à droite, coupée par la scène).
+  useLayoutEffect(() => {
+    const el = panelRef.current, anchor = el?.parentElement;
+    if (!open || !el || !anchor) return;
+    const x = anchor.getBoundingClientRect().left, vw = document.documentElement.clientWidth;
+    el.style.setProperty('--lmenu-dx', `${Math.round(Math.max(16 - x, Math.min(0, vw - 16 - x - el.offsetWidth)))}px`);
+  }, [open]);
   // ouvert : le focus sur la première playlist qui peut le recevoir (sinon « Nouvelle playlist… ») ; fermé : le nom repart
   useEffect(() => {
     if (!open) { setNaming(false); return; }
     panelRef.current?.querySelector<HTMLElement>('.pop-item:not([aria-disabled=true])')?.focus();
   }, [open]);
-  // le titre a changé sous le menu : ses choix ne valent plus pour lui
-  useEffect(() => { close(); }, [k, close]);
+  // le titre a changé sous le menu : ses choix ne valent plus pour lui ; le focus, s'il y était, revient au bouton
+  useEffect(() => {
+    const at = document.activeElement;
+    close(!!at && at !== btnRef.current && !!wrapRef.current?.contains(at));
+  }, [k, close, wrapRef, btnRef]);
 
   const pick = (id: string) => {
-    if (!track) return;
+    if (!track || !open) return;   // un second clic pendant le fondu de fermeture : déjà ajouté
     close(true);
     void libraryActions.addToPlaylist(id, [track]);
   };
@@ -88,7 +100,7 @@ export default function AddToPlaylist({ track, className = 'nbtn' }: { track: Tr
         {naming
           ? <NameForm initial="" submitLabel={tx('library.create')} submitAria={tx('library.createAria')} onSubmit={create}
               onCancel={() => { setNaming(false); requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>('.lnew')?.focus()); }}/>
-          : <button type="button" className="pop-item lnew" aria-label={tx('library.newPlaylistMenu')} onClick={() => setNaming(true)}>
+          : <button type="button" className="pop-item lnew" aria-label={tx('library.newPlaylistMenu')} onClick={() => { if (open) setNaming(true); }}>
               {PLUS}{tx('library.newPlaylistMenu')}
             </button>}
       </div>

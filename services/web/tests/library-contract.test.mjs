@@ -175,6 +175,11 @@ test('« Ajouter à une playlist » : dialogue depuis son bouton, flèches entre
   assert.match(src, /className="pop plaque lmenu" ref=\{panelRef\} role="dialog" aria-labelledby=\{titleId\} data-open=\{open\}/);
   assert.match(src, /const MOVES = new Set\(\['ArrowDown', 'ArrowUp', 'Home', 'End'\]\);/);
   assert.match(src, /aria-disabled=\{!it\.sub \|\| undefined\}/, 'une playlist qui l’a déjà le dit');
+  // la plaque reste dans la fenêtre (téléphone : le bouton finit la ligne du demandeur, elle sortait à droite)
+  assert.match(src, /el\.style\.setProperty\('--lmenu-dx', `\$\{Math\.round\(Math\.max\(16 - x, Math\.min\(0, vw - 16 - x - el\.offsetWidth\)\)\)\}px`\);/);
+  assert.match(read('src/components/Library/library.css'), /\.ladd \.lmenu \{[^}]*left: var\(--lmenu-dx, 0px\);/);
+  assert.match(src, /if \(!track \|\| !open\) return;/, 'un second clic pendant le fondu de fermeture n’ajoute rien');
+  assert.match(src, /close\(!!at && at !== btnRef\.current && !!wrapRef\.current\?\.contains\(at\)\);/, 'titre changé : le focus revient au bouton');
   const form = read('src/components/Library/NameForm.tsx');
   assert.match(form, /if \(e\.key === 'Escape'\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); onCancel\(\); \}/, 'Échap ferme le champ, pas le popover');
   assert.match(form, /<label className="sr" htmlFor=\{id\}>/);

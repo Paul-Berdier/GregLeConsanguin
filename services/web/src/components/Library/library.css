@@ -78,7 +78,7 @@
 .ldel { position: relative; margin-left: auto; }
 
 /* « Supprimer « … » ? » : depuis son bouton, vers le bas, comme les popovers de l'en-tête (le focus sur « Garder ») */
-.ldel .lconfirm { width: 290px; padding: 14px; }
+.ldel .lconfirm { width: min(290px, calc(100vw - 32px)); padding: 14px; }
 .lconfirm h3 { margin: 0 0 6px; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
 .lconfirm p { margin: 0 0 12px; font-size: 15px; color: var(--os-2); }
 .lconfirm .row-btns { display: flex; gap: 8px; justify-content: flex-end; }
@@ -86,10 +86,11 @@
 /* lignes d'une playlist : celles de la file, le rang à la place de la poignée */
 .lpane .trow .rank { justify-self: end; }
 
-/* « Ajouter à une playlist » : sous le titre en lecture, il s'ouvre vers le haut, au-dessus de la vidéo */
+/* « Ajouter à une playlist » : sous le titre en lecture, il s'ouvre vers le haut, au-dessus de la vidéo ; décalé vers la
+   gauche s'il sortait de la fenêtre (--lmenu-dx, AddToPlaylist.tsx), son échelle part toujours du bouton */
 .ladd { position: relative; }
 .ladd .lmenu {
-  top: auto; right: auto; bottom: calc(100% + 8px); left: 0; transform-origin: bottom left;
+  top: auto; right: auto; bottom: calc(100% + 8px); left: var(--lmenu-dx, 0px); transform-origin: calc(0px - var(--lmenu-dx, 0px)) 100%;
   width: 280px; max-height: min(360px, 55dvh); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
 }
 .lmenu-list { list-style: none; margin: 0; padding: 0; }
