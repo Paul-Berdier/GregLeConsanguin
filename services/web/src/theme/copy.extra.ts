@@ -156,7 +156,6 @@ export const EXTRA = {
     help: 'Compense le retard de Discord sur cet appareil. Image en avance sur le son\u00a0: glissez vers −. Image en retard\u00a0: vers +.',
   },
   a11y: { skipToQueue: 'Aller à la file', nowPlaying: 'En lecture : {title}', paused: 'En pause.', resumed: 'Lecture reprise.' },
-  // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
   // Plein écran de la vidéo, « La Grand-Salle » (Stage.tsx, Stage/Theater.tsx ; conception du 2026-11-23, §2).
   fullscreen: {
     enter: 'Plein écran',
@@ -171,6 +170,7 @@ export const EXTRA = {
     current: 'En cours',
     more: { one: '…et 1 autre titre', other: '…et {n} autres titres' },
   },
+  // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
   error: {
     // NO_RESULTS transient : recherche trop lente ou bloquée, pas une absence de résultat
     SEARCH_FAILED: { text: 'La recherche YouTube n’a pas abouti. Réessayez dans un instant.' },
