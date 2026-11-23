@@ -19,7 +19,8 @@ test('Entrée maintenue : « Ajouter à une playlist » et tout le volet n’agi
 
 test('double-clic sur une carte : la vue ouverte ignore la suite (« Tout jouer », une ligne remise dans la file)', async () => {
   const panel = read('src/components/Library/LibraryPanel.tsx');
-  assert.ok(panel.includes(`${GUARD}\n      onClickCapture={swallow} onDoubleClickCapture={swallow}>`), 'en capture, sur le volet qui garde les deux vues');
+  assert.ok(panel.includes(`${GUARD}\n      onMouseDownCapture={swallow} onClickCapture={swallow} onDoubleClickCapture={swallow}>`),
+    'en capture, sur le volet qui garde les deux vues ; l’appui du second clic ne prend pas le focus du retour');
   assert.match(panel, /if \(!fsSwallowClick\(e\.detail, performance\.now\(\) - switchedAt\.current\)\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);/);
   // l'heure du changement de vue est prise au rendu qui l'affiche (aller comme retour)
   const effect = panel.slice(panel.indexOf('useLayoutEffect(() => {\n    const want'), panel.indexOf('}, [view]);'));

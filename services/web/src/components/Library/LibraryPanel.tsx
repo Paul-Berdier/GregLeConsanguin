@@ -198,7 +198,8 @@ export default function LibraryPanel() {
   /**
    * Un clic ouvre une vue (ou y revient) aussitôt : le second clic d'un double-clic, et son dblclick, tomberaient sur ce
    * qu'elle a mis sous le pointeur (« Tout jouer », une ligne remise dans la file, « Nouvelle playlist »). Ignorés comme
-   * dans la Grand-Salle (fsSwallowClick) ; un clic du clavier (detail 0) passe toujours.
+   * dans la Grand-Salle (fsSwallowClick), son appui compris (il prenait le focus du retour) ; un clic du clavier
+   * (detail 0) passe toujours.
    */
   const swallow = (e: MouseEvent): void => {
     if (!fsSwallowClick(e.detail, performance.now() - switchedAt.current)) return;
@@ -241,7 +242,7 @@ export default function LibraryPanel() {
     // Entrée maintenue n'agit qu'une fois sur tout le volet (heldEnter) : « Tout jouer » rajoutait la playlist entière
     // toutes les 500 ms ; un bouton qui ouvre (renommer, supprimer) se rouvrait en boucle. Les lignes : listKey.
     <div className="lpane" ref={paneRef} onKeyDownCapture={(e) => { if (heldEnter(e)) e.preventDefault(); }}
-      onClickCapture={swallow} onDoubleClickCapture={swallow}>
+      onMouseDownCapture={swallow} onClickCapture={swallow} onDoubleClickCapture={swallow}>
       {view && tracks
         ? <PlaylistView key={libraryActions.originOf(view)} id={view} lib={lib} tracks={tracks} onBack={back}/>
         : <Overview lib={lib} onOpen={openView}/>}
