@@ -22,7 +22,6 @@ import math
 import re
 import secrets
 import time
-import unicodedata
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
@@ -77,6 +76,11 @@ _YT_ID_RE = re.compile(
 _YT_HOST_RE = re.compile(r"(?:^|\.)(?:youtube\.com|youtu\.be|youtube-nocookie\.com)$")
 _SC_HOST_RE = re.compile(r"(?:^|\.)soundcloud\.com$")
 _WS_RE = re.compile(r"\s")
+# Caractères de contrôle (catégorie Cc : U+0000..U+001F, U+007F..U+009F). Regex et non boucle par caractère :
+# chaque lecture renettoie toute la bibliothèque (jusqu'à ~10 000 titres).
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Ceux qui ne sont pas des blancs (str.isspace) : retirés du texte ; les blancs, eux, sont réduits par split().
+_CTRL_NOT_SPACE_RE = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f]")
 
 
 class LibraryError(Exception):
@@ -190,14 +194,13 @@ def track_key(url: str) -> str:
 
 def clean_text(value: str) -> str:
     """Caractères de contrôle retirés, blancs réduits à une espace, bords rognés."""
-    s = "".join(ch for ch in value if ch.isspace() or unicodedata.category(ch) != "Cc")
-    return " ".join(s.split())
+    return " ".join(_CTRL_NOT_SPACE_RE.sub("", value).split())
 
 
 def _http_url(value: str, max_len: int) -> str | None:
     """Lien http(s) absolu d'au plus max_len caractères, sans blanc ni caractère de contrôle, sinon None."""
     s = value.strip()
-    if not s or len(s) > max_len or any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in s):
+    if not s or len(s) > max_len or _WS_RE.search(s) or _CTRL_RE.search(s):
         return None
     try:
         u = urlsplit(s)
