@@ -72,7 +72,8 @@ test('Portal : `.video` passe en plein écran, l’iframe ne bouge pas, la surco
 
 test('Stage : un seul crochet, le bouton à côté de « Synchro vidéo », sortie sans titre, Portal jamais remonté', () => {
   const stage = code('src/components/Stage/Stage.tsx');
-  assert.match(stage, /useFullscreen\(videoElRef, \(\) => fsBtnRef\.current\?\.focus\(/, 'focus rendu au bouton d’entrée');
+  assert.match(stage, /useFullscreen\(videoElRef, \(\) => \(fsBtnRef\.current\s*\?\? stageRef\.current\?\.querySelector<HTMLElement>\('\.night button, \.night a\[href\]'\)\)\?\.focus\(/,
+    'focus rendu au bouton d’entrée ; parti avec le titre (fin de lecture), à l’appel de la nuit, jamais à <body>');
   assert.match(stage, /data-fs=\{fsMode \?\? undefined\}/);
   assert.match(stage, /fsExitDelay\(!!fsMode, day\)/);
   const foot = stage.slice(stage.indexOf('className="below-foot"'));

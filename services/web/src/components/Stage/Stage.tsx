@@ -111,10 +111,12 @@ function Stage({ booted }: { booted: boolean }) {
   const art = day && !videoId ? thumb : null;
 
   // Plein écran de la vidéo (conception du 2026-11-23, §2) : `.video` y passe (Portal.tsx), dès qu'un titre joue ;
-  // à la sortie, le focus revient au bouton d'entrée.
+  // à la sortie, le focus revient au bouton d'entrée. Sortie par la fin de lecture : le bouton est parti avec le titre,
+  // le focus va à l'appel de la nuit (« Ajouter un titre »), pas sur <body>.
   const videoElRef = useRef<HTMLDivElement>(null);
   const fsBtnRef = useRef<HTMLButtonElement>(null);
-  const fs = useFullscreen(videoElRef, () => fsBtnRef.current?.focus({ preventScroll: true }));
+  const fs = useFullscreen(videoElRef, () => (fsBtnRef.current
+    ?? stageRef.current?.querySelector<HTMLElement>('.night button, .night a[href]'))?.focus({ preventScroll: true }));
   const { mode: fsMode, exit: fsExit } = fs;
   // Fin de lecture (arrêt, file finie) : plus de titre pendant 1,5 s, on sort ; un creux entre deux titres passe.
   useEffect(() => {
