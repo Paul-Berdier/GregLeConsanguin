@@ -354,6 +354,7 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
   const aliases = new Map<string, string>(), origins = new Map<string, string>();
   const idOf = (id: string): string => aliases.get(id) ?? id;
   const rename = (op: LibraryOp, from: string, to: string): LibraryOp => ('id' in op && op.id === from ? ({ ...op, id: to } as LibraryOp) : op);
+  const resolve = (op: LibraryOp): LibraryOp => ('id' in op && aliases.has(op.id) ? rename(op, op.id, idOf(op.id)) : op);
 
   const emit = () => {
     shown = server && pending.reduce((lib, p) => applyOp(lib, p.op, p.at), server);
@@ -412,11 +413,16 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
     /** Modification du Roi : visible tout de suite, envoyée à son tour. false : refusée (vue revenue en arrière) ou oubliée. */
     dispatch(op: LibraryOp): Promise<boolean> {
       if (!server) return Promise.resolve(false);
-      const real = 'id' in op && aliases.has(op.id) ? rename(op, op.id, idOf(op.id)) : op;
+      const real = resolve(op);
       return new Promise<boolean>((done) => { pending.push({ op: real, at: o.now(), done }); emit(); void pump(); });
     },
     /** Id d'une playlist, provisoire compris (« tmp:… » devenu celui de l'API). */
     idOf,
+    /**
+     * `op` visant l'id définitif de sa playlist : un geste préparé quand elle n'avait que son id provisoire (l'annulation
+     * d'un retrait fait juste après sa création) se vérifie sur la vue, qui ne connaît plus que le vrai. Sinon `op` même.
+     */
+    resolve,
     /** Premier id d'une playlist (le provisoire qu'elle a porté, sinon le sien) : clé React stable, la ligne reste montée. */
     originOf: (id: string): string => origins.get(id) ?? id,
     /** Modifications pas encore accusées (en vol comprise). */

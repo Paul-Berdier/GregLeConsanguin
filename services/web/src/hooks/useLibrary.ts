@@ -127,11 +127,16 @@ function refused(lib: Library, op: LibraryOp): boolean {
   return true;
 }
 
-/** Modification vérifiée d'avance, puis optimiste. false : refusée (d'avance, ou par l'API : vue revenue en arrière). */
+/**
+ * Modification vérifiée d'avance, puis optimiste. false : refusée (d'avance, ou par l'API : vue revenue en arrière).
+ * L'id provisoire d'une playlist créée depuis (une annulation préparée avant sa réponse) devient le vrai avant la
+ * vérification : la vue ne connaît plus que lui (sinon « Cette playlist n'existe plus », le titre perdu).
+ */
 function run(op: LibraryOp): Promise<boolean> {
   const lib = ready();
-  if (!lib || refused(lib, op)) return Promise.resolve(false);
-  return engine.dispatch(op);
+  const real = engine.resolve(op);
+  if (!lib || refused(lib, real)) return Promise.resolve(false);
+  return engine.dispatch(real);
 }
 
 const songOf = (x: { title: string; artist: string | null }): string => parseTitle(x.title, x.artist ?? undefined).song || x.title;
