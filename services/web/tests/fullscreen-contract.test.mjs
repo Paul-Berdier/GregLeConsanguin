@@ -120,6 +120,21 @@ test('surcouche : focus pris, piégé, rendu ; libellés ; aucun id ni classe de
   for (const [, key] of src.matchAll(/tx\('(fullscreen\.[\w.]+)'/g)) assert.notEqual(tx(key, { n: 2 }), key, key);
 });
 
+test('repos : une commande au focus du clavier retient les commandes ; au doigt, l’appui qui réveille n’actionne rien', () => {
+  const th = code('src/components/Stage/Theater.tsx');
+  const hold = th.slice(th.indexOf('const hold = '), th.indexOf('const rest = '));
+  assert.match(hold, /keyed\(\)/, 'focus du clavier sur une commande : son anneau ne s’efface pas (WCAG 2.4.7)');
+  assert.match(th, /root\.contains\(el\) && !!el\.closest\('\.th-ui'\) && keyboardFocus\(el\)/, ':focus-visible seulement, pas un clic');
+  // l'appui à part : le repos est lu avant le réveil, le clic qui suit est avalé en capture (avant React et la commande)
+  assert.doesNotMatch(th.match(/const WAKE = \[[^\]]*\]/)?.[0] ?? 'pointerdown', /pointerdown/);
+  assert.match(th, /const down = \(e: PointerEvent\): void => \{ tap\.down\(e\.pointerType, rest\.idle\); rest\.wake\(\); \};/);
+  assert.match(th, /root\.addEventListener\('pointerdown', down, \{ passive: true \}\);/);
+  assert.match(th, /root\.addEventListener\('pointercancel', cancel\);/);
+  assert.match(th, /root\.addEventListener\('click', eat, true\);/);
+  assert.match(th, /if \(!tap\.eats\(e\.detail\)\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);/);
+  assert.match(th, /root\.removeEventListener\('click', eat, true\);/);
+});
+
 test('file de la surcouche : une action ne retombe pas sur la voisine (double-clic, Entrée maintenue)', () => {
   const th = code('src/components/Stage/Theater.tsx');
   // la ligne partie, la suivante glisse sous le pointeur : le second clic d'un double-clic attend l'accalmie (QueuePanel)

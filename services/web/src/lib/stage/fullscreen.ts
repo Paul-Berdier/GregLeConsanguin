@@ -2,8 +2,8 @@
  * La vidéo en plein écran, « La Grand-Salle » (conception du 2026-11-23, §2), pur (tests/fullscreen.test.mjs).
  * L'élément mis en plein écran est `.video` (Portal.tsx) : l'iframe YouTube n'y bouge jamais (la déplacer la recharge).
  * Ici : détection de l'API (préfixes webkit), état après `fullscreenchange`, délais, file mémorisée, raccourcis de la
- * page ignorés, ordre du focus piégé, minuterie de repos des commandes. Le DOM et React restent dans
- * hooks/useFullscreen.ts et components/Stage/Theater.tsx.
+ * page ignorés, ordre du focus piégé, minuterie de repos des commandes, appui qui ne fait que les réveiller. Le DOM
+ * et React restent dans hooks/useFullscreen.ts et components/Stage/Theater.tsx.
  */
 import type { Shortcut } from '@/lib/keys';
 
@@ -163,5 +163,27 @@ export function createIdle(ms: number, onIdle: (idle: boolean) => void, hold: ()
       handle = null;
     },
     get idle(): boolean { return idle; },
+  };
+}
+
+export type WakeTap = { down(pointerType: string, idle: boolean): void; cancel(): void; eats(detail: number): boolean };
+
+/**
+ * Appui du doigt (ou du stylet) sur des commandes effacées : il les réveille, rien de plus. Le clic qui le suit part au
+ * lever du doigt, sur la commande tout juste revenue sous lui (pause, « Retirer », cœur) : il est avalé. La souris, elle,
+ * les a réveillées en bougeant ; au clavier (`detail` 0), rien n'est avalé. Un appui sans clic (défilement, appui long)
+ * n'avale pas le clic d'après.
+ * down : à chaque pointerdown, `idle` lu AVANT le réveil ; cancel : pointercancel ; eats : au clic, vrai s'il est avalé.
+ */
+export function createWakeTap(): WakeTap {
+  let armed = false;
+  return {
+    down(pointerType, idle) { armed = idle && pointerType !== 'mouse'; },
+    cancel() { armed = false; },
+    eats(detail) {
+      const eat = armed && detail > 0;
+      armed = false;
+      return eat;
+    },
   };
 }

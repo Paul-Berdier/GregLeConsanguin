@@ -147,6 +147,25 @@ test('file mémorisée : clé, montrée par défaut, stockage bloqué sans erreu
   assert.doesNotThrow(() => F.saveFsQueue(blocked, false));
 });
 
+test('au doigt, l’appui sur des commandes effacées les réveille seulement : le clic qui suit est avalé', () => {
+  const tap = F.createWakeTap();
+  tap.down('touch', true);
+  assert.equal(tap.eats(1), true, 'pause, « Retirer », cœur effacés sous le doigt : rien ne part');
+  assert.equal(tap.eats(1), false, 'un seul clic avalé');
+  tap.down('touch', false);
+  assert.equal(tap.eats(1), false, 'commandes affichées : l’appui agit');
+  tap.down('mouse', true);
+  assert.equal(tap.eats(1), false, 'la souris les a réveillées en bougeant');
+  tap.down('pen', true);
+  assert.equal(tap.eats(1), true, 'le stylet comme le doigt');
+  tap.down('touch', true);
+  tap.cancel();
+  assert.equal(tap.eats(1), false, 'défilement (pointercancel) : le clic d’après passe');
+  tap.down('touch', true);
+  assert.equal(tap.eats(0), false, 'appui long sans clic, puis Entrée au clavier (detail 0) : jamais avalée');
+  assert.equal(tap.eats(1), false, 'l’appui est oublié');
+});
+
 test('clavier en plein écran : saisie, « / » et « ? » ignorés ; Espace et Maj+→/← restent', () => {
   const ctx = { enabled: true, loggedIn: true, inField: false, inPopover: false, onRow: false, onControl: false, dragging: false };
   const act = (ev) => shortcutFor(ev, ctx);

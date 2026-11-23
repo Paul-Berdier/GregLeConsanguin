@@ -5,12 +5,14 @@ import type { KeyboardEvent, MouseEvent } from 'react';
 import { playerActions, useStore } from '@/hooks/usePlayer';
 import { kingName } from '@/components/Header/KingAvatar';
 import { thumbOf } from '@/components/Queue/QueueRow';
+import { keyboardFocus } from '@/lib/focus';
 import { fmt } from '@/lib/format';
 import { livePosition } from '@/lib/playerUtils';
 import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { kingOrders } from '@/lib/stage/coronation';
 import { fmtSpoken } from '@/lib/stage/dial';
-import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, fsSwallowClick, loadFsQueue, neighbourKey, progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
+import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, createWakeTap, fsSwallowClick, loadFsQueue, neighbourKey, progressOf,
+  saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
 import { kickerKey, kingSealSrc, requesterKeys, requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import type { Track } from '@/lib/types';
@@ -23,8 +25,8 @@ import Transport from './Transport';
 const TICK_MS = 250;
 /** Arrêts de Tab de la surcouche ; ceux qui ne sont pas affichés (popover fermé, file masquée) sont écartés à l'usage. */
 const TABBABLE = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
-/** Activité qui réveille les commandes effacées. */
-const WAKE = ['pointermove', 'pointerdown', 'wheel', 'keydown', 'focusin'] as const;
+/** Activité qui réveille les commandes effacées ; l'appui (pointerdown) aussi, à part : au doigt, il ne fait que ça. */
+const WAKE = ['pointermove', 'wheel', 'keydown', 'focusin'] as const;
 
 const ICON = {
   exit: <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>,
@@ -72,7 +74,8 @@ const TheaterRow = memo(function TheaterRow({ item, now }: { item: Track; now: b
  * et les boutons ; à droite, la file « À suivre » sur une plaque translucide, masquable (mémorisé) ; en bas, les temps,
  * la barre de progression et le Transport de la scène. Translucide par la couleur seule : ni flou ni filtre au-dessus de
  * l'iframe (tech.md §6.2). Styles : theater.css.
- * Les commandes s'effacent après 3 s de repos (createIdle), le curseur avec elles ; elles restent pendant un dialogue.
+ * Les commandes s'effacent après 3 s de repos (createIdle), le curseur avec elles ; elles restent pendant un dialogue et
+ * tant qu'une d'elles a le focus du clavier. Au doigt, l'appui qui les réveille ne les actionne pas (createWakeTap).
  * Focus : la surcouche le prend à l'entrée (Espace y met encore en pause : sur un bouton, il l'activerait), Tab y tourne
  * en boucle, et un focus égaré ailleurs (hors de l'écran) y revient. À la sortie, Stage.tsx le rend au bouton d'entrée.
  * Les temps sont écrits par useStageClock (data-clock, sous .stage) ; la barre, ici, au même pas.
@@ -119,21 +122,42 @@ export default function Theater({ exit }: { exit: () => void }) {
     return () => document.removeEventListener('focusin', onFocusIn);
   }, []);
 
-  // Repos : commandes et curseur s'effacent après 3 s ; un dialogue ouvert (confirmation d'arrêt) ou, à la souris, le
-  // pointeur posé sur une commande les retient : boutons du haut, file, transport, pas les bandeaux entiers (au toucher,
-  // le survol reste collé après un appui : il ne compte pas).
+  // Repos : commandes et curseur s'effacent après 3 s ; un dialogue ouvert (confirmation d'arrêt), une commande qui a le
+  // focus du clavier (son anneau ne s'efface pas avec elle, WCAG 2.4.7) ou, à la souris, le pointeur posé sur une
+  // commande les retient : boutons du haut, file, transport, pas les bandeaux entiers (au toucher, le survol reste collé
+  // après un appui : il ne compte pas ; un bouton touché ou cliqué garde le focus, sans :focus-visible : il ne compte pas).
+  // Au doigt, l'appui sur des commandes effacées les réveille seulement : le clic qui suit, lancé au lever du doigt sur
+  // la commande tout juste revenue, est avalé en capture (createWakeTap), avant elle et React.
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
     const fine = typeof matchMedia === 'function' ? matchMedia('(hover: hover) and (pointer: fine)') : null;
-    const hold = (): boolean => !!root.querySelector('.pop[data-open="true"]')
+    const keyed = (): boolean => {
+      const el = document.activeElement;
+      return el instanceof HTMLElement && root.contains(el) && !!el.closest('.th-ui') && keyboardFocus(el);
+    };
+    const hold = (): boolean => !!root.querySelector('.pop[data-open="true"]') || keyed()
       || (!!fine?.matches && !!root.querySelector('.th-acts:hover, .th-queue:hover, .th-bottom .transport:hover'));
     const rest = createIdle(FS_IDLE_MS, setIdle, hold, { set: (fn, ms) => window.setTimeout(fn, ms), clear: (h) => window.clearTimeout(h as number) });
+    const tap = createWakeTap();
     const wake = (): void => rest.wake();
+    const down = (e: PointerEvent): void => { tap.down(e.pointerType, rest.idle); rest.wake(); };
+    const cancel = (): void => tap.cancel();
+    const eat = (e: globalThis.MouseEvent): void => {
+      if (!tap.eats(e.detail)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
     for (const ev of WAKE) root.addEventListener(ev, wake, { passive: true });
+    root.addEventListener('pointerdown', down, { passive: true });
+    root.addEventListener('pointercancel', cancel);
+    root.addEventListener('click', eat, true);
     rest.wake();
     return () => {
       for (const ev of WAKE) root.removeEventListener(ev, wake);
+      root.removeEventListener('pointerdown', down);
+      root.removeEventListener('pointercancel', cancel);
+      root.removeEventListener('click', eat, true);
       rest.stop();
     };
   }, []);
