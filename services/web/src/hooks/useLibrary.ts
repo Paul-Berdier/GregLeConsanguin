@@ -59,8 +59,15 @@ function send(op: LibraryOp, base: Library): Promise<unknown> {
 }
 
 /**
+ * Échecs après lesquels le chansonnier confirmé est relu : playlist disparue (supprimée dans un autre onglet) ; issue
+ * inconnue, l'écriture peut avoir eu lieu (503 STORAGE_UNAVAILABLE : « le site relit », dit l'API ; réseau, réponse
+ * illisible : sans code) ; requête invalide, souvent comptée sur une copie dépassée (rangs d'un déplacement).
+ */
+const REREAD = new Set(['PLAYLIST_NOT_FOUND', 'STORAGE_UNAVAILABLE', 'INVALID_REQUEST', '']);
+
+/**
  * Refus de l'API, la vue déjà revenue en arrière : le Héraut dit pourquoi. Session perdue (401) : la perte de session
- * le dit déjà (usePlayer, onAuthLost) et vide le chansonnier. Playlist disparue (supprimée dans un autre onglet) : relue.
+ * le dit déjà (usePlayer, onAuthLost) et vide le chansonnier. Copie peut-être dépassée (REREAD) : relue.
  */
 function failed(op: LibraryOp, e: unknown): void {
   const code = libraryCode(e);
@@ -68,7 +75,7 @@ function failed(op: LibraryOp, e: unknown): void {
   const n = noticeOf(code, op, engine.view());
   if (n) say(n.key, { vars: n.vars, kind: n.kind });
   else sayError(e);
-  if (code === 'PLAYLIST_NOT_FOUND') void load();
+  if (REREAD.has(code)) void load();
 }
 
 const engine = createLibraryEngine({
@@ -82,18 +89,23 @@ const engine = createLibraryEngine({
 
 let _loadSeq = 0;
 
-/** Lit le chansonnier du Roi connecté ; une lecture dépassée (déconnexion, autre Roi, relecture) ne s'écrit pas. */
+/**
+ * Lit le chansonnier du Roi connecté ; une lecture dépassée (déconnexion, autre Roi, relecture, modification accusée
+ * entre-temps) ne s'écrit pas.
+ */
 async function load(): Promise<void> {
   const meId = useStore.getState().me?.id;
   if (!meId) return;
   const seq = ++_loadSeq;
   const live = () => seq === _loadSeq && useStore.getState().me?.id === meId;
+  const acks = engine.acks();
   if (!engine.view()) useLibrary.setState({ status: 'loading' });
   try {
     const lib = parseLibrary(await api.getLibrary());
     if (!live()) return;
     if (!lib) throw new Error('library');
-    engine.load(lib);
+    // une modification accusée pendant la lecture a rendu le chansonnier entier, peut-être plus récent que lui : gardé
+    if (engine.acks() === acks || !engine.view()) engine.load(lib);
     useLibrary.setState({ status: 'ready' });
   } catch {
     // déjà chargé (relecture ratée) : la vue reste ; sinon l'onglet dit l'indisponibilité et propose de réessayer

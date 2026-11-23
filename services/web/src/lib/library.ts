@@ -351,6 +351,7 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
   let shown: Library | null = null;
   let busy = false;
   let epoch = 0;
+  let acks = 0;
   const aliases = new Map<string, string>(), origins = new Map<string, string>();
   const idOf = (id: string): string => aliases.get(id) ?? id;
   const rename = (op: LibraryOp, from: string, to: string): LibraryOp => ('id' in op && op.id === from ? ({ ...op, id: to } as LibraryOp) : op);
@@ -371,6 +372,7 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
     if (e0 !== epoch) { void pump(); return; }   // oublié entre-temps (déconnexion) : ni accusé ni retour arrière
     pending.shift();
     if (ok) {
+      acks++;
       // réponse sans chansonnier lisible : la modification telle qu'appliquée devient l'état confirmé
       server = parseLibrary(res, base.limits) ?? applyOp(base, head.op, head.at);
       if (head.op.kind === 'create') {
@@ -427,6 +429,11 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
     originOf: (id: string): string => origins.get(id) ?? id,
     /** Modifications pas encore accusées (en vol comprise). */
     pending: (): number => pending.length,
+    /**
+     * Réponses acceptées par l'API jusqu'ici (chacune rend le chansonnier entier, fait foi) : une relecture (GET) partie
+     * avant l'une d'elles peut la précéder chez Redis ; comparé avant et après, il dit qu'elle ne doit pas l'écraser.
+     */
+    acks: (): number => acks,
   };
 }
 

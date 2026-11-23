@@ -365,6 +365,29 @@ test('moteur : un geste préparé sous l’id provisoire (annulation d’un retr
   assert.equal(engine.resolve(other), other, 'id inconnu : le même');
 });
 
+test('moteur : acks compte les réponses acceptées (une relecture partie avant ne doit pas les écraser)', async () => {
+  const { engine, sent } = harness();
+  assert.equal(engine.acks(), 0);
+  const a = engine.dispatch({ kind: 'like', track: tr('a') });
+  const b = engine.dispatch({ kind: 'like', track: tr('b') });
+  await settle();
+  sent[0].reject(Object.assign(new Error('x'), { payload: { error: 'STORAGE_UNAVAILABLE' } }));
+  assert.equal(await a, false);
+  assert.equal(engine.acks(), 0, 'un refus ne compte pas : le confirmé n’a pas bougé');
+  await settle();
+  sent[1].resolve(reply({ likes: [tr('b')], playlists: [] }));
+  assert.equal(await b, true);
+  assert.equal(engine.acks(), 1);
+  // déconnexion pendant une requête : sa réponse, ignorée, ne compte pas
+  const c = engine.dispatch({ kind: 'like', track: tr('c') });
+  await settle();
+  engine.reset();
+  sent[2].resolve(reply({ likes: [tr('c')], playlists: [] }));
+  assert.equal(await c, false);
+  await settle();
+  assert.equal(engine.acks(), 1);
+});
+
 test('moteur : sans playlist_id, la création est reconnue à la playlist apparue', async () => {
   const { engine, sent, aliases } = harness(lib({ playlists: [pl('old')] }));
   const c = engine.dispatch({ kind: 'create', id: 'tmp:9', name: 'Neuve', tracks: [] });
