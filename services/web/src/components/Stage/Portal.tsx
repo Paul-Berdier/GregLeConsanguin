@@ -269,8 +269,10 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown, vi
   }, [nextId]);
 
   // En plein écran par l'API, `.video` est dans la couche du dessus : le fantôme du vol (dans <body>, coronation.ts) y est
-  // invisible. Le nouveau poster n'attend pas sous lui un atterrissage qu'on ne voit pas (noir pendant le vol) : il entre en fondu.
-  const ghostSeen = fullscreen.mode !== 'native';
+  // invisible. En repli, il passerait par-dessus la surcouche (la pile de .page-shell, z-index 10, garde la vidéo sous lui) :
+  // theater.css l'y cache. Le nouveau poster n'attend pas sous lui un atterrissage qu'on ne voit pas (noir pendant le
+  // vol) : il entre en fondu.
+  const ghostSeen = !fullscreen.mode;
   const flying = ghostSeen && crown?.mode === 'flight' && !crown.landed;
   // Double-clic sur l'image : plein écran, entrée comme sortie (requestFullscreen part dans ce gestionnaire, useFullscreen).
   const onDoubleClick = (e: MouseEvent<HTMLDivElement>): void => {

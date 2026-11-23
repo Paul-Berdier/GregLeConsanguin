@@ -147,6 +147,75 @@ test('file mémorisée : clé, montrée par défaut, stockage bloqué sans erreu
   assert.doesNotThrow(() => F.saveFsQueue(blocked, false));
 });
 
+test('file sur un écran étroit (téléphone debout) : masquée d’emblée, montrée si le Roi l’a montrée', () => {
+  assert.equal(F.FS_NARROW, '(max-width: 700px)');
+  assert.deepEqual([null, undefined, 'on', 'off', ''].map((v) => F.fsQueueOn(v, true)), [false, false, true, false, false]);
+  assert.deepEqual([null, 'on', 'off'].map((v) => F.fsQueueOn(v, false)), [true, true, false], 'écran large : comme avant');
+  const map = new Map();
+  const store = () => ({ getItem: (k) => map.get(k) ?? null, setItem: (k, v) => { map.set(k, v); } });
+  assert.equal(F.loadFsQueue(store, true), false, 'sans choix : la file couvrirait l’image');
+  assert.equal(F.loadFsQueue(store, false), true);
+  F.saveFsQueue(store, true);
+  assert.equal(F.loadFsQueue(store, true), true, 'montrée par le Roi : elle reste montrée');
+  F.saveFsQueue(store, false);
+  assert.equal(F.loadFsQueue(store, false), false, 'masquée par le Roi : partout');
+  const blocked = () => { throw new Error('SecurityError'); };
+  assert.equal(F.loadFsQueue(blocked, true), false);
+  assert.equal(F.loadFsQueue(blocked, false), true);
+});
+
+test('au doigt, l’appui sur des commandes effacées les réveille seulement : le clic qui suit est avalé', () => {
+  const tap = F.createWakeTap();
+  tap.down('touch', true);
+  assert.equal(tap.eats(1), true, 'pause, « Retirer », cœur effacés sous le doigt : rien ne part');
+  assert.equal(tap.eats(1), false, 'un seul clic avalé');
+  tap.down('touch', false);
+  assert.equal(tap.eats(1), false, 'commandes affichées : l’appui agit');
+  tap.down('mouse', true);
+  assert.equal(tap.eats(1), false, 'la souris les a réveillées en bougeant');
+  tap.down('pen', true);
+  assert.equal(tap.eats(1), true, 'le stylet comme le doigt');
+  tap.down('touch', true);
+  tap.cancel();
+  assert.equal(tap.eats(1), false, 'défilement (pointercancel) : le clic d’après passe');
+  tap.down('touch', true);
+  assert.equal(tap.eats(0), false, 'appui long sans clic, puis Entrée au clavier (detail 0) : jamais avalée');
+  assert.equal(tap.eats(1), false, 'l’appui est oublié');
+});
+
+test('Entrée maintenue sur « Plein écran » : la répétition ne rebascule pas', () => {
+  assert.equal(F.fsHeldKey({ repeat: true, key: 'Enter' }), true, 'sortie puis focus rendu ici : pas de retour aussitôt');
+  assert.equal(F.fsHeldKey({ repeat: false, key: 'Enter' }), false, 'un appui');
+  assert.equal(F.fsHeldKey({ repeat: true, key: ' ' }), false, 'Espace agit au relâché, une fois');
+});
+
+test('plein écran : le reste de la page devient inerte, puis revient tel qu’il était', () => {
+  const node = (name, kids = []) => {
+    const n = { name, inert: false, parentElement: null, children: kids };
+    for (const k of kids) k.parentElement = n;
+    return n;
+  };
+  const theater = node('theater'), toasts = node('toasts');
+  const video = node('video', [node('yt'), theater, toasts]);
+  const rose = node('rose'), below = node('below'), sidebar = node('sidebar'), header = node('header'), ghost = node('ghost');
+  const stage = node('stage', [rose, node('portal', [video]), below]);
+  const main = node('main', [node('stage-col', [stage]), sidebar]);
+  const plate = node('plate');
+  plate.inert = true;   // déjà inerte avant le plein écran : le reste à la sortie
+  const body = node('body', [node('shell', [header, main, plate]), ghost]);
+  const head = node('head');
+  node('html', [head, body]);
+  const all = [];
+  (function walk(n) { all.push(n); for (const k of n.children) walk(k); })(body);
+  const inert = () => all.filter((n) => n.inert).map((n) => n.name).sort();
+  const restore = F.inertOthers(video, body);
+  assert.deepEqual(inert(), ['below', 'ghost', 'header', 'plate', 'rose', 'sidebar'].sort());
+  assert.equal(theater.inert || toasts.inert || video.inert, false, 'la vidéo, sa surcouche et le Héraut restent vivants');
+  assert.equal(head.inert, false, 'rien au-dessus de <body>');
+  restore();
+  assert.deepEqual(inert(), ['plate'], 'tout revient, sauf ce qui l’était déjà');
+});
+
 test('clavier en plein écran : saisie, « / » et « ? » ignorés ; Espace et Maj+→/← restent', () => {
   const ctx = { enabled: true, loggedIn: true, inField: false, inPopover: false, onRow: false, onControl: false, dragging: false };
   const act = (ev) => shortcutFor(ev, ctx);

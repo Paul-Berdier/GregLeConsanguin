@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, RefObject } from 'react';
+import type { CSSProperties, KeyboardEvent, RefObject } from 'react';
 import { useStore } from '@/hooks/usePlayer';
 import { useFullscreen } from '@/hooks/useFullscreen';
 import { useStageLayout } from '@/hooks/useStageLayout';
@@ -9,7 +9,7 @@ import { useStageClock } from '@/hooks/useStageClock';
 import { useVideoOffset } from '@/hooks/useVideoOffset';
 import { extractVideoId } from '@/lib/format';
 import { DUR, EASE, reducedMotion } from '@/lib/motion';
-import { fsExitDelay } from '@/lib/stage/fullscreen';
+import { fsExitDelay, fsHeldKey } from '@/lib/stage/fullscreen';
 import { fitNight, nightBottom, sameLayout, stageCssVars } from '@/lib/stage/layout';
 import type { StageLayout } from '@/lib/stage/layout';
 import { dialGeometry, paneMask } from '@/lib/stage/dial';
@@ -118,6 +118,9 @@ function Stage({ booted }: { booted: boolean }) {
   const fs = useFullscreen(videoElRef, () => (fsBtnRef.current
     ?? stageRef.current?.querySelector<HTMLElement>('.night button, .night a[href]'))?.focus({ preventScroll: true }));
   const { mode: fsMode, exit: fsExit } = fs;
+  // Entrée maintenue sur « Quitter le plein écran » : le focus revient au bouton d'entrée, la répétition de la touche n'y
+  // rentre pas (fsHeldKey) ; la vidéo n'entre et ne sort pas en boucle.
+  const onFsKey = (e: KeyboardEvent<HTMLButtonElement>): void => { if (fsHeldKey(e)) e.preventDefault(); };
   // Fin de lecture (arrêt, file finie) : plus de titre pendant 1,5 s, on sort ; un creux entre deux titres passe.
   useEffect(() => {
     const ms = fsExitDelay(!!fsMode, day);
@@ -190,7 +193,7 @@ function Stage({ booted }: { booted: boolean }) {
             {/* requestFullscreen dans le gestionnaire du clic (activation de l'utilisateur) ; double-clic sur la vidéo aussi */}
             {/* colonne étroite : l'icône seule (portal.css), le nom reste (aria-label) */}
             {day && <button ref={fsBtnRef} type="button" className="fs-btn" aria-label={tx('fullscreen.enter')} title={tx('fullscreen.enterTip')}
-              onClick={() => fs.toggle()}>
+              onKeyDown={onFsKey} onClick={() => fs.toggle()}>
               <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
               <span className="fs-lbl">{tx('fullscreen.enter')}</span>
             </button>}
