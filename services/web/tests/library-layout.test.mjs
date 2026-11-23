@@ -23,3 +23,29 @@ test('titre en cours : le demandeur cède avec l’artiste (le cœur et « Ajout
   // « Ajouter à une playlist » désactivé (chansonnier pas encore lu) : il le paraît
   assert.match(rule(now, '.nbtn:disabled'), /opacity: \.4;/);
 });
+
+test('file au toucher : le cœur (quatrième bouton) ne prend plus 42 px au titre', () => {
+  const q = css('src/components/Queue/queue.css');
+  const touch = q.slice(q.indexOf('@media (hover: none) {'));
+  assert.match(touch, /^@media \(hover: none\) \{[^@]*\n\s*\.act \{ width: 32px; height: 40px; \}/, '40 px de haut pour le doigt, 32 de large');
+});
+
+test('file au survol ou au focus : le titre cède la place à la puce de quatre boutons', () => {
+  const q = css('src/components/Queue/queue.css');
+  const px = (re) => Number(q.match(re)?.[1]);
+  const act = px(/\n\.act \{ width: (\d+)px;/), gap = px(/\n\.acts \{[^}]*gap: (\d+)px;/), pad = px(/\n\.acts \{[^}]*padding: (\d+)px;/);
+  const right = px(/\n\.acts \{[^}]*right: (\d+)px;/);
+  const cols = q.match(/\n\.row \.card \{[^}]*grid-template-columns: 24px 72px minmax\(0, 1fr\) (\d+)px; align-items: center; gap: (\d+)px;/);
+  const side = Number(cols?.[1]), colGap = Number(cols?.[2]), cardPad = px(/\n\.row \.card \{[^}]*padding: 0 (\d+)px 0 2px;/);
+  // la puce déborde sur la colonne du titre de ce qu'elle a de plus que la durée et son espace
+  const over = right + 4 * act + 3 * gap + 2 * pad - (cardPad + side + colGap);
+  assert.equal(over, 40);
+  const reserve = px(/@media \(hover: hover\) \{\s*\.qcontent > \.qlist > \.row:not\(\.dragging\):hover \.meta, \.qcontent > \.qlist > \.row:focus-within \.meta \{ padding-right: (\d+)px; \}/);
+  assert.ok(reserve >= over && reserve <= over + 8, `réservé ${reserve} px pour ${over} px`);
+  // seulement la file (.qcontent > .qlist) : ni « Souvent demandés ici » (dans sa section) ni le chansonnier (deux boutons)
+  assert.ok(!/\n\.row:focus-within \.meta|\n\.row:hover \.meta/.test(q));
+  // fenêtre étroite : sans « Jouer ensuite », trois boutons, et 10 px entre les colonnes
+  const narrow = px(/@media \(hover: hover\) and \(max-width: 520px\) \{\s*[^{]+\{ padding-right: (\d+)px; \}/);
+  const overNarrow = right + 3 * act + 2 * gap + 2 * pad - (cardPad + side + 10);
+  assert.ok(narrow >= overNarrow && narrow <= overNarrow + 8, `étroit : réservé ${narrow} px pour ${overNarrow} px`);
+});
