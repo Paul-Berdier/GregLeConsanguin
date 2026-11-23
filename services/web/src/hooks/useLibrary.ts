@@ -165,7 +165,9 @@ let _tmp = 0;
 function createPlaylist(rawName: string, items: readonly TrackLike[] = []): { id: string; done: Promise<boolean> } | null {
   const lib = ready();
   if (!lib) return null;
-  const tracks = items.map(trackOf).filter((x): x is LibraryTrack => !!x);
+  // ce que l'API garderait (doublons écartés, 200 au plus) : une longue file (plus de 500 titres) serait sinon
+  // refusée en entier (INVALID_REQUEST), et la requête resterait petite
+  const tracks = addPlan([], items.map(trackOf).filter((x): x is LibraryTrack => !!x), lib.limits.tracks).added;
   const op: LibraryOp = { kind: 'create', id: `${TMP}${++_tmp}`, name: cleanName(rawName), tracks };
   if (refused(lib, op)) return null;
   return { id: op.id, done: engine.dispatch(op) };

@@ -208,6 +208,9 @@ test('useLibrary : lu à la connexion, vidé à la déconnexion (401 compris), r
   const clear = src.slice(src.indexOf('function clear('), src.indexOf('\n}\n', src.indexOf('function clear(')));
   assert.match(clear, /_loadSeq\+\+;/, 'une lecture en vol ne s’écrit plus');
   assert.match(clear, /engine\.reset\(\);/);
+  // une création n'envoie que ce que l'API garde : l'API refuse en entier une liste de plus de 500 titres
+  const create = src.slice(src.indexOf('function createPlaylist('), src.indexOf('\n}\n', src.indexOf('function createPlaylist(')));
+  assert.match(create, /const tracks = addPlan\(\[\], items\.map\(trackOf\)\.filter\([^)]*\)[^)]*\), lib\.limits\.tracks\)\.added;/);
   const failed = src.slice(src.indexOf('function failed('), src.indexOf('\n}\n', src.indexOf('function failed(')));
   assert.match(failed, /if \(code === 'NOT_AUTHENTICATED'\) return;/, 'la perte de session parle seule');
   assert.match(failed, /if \(n\) say\(n\.key, \{ vars: n\.vars, kind: n\.kind \}\);\s*else sayError\(e\);/);
