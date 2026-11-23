@@ -9,7 +9,7 @@ import { useStore } from '@/hooks/usePlayer';
 import { libraryActions } from '@/hooks/useLibrary';
 import { useRoving } from '@/hooks/useRoving';
 import { LIKES, findPlaylist, trackKey } from '@/lib/library';
-import { createDedupe } from '@/lib/queue/drag';
+import { createDedupe, createSettle } from '@/lib/queue/drag';
 import type { HistoryItem } from '@/lib/queue/view';
 import type { Library, LibraryTrack } from '@/lib/types';
 import { parseTitle } from '@/lib/titles';
@@ -39,9 +39,10 @@ export type PlaylistViewProps = {
  * Une playlist (ou les coups de cœur) : retour, nom modifiable en ligne, nombre de titres et durée, « Tout jouer »,
  * « Ajouter le titre en cours », « Supprimer » (confirmé, comme l'arrêt du transport : le focus sur « Garder »).
  * Lignes au style de l'historique (LibraryRow). Clics délégués : « + » ou double-clic remettent dans la file avec
- * Le Sceau (requeue), un par 500 ms ; « Retirer » retire (annonce annulable). Clavier (useRoving) : un arrêt de Tab,
- * ↑ ↓ Début Fin, Entrée ajoute à la file, Suppr retire, Alt+↑ / Alt+↓ déplacent (pas dans les coups de cœur, rangés
- * du plus récent au plus ancien) ; touches décrites (aria-describedby). Styles : library.css.
+ * Le Sceau (requeue), un par 500 ms ; « Retirer » retire (annonce annulable), puis la liste s'accalmit (settle).
+ * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée ajoute à la file, Suppr retire, Alt+↑ / Alt+↓
+ * déplacent (pas dans les coups de cœur, rangés du plus récent au plus ancien) ; touches décrites (aria-describedby).
+ * Styles : library.css.
  */
 export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewProps) {
   const likes = id === LIKES;
@@ -55,6 +56,7 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const renameRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const once = useRef(createDedupe());
+  const settleRef = useRef(createSettle());
   const moves = useRef(0);
   const keysId = useId(), titleId = useId(), bodyId = useId();
 
@@ -101,17 +103,34 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
     return undefined;
   });
 
+  /**
+   * « Retirer » au pointeur : la ligne suivante remonte sous le pointeur immobile, sa puce montrée ; le second clic d'un
+   * double-clic la retirait aussi. La liste s'accalmit comme la file (QueuePanel) : clics, double-clics et puces
+   * ignorés 400 ms ou jusqu'à 3 px de mouvement (.qlist.settling, queue.css).
+   */
+  const settle = () => {
+    const list = listRef.current, s = settleRef.current;
+    s.start(performance.now());
+    list?.classList.add('settling');
+    const done = () => { if (!s.active(performance.now())) list?.classList.remove('settling'); };
+    const onMove = (e: PointerEvent) => { if (s.move(e.clientX, e.clientY, performance.now())) { done(); window.removeEventListener('pointermove', onMove); } };
+    window.addEventListener('pointermove', onMove);
+    setTimeout(() => { done(); window.removeEventListener('pointermove', onMove); }, 420);
+  };
+  const settling = () => settleRef.current.active(performance.now());
+
   const keyOf = (e: MouseEvent) => (e.target as HTMLElement).closest<HTMLElement>('.row')?.dataset.key ?? '';
   const onClick = (e: MouseEvent) => {
     const k = keyOf(e), x = byKey.get(k);
-    if (!x) return;
+    if (!x || settling()) return;
     const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
     if (act === 'add') add(x);
-    else if (act === 'del') void remove(x);
+    else if (act === 'del') { settle(); void remove(x); }
     else setPicked(k);
   };
   const onDoubleClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-act]')) return;
+    // accalmie : la puce sans pointeur, le dblclick d'un « Retirer » doublé viserait la ligne remontée dessous
+    if (settling() || (e.target as HTMLElement).closest('[data-act]')) return;
     const x = byKey.get(keyOf(e));
     if (x) add(x);
   };

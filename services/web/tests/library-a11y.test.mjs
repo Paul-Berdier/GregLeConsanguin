@@ -49,3 +49,14 @@ test('« Ajouter le titre en cours » : le titre ajouté, il garde le focus (ari
   assert.match(add, /const toast = say\('library\.toast\.liked', \{ vars: \{ title: songOf\(tr\) \}, kind: 'ok' \}\);/);
   assert.match(add, /void done\.then\(\(ok\) => \{ if \(!ok\) herald\.retract\(toast\); \}\);/, 'refusé par l’API : l’annonce part, Ctrl+Z n’y est pas');
 });
+
+test('« Retirer » doublé : la ligne remontée sous le pointeur n’est ni retirée ni remise dans la file', () => {
+  const view = read('src/components/Library/PlaylistView.tsx');
+  assert.match(view, /const settleRef = useRef\(createSettle\(\)\);/);
+  assert.match(view, /list\?\.classList\.add\('settling'\);/, 'la puce sans pointeur pendant l’accalmie (.qlist.settling, queue.css)');
+  assert.match(view, /if \(!x \|\| settling\(\)\) return;/, 'clics ignorés');
+  assert.match(view, /else if \(act === 'del'\) \{ settle\(\); void remove\(x\); \}/);
+  assert.match(view, /if \(settling\(\) \|\| \(e\.target as HTMLElement\)\.closest\('\[data-act\]'\)\) return;/, 'double-clic ignoré');
+  assert.match(view, /<ol className="qlist lrows"/, 'la règle .qlist.settling de queue.css s’y applique');
+  assert.match(read('src/components/Queue/queue.css'), /\.qlist\.settling \.row \.acts \{ opacity: 0 !important; pointer-events: none !important;/);
+});
