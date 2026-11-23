@@ -166,6 +166,12 @@ test('au doigt, l’appui sur des commandes effacées les réveille seulement : 
   assert.equal(tap.eats(1), false, 'l’appui est oublié');
 });
 
+test('Entrée maintenue sur « Plein écran » : la répétition ne rebascule pas', () => {
+  assert.equal(F.fsHeldKey({ repeat: true, key: 'Enter' }), true, 'sortie puis focus rendu ici : pas de retour aussitôt');
+  assert.equal(F.fsHeldKey({ repeat: false, key: 'Enter' }), false, 'un appui');
+  assert.equal(F.fsHeldKey({ repeat: true, key: ' ' }), false, 'Espace agit au relâché, une fois');
+});
+
 test('plein écran : le reste de la page devient inerte, puis revient tel qu’il était', () => {
   const node = (name, kids = []) => {
     const n = { name, inert: false, parentElement: null, children: kids };

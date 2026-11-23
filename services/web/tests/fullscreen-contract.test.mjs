@@ -79,6 +79,9 @@ test('Stage : un seul crochet, le bouton à côté de « Synchro vidéo », sort
   const foot = stage.slice(stage.indexOf('className="below-foot"'));
   assert.ok(foot.indexOf('<SyncOffset') >= 0 && foot.indexOf('<SyncOffset') < foot.indexOf('className="fs-btn"'), 'après la synchro');
   assert.match(foot, /<button ref=\{fsBtnRef\} type="button" className="fs-btn"[^>]*onClick=\{\(\) => fs\.toggle\(\)\}>/);
+  // Entrée maintenue sur « Quitter le plein écran » : le focus revient ici, la répétition n'y rentre pas aussitôt
+  assert.match(foot, /className="fs-btn"[^>]*onKeyDown=\{onFsKey\}/);
+  assert.match(stage, /const onFsKey = \(e: KeyboardEvent<HTMLButtonElement>\): void => \{ if \(fsHeldKey\(e\)\) e\.preventDefault\(\); \};/);
   assert.match(foot, /className="fs-btn" aria-label=\{tx\('fullscreen\.enter'\)\}/, 'nommé même en icône seule (colonne étroite)');
   assert.match(noComments(read('src/components/Stage/portal.css')), /@container stage-col \(max-width: 660px\) \{[^@]*\.fs-btn \.fs-lbl \{ display: none; \}/);
   assert.match(stage, /\n\s*<Portal videoId=/, 'Portal rendu sans condition');

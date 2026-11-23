@@ -40,6 +40,12 @@ export const FS_DBLCLICK_MS = 500;
  */
 export const fsSwallowClick = (detail: number, since: number): boolean => detail > 1 && since < FS_DBLCLICK_MS;
 
+/**
+ * Entrée maintenue sur « Plein écran » : une fois. Sortie par « Quitter le plein écran », le focus revient à ce bouton
+ * (Stage.tsx) : la répétition suivante de la touche y rentrerait aussitôt.
+ */
+export const fsHeldKey = (e: { repeat: boolean; key: string }): boolean => e.repeat && e.key === 'Enter';
+
 export const fsSkips = (act: Shortcut): boolean => FS_SKIPPED.includes(act);
 export const fsQueueOn = (stored: string | null | undefined): boolean => stored !== 'off';
 
