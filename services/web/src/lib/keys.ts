@@ -49,6 +49,11 @@ export function listKey(ev: KeyEv, index: number, count: number): ListAct | null
   }
 }
 
+/** Entrée maintenue sur un bouton ou dans un champ : chaque répétition le recliquerait ou renverrait le formulaire
+ * (« Tout jouer » rajoutait la playlist ; le menu rouvert ajoutait le titre à la playlist suivante, puis envoyait un nom
+ * vide). preventDefault sur la répétition : ni clic, ni envoi ; la première Entrée agit seule. */
+export const heldEnter = (ev: KeyEv): boolean => !!ev.repeat && ev.key === 'Enter';
+
 /** Clé devant laquelle déposer `key` décalé d'un rang (moveTrack) ; null : fin de file ; undefined : impossible. */
 export function moveBefore(keys: readonly string[], key: string, dir: -1 | 1): string | null | undefined {
   const i = keys.indexOf(key), j = i + dir;

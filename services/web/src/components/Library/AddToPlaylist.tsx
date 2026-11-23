@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { KeyboardEvent } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { libraryActions, useLibrary } from '@/hooks/useLibrary';
+import { heldEnter } from '@/lib/keys';
 import { trackKey } from '@/lib/library';
 import type { TrackLike } from '@/lib/library';
 import { parseTitle } from '@/lib/titles';
@@ -17,8 +18,9 @@ const MOVES = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End']);
  * « Ajouter à une playlist », à côté du cœur du titre en lecture : un petit dialogue (plaque, comme la confirmation
  * d'arrêt du transport) qui liste les playlists du Roi (celles qui l'ont déjà le disent) et « Nouvelle playlist… »
  * (nom en ligne, créée avec le titre). Ouvert : focus sur la première playlist ; ↑ ↓ Début Fin passent d'un choix à
- * l'autre ; Échap ferme et rend le focus au bouton (usePopover), ou referme d'abord le champ du nom. Il s'ouvre vers le
- * haut, au-dessus de la vidéo (rien ne déborde sous la scène). Styles : library.css (.lmenu), now.css (.nbtn).
+ * l'autre ; Échap ferme et rend le focus au bouton (usePopover), ou referme d'abord le champ du nom. Entrée maintenue
+ * n'agit qu'une fois (heldEnter). Il s'ouvre vers le haut, au-dessus de la vidéo (rien ne déborde sous la scène).
+ * Styles : library.css (.lmenu), now.css (.nbtn).
  */
 export default function AddToPlaylist({ track, className = 'nbtn' }: { track: TrackLike | null; className?: string }) {
   const pop = usePopover();
@@ -77,7 +79,9 @@ export default function AddToPlaylist({ track, className = 'nbtn' }: { track: Tr
   };
 
   return (
-    <div className="ladd" {...pop.wrapProps}>
+    // Entrée maintenue (heldEnter) : sans cette garde, chaque répétition ajoutait le titre, rouvrait le menu sur la
+    // playlist suivante, et ainsi de suite jusqu'à envoyer un nom vide en boucle
+    <div className="ladd" {...pop.wrapProps} onKeyDownCapture={(e) => { if (heldEnter(e)) e.preventDefault(); }}>
       <button ref={pop.btnRef} type="button" className={className} disabled={!k || !lib} aria-haspopup="dialog" aria-expanded={open}
         aria-label={tx('library.addTo.aria', { title: song })} title={tx('library.addTo.label')} onClick={() => pop.setOpen((o) => !o)}>
         {LIST_ADD}

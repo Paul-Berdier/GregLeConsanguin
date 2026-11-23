@@ -7,6 +7,7 @@ import { thumbOf } from '@/components/Queue/QueueRow';
 import { useStore } from '@/hooks/usePlayer';
 import { libraryActions, useLibrary } from '@/hooks/useLibrary';
 import { useRoving } from '@/hooks/useRoving';
+import { heldEnter } from '@/lib/keys';
 import { LIKES, tracksOf } from '@/lib/library';
 import { createDedupe } from '@/lib/queue/drag';
 import { kingSealSrc } from '@/lib/stage/scene';
@@ -188,7 +189,9 @@ export default function LibraryPanel() {
     );
   }
   return (
-    <div className="lpane" ref={paneRef}>
+    // Entrée maintenue n'agit qu'une fois sur tout le volet (heldEnter) : « Tout jouer » rajoutait la playlist entière
+    // toutes les 500 ms ; un bouton qui ouvre (renommer, supprimer) se rouvrait en boucle. Les lignes : listKey.
+    <div className="lpane" ref={paneRef} onKeyDownCapture={(e) => { if (heldEnter(e)) e.preventDefault(); }}>
       {view && tracks
         ? <PlaylistView key={libraryActions.originOf(view)} id={view} lib={lib} tracks={tracks} onBack={back}/>
         : <Overview lib={lib} onOpen={openView}/>}

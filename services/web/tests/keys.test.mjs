@@ -57,6 +57,11 @@ test('liste : J (« J’aime ») bascule le cœur de la ligne, une fois même ma
   assert.equal(f({ key: 'j' }, { onRow: true }), null);
 });
 
+test('Entrée maintenue sur un bouton : seule la première agit (heldEnter)', () => {
+  assert.deepEqual([K.heldEnter({ key: 'Enter', repeat: true }), K.heldEnter({ key: 'Enter' }), K.heldEnter({ key: ' ', repeat: true }),
+    K.heldEnter({ key: 'ArrowDown', repeat: true })], [true, false, false, false]);
+});
+
 test('déplacer d’un rang : la clé devant laquelle déposer (null : fin de file)', () => {
   const k = ['a', 'b', 'c', 'd'];
   assert.deepEqual([K.moveBefore(k, 'c', -1), K.moveBefore(k, 'b', 1), K.moveBefore(k, 'c', 1)], ['b', 'd', null]);
