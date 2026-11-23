@@ -17,14 +17,16 @@
   transition: transform var(--dur-press) var(--ease-out);
 }
 .lbtn svg { width: 16px; height: 16px; flex: none; }
-.lbtn:active:not(:disabled) { transform: scale(.97); }
-.lbtn:disabled { opacity: .4; cursor: default; }
+/* désactivé : disabled, ou aria-disabled pour un bouton qui garde le focus en se désactivant (« Ajouter le titre en
+   cours ») ; :not() à liste pèse comme son argument le plus lourd, l'ordre des règles ne change pas */
+.lbtn:active:not(:disabled, [aria-disabled=true]) { transform: scale(.97); }
+.lbtn:is(:disabled, [aria-disabled=true]) { opacity: .4; cursor: default; }
 .lbtn.primary { color: var(--os); background: var(--voute-2); box-shadow: none; }
 .lbtn.licon { width: 34px; padding: 0; justify-content: center; }
 @media (hover: hover) and (pointer: fine) {
-  .lbtn:not(:disabled):hover { color: var(--os); background: var(--voute); }
-  .lbtn.primary:not(:disabled):hover { background: var(--voute-2); box-shadow: inset 0 0 0 1px var(--hair-2); }
-  .lbtn.danger:not(:disabled):hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
+  .lbtn:not(:disabled, [aria-disabled=true]):hover { color: var(--os); background: var(--voute); }
+  .lbtn.primary:not(:disabled, [aria-disabled=true]):hover { background: var(--voute-2); box-shadow: inset 0 0 0 1px var(--hair-2); }
+  .lbtn.danger:not(:disabled, [aria-disabled=true]):hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
 }
 
 /* le nom en ligne : un petit champ de la voûte, le focus d'or de la page */

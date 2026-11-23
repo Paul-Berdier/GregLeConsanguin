@@ -61,6 +61,8 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const keys = useMemo(() => tracks.map((x) => trackKey(x.url)), [tracks]);
   const byKey = useMemo(() => new Map(tracks.map((x) => [trackKey(x.url), x])), [tracks]);
   const curKey = current?.url ? trackKey(current.url) : '';
+  /** « Ajouter le titre en cours » : un titre joue et la vue ne l'a pas encore. */
+  const canAdd = !!current && !(curKey && keys.includes(curKey));
 
   // la confirmation de suppression met le focus sur le choix sûr (DESIGN §7)
   useEffect(() => { if (confirm.open) noRef.current?.focus(); }, [confirm.open]);
@@ -144,8 +146,10 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
           <button type="button" className="lbtn primary" disabled={!tracks.length} aria-label={tx('library.playAllAria', { name })} onClick={playAll}>
             {PLAY}{tx('library.playAll')}
           </button>
-          <button type="button" className="lbtn" disabled={!current || (!!curKey && keys.includes(curKey))} aria-label={tx('library.addCurrent')}
-            onClick={() => { if (current) void libraryActions.addTo(id, current); }}>
+          {/* aria-disabled, pas disabled : le titre ajouté, le bouton garde le focus (désactivé, il le perdait sur la page,
+              et l'Espace suivant mettait tout le salon en pause) */}
+          <button type="button" className="lbtn" aria-disabled={!canAdd} aria-label={tx('library.addCurrent')}
+            onClick={() => { if (canAdd && current) void libraryActions.addTo(id, current); }}>
             {PLUS}{tx('library.addCurrent')}
           </button>
           {pl && (

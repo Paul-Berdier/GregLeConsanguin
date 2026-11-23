@@ -255,11 +255,17 @@ function addToPlaylist(id: string, items: readonly TrackLike[]): Promise<boolean
   return done;
 }
 
-/** Ajouter à une vue du chansonnier : les coups de cœur (LIKES) ou une playlist. */
+/** Ajouter à une vue du chansonnier : les coups de cœur (LIKES) ou une playlist ; annoncé comme l'ajout à une playlist. */
 function addTo(id: string, item: TrackLike): Promise<boolean> {
   if (id !== LIKES) return addToPlaylist(id, [item]);
-  const tr = ready() && trackOf(item);
-  return tr ? run({ kind: 'like', track: tr }) : Promise.resolve(false);
+  const lib = ready(), tr = lib && trackOf(item);
+  if (!lib || !tr) return Promise.resolve(false);
+  const op: LibraryOp = { kind: 'like', track: tr };
+  if (refused(lib, op)) return Promise.resolve(false);   // refus dit d'avance : pas d'annonce d'ajout
+  const done = engine.dispatch(op);
+  const toast = say('library.toast.liked', { vars: { title: songOf(tr) }, kind: 'ok' });
+  void done.then((ok) => { if (!ok) herald.retract(toast); });
+  return done;
 }
 
 /** Retirer un titre d'une playlist : annonce annulable (le titre revient à sa place). */

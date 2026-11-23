@@ -29,3 +29,23 @@ test('double-clic sur une carte : la vue ouverte ignore la suite (« Tout jouer 
   const { fsSwallowClick } = await loadTs('../src/lib/stage/fullscreen.ts');
   assert.deepEqual([fsSwallowClick(2, 120), fsSwallowClick(1, 0), fsSwallowClick(0, 0), fsSwallowClick(2, 900)], [true, false, false, false]);
 });
+
+test('« Ajouter le titre en cours » : le titre ajouté, il garde le focus (aria-disabled) ; dans les coups de cœur, annoncé', () => {
+  const view = read('src/components/Library/PlaylistView.tsx');
+  const i = view.indexOf("aria-label={tx('library.addCurrent')}");
+  const btn = view.slice(view.lastIndexOf('<button', i), view.indexOf('>', i));
+  assert.match(btn, /aria-disabled=\{!canAdd\}/);
+  assert.ok(!/\sdisabled=/.test(btn), 'désactivé, il perdait le focus sur <body> (Espace : pause pour tout le salon)');
+  assert.match(view, /const canAdd = !!current && !\(curKey && keys\.includes\(curKey\)\);/);
+  assert.match(view, /onClick=\{\(\) => \{ if \(canAdd && current\) void libraryActions\.addTo\(id, current\); \}\}/, 'désactivé : le clic ne fait rien');
+  const css = read('src/components/Library/library.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(css, /\.lbtn:is\(:disabled, \[aria-disabled=true\]\) \{ opacity: \.4; cursor: default; \}/);
+  for (const sel of ['.lbtn:active', '.lbtn:not', '.lbtn.primary:not', '.lbtn.danger:not']) {
+    for (const m of css.matchAll(new RegExp(`${sel.replace(/[.:]/g, '\\$&')}[^{]*\\{`, 'g'))) assert.match(m[0], /:not\(:disabled, \[aria-disabled=true\]\)/, m[0]);
+  }
+  const lib = read('src/hooks/useLibrary.ts');
+  const add = lib.slice(lib.indexOf('function addTo('), lib.indexOf('\n}\n', lib.indexOf('function addTo(')));
+  assert.match(add, /if \(refused\(lib, op\)\) return Promise\.resolve\(false\);[^\n]*\n\s*const done = engine\.dispatch\(op\);/);
+  assert.match(add, /const toast = say\('library\.toast\.liked', \{ vars: \{ title: songOf\(tr\) \}, kind: 'ok' \}\);/);
+  assert.match(add, /void done\.then\(\(ok\) => \{ if \(!ok\) herald\.retract\(toast\); \}\);/, 'refusé par l’API : l’annonce part, Ctrl+Z n’y est pas');
+});
