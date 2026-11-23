@@ -7,7 +7,7 @@
  *   une notification arrivée entre-temps) ;
  * - un même fait sans action, encore affiché, devient « ×2 », « ×3 » ;
  * - une action d'annulation (« Annuler ») se rejoue aussi par Ctrl+Z pendant 15 s, sauf retirée (ordre refusé) ou
- *   désarmée (autre serveur, déconnexion) ;
+ *   désarmée (autre serveur, déconnexion ; celles du chansonnier, propres au Roi, à sa seule déconnexion) ;
  * - au plus une réplique de Greg toutes les 30 s (le reste : le fait seul).
  * Pur, sans import runtime (tests/herald.test.mjs) : horloge, minuteurs et deck injectés.
  */
@@ -15,7 +15,12 @@ import type { CopyVars } from '../theme/copy';
 import type { ErrorCopy } from './playerUtils';
 
 export type ToastKind = 'ok' | 'info' | 'warn' | 'err';
-export type ToastAction = { label: string; run: () => void };
+/**
+ * Ce dont dépend une annulation : `guild` (par défaut) le serveur affiché, sa file ; `king` le Roi seul, quel que soit
+ * le serveur (son chansonnier) : un changement de serveur ne la désarme pas, sa déconnexion si.
+ */
+export type UndoScope = 'guild' | 'king';
+export type ToastAction = { label: string; run: () => void; scope?: UndoScope };
 export type ToastInput = {
   kind?: ToastKind;
   fact: string;
@@ -148,8 +153,11 @@ export interface Herald {
   dismiss(id: number): void;
   /** Retrait d'une notification dont l'action ne vaut plus (ordre refusé ou abandonné) : Ctrl+Z ne la rejoue pas. */
   retract(id: number): void;
-  /** Vue remise à zéro (autre serveur, déconnexion) : les annulations proposées ne valent plus, ni bouton ni Ctrl+Z. */
-  disarm(): void;
+  /**
+   * Vue remise à zéro : les annulations proposées de cette portée ne valent plus, ni bouton ni Ctrl+Z. `guild` (par
+   * défaut) : autre serveur ou déconnexion (usePlayer) ; `king` : déconnexion ou autre Roi (useLibrary).
+   */
+  disarm(scope?: UndoScope): void;
   /** Bouton d'action de la notification : l'action, puis la notification s'en va. */
   act(id: number): void;
   /** Ctrl+Z : la dernière annulation proposée, si elle a moins de UNDO_MS. */
@@ -174,7 +182,8 @@ export function createHerald(o: HeraldOptions): Herald {
   let hovers = 0;
   let hidden = false;
   let lastQuipAt = -Infinity;
-  let lastUndo: { id: number; run: () => void; until: number } | null = null;
+  let lastUndo: { id: number; run: () => void; until: number; scope: UndoScope } | null = null;
+  const scopeOf = (a: ToastAction): UndoScope => a.scope ?? 'guild';
   const timers = new Map<number, { h: unknown; at: number }>();
   /** durée de vie complète de chaque notification */
   const lives = new Map<number, number>();
@@ -239,7 +248,7 @@ export function createHerald(o: HeraldOptions): Herald {
       const t: Toast = { id: ++seq, kind, fact: input.fact, quip, action, n: 1, leaving: false };
       list = [t, ...list];
       lives.set(t.id, life);
-      if (action) lastUndo = { id: t.id, run: action.run, until: now + UNDO_MS };
+      if (action) lastUndo = { id: t.id, run: action.run, until: now + UNDO_MS, scope: scopeOf(action) };
       arm(t.id, life);
       emit();
       o.announce?.(t);
@@ -250,9 +259,9 @@ export function createHerald(o: HeraldOptions): Herald {
       if (lastUndo?.id === id) lastUndo = null;   // même déjà sortie d'elle-même (ordre lent)
       dismiss(id);
     },
-    disarm() {
-      lastUndo = null;
-      for (const t of list.filter((x) => x.action && !x.leaving)) dismiss(t.id);
+    disarm(scope = 'guild') {
+      if (lastUndo?.scope === scope) lastUndo = null;
+      for (const t of list.filter((x) => x.action && !x.leaving && scopeOf(x.action) === scope)) dismiss(t.id);
     },
     act(id) {
       const t = list.find((x) => x.id === id);

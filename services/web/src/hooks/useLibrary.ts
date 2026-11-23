@@ -113,10 +113,15 @@ async function load(): Promise<void> {
   }
 }
 
-/** Déconnexion ou autre Roi : rien ne reste du chansonnier précédent, ses réponses en vol sont ignorées. */
+/**
+ * Déconnexion ou autre Roi : rien ne reste du chansonnier précédent, ses réponses en vol sont ignorées, ses
+ * annulations désarmées. Elles sont au Roi (scope 'king') : un changement de serveur, lui, les laisse (usePlayer
+ * ne désarme que celles du serveur quitté).
+ */
 function clear(): void {
   _loadSeq++;
   engine.reset();
+  herald.disarm('king');
   useLibrary.setState({ status: 'off', open: null });
 }
 
@@ -175,7 +180,7 @@ function unlike(track: LibraryTrack): Promise<boolean> {
   const done = run({ kind: 'unlike', url: track.url });
   const id = say('library.toast.unliked', {
     vars: { title: songOf(track) }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { void run({ kind: 'like', track }); } },
+    action: { label: t('toast.undo'), run: () => { void run({ kind: 'like', track }); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(id); });
   return done;
@@ -245,7 +250,7 @@ function deletePlaylist(id: string): Promise<boolean> {
   const done = run({ kind: 'delete', id: pl.id });
   const toast = say('library.toast.deleted', {
     vars: { name: pl.name }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { createPlaylist(pl.name, pl.tracks); } },
+    action: { label: t('toast.undo'), run: () => { createPlaylist(pl.name, pl.tracks); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(toast); });
   return done;
@@ -295,7 +300,7 @@ function removeFromPlaylist(id: string, track: LibraryTrack): Promise<boolean> {
   const toast = say('library.toast.removed', {
     vars: { name: pl.name, title: songOf(track) }, kind: 'info',
     // rajouté (à la fin), puis ramené à son rang : les deux partent l'un après l'autre (lib/library.ts)
-    action: { label: t('toast.undo'), run: () => { void run({ kind: 'add', id: pl.id, tracks: [track] }); void run({ kind: 'move', id: pl.id, url: track.url, to: at }); } },
+    action: { label: t('toast.undo'), run: () => { void run({ kind: 'add', id: pl.id, tracks: [track] }); void run({ kind: 'move', id: pl.id, url: track.url, to: at }); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(toast); });
   return done;
