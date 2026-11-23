@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FocusEvent, KeyboardEvent, MouseEvent } from 'react';
-import { usePlayer } from '@/hooks/usePlayer';
+import { playerActions, useStore } from '@/hooks/usePlayer';
 import { revealDelta } from '@/lib/focus';
 import { filterGuilds, foldText, groupGuilds, guildKey, imeKey, moveIndex, openingActive, searchable } from '@/lib/guilds';
 import type { GuildInfo } from '@/lib/types';
@@ -83,7 +83,12 @@ const STATUS_DELAY = 500;
  * aria-activedescendant. En dessous, même modèle clavier, focus sur la liste elle-même.
  */
 export default function GuildPicker() {
-  const { guilds, guildId, setGuild, socketReady } = usePlayer();
+  // Sélecteurs étroits : usePlayer() lirait tout le store, et le bot l'écrit 4 fois par seconde (position, horloge) ;
+  // avec des centaines de serveurs, chaque option serait redessinée à chaque fois.
+  const guilds = useStore((s) => s.guilds);
+  const guildId = useStore((s) => s.guildId);
+  const socketReady = useStore((s) => s.socketReady);
+  const { setGuild } = playerActions;
   const { open, setOpen, close, btnRef, wrapProps } = usePopover();
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
