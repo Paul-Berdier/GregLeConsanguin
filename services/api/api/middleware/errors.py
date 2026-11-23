@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+
 from flask import jsonify
 
 logger = logging.getLogger("greg.api.errors")
@@ -23,6 +24,12 @@ def register_error_handlers(app):
     @app.errorhandler(404)
     def not_found(e):
         return jsonify({"ok": False, "error": "not_found"}), 404
+
+    @app.errorhandler(413)
+    def too_large(e):
+        # MAX_CONTENT_LENGTH (api/__init__.py) : le corps n'est pas lu au-delà
+        return jsonify({"ok": False, "error": "PAYLOAD_TOO_LARGE",
+                        "message": "Demande trop volumineuse."}), 413
 
     @app.errorhandler(500)
     def internal_error(e):

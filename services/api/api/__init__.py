@@ -70,6 +70,9 @@ def create_app() -> Flask:
 
     # Config
     app.config["SECRET_KEY"] = settings.flask_secret_key
+    # Corps JSON bornés (413 au-delà) : le chansonnier et /queue/add_many lisent des listes de titres, le reste
+    # des routes de petits objets. 1 Mo couvre 500 titres pleins ; un corps énorme n'est plus lu en entier.
+    app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
     app.config["SESSION_COOKIE_NAME"] = settings.session_cookie_name
     app.config["SESSION_COOKIE_SAMESITE"] = settings.session_cookie_samesite
     app.config["SESSION_COOKIE_SECURE"] = settings.session_cookie_secure

@@ -137,3 +137,12 @@ def test_enqueue_route_is_unchanged(logged_client, fake_send):
     logged_client.post(f"{BASE}/queue/add", json={"guild_id": 1, "query": "x", "items": [yt(1)]})
     item = fake_send.calls[-1]["data"]["item"]
     assert set(item) == ITEM_KEYS and item["url"] == "x"
+
+
+def test_oversized_body_is_413_json(logged_client, fake_send):
+    """MAX_CONTENT_LENGTH : un corps de plus de 1 Mo n'est pas lu, la réponse reste du JSON."""
+    big = {"guild_id": "5", "items": [{"url": "https://youtu.be/dQw4w9WgXcQ", "title": "x" * 2000}] * 600}
+    r = logged_client.post("/api/v1/queue/add_many", json=big)
+    assert r.status_code == 413
+    assert r.get_json()["error"] == "PAYLOAD_TOO_LARGE"
+    assert fake_send.calls == []

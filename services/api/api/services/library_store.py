@@ -150,8 +150,9 @@ def library_key(uid: int) -> str:
 
 def _unavailable(uid: int, e: BaseException) -> LibraryError:
     # Le détail reste dans les journaux : la réponse ne porte que le code et le message FR.
+    # Pas de _reset_redis() ici : close() viderait le pool partagé, connexions des autres requêtes en cours comprises
+    # (fausses 503 en cascade). Le pool jette seul une connexion cassée ; le client n'est refait que s'il n'a pas pu naître.
     logger.warning("Chansonnier de %s : Redis injoignable (%s: %s)", uid, type(e).__name__, e)
-    _reset_redis()
     return LibraryError("STORAGE_UNAVAILABLE", MSG_STORAGE_UNAVAILABLE, 503)
 
 
