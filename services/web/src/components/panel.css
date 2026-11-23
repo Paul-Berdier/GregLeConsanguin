@@ -38,7 +38,9 @@
 .tab[aria-selected=true] { color: var(--os); }
 .count { font-size: 13px; color: var(--cendre); min-width: 8px; }
 
-.panes { position: relative; flex: 1; min-height: 0; display: grid; margin-top: 14px; }
+/* une colonne bornée au panneau : sans elle (piste « auto »), le nom en ligne du chansonnier (son champ garde sa
+   largeur propre) élargissait le volet au-delà du panneau, « Annuler » et les ▶ hors de l'écran à 320 px */
+.panes { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
 .pane { grid-area: 1 / 1; min-height: 0; display: flex; flex-direction: column; }
 .pane[aria-hidden=true] { visibility: hidden; pointer-events: none; }
 

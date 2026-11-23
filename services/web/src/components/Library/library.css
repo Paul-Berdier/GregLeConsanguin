@@ -77,8 +77,10 @@
 .lmeta { margin: 0; font-size: 14px; color: var(--cendre); }
 .ldel { position: relative; margin-left: auto; }
 
-/* « Supprimer « … » ? » : depuis son bouton, vers le bas, comme les popovers de l'en-tête (le focus sur « Garder ») */
-.ldel .lconfirm { width: min(290px, calc(100vw - 32px)); padding: 14px; }
+/* « Supprimer « … » ? » : depuis son bouton, vers le bas, comme les popovers de l'en-tête (le focus sur « Garder »).
+   Ancrée à droite du bouton, qui finit la rangée : sa largeur laisse la marge de la page et celles de .lhead (2 × 18 px),
+   sinon elle sortait de l'écran à gauche à 320 px */
+.ldel .lconfirm { width: min(290px, calc(100vw - 2 * var(--page-x, 16px) - 36px)); padding: 14px; }
 .lconfirm h3 { margin: 0 0 6px; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
 .lconfirm p { margin: 0 0 12px; font-size: 15px; color: var(--os-2); }
 .lconfirm .row-btns { display: flex; gap: 8px; justify-content: flex-end; }

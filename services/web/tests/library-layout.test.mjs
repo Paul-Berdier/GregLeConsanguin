@@ -49,3 +49,14 @@ test('file au survol ou au focus : le titre cède la place à la puce de quatre 
   const overNarrow = right + 3 * act + 2 * gap + 2 * pad - (cardPad + side + 10);
   assert.ok(narrow >= overNarrow && narrow <= overNarrow + 8, `étroit : réservé ${narrow} px pour ${overNarrow} px`);
 });
+
+test('chansonnier à 320 px : le nom en ligne n’élargit plus le volet ; la confirmation de suppression reste à l’écran', () => {
+  // une piste « auto » prenait la largeur propre du champ (≈ 163 px) : volet de 334 à 366 px dans un panneau de 278
+  assert.match(rule(css('src/components/panel.css'), '.panes'), /grid-template-columns: minmax\(0, 1fr\);/);
+  // ancrée à droite du bouton, au bout de .lhead (18 px de chaque côté) : la marge de la page et celles de .lhead laissées
+  const w = rule(css('src/components/Library/library.css'), '.ldel .lconfirm').match(/width: min\(290px, calc\(100vw - 2 \* var\(--page-x, 16px\) - (\d+)px\)\);/);
+  assert.ok(w, 'largeur bornée à la place à gauche du bouton');
+  const vw = 320, pageX = 16, scrollbar = 10, right = vw - scrollbar - pageX - 18;
+  const width = Math.max(250, Math.min(290, vw - 2 * pageX - Number(w[1])));   // .pop : min-width 250 px
+  assert.ok(right - width >= 0, `bord gauche à ${right - width} px`);
+});
