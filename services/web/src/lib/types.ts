@@ -74,3 +74,41 @@ export interface SearchResult {
 }
 
 export type StatusKind = 'info' | 'ok' | 'err' | 'warn';
+
+/**
+ * Un titre du chansonnier du Roi (API /library, spec 2026-11-23 §3) : lien http(s), titre brut (nettoyé à l'affichage),
+ * durée en secondes, ajouté à `added_at` (secondes epoch).
+ */
+export interface LibraryTrack {
+  url: string;
+  title: string;
+  artist: string | null;
+  duration: number | null;
+  thumb: string | null;
+  provider: 'youtube' | 'soundcloud' | null;
+  added_at: number;
+}
+
+/** Une playlist du Roi : `id` donné par l'API (ou provisoire, « tmp:… », tant qu'elle n'a pas répondu). */
+export interface LibraryPlaylist {
+  id: string;
+  name: string;
+  tracks: LibraryTrack[];
+  created_at: number;
+  updated_at: number;
+}
+
+/** Plafonds de l'API : coups de cœur, playlists, titres par playlist, caractères d'un nom. */
+export interface LibraryLimits {
+  likes: number;
+  playlists: number;
+  tracks: number;
+  name: number;
+}
+
+/** Le chansonnier d'un Roi : coups de cœur (le plus récent en tête) et playlists. */
+export interface Library {
+  likes: LibraryTrack[];
+  playlists: LibraryPlaylist[];
+  limits: LibraryLimits;
+}
