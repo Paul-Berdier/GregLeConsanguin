@@ -47,6 +47,7 @@ youtube.com_cookies.txt
 .pytest_cache/
 htmlcov/
 .coverage
+prof.out
 
 # Next / TypeScript (generes)
 services/web/next-env.d.ts
