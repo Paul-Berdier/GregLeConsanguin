@@ -180,6 +180,12 @@
 @media (max-height: 520px) and (min-width: 701px) {
   .theater { grid-template-areas: "top queue" ". queue" "bottom bottom"; }
   .th-queue { margin-top: 14px; }
+  /* le haut partage alors sa largeur avec la file : l'artiste sur sa ligne, le demandeur dessous, comme sur téléphone
+     debout (côte à côte, à 740 px, l'artiste ne gardait plus rien) */
+  .th-meta-line { flex-wrap: wrap; row-gap: 4px; }
+  .th-meta-line > .dot-sep { display: none; }
+  .th-artist { flex-basis: 100%; }
+  .th-by { flex: 0 1 auto; }
 }
 
 /* mouvement réduit : les commandes paraissent et partent sans fondu, la barre saute, les boutons ne s'enfoncent pas */

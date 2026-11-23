@@ -74,10 +74,15 @@ test('file de la surcouche lisible sur tablette et téléphone couché ; artiste
   const at = css.indexOf(`@media ${F.FS_NARROW} {`);
   assert.ok(at > 0, 'même seuil que FS_NARROW');
   const phone = css.slice(at, css.indexOf('\n}', at));
-  assert.match(phone, /\.th-meta-line \{[^}]*flex-wrap:\s*wrap/, 'l’artiste et le demandeur sur deux lignes');
-  assert.match(phone, /\.th-meta-line > \.dot-sep \{ display: none; \}/);
-  assert.match(phone, /\.th-artist \{ flex-basis: 100%; \}/);
-  assert.match(phone, /\.th-by \{ flex: 0 1 auto; \}/);
+  // téléphone couché aussi : le haut partage sa largeur avec la file (740 px : l'artiste à 0 px, côte à côte)
+  const low = css.indexOf('@media (max-height: 520px) and (min-width: 701px) {');
+  const landscape = css.slice(low, css.indexOf('\n}', low));
+  for (const [name, block] of [['debout', phone], ['couché', landscape]]) {
+    assert.match(block, /\.th-meta-line \{[^}]*flex-wrap:\s*wrap/, `${name} : l’artiste et le demandeur sur deux lignes`);
+    assert.match(block, /\.th-meta-line > \.dot-sep \{ display: none; \}/, name);
+    assert.match(block, /\.th-artist \{ flex-basis: 100%; \}/, name);
+    assert.match(block, /\.th-by \{ flex: 0 1 auto; \}/, name);
+  }
   assert.match(ruleBody(css, '.th-by'), /min-width:\s*0/);
   assert.match(ruleBody(css, '.th-by > span'), /text-overflow:\s*ellipsis/, 'le demandeur s’abrège seul');
   assert.match(code('src/components/Stage/Theater.tsx'), /<span>\{t\(keys\.plain, vars\)\}<\/span>/);
