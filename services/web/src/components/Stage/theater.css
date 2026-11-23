@@ -69,7 +69,7 @@
 .th-seal { width: 18px; height: 18px; flex: none; }
 .th-acts { display: flex; gap: 8px; flex: none; }
 
-/* boutons ronds de la surcouche (file, sortie ; le cœur du titre en cours viendra à leur gauche) */
+/* boutons ronds de la surcouche (cœur du titre en cours, file, sortie) */
 .th-icon {
   width: 44px; height: 44px; display: grid; place-items: center; border-radius: 9px; corner-shape: bevel;
   color: var(--os-2); background: rgb(11 9 8 / .6);
@@ -79,6 +79,11 @@
 .th-icon svg { width: 22px; height: 22px; }
 .th-icon:active { transform: scale(.95); }
 .th-icon[aria-expanded=true] { color: rgb(var(--lumiere-rgb)); }
+.th-icon[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
+.th-icon[aria-pressed=true] svg { fill: currentColor; }
+.th-icon:disabled { opacity: .5; cursor: default; }
+/* le Héraut monte dans l'élément en plein écran (page.tsx) : ses plaques passent au-dessus du bandeau du bas */
+.video[data-fs] .toasts[data-dock=center] { bottom: calc(210px + env(safe-area-inset-bottom, 0px)); }
 @media (hover: hover) and (pointer: fine) { .th-icon:hover { color: var(--os); background: rgb(29 25 21 / .85); } }
 
 /* « À suivre » : la plaque translucide, défilante */
@@ -158,3 +163,6 @@
   .th-icon:active, .th-act:active { transform: none; }
 }
 :root[data-motion=reduced] :is(.th-ui, .th-icon, .th-act, .th-fill), :root[data-motion=reduced] .theater[data-idle] .th-ui { transition: none; }
+
+/* repli « pseudo » sur téléphone : la page cachée dessous ne défile plus sous le doigt (ni la barre du navigateur) */
+html:has(.stage[data-fs=pseudo]), html:has(.stage[data-fs=pseudo]) body { overflow: hidden; overscroll-behavior: none; }

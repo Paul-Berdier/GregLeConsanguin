@@ -1,11 +1,18 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { create } from 'zustand';
 import type { RefObject } from 'react';
 import { FS_ASK_MS, canNativeFs, exitFs, fsElement, fsModeAfterChange, requestFs } from '@/lib/stage/fullscreen';
 import type { FsDoc, FsEl, FsMode } from '@/lib/stage/fullscreen';
 
 export type Fullscreen = { mode: FsMode | null; enter: () => void; exit: () => void; toggle: () => void };
+
+/**
+ * L'élément en plein écran (API ou repli), null sinon. Hors de lui, rien n'est visible en plein écran : page.tsx y monte
+ * le Héraut (createPortal) pour que les confirmations et « Annuler » restent à l'écran.
+ */
+export const useFsHost = create<{ host: HTMLElement | null }>(() => ({ host: null }));
 
 const CHANGE = ['fullscreenchange', 'webkitfullscreenchange'] as const;
 const ERROR = ['fullscreenerror', 'webkitfullscreenerror'] as const;
@@ -88,7 +95,10 @@ export function useFullscreen(elRef: RefObject<HTMLElement>, onExit: () => void)
   useEffect(() => {
     if (was.current && !mode) onExitRef.current();
     was.current = mode;
-  }, [mode]);
+    useFsHost.setState({ host: mode ? elRef.current : null });
+  }, [mode, elRef]);
+  // démonté en plein écran (élément retiré : le navigateur sort seul) : le Héraut revient à la page
+  useEffect(() => () => { if (useFsHost.getState().host === elRef.current) useFsHost.setState({ host: null }); }, [elRef]);
 
   return { mode, enter, exit, toggle };
 }

@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { playerActions, usePlayer, usePlayerInit, useStore } from '@/hooks/usePlayer';
+import { useFsHost } from '@/hooks/useFullscreen';
 import { HELP_EVENT, shortcutFor } from '@/lib/keys';
 import type { Shortcut } from '@/lib/keys';
 import { watchReducedMotion } from '@/lib/motion';
@@ -35,6 +37,7 @@ function focusQueue(): void {
 export default function Home() {
   usePlayerInit();
   const { boot, refreshMe, me } = usePlayer();
+  const fsHost = useFsHost((s) => s.host);
   const [booted, setBooted] = useState(false);
 
   useEffect(() => { boot().then(() => setBooted(true)).catch(() => setBooted(true)); }, [boot]);
@@ -117,7 +120,8 @@ export default function Home() {
       </div>
 
       {/* Le Héraut : au-dessus du pied du panneau ; au centre en bas quand le panneau n'est pas là */}
-      <Herald dock={booted && me ? 'panel' : 'center'}/>
+      {/* en plein écran, rien hors de la vidéo n'est visible : le Héraut y monte (ses plaques et « Annuler » restent là) */}
+      {fsHost ? createPortal(<Herald dock="center"/>, fsHost) : <Herald dock={booted && me ? 'panel' : 'center'}/>}
     </div>
   );
 }

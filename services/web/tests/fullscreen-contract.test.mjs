@@ -115,7 +115,8 @@ test('surcouche : focus pris, piégé, rendu ; libellés ; aucun id ni classe de
   for (const bad of ['data-clock="aria"', 'NOW_TITLE_ID', "'now-title'", 'pane-queue', 'tab-queue', 'className="qlist"', 'className="row', 'className="act']) {
     assert.ok(!th.includes(bad), bad);
   }
-  assert.match(src, /EMPLACEMENT DU CŒUR/, 'place réservée au cœur du titre en cours (intégration du chansonnier)');
+  // le cœur du titre en cours (chansonnier du Roi), avant le bouton de la file
+  assert.match(src, /<LikeButton track=\{current\} className="th-icon th-like"\/>\s*<button[^>]*fullscreen\.queueToggle/, 'cœur du titre en cours dans la surcouche');
   for (const [, key] of src.matchAll(/tx\('(fullscreen\.[\w.]+)'/g)) assert.notEqual(tx(key, { n: 2 }), key, key);
 });
 

@@ -16,6 +16,7 @@ import { parseTitle } from '@/lib/titles';
 import type { Track } from '@/lib/types';
 import { t } from '@/theme/copy';
 import { tx } from '@/theme/copy.extra';
+import LikeButton from '@/components/Library/LikeButton';
 import Transport from './Transport';
 
 /** Même pas que useStageClock : la barre avance quatre fois par seconde, sans boucle par image (motion.md P4). */
@@ -234,8 +235,8 @@ export default function Theater({ exit }: { exit: () => void }) {
           </p>
         </div>
         <div className="th-acts">
-          {/* EMPLACEMENT DU CŒUR : le bouton « J'aime » du titre en cours (chansonnier du Roi, §3 de la conception)
-              s'insère ici, avant le bouton de la file, à l'intégration. */}
+          {/* le cœur du titre en cours (chansonnier du Roi, §3 de la conception) */}
+          <LikeButton track={current} className="th-icon th-like"/>
           <button type="button" className="th-icon" aria-label={tx('fullscreen.queueToggle')} aria-expanded={queueOn}
             aria-controls={queueId} title={tx(queueOn ? 'fullscreen.queueHide' : 'fullscreen.queueShow')} onClick={toggleQueue}>
             {ICON.queue}
