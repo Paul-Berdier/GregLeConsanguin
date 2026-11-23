@@ -268,7 +268,10 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown, vi
     load(noMaxres.has(nextId));
   }, [nextId]);
 
-  const flying = crown?.mode === 'flight' && !crown.landed;
+  // En plein écran par l'API, `.video` est dans la couche du dessus : le fantôme du vol (dans <body>, coronation.ts) y est
+  // invisible. Le nouveau poster n'attend pas sous lui un atterrissage qu'on ne voit pas (noir pendant le vol) : il entre en fondu.
+  const ghostSeen = fullscreen.mode !== 'native';
+  const flying = ghostSeen && crown?.mode === 'flight' && !crown.landed;
   // Double-clic sur l'image : plein écran, entrée comme sortie (requestFullscreen part dans ce gestionnaire, useFullscreen).
   const onDoubleClick = (e: MouseEvent<HTMLDivElement>): void => {
     if (!fullscreen.ready && !fullscreen.mode) return;
@@ -281,7 +284,7 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown, vi
         <div className="yt" ref={wrapRef} aria-hidden="true"/>
         <div className="posters" data-covered={coverVisible(cover, still)}>
           {posters.map((p) => <Poster key={p.id} id={p.id} leaving={p.leaving} held={!p.leaving && p.mode === 'flight' && flying}
-            cut={p.mode === 'flight'} ms={p.ms}/>)}
+            cut={ghostSeen && p.mode === 'flight'} ms={p.ms}/>)}
           {!videoId && art && <img className="poster art" src={art} alt="" decoding="async" draggable={false} data-ready="true"/>}
         </div>
         <div className="veil"/>

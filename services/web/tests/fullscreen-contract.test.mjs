@@ -63,6 +63,11 @@ test('Portal : `.video` passe en plein écran, l’iframe ne bouge pas, la surco
   assert.ok(theater > video.indexOf('video-note'), 'après la note');
   assert.match(video.slice(theater), /^\{fullscreen\.mode && <Theater exit=\{fullscreen\.exit\}\/>\}\s*<\/div>\s*<\/div>/, 'dernier enfant de .video');
   assert.match(portal, /\(e\.target as Element\)\.closest\(FS_NO_DBLCLICK\)/, 'pas de double-clic sur une commande');
+  // Suivant à la souris dans la surcouche : le Couronnement peut voler depuis la file, cachée sous la couche du dessus ;
+  // son fantôme (dans <body>) y est invisible, le nouveau poster ne reste pas retenu (noir) pendant le vol
+  assert.match(portal, /const ghostSeen = fullscreen\.mode !== 'native';/);
+  assert.match(portal, /const flying = ghostSeen && crown\?\.mode === 'flight' && !crown\.landed;/);
+  assert.match(portal, /cut=\{ghostSeen && p\.mode === 'flight'\}/);
 });
 
 test('Stage : un seul crochet, le bouton à côté de « Synchro vidéo », sortie sans titre, Portal jamais remonté', () => {
