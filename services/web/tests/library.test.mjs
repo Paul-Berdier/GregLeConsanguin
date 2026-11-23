@@ -30,8 +30,24 @@ test('trackKey : toutes les formes YouTube de la spec donnent yt:<id>', () => {
     `https://www.youtube.com/embed/${id}?autoplay=1`,
     `HTTPS://WWW.YOUTUBE.COM/watch?v=${id}`,
     `  https://youtu.be/${id}/  `,
+    // formes que l'API reconnaît aussi (library_store._YT_ID_RE, comme lib/format.ts et le bot)
+    `https://www.youtube.com/live/${id}`,
+    `https://www.youtube.com/v/${id}`,
+    `https://www.youtube.com/e/${id}`,
+    `https://www.youtube-nocookie.com/embed/${id}`,
+    `www.youtube.com/watch?v=${id}`,
   ]) assert.equal(trackKey(u), `yt:${id}`, u);
   assert.equal(youtubeId(`https://www.youtube.com/watch?v=${id}`), id);
+});
+
+test('trackKey : la même clé que l’API pour chaque forme de ses tests (test_library_store.py)', () => {
+  const id = 'dQw4w9WgXcQ';
+  // une vidéo vue sous deux formes que l'API confond : le site les confond aussi (cœur pressé, doublon écarté)
+  assert.equal(trackKey(`https://www.youtube.com/live/${id}`), trackKey(`https://www.youtube.com/watch?v=${id}`));
+  assert.equal(trackKey(`https://www.youtube-nocookie.com/embed/${id}`), trackKey(`https://youtu.be/${id}`));
+  assert.equal(trackKey('https://example.com/a b'), 'url:https://example.com/ab', 'aucun blanc, comme l’API');
+  assert.equal(trackKey('https://www.youtube.com/watch?v=short'), 'url:https://www.youtube.com/watch?v=short');
+  assert.equal(providerOf(`https://www.youtube-nocookie.com/embed/${id}`), 'youtube');
 });
 
 test('trackKey : ailleurs que sur une vidéo YouTube, le lien sans espaces autour ni « / » final', () => {
@@ -67,6 +83,9 @@ test('toLibraryTrack : lien http(s) obligatoire, au plus 500 caractères', () =>
   assert.equal(toLibraryTrack({ url: 'ftp://x.org/a' }, NOW), null);
   assert.equal(toLibraryTrack({ url: `https://x.org/${'a'.repeat(490)}` }, NOW), null, '> 500');
   assert.equal(toLibraryTrack({ title: 'sans lien' }, NOW), null);
+  // refusés par l'API (library_store._http_url) : « \ », caractère de contrôle
+  assert.equal(toLibraryTrack({ url: 'https://a.b\\@youtube.com/watch?v=dQw4w9WgXcQ' }, NOW), null, '« \\ »');
+  assert.equal(toLibraryTrack({ url: 'https://x.org/a\u0001b' }, NOW), null, 'contrôle');
   assert.equal(toLibraryTrack(null, NOW), null);
   assert.equal(toLibraryTrack({ webpage_url: 'https://youtu.be/dQw4w9WgXcQ' }, NOW)?.url, 'https://youtu.be/dQw4w9WgXcQ', 'repli : webpage_url');
 });

@@ -20,10 +20,13 @@ export const TMP = 'tmp:';
 
 const URL_MAX = 500, TITLE_MAX = 200, ARTIST_MAX = 120, DURATION_MAX = 86400;
 
-// Formes de la spec (identité d'un titre) : watch?v=, youtu.be/, shorts/, embed/ (sauf « videoseries », une playlist),
-// sur youtube.com et ses sous-domaines (www., m., music.) ou youtu.be. Copie et non import (lib/format.ts) : module pur.
-const YT_ID = /(?:[?&]v=|youtu\.be\/|\/shorts\/|\/embed\/(?!videoseries))([A-Za-z0-9_-]{11})/;
-const YT_HOST = /(?:^|\.)youtube\.com$|^youtu\.be$/;
+// Les formes de l'API (library_store._YT_ID_RE, _YT_HOST_RE), qui sont celles de VIDEO_ID / YOUTUBE_HOST de
+// lib/format.ts et du bot : ?v=, /shorts/, /live/, /embed/ (sauf « videoseries », une playlist), youtu.be/, anciennes
+// formes /v/ /e/ /watch/ ; hôtes youtube.com (www., m., music.…), youtu.be, youtube-nocookie.com. Une forme de moins
+// ici, et un titre que l'API dit aimé paraîtrait libre (cœur relâché, doublon accepté puis écarté). Copie et non
+// import (lib/format.ts) : module pur.
+const YT_ID = /(?:[?&]v=|\/shorts\/|\/live\/|\/embed\/(?!videoseries)|youtu\.be\/|\.com\/(?:v|e|watch)\/)([A-Za-z0-9_-]{11})/;
+const YT_HOST = /(?:^|\.)(?:youtube\.com|youtu\.be|youtube-nocookie\.com)$/;
 const SC_HOST = /(?:^|\.)soundcloud\.com$/;
 
 function hostOf(url: string): string {
@@ -38,14 +41,14 @@ export function youtubeId(url: string | null | undefined): string | null {
 }
 
 /**
- * Identité d'un titre, calculée comme l'API : `yt:<id>` pour une vidéo YouTube, sinon `url:<lien>` sans espaces autour
- * ni « / » final. '' : pas de lien.
+ * Identité d'un titre, calculée comme l'API (library_store.track_key) : `yt:<id>` pour une vidéo YouTube, sinon
+ * `url:<lien>` sans aucun blanc ni « / » final. '' : pas de lien.
  */
 export function trackKey(url: string | null | undefined): string {
   const u = String(url ?? '').trim();
   if (!u) return '';
   const id = youtubeId(u);
-  return id ? `yt:${id}` : `url:${u.replace(/\/+$/, '')}`;
+  return id ? `yt:${id}` : `url:${u.replace(/\s+/g, '').replace(/\/+$/, '')}`;
 }
 
 /** Source déduite de l'hôte, comme l'API quand le titre ne la dit pas. */
@@ -61,9 +64,11 @@ export type TrackLike = {
 };
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
+/** Lien http(s) que l'API garde (library_store._http_url) : sans blanc, caractère de contrôle ni « \ » (sinon toute la
+ * liste envoyée serait refusée, INVALID_TRACK). */
 const httpUrl = (v: unknown): string | null => {
   const s = typeof v === 'string' ? v.trim() : '';
-  return s.length <= URL_MAX && /^https?:\/\/\S+$/i.test(s) ? s : null;
+  return s.length <= URL_MAX && /^https?:\/\/[^\s\\\u0000-\u001f\u007f-\u009f]+$/i.test(s) ? s : null;
 };
 /** Coupé à `n` caractères (points de code, comme len() de Python). */
 const clip = (s: string, n: number): string => { const cps = [...s]; return cps.length > n ? cps.slice(0, n).join('') : s; };
