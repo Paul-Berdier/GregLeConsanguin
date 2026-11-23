@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { speak } from '@/components/Herald/store';
@@ -57,6 +57,9 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const listRef = useRef<HTMLOListElement>(null);
   const once = useRef(createDedupe());
   const settleRef = useRef(createSettle());
+  const backRef = useRef<HTMLButtonElement>(null);
+  /** Suppr vient de viser la dernière ligne (le focus ira au retour). */
+  const emptied = useRef(false);
   const moves = useRef(0);
   const keysId = useId(), titleId = useId(), bodyId = useId();
 
@@ -92,6 +95,7 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const roving = useRoving(listRef, keys, 'key', (act, k, i) => {
     const x = byKey.get(k);
     if (!x) return null;
+    emptied.current = act.kind === 'remove' && keys.length === 1;   // la dernière : la liste part avec elle
     if (act.kind === 'activate') { add(x); return null; }
     if (act.kind === 'remove') { void remove(x); return keys[i + 1] ?? keys[i - 1] ?? null; }
     if (act.kind !== 'move' || likes) return undefined;   // Alt+Début : rien ici ; les coups de cœur gardent leur ordre
@@ -102,6 +106,14 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
     });
     return undefined;
   });
+  // Suppr sur la dernière ligne : la liste démontée, le focus tombait sur la page (ou sur l'onglet, rendu par useRoving) ;
+  // il va au retour, en tête de la vue vide. Après useRoving, qui a déjà tenté de le rendre.
+  useLayoutEffect(() => {
+    const was = emptied.current;
+    emptied.current = false;
+    const at = document.activeElement;
+    if (was && !tracks.length && (!at || at === document.body || at.getAttribute('role') === 'tab')) backRef.current?.focus();
+  }, [tracks.length]);
 
   /**
    * « Retirer » au pointeur : la ligne suivante remonte sous le pointeur immobile, sa puce montrée ; le second clic d'un
@@ -150,7 +162,7 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   return (
     <div className="lview">
       <div className="lhead">
-        <button type="button" className="lback" onClick={onBack} aria-label={tx('library.back')}>{BACK}<span>{tx('library.tab')}</span></button>
+        <button ref={backRef} type="button" className="lback" onClick={onBack} aria-label={tx('library.back')}>{BACK}<span>{tx('library.tab')}</span></button>
         {renaming && pl
           ? <NameForm initial={pl.name} submitLabel={tx('library.save')} submitAria={tx('library.save')} onSubmit={rename} onCancel={() => setRenaming(false)}/>
           : (

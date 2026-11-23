@@ -190,15 +190,34 @@ export default function LibraryPanel() {
     e.stopPropagation();
   };
 
+  /** « Réessayer » pressé : il reste affiché pendant la relecture ; le chansonnier lu, le focus va à sa liste. */
+  const [retried, setRetried] = useState(false);
+  const retry = () => {
+    if (status !== 'error') return;   // relecture en cours (aria-disabled)
+    setRetried(true);
+    void libraryActions.load();
+  };
+  useLayoutEffect(() => {
+    if (!retried || (!lib && status !== 'off')) return;
+    setRetried(false);
+    const root = paneRef.current, at = document.activeElement;
+    // déconnecté entre-temps, le Roi parti ailleurs, ou le volet caché : le focus reste où il est
+    if (!lib || !root || (at && at !== document.body) || root.closest('[aria-hidden="true"]')) return;
+    root.querySelector<HTMLElement>('.lcards > .row[tabindex="0"], .lback')?.focus();
+  }, [lib, retried, status]);
+
   if (!lib) {
+    const failed = status === 'error';
+    // une seule région annoncée de l'ouverture à l'échec : un nouvel échec après « Réessayer » est dit. Le bouton
+    // reste (aria-disabled) pendant la relecture : le focus ne tombe pas sur la page avec lui.
     return (
-      <div className="lpane">
-        {status === 'error' ? (
-          <div className="hstate">
-            <p>{tx('library.failed')}</p>
-            <button type="button" className="lbtn" aria-label={tx('library.retry')} onClick={() => void libraryActions.load()}>{tx('library.retry')}</button>
-          </div>
-        ) : <div className="hstate" role="status"><p>{status === 'off' ? '' : tx('library.loading')}</p></div>}
+      <div className="lpane" ref={paneRef}>
+        <div className="hstate">
+          <p role="status">{status === 'off' ? '' : tx(failed ? 'library.failed' : 'library.loading')}</p>
+          {status !== 'off' && (failed || retried) && (
+            <button type="button" className="lbtn" aria-disabled={!failed} aria-label={tx('library.retry')} onClick={retry}>{tx('library.retry')}</button>
+          )}
+        </div>
       </div>
     );
   }

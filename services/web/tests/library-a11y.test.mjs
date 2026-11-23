@@ -50,6 +50,28 @@ test('« Ajouter le titre en cours » : le titre ajouté, il garde le focus (ari
   assert.match(add, /void done\.then\(\(ok\) => \{ if \(!ok\) herald\.retract\(toast\); \}\);/, 'refusé par l’API : l’annonce part, Ctrl+Z n’y est pas');
 });
 
+test('focus gardé : « Réessayer » reste pendant la relecture, puis la liste ; un nouvel échec est dit', () => {
+  const panel = read('src/components/Library/LibraryPanel.tsx');
+  const off = panel.slice(panel.indexOf('if (!lib) {'), panel.indexOf('\n  }\n', panel.indexOf('if (!lib) {')));
+  // une seule région annoncée, de l'ouverture à l'échec (avant : l'échec hors de toute région)
+  assert.match(off, /<p role="status">\{status === 'off' \? '' : tx\(failed \? 'library\.failed' : 'library\.loading'\)\}<\/p>/);
+  assert.equal((off.match(/role="status"/g) || []).length, 1);
+  assert.match(off, /\{status !== 'off' && \(failed \|\| retried\) && \(\s*<button type="button" className="lbtn" aria-disabled=\{!failed\}/, 'gardé (désactivé) pendant la relecture');
+  assert.match(panel, /if \(status !== 'error'\) return;\s*\/\/[^\n]*\n\s*setRetried\(true\);\s*void libraryActions\.load\(\);/);
+  // lu : le focus (tombé avec le bouton) va à la ligne active ; jamais volé, jamais dans un volet caché
+  assert.match(panel, /if \(!lib \|\| !root \|\| \(at && at !== document\.body\) \|\| root\.closest\('\[aria-hidden="true"\]'\)\) return;\s*root\.querySelector<HTMLElement>\('\.lcards > \.row\[tabindex="0"\], \.lback'\)\?\.focus\(\);/);
+});
+
+test('focus gardé : Suppr sur la dernière ligne d’une playlist l’envoie au retour', () => {
+  const view = read('src/components/Library/PlaylistView.tsx');
+  assert.match(view, /emptied\.current = act\.kind === 'remove' && keys\.length === 1;/);
+  assert.match(view, /if \(was && !tracks\.length && \(!at \|\| at === document\.body \|\| at\.getAttribute\('role'\) === 'tab'\)\) backRef\.current\?\.focus\(\);/);
+  assert.match(view, /\}, \[tracks\.length\]\);/);
+  // après useRoving (son propre secours, vers l'onglet, passe d'abord)
+  assert.ok(view.indexOf('const roving = useRoving(') < view.indexOf('if (was && !tracks.length'));
+  assert.match(view, /<button ref=\{backRef\} type="button" className="lback"/);
+});
+
 test('« Retirer » doublé : la ligne remontée sous le pointeur n’est ni retirée ni remise dans la file', () => {
   const view = read('src/components/Library/PlaylistView.tsx');
   assert.match(view, /const settleRef = useRef\(createSettle\(\)\);/);
