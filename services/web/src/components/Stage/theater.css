@@ -145,6 +145,15 @@
   position: absolute; inset: 0; background: rgb(var(--lumiere-rgb)); transform: scaleX(0); transform-origin: 0 50%;
   transition: transform 250ms linear;
 }
+/* la rondelle du transport s'éclaire au survol par un filtre (now.css) : pas au-dessus de l'iframe. Ici, un voile de
+   lumière posé sur son verre, sous l'icône */
+@media (hover: hover) and (pointer: fine) {
+  .theater .tbtn.main:not(:disabled):hover { filter: none; }
+  .theater .tbtn.main::before {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; background: rgb(255 248 232 / .1); opacity: 0; pointer-events: none;
+  }
+  .theater .tbtn.main:not(:disabled):hover::before { opacity: 1; }
+}
 
 /* écran étroit (téléphone en repli) : la file passe entre le titre et le transport, sur toute la largeur */
 @media (max-width: 700px) {
@@ -182,3 +191,9 @@
 
 /* repli « pseudo » sur téléphone : la page cachée dessous ne défile plus sous le doigt (ni la barre du navigateur) */
 html:has(.stage[data-fs=pseudo]), html:has(.stage[data-fs=pseudo]) body { overflow: hidden; overscroll-behavior: none; }
+/* une colonne (stage.css) : la gouttière gardée pour la barre de défilement laisserait une bande de page à droite de la
+   vidéo fixée ; sans défilement, plus de gouttière */
+html:has(.stage[data-fs=pseudo]) { scrollbar-gutter: auto; }
+/* les fantômes des vols (Couronnement, Sceau), fixés dans <body>, passeraient par-dessus la surcouche : la pile de
+   .page-shell (z-index 10) garde la vidéo du repli sous eux. Avec l'API, la couche du dessus les cache déjà */
+html:has(.stage[data-fs=pseudo]) :is(.ghost, .seal-ghost) { visibility: hidden; }

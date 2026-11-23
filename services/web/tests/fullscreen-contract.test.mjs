@@ -25,9 +25,16 @@ test('feuille : importée avec la scène, transform et opacity seulement, mouvem
 });
 
 test('translucide par la couleur seule : ni filter ni backdrop-filter autour de l’iframe', () => {
-  assert.doesNotMatch(noComments(read(THEATER_CSS)), /filter\s*:/, 'theater.css');
+  // un seul filtre permis, « filter: none », qui en ôte un
+  for (const [decl] of noComments(read(THEATER_CSS)).matchAll(/(?<![-\w])(?:backdrop-)?filter\s*:\s*[^;}]+/g)) {
+    assert.match(decl, /^filter\s*:\s*none\s*$/, `theater.css : ${decl}`);
+  }
   assert.doesNotMatch(noComments(read('src/components/Stage/portal.css')), /backdrop-filter/, 'portal.css');
   const css = noComments(read(THEATER_CSS));
+  // le Transport de la scène monte dans la surcouche : chaque filtre que now.css pose sur ses boutons y est ôté
+  const now = noComments(read('src/components/Stage/now.css'));
+  const filtered = [...now.matchAll(/([^{}]*\.tbtn[^{}]*)\{[^}]*(?<![-\w])filter\s*:\s*(?!none)/g)].map(([, sel]) => sel.trim());
+  for (const sel of filtered) assert.match(ruleBody(css, `.theater ${sel}`), /(?<![-\w])filter:\s*none/, `now.css : ${sel}`);
   assert.match(ruleBody(css, '.th-queue'), /background:\s*rgb\(11 9 8 \/ \.6\)/, 'plaque de la file');
   assert.match(ruleBody(css, '.th-queue'), /var\(--hair\)/, 'filet');
   assert.match(ruleBody(css, '.th-title'), /var\(--f-title\)/, 'titre en Grenze');
@@ -44,6 +51,15 @@ test('plein écran : fond noir, posters entiers ; la nuit n’éteint ni ne bloq
   // .stage[data-fs=pseudo] .video (0,3,0) passe après .stage[data-paused=true] .video (portal.css, même poids)
   assert.match(css, /\.stage-col:has\(> \.stage\[data-fs=pseudo\]\)\s*\{\s*container-type:\s*normal;?\s*\}/);
   assert.match(ruleBody(css, '.th-queue[hidden]'), /display:\s*none/, 'display: flex ne doit pas rouvrir la file masquée');
+});
+
+test('repli : ni bande de page à droite (gouttière), ni fantôme de vol par-dessus la surcouche', () => {
+  const css = noComments(read(THEATER_CSS));
+  // une colonne : stage.css garde une gouttière ; sans défilement (repli), elle laisserait la page voir à droite
+  assert.match(noComments(read('src/components/Stage/stage.css')), /@media \(max-width: 900px\) \{\s*html \{ scrollbar-gutter: stable; \}/);
+  assert.match(ruleBody(css, 'html:has(.stage[data-fs=pseudo])'), /scrollbar-gutter:\s*auto/);
+  // les fantômes (fixes, dans <body>, z-index 80) passeraient au-dessus de la pile de .page-shell (10), donc de la vidéo
+  assert.match(ruleBody(css, 'html:has(.stage[data-fs=pseudo]) :is(.ghost, .seal-ghost)'), /visibility:\s*hidden/);
 });
 
 test('file de la surcouche lisible sur tablette et téléphone couché ; artiste et demandeur lisibles sur téléphone', () => {
@@ -84,9 +100,10 @@ test('Portal : `.video` passe en plein écran, l’iframe ne bouge pas, la surco
   assert.ok(theater > video.indexOf('video-note'), 'après la note');
   assert.match(video.slice(theater), /^\{fullscreen\.mode && <Theater exit=\{fullscreen\.exit\}\/>\}\s*<\/div>\s*<\/div>/, 'dernier enfant de .video');
   assert.match(portal, /\(e\.target as Element\)\.closest\(FS_NO_DBLCLICK\)/, 'pas de double-clic sur une commande');
-  // Suivant à la souris dans la surcouche : le Couronnement peut voler depuis la file, cachée sous la couche du dessus ;
-  // son fantôme (dans <body>) y est invisible, le nouveau poster ne reste pas retenu (noir) pendant le vol
-  assert.match(portal, /const ghostSeen = fullscreen\.mode !== 'native';/);
+  // Suivant à la souris dans la surcouche : le Couronnement peut voler depuis la file, cachée sous la vidéo ; son fantôme
+  // (dans <body>) y est invisible, sous la couche du dessus (API) ou caché par theater.css (repli) : en plein écran, quel
+  // qu'il soit, le nouveau poster ne reste pas retenu (noir) pendant le vol
+  assert.match(portal, /const ghostSeen = !fullscreen\.mode;/);
   assert.match(portal, /const flying = ghostSeen && crown\?\.mode === 'flight' && !crown\.landed;/);
   assert.match(portal, /cut=\{ghostSeen && p\.mode === 'flight'\}/);
 });
