@@ -10,6 +10,7 @@ import { useRoving } from '@/hooks/useRoving';
 import { heldEnter } from '@/lib/keys';
 import { LIKES, tracksOf } from '@/lib/library';
 import { createDedupe } from '@/lib/queue/drag';
+import { fsSwallowClick } from '@/lib/stage/fullscreen';
 import { kingSealSrc } from '@/lib/stage/scene';
 import type { Library, LibraryTrack } from '@/lib/types';
 import { tx } from '@/theme/copy.extra';
@@ -154,11 +155,14 @@ export default function LibraryPanel() {
 
   /** Vue rendue au passage précédent : une vue disparue sous le Roi se reconnaît à son départ. */
   const shown = useRef<string | null>(null);
+  /** Dernier changement de vue (performance.now()) : la suite d'un double-clic qui l'a fait est ignorée (swallow). */
+  const switchedAt = useRef(0);
 
   useLayoutEffect(() => {
     const want = focusNext.current, was = shown.current;
     focusNext.current = null;
     shown.current = view;
+    switchedAt.current = performance.now();
     const root = paneRef.current;
     if (!root) return;
     // vue ouverte disparue sans geste du Roi (playlist supprimée dans un autre onglet, création refusée) : le focus,
@@ -175,6 +179,16 @@ export default function LibraryPanel() {
 
   const openView = (id: string) => { focusNext.current = 'back'; libraryActions.setOpen(id); };
   const back = () => { focusNext.current = view; libraryActions.setOpen(null); };
+  /**
+   * Un clic ouvre une vue (ou y revient) aussitôt : le second clic d'un double-clic, et son dblclick, tomberaient sur ce
+   * qu'elle a mis sous le pointeur (« Tout jouer », une ligne remise dans la file, « Nouvelle playlist »). Ignorés comme
+   * dans la Grand-Salle (fsSwallowClick) ; un clic du clavier (detail 0) passe toujours.
+   */
+  const swallow = (e: MouseEvent): void => {
+    if (!fsSwallowClick(e.detail, performance.now() - switchedAt.current)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   if (!lib) {
     return (
@@ -191,7 +205,8 @@ export default function LibraryPanel() {
   return (
     // Entrée maintenue n'agit qu'une fois sur tout le volet (heldEnter) : « Tout jouer » rajoutait la playlist entière
     // toutes les 500 ms ; un bouton qui ouvre (renommer, supprimer) se rouvrait en boucle. Les lignes : listKey.
-    <div className="lpane" ref={paneRef} onKeyDownCapture={(e) => { if (heldEnter(e)) e.preventDefault(); }}>
+    <div className="lpane" ref={paneRef} onKeyDownCapture={(e) => { if (heldEnter(e)) e.preventDefault(); }}
+      onClickCapture={swallow} onDoubleClickCapture={swallow}>
       {view && tracks
         ? <PlaylistView key={libraryActions.originOf(view)} id={view} lib={lib} tracks={tracks} onBack={back}/>
         : <Overview lib={lib} onOpen={openView}/>}
