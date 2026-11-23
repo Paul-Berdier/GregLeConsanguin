@@ -6,6 +6,8 @@ import { kingName } from '@/components/Header/KingAvatar';
 import { parseTitle } from '@/lib/titles';
 import { kickerKey, kingSealSrc, requesterKeys, requesterOf, seedOf } from '@/lib/stage/scene';
 import { quip, t } from '@/theme/copy';
+import AddToPlaylist from '@/components/Library/AddToPlaylist';
+import LikeButton from '@/components/Library/LikeButton';
 import { useCeremony } from './coronation';
 import { runGlint } from './glint';
 import Swap from './Swap';
@@ -19,6 +21,8 @@ export const NOW_TITLE_ID = 'now-title';
  * Les emplacements sont toujours rendus et gardent leur hauteur sans titre (la mise en page de la scène n'en dépend pas).
  * Au Couronnement (coronation.ts), titre et demandeur se croisent (Swap) selon le plan de la cérémonie, puis le reflet
  * d'or passe sur le titre (glint.ts) ; en vol, à l'atterrissage. Styles : now.css.
+ * Au bout de la ligne du demandeur : le cœur du Roi (coups de cœur) et « Ajouter à une playlist » (chansonnier, spec
+ * 2026-11-23 §3), hors des légendes croisées : ils suivent le titre affiché, sans attendre la cérémonie.
  */
 export default function NowPlaying() {
   const current = useStore((s) => s.player.current);
@@ -63,15 +67,22 @@ export default function NowPlaying() {
       <h2 className="title-slot" id={NOW_TITLE_ID} title={current?.title} ref={titleRef}>
         <Swap k={key} plan={plan} delay={plan?.titleDelay ?? 0}>{song}</Swap>
       </h2>
-      <p className="meta-slot">
-        <Swap k={key} plan={plan} delay={plan?.metaDelay ?? 0}>
-          {parsed?.artist && <><span className="artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
-          {req && keys && <span className="by">
-            {req.kind === 'mine' && <img className="seal" src={kingSealSrc(kingName(me))} alt="" width={20} height={20} decoding="async"/>}
-            {t(keys.plain, vars)}
-          </span>}
-        </Swap>
-      </p>
+      <div className="now-meta">
+        <p className="meta-slot">
+          <Swap k={key} plan={plan} delay={plan?.metaDelay ?? 0}>
+            {parsed?.artist && <><span className="artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
+            {req && keys && <span className="by">
+              {req.kind === 'mine' && <img className="seal" src={kingSealSrc(kingName(me))} alt="" width={20} height={20} decoding="async"/>}
+              {t(keys.plain, vars)}
+            </span>}
+          </Swap>
+        </p>
+        {/* le cœur du Roi et « Ajouter à une playlist » (Library/) : toujours rendus, cachés sans titre (hauteur gardée) */}
+        <div className="now-acts" data-shown={!!current && !!me}>
+          <LikeButton track={current}/>
+          <AddToPlaylist track={current}/>
+        </div>
+      </div>
     </div>
   );
 }

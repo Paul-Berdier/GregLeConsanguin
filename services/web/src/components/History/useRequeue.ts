@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { MouseEvent, RefObject } from 'react';
 import { playerActions } from '@/hooks/usePlayer';
+import { libraryActions } from '@/hooks/useLibrary';
 import { useRoving } from '@/hooks/useRoving';
 import { reducedMotion } from '@/lib/motion';
 import { createDedupe } from '@/lib/queue/drag';
@@ -24,7 +25,8 @@ export function requeue(item: HistoryItem, from?: HTMLElement | null): void {
 }
 
 /**
- * Clics d'une liste d'historique (délégués) : un clic sélectionne, un double-clic ou « + » remet dans la file.
+ * Clics d'une liste d'historique (délégués) : un clic sélectionne, un double-clic ou « + » remet dans la file, le cœur
+ * garde le titre parmi les coups de cœur du Roi (useLibrary).
  * Un seul ajout par 500 ms : « + » cliqué deux fois, ou la ligne de « Souvent demandés ici » qui remonte sous le
  * pointeur quand la précédente entre dans la file, ne remettent pas un second titre.
  * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre dans la file (depuis sa pochette).
@@ -49,11 +51,13 @@ export function useRequeueList(items: readonly HistoryItem[], listRef: RefObject
   const onClick = (e: MouseEvent) => {
     const it = itemOf(e);
     if (!it) return;
-    if ((e.target as HTMLElement).closest('[data-act=add]')) add(it);
+    const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
+    if (act === 'like') libraryActions.toggleLike(it);   // le cœur : les coups de cœur du Roi (chansonnier)
+    else if (act === 'add') add(it);
     else setPicked(it.url || null);
   };
   const onDoubleClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-act=add]')) return;
+    if ((e.target as HTMLElement).closest('[data-act]')) return;   // « + » ou le cœur cliqués deux fois : leur seul geste
     const it = itemOf(e);
     if (it) add(it);
   };

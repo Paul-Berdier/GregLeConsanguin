@@ -71,6 +71,9 @@
 .act { width: 32px; height: 32px; border-radius: 6px; display: grid; place-items: center; color: var(--os-2); transition: transform var(--dur-press) var(--ease-out); }
 .act svg { width: 16px; height: 16px; }
 .act:active { transform: scale(.94); }
+/* le cœur pressé (coups de cœur du Roi, chansonnier) : la lumière du morceau, rempli */
+.act[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
+.act[aria-pressed=true] svg { fill: currentColor; }
 @media (hover: hover) and (pointer: fine) {
   .act:hover { background: rgb(239 231 216 / .07); color: var(--os); }
   .act.del:hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
