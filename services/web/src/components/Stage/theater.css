@@ -1,0 +1,160 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   NUIT GOTHIQUE : la vidéo en plein écran et « La Grand-Salle », sa surcouche (Theater.tsx ; conception du
+   2026-11-23, §2). Choix de DA, les nôtres :
+   - c'est `.video` (Portal.tsx) qui passe en plein écran, l'iframe dedans, sans bouger. Avec l'API, elle monte dans la
+     couche du dessus : l'opacité et le transform de nuit du portail, les rognages de la colonne ne s'y appliquent
+     plus. Sans elle (iPhone), le repli « pseudo » la fixe sur tout l'écran ; data-fs (.video, .stage) porte le mode ;
+   - fond noir, posters entiers (object-fit: contain) : un écran n'a pas toujours le 16/9 de la vidéo ;
+   - translucide par la couleur seule : plaques rgb(11 9 8 / .6) (--nuit), dégradés de la même nuit en haut et en bas,
+     filets --hair, lumière du morceau sur l'arête haute. Jamais de backdrop-filter ni de filter au-dessus de
+     l'iframe : une passe de rendu de plus à chaque image de la vidéo (tech.md §6.2) ;
+   - le titre en Grenze, le surtitre, le temps écoulé et la barre dans la lumière du morceau, comme sous le portail ;
+   - commandes au repos après 3 s (Theater.tsx) : elles partent en fondu lent, reviennent vite, le curseur avec elles ;
+     mouvement réduit : sans fondu. Seuls transform et opacity s'animent (tests/fullscreen-contract.test.mjs).
+   Variables lues : --lumiere-rgb, les couleurs et durées de tokens.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* plein écran, API ou repli : la vidéo occupe l'écran, sur du noir ; ses commandes répondent même si la nuit est
+   tombée pendant les 1,5 s avant la sortie (pointer-events: none du portail, hérité) */
+.video[data-fs] { background: #000; pointer-events: auto; -webkit-user-select: none; user-select: none; }
+.video[data-fs] .posters { background: #000; }
+.video[data-fs] .poster { object-fit: contain; }
+.video[data-fs] .video-note {
+  left: 50%; right: auto; bottom: auto; top: calc(50% + 44px); max-width: min(560px, calc(100% - 32px)); transform: translateX(-50%);
+}
+
+/* repli « pseudo » (sans API) : fixé sur tout l'écran. Les ancêtres ne doivent ni l'effacer (nuit), ni l'incliner
+   (Révérence), ni le piéger (un transform fait d'un ancêtre le bloc conteneur d'un élément fixe), ni le laisser sous
+   l'en-tête (z-index 30) et le Héraut (90) : sans l'API, rien n'est caché pour nous. */
+.stage[data-fs=pseudo] .portal { z-index: 100; opacity: 1; transform: none; pointer-events: auto; transition: none; }
+.stage[data-fs=pseudo] .video {
+  position: fixed; inset: 0; z-index: 100; width: 100%; height: 100%; aspect-ratio: auto; transform: none; transition: none;
+}
+/* la colonne est un conteneur de requêtes (container: inline-size) : selon le moteur, sa contenance en ferait le bloc
+   conteneur et la pile de la vidéo fixée ; le temps du repli, elle n'en est plus un (la page dessous est cachée) */
+.stage-col:has(> .stage[data-fs=pseudo]) { container-type: normal; }
+
+/* ── La Grand-Salle : ce qui joue en haut, la file à droite, le temps et le transport en bas ── */
+.theater {
+  position: absolute; inset: 0; z-index: 5;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "top top" ". queue" "bottom bottom";
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  color: var(--os); outline: none;   /* le focus d'entrée est sur la surcouche entière : pas d'anneau autour de l'écran */
+}
+.theater[data-idle] { cursor: none; }
+/* les trois zones de commandes : au repos, elles partent en 420 ms et ne captent plus rien (un appui réveille d'abord) ;
+   elles reviennent en 160 ms */
+.th-ui { transition: opacity var(--dur-micro) var(--ease-out); }
+.theater[data-idle] .th-ui { opacity: 0; pointer-events: none; transition-duration: var(--dur-reveal); }
+
+.th-top {
+  grid-area: top; display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 26px 32px 64px;
+  background: linear-gradient(rgb(11 9 8 / .82), rgb(11 9 8 / .45) 55%, rgb(11 9 8 / 0));
+}
+.th-now { min-width: 0; }
+.th-kicker {
+  margin: 0; min-height: 12px; font: 700 12px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase;
+  color: rgb(var(--lumiere-rgb));
+}
+.th-title {
+  margin: 10px 0 0; font: 600 clamp(30px, 3.6vw, 56px)/1.08 var(--f-title); letter-spacing: -.015em; color: var(--os);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 2px 18px rgb(0 0 0 / .55);
+}
+.th-meta-line {
+  display: flex; align-items: center; gap: 8px; min-width: 0; margin: 6px 0 0; font-size: 16.5px; color: var(--os-2); white-space: nowrap;
+}
+.th-artist { overflow: hidden; text-overflow: ellipsis; }
+.th-by { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.th-seal { width: 18px; height: 18px; flex: none; }
+.th-acts { display: flex; gap: 8px; flex: none; }
+
+/* boutons ronds de la surcouche (file, sortie ; le cœur du titre en cours viendra à leur gauche) */
+.th-icon {
+  width: 44px; height: 44px; display: grid; place-items: center; border-radius: 9px; corner-shape: bevel;
+  color: var(--os-2); background: rgb(11 9 8 / .6);
+  box-shadow: inset 0 0 0 1px var(--hair), inset 0 1px 0 rgb(var(--lumiere-rgb) / .18);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.th-icon svg { width: 22px; height: 22px; }
+.th-icon:active { transform: scale(.95); }
+.th-icon[aria-expanded=true] { color: rgb(var(--lumiere-rgb)); }
+@media (hover: hover) and (pointer: fine) { .th-icon:hover { color: var(--os); background: rgb(29 25 21 / .85); } }
+
+/* « À suivre » : la plaque translucide, défilante */
+.th-queue {
+  grid-area: queue; display: flex; flex-direction: column; min-height: 0; width: min(380px, 34vw); margin: 0 24px 12px 0;
+  border-radius: 12px; corner-shape: bevel; background: rgb(11 9 8 / .6);
+  box-shadow: inset 0 0 0 1px var(--hair), inset 0 1px 0 rgb(var(--lumiere-rgb) / .22);
+}
+.th-queue[hidden] { display: none; }
+.th-qtitle {
+  margin: 0; padding: 14px 16px 8px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--cendre);
+}
+.th-list { list-style: none; margin: 0; padding: 0 8px 8px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.th-row {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 6px 8px; border-radius: 8px; corner-shape: bevel;
+}
+.th-row + .th-row { margin-top: 2px; }
+.th-row[data-current] { background: rgb(var(--lumiere-rgb) / .08); box-shadow: inset 0 0 0 1px rgb(var(--lumiere-rgb) / .16); }
+@media (hover: hover) and (pointer: fine) { .th-row:not([data-current]):hover { background: rgb(239 231 216 / .05); } }
+.th-thumb { width: 64px; height: 36px; border-radius: 4px; overflow: hidden; background: var(--voute-2); }
+.th-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.th-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.th-meta .t { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-meta .a { font-size: 13px; color: var(--cendre); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-side { display: flex; align-items: center; gap: 2px; }
+.th-dur { min-width: 38px; margin-right: 4px; font-size: 13px; color: var(--os-2); text-align: right; }
+.th-tag { font: 700 11px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase; color: rgb(var(--lumiere-rgb)); }
+.th-act {
+  width: 32px; height: 32px; display: grid; place-items: center; border-radius: 7px; corner-shape: bevel; color: var(--cendre);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.th-act svg { width: 17px; height: 17px; }
+.th-act:active { transform: scale(.92); }
+@media (hover: hover) and (pointer: fine) {
+  .th-act:hover { color: var(--os); background: rgb(239 231 216 / .07); }
+  .th-act.del:hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
+}
+@media (hover: none) { .th-act { width: 40px; height: 40px; } }
+.th-more, .th-empty { margin: 0; padding: 8px 16px 14px; font-size: 13.5px; color: var(--cendre); }
+
+/* en bas : temps, barre (lecture seule : le bot n'a pas de seek), transport de la scène (now.css) */
+.th-bottom {
+  grid-area: bottom; display: grid; justify-items: center; gap: 16px; padding: 56px 32px 26px;
+  background: linear-gradient(rgb(11 9 8 / 0), rgb(11 9 8 / .5) 45%, rgb(11 9 8 / .85));
+}
+.th-times {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; width: min(960px, 100%);
+  font: 600 14px/1 var(--f-ui); color: var(--os-2);
+}
+.th-times > span:first-child { color: rgb(var(--lumiere-rgb)); }
+.th-bar { position: relative; height: 4px; overflow: hidden; border-radius: 2px; background: rgb(239 231 216 / .16); }
+/* avancée par Theater.tsx toutes les 250 ms (scaleX), lissée sur le même pas */
+.th-fill {
+  position: absolute; inset: 0; background: rgb(var(--lumiere-rgb)); transform: scaleX(0); transform-origin: 0 50%;
+  transition: transform 250ms linear;
+}
+
+/* écran étroit (téléphone en repli) : la file passe entre le titre et le transport, sur toute la largeur */
+@media (max-width: 700px) {
+  .theater { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "queue" "bottom"; }
+  .th-top { gap: 12px; padding: 16px 16px 40px; }
+  .th-title { font-size: 26px; }
+  .th-queue { width: auto; max-height: 42vh; margin: 0 12px; align-self: end; }
+  .th-bottom { padding: 32px 16px 16px; gap: 12px; }
+}
+/* écran bas (téléphone couché) : les bandeaux se resserrent, la file garde de la hauteur */
+@media (max-height: 520px) {
+  .th-top { padding-top: 14px; padding-bottom: 28px; }
+  .th-title { font-size: 24px; }
+  .th-bottom { padding-top: 24px; padding-bottom: 12px; gap: 8px; }
+}
+
+/* mouvement réduit : les commandes paraissent et partent sans fondu, la barre saute, les boutons ne s'enfoncent pas */
+@media (prefers-reduced-motion: reduce) {
+  .th-ui, .theater[data-idle] .th-ui, .th-icon, .th-act, .th-fill { transition: none; }
+  .th-icon:active, .th-act:active { transform: none; }
+}
+:root[data-motion=reduced] :is(.th-ui, .th-icon, .th-act, .th-fill), :root[data-motion=reduced] .theater[data-idle] .th-ui { transition: none; }

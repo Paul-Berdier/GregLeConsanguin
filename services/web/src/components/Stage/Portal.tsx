@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent, RefObject } from 'react';
 import { useStore } from '@/hooks/usePlayer';
 import { YT_API_FAILED, useYouTubePlayer } from '@/hooks/useYouTubePlayer';
 import type { YTPlayer } from '@/hooks/useYouTubePlayer';
@@ -13,8 +13,14 @@ import type { CtlState, Decision } from '@/lib/sync/controller';
 import { refClock, serverNow } from '@/lib/sync/live';
 import type { ClockView } from '@/lib/sync/refclock';
 import type { CrownMode } from '@/lib/stage/coronation';
+import { FS_NO_DBLCLICK } from '@/lib/stage/fullscreen';
+import type { FsMode } from '@/lib/stage/fullscreen';
 import { t } from '@/theme/copy';
 import type { Ceremony } from './coronation';
+import Theater from './Theater';
+
+/** Plein écran de la vidéo (useFullscreen, tenu par Stage.tsx) : ready, un titre joue ; toggle et exit, ses commandes. */
+export type PortalFullscreen = { mode: FsMode | null; ready: boolean; toggle: () => void; exit: () => void };
 
 export type PortalProps = {
   videoId: string | null;   // titre en cours (null : rien, le portail s'efface la nuit)
@@ -23,6 +29,8 @@ export type PortalProps = {
   offset: number;           // décalage vidéo ↔ son (s), useVideoOffset
   art: string | null;       // pochette d'un titre sans vidéo YouTube (SoundCloud) : image fixe, comme l'ancien lecteur
   crown: Ceremony | null;   // cérémonie du titre en cours (coronation.ts) : le relais des posters suit son plan
+  videoElRef: RefObject<HTMLDivElement>;   // `.video`, l'élément mis en plein écran (l'iframe n'en sort jamais)
+  fullscreen: PortalFullscreen;
 };
 /** Un poster à l'écran ; mode et ms : le Couronnement qui l'a amené (ms : durée de son fondu d'entrée, null : --dur-reveal). */
 type PosterEntry = { id: string; leaving: boolean; mode: CrownMode | null; ms: number | null };
@@ -65,8 +73,11 @@ function Poster({ id, leaving, held, cut, ms }: { id: string; leaving: boolean; 
  * qui le couvre jusqu'à PLAYING + REVEAL_AFTER_PLAYING_MS et pendant la pause (tech.md §5.3). Styles : portal.css.
  * Au Couronnement (coronation.ts) : en vol, le nouveau poster attend l'atterrissage sous le fantôme et l'ancien
  * part en scale(1.03) ; sinon, le nouveau entre en fondu (--poster-ms du plan).
+ * Plein écran (conception du 2026-11-23, §2) : c'est `.video` qui y passe, avec tout ce qu'elle contient ; l'iframe ne
+ * bouge pas (la déplacer la rechargerait) et le régulateur continue (l'onglet reste visible). « La Grand-Salle »
+ * (Theater.tsx) s'y ajoute en dernier enfant, seulement en plein écran ; data-fs porte le mode (theater.css).
  */
-export default function Portal({ videoId, nextId, paused, offset, art, crown }: PortalProps) {
+export default function Portal({ videoId, nextId, paused, offset, art, crown, videoElRef, fullscreen }: PortalProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [cover, setCover] = useState<Cover>(COVERED);
   const [unavailable, setUnavailable] = useState(false);   // cette vidéo refuse l'intégration (remis à chaque titre)
@@ -257,14 +268,23 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
     load(noMaxres.has(nextId));
   }, [nextId]);
 
-  const flying = crown?.mode === 'flight' && !crown.landed;
+  // En plein écran par l'API, `.video` est dans la couche du dessus : le fantôme du vol (dans <body>, coronation.ts) y est
+  // invisible. Le nouveau poster n'attend pas sous lui un atterrissage qu'on ne voit pas (noir pendant le vol) : il entre en fondu.
+  const ghostSeen = fullscreen.mode !== 'native';
+  const flying = ghostSeen && crown?.mode === 'flight' && !crown.landed;
+  // Double-clic sur l'image : plein écran, entrée comme sortie (requestFullscreen part dans ce gestionnaire, useFullscreen).
+  const onDoubleClick = (e: MouseEvent<HTMLDivElement>): void => {
+    if (!fullscreen.ready && !fullscreen.mode) return;
+    if ((e.target as Element).closest(FS_NO_DBLCLICK)) return;
+    fullscreen.toggle();
+  };
   return (
     <div className="portal">
-      <div className="video">
+      <div className="video" ref={videoElRef} data-fs={fullscreen.mode ?? undefined} onDoubleClick={onDoubleClick}>
         <div className="yt" ref={wrapRef} aria-hidden="true"/>
         <div className="posters" data-covered={coverVisible(cover, still)}>
           {posters.map((p) => <Poster key={p.id} id={p.id} leaving={p.leaving} held={!p.leaving && p.mode === 'flight' && flying}
-            cut={p.mode === 'flight'} ms={p.ms}/>)}
+            cut={ghostSeen && p.mode === 'flight'} ms={p.ms}/>)}
           {!videoId && art && <img className="poster art" src={art} alt="" decoding="async" draggable={false} data-ready="true"/>}
         </div>
         <div className="veil"/>
@@ -273,6 +293,7 @@ export default function Portal({ videoId, nextId, paused, offset, art, crown }: 
           {t('now.state.paused')}
         </div>
         {(unavailable || (noApi && videoId)) && <p className="video-note plaque">{t('now.videoUnavailable')}</p>}
+        {fullscreen.mode && <Theater exit={fullscreen.exit}/>}
       </div>
     </div>
   );

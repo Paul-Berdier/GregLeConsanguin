@@ -68,6 +68,20 @@ export const EXTRA = {
   },
   a11y: { skipToQueue: 'Aller à la file', nowPlaying: 'En lecture : {title}', paused: 'En pause.', resumed: 'Lecture reprise.' },
   // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
+  // Plein écran de la vidéo, « La Grand-Salle » (Stage.tsx, Stage/Theater.tsx ; conception du 2026-11-23, §2).
+  fullscreen: {
+    enter: 'Plein écran',
+    enterTip: 'Plein écran (ou double-clic sur la vidéo)',
+    exit: 'Quitter le plein écran',
+    exitTip: 'Quitter le plein écran (Échap)',
+    region: 'Lecture en plein écran',
+    queue: 'À suivre',
+    queueToggle: 'File à suivre',
+    queueShow: 'Montrer la file',
+    queueHide: 'Masquer la file',
+    current: 'En cours',
+    more: { one: '…et 1 autre titre', other: '…et {n} autres titres' },
+  },
   error: {
     // NO_RESULTS transient : recherche trop lente ou bloquée, pas une absence de résultat
     SEARCH_FAILED: { text: 'La recherche YouTube n’a pas abouti. Réessayez dans un instant.' },
