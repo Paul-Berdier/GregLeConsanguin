@@ -152,6 +152,29 @@ async def test_batch_where_every_entry_is_refused_at_enqueue_returns_the_first_e
     assert h.queue() == []
 
 
+async def test_batch_of_only_playlist_or_unplayable_links_is_refused_before_voice(harness, monkeypatch):
+    # Comme un lien seul : rien de jouable → refus AVANT de faire venir Greg dans le salon.
+    h = harness
+    _in_voice(h)
+    unplayable = "https://www.youtube.com/feed/trending"
+
+    def fake_target(url):
+        if url == unplayable:
+            raise h.ps.TrackUnavailable("Lien YouTube sans vidéo.")
+        return url
+
+    monkeypatch.setattr(h.ps, "yt_stream_target", fake_target)
+    res = await h.svc.play_for_user(h.gid, USER, _batch([{"url": "https://www.youtube.com/playlist?list=PLx"},
+                                                         {"url": unplayable}]))
+    assert res["ok"] is False and res["error"] == "UNSUPPORTED_SOURCE"
+    assert res["message"] == h.ps._RAW_BUNDLE_MESSAGE  # le 1er refus, dans l'ordre du lot
+    assert h.guild.voice_client is None and h.queue() == []
+
+    res = await h.svc.play_for_user(h.gid, USER, _batch([{"url": unplayable}]))
+    assert res == {**res, "ok": False, "error": "UNSUPPORTED_SOURCE", "message": "Lien YouTube sans vidéo."}
+    assert h.guild.voice_client is None
+
+
 async def test_user_not_in_voice(harness):
     h = harness
     h.guild.add_member(USER)

@@ -164,6 +164,8 @@ _ERROR_MESSAGES = {
 
 _BUSY_MESSAGE = "Greg est déjà occupé avec une autre demande sur ce serveur : réessaie dans un instant."
 _UNPLAYABLE_LINK_MESSAGE = "Ce lien ne pointe vers aucun titre lisible : colle le lien d'une vidéo ou d'une playlist."
+# Lien de playlist là où un titre est attendu (_enqueue_locked, lot du chansonnier).
+_RAW_BUNDLE_MESSAGE = "Lien de playlist non développé : impossible de l'ajouter tel quel."
 # Repli watch?v=ID&list=… → vidéo seule : on prévient que la playlist a été ignorée.
 _PLAYLIST_IGNORED_MESSAGES = {
     "PLAYLIST_UNAVAILABLE": "Playlist privée ou inaccessible : seule la vidéo demandée a été ajoutée.",
@@ -707,7 +709,7 @@ class PlayerService:
         if not url or is_bundle_url(url):
             # Jamais d'URL de playlist brute dans la file : elle serait « lue »
             # comme un seul morceau (ré-extraite en boucle, seul le 1er titre joué).
-            return _fail("UNSUPPORTED_SOURCE", "Lien de playlist non développé : impossible de l'ajouter tel quel.")
+            return _fail("UNSUPPORTED_SOURCE", _RAW_BUNDLE_MESSAGE)
         refusal = _track_link_refusal(url)
         if refusal:
             return _fail("UNSUPPORTED_SOURCE", refusal)
@@ -1575,9 +1577,10 @@ class PlayerService:
         """item["items"] (lot de titres connus) → (entrées à ajouter, 1er refus ou None).
 
         Normalisées comme les titres d'une playlist développée, le fournisseur donné gardé tel quel (comme
-        user_meta). Sans url → écartées. Texte libre et Spotify → refusés ici (le lot ne lance ni recherche
-        ni expansion, et _enqueue_locked ne les arrêterait pas) ; les autres refus (lien de playlist, lien
-        que stream() rejetterait) restent ceux de _enqueue_locked, dans la boucle d'ajout.
+        user_meta). Sans url → écartées. Refusés ici, AVANT toute connexion vocale (comme un lien seul) :
+        texte libre et Spotify (le lot ne lance ni recherche ni expansion, et _enqueue_locked ne les
+        arrêterait pas), lien de playlist et lien que stream() rejetterait (mêmes règles que
+        _enqueue_locked, qui les revérifie sous le verrou).
         """
         entries: list[dict] = []
         refused: dict | None = None
@@ -1594,6 +1597,12 @@ class PlayerService:
             if is_spotify_url(link) or not is_url(link):
                 refused = refused or _fail("SPOTIFY_UNSUPPORTED" if is_spotify_url(link) else "UNSUPPORTED_SOURCE")
                 logger.warning("Entrée du lot refusée : %s", link[:200])
+                continue
+            reason = (_RAW_BUNDLE_MESSAGE if is_bundle_url(link) else None) or _track_link_refusal(link)
+            if reason:
+                # Sinon Greg rejoindrait le salon vocal pour un lot dont aucun titre ne passe.
+                refused = refused or _fail("UNSUPPORTED_SOURCE", reason)
+                logger.warning("Entrée du lot refusée (%s) : %s", reason, link[:200])
                 continue
             # Un titre qui n'est qu'un lien est ignoré : le vrai viendra de l'extraction (comme user_meta).
             if it.get("title") and (str(it["title"]).strip() == link or is_url(str(it["title"]))):
