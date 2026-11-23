@@ -2,8 +2,8 @@
  * La vidéo en plein écran, « La Grand-Salle » (conception du 2026-11-23, §2), pur (tests/fullscreen.test.mjs).
  * L'élément mis en plein écran est `.video` (Portal.tsx) : l'iframe YouTube n'y bouge jamais (la déplacer la recharge).
  * Ici : détection de l'API (préfixes webkit), état après `fullscreenchange`, délais, file mémorisée, raccourcis de la
- * page ignorés, ordre du focus piégé, minuterie de repos des commandes, appui qui ne fait que les réveiller. Le DOM
- * et React restent dans hooks/useFullscreen.ts et components/Stage/Theater.tsx.
+ * page ignorés, ordre du focus piégé, minuterie de repos des commandes, appui qui ne fait que les réveiller, reste de la
+ * page rendu inerte. Le DOM et React restent dans hooks/useFullscreen.ts et components/Stage/Theater.tsx.
  */
 import type { Shortcut } from '@/lib/keys';
 
@@ -186,4 +186,25 @@ export function createWakeTap(): WakeTap {
       return eat;
     },
   };
+}
+
+/** Un nœud et ses frères, assez du DOM pour inertOthers (le DOM dans la page, des objets dans les tests). */
+export type InertNode = { inert?: boolean; parentElement: InertNode | null; readonly children: ArrayLike<InertNode> };
+
+/**
+ * Le reste de la page devient inerte le temps du plein écran : hors de l'écran, il ne doit plus recevoir ni le focus ni
+ * le curseur d'un lecteur d'écran (balayage de VoiceOver, mode navigation de NVDA). Inertes : les frères de `el` et de
+ * chacun de ses ancêtres, jusqu'aux enfants de `stop` (<body> : ni lui ni <head>) ; `el` et ce qu'il contient restent
+ * vivants. Rend de quoi tout remettre ; ce qui était déjà inerte le reste.
+ */
+export function inertOthers(el: InertNode, stop: InertNode | null): () => void {
+  const done: InertNode[] = [];
+  for (let n = el; n !== stop && n.parentElement; n = n.parentElement) {
+    for (const sib of Array.from(n.parentElement.children)) {
+      if (sib === n || sib.inert) continue;
+      sib.inert = true;
+      done.push(sib);
+    }
+  }
+  return () => { for (const sib of done) sib.inert = false; };
 }

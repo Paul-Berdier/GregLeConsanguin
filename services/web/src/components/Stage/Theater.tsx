@@ -11,8 +11,8 @@ import { livePosition } from '@/lib/playerUtils';
 import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { kingOrders } from '@/lib/stage/coronation';
 import { fmtSpoken } from '@/lib/stage/dial';
-import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, createWakeTap, fsSwallowClick, loadFsQueue, neighbourKey, progressOf,
-  saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
+import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, createWakeTap, fsSwallowClick, inertOthers, loadFsQueue, neighbourKey,
+  progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
 import { kickerKey, kingSealSrc, requesterKeys, requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import type { Track } from '@/lib/types';
@@ -25,6 +25,8 @@ import Transport from './Transport';
 const TICK_MS = 250;
 /** Arrêts de Tab de la surcouche ; ceux qui ne sont pas affichés (popover fermé, file masquée) sont écartés à l'usage. */
 const TABBABLE = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+/** Plaques du Héraut hors d'atteinte : repliées sous la pile (inertes), ou sur le départ (comme focusAfterToast, lib/focus.ts). */
+const OUT = '[inert], .toast[data-hidden], .toast[data-leaving]';
 /** Activité qui réveille les commandes effacées ; l'appui (pointerdown) aussi, à part : au doigt, il ne fait que ça. */
 const WAKE = ['pointermove', 'wheel', 'keydown', 'focusin'] as const;
 
@@ -35,8 +37,20 @@ const ICON = {
   del: <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>,
 };
 
+/** Le Héraut, monté dans l'élément en plein écran à côté de la surcouche (page.tsx) : ses « Annuler » restent à portée. */
+function heraldOf(root: HTMLElement): HTMLElement | null {
+  return root.parentElement?.querySelector<HTMLElement>(':scope > .toasts') ?? null;
+}
+
+/** Ce qui garde le focus en plein écran : la surcouche et le Héraut à côté d'elle ; le reste de la page est hors de l'écran. */
+function inside(root: HTMLElement, n: Node): boolean {
+  return root.contains(n) || !!heraldOf(root)?.contains(n);
+}
+
+/** Arrêts de Tab en plein écran, dans l'ordre du document : ceux de la surcouche, puis les « Annuler » du Héraut. */
 function stops(root: HTMLElement): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(TABBABLE)].filter((el) => el.getClientRects().length > 0);
+  return [root, heraldOf(root)].flatMap((box) => (box ? [...box.querySelectorAll<HTMLElement>(TABBABLE)] : []))
+    .filter((el) => !el.closest(OUT) && el.getClientRects().length > 0);
 }
 
 /**
@@ -77,7 +91,8 @@ const TheaterRow = memo(function TheaterRow({ item, now }: { item: Track; now: b
  * Les commandes s'effacent après 3 s de repos (createIdle), le curseur avec elles ; elles restent pendant un dialogue et
  * tant qu'une d'elles a le focus du clavier. Au doigt, l'appui qui les réveille ne les actionne pas (createWakeTap).
  * Focus : la surcouche le prend à l'entrée (Espace y met encore en pause : sur un bouton, il l'activerait), Tab y tourne
- * en boucle, et un focus égaré ailleurs (hors de l'écran) y revient. À la sortie, Stage.tsx le rend au bouton d'entrée.
+ * en boucle avec les « Annuler » du Héraut monté à côté, et un focus égaré ailleurs (hors de l'écran) y revient ; le
+ * reste de la page est inerte (inertOthers). À la sortie, Stage.tsx le rend au bouton d'entrée.
  * Les temps sont écrits par useStageClock (data-clock, sous .stage) ; la barre, ici, au même pas.
  */
 export default function Theater({ exit }: { exit: () => void }) {
@@ -110,16 +125,46 @@ export default function Theater({ exit }: { exit: () => void }) {
   const more = queue.length - shown.length;
 
   // Entrée : le focus dans la surcouche ; un focus parti ailleurs (lecteur d'écran, autre code) y revient : le reste de
-  // la page est hors de l'écran.
+  // la page est hors de l'écran. Le Héraut monté à côté (page.tsx) garde le sien : « Annuler », Échap sur une plaque.
+  // Un focus tombé sur <body> (« Annuler » joué, plaque partie : le Héraut le rendrait à la file, inerte ici) revient
+  // à la surcouche, une tâche plus tard (fenêtre quittée : activeElement ne change pas, rien à faire).
+  // Tab et Maj+Tab tournent dans la surcouche puis le Héraut (ordre du document), d'où que parte la touche.
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
     root.focus({ preventScroll: true });
     const onFocusIn = (e: FocusEvent): void => {
-      if (e.target instanceof Node && !root.contains(e.target)) root.focus({ preventScroll: true });
+      if (e.target instanceof Node && !inside(root, e.target)) root.focus({ preventScroll: true });
+    };
+    const onFocusOut = (e: FocusEvent): void => {
+      if (e.relatedTarget) return;
+      window.setTimeout(() => {
+        const at = document.activeElement;
+        if (root.isConnected && (!at || at === document.body)) root.focus({ preventScroll: true });
+      }, 0);
+    };
+    const onKeyDown = (e: globalThis.KeyboardEvent): void => {
+      if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey) return;
+      const list = stops(root);
+      const i = trapIndex(list.length, list.indexOf(document.activeElement as HTMLElement), e.shiftKey);
+      e.preventDefault();
+      (i < 0 ? root : list[i]).focus();
     };
     document.addEventListener('focusin', onFocusIn);
-    return () => document.removeEventListener('focusin', onFocusIn);
+    document.addEventListener('focusout', onFocusOut);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  // Le reste de la page, hors de l'écran, devient inerte (inertOthers) : ni le focus ni le curseur d'un lecteur d'écran
+  // ne s'y égarent ; `.video` (la surcouche, le Héraut) reste vivante. Tout revient à la sortie, avant le focus rendu.
+  useEffect(() => {
+    const host = rootRef.current?.parentElement;
+    return host ? inertOthers(host, document.body) : undefined;
   }, []);
 
   // Repos : commandes et curseur s'effacent après 3 s ; un dialogue ouvert (confirmation d'arrêt), une commande qui a le
@@ -182,16 +227,6 @@ export default function Theater({ exit }: { exit: () => void }) {
     return () => clearInterval(id);
   }, []);
 
-  /** Tab et Maj+Tab tournent dans la surcouche (ordre du document) ; le reste de la page est hors de l'écran. */
-  const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
-    const root = rootRef.current;
-    if (e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey || !root) return;
-    const list = stops(root);
-    const i = trapIndex(list.length, list.indexOf(document.activeElement as HTMLElement), e.shiftKey);
-    e.preventDefault();
-    (i < 0 ? root : list[i]).focus();
-  };
-
   /**
    * Entrée maintenue sur « Retirer » ou « Jouer maintenant » : une fois. Le focus passe à la voisine (même bouton) et
    * chaque répétition la retirerait ou la jouerait à son tour : toute la file y passerait (comme listKey, lib/keys.ts).
@@ -245,7 +280,7 @@ export default function Theater({ exit }: { exit: () => void }) {
 
   return (
     <section ref={rootRef} className="theater" aria-label={tx('fullscreen.region')} tabIndex={-1}
-      data-idle={idle || undefined} onKeyDown={onKeyDown} onClickCapture={swallow} onDoubleClickCapture={swallow}>
+      data-idle={idle || undefined} onClickCapture={swallow} onDoubleClickCapture={swallow}>
       <div className="th-top th-ui">
         <div className="th-now">
           <p className="th-kicker">{current && t(kickerKey({ paused, repeat }))}</p>

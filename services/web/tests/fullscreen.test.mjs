@@ -166,6 +166,33 @@ test('au doigt, l’appui sur des commandes effacées les réveille seulement : 
   assert.equal(tap.eats(1), false, 'l’appui est oublié');
 });
 
+test('plein écran : le reste de la page devient inerte, puis revient tel qu’il était', () => {
+  const node = (name, kids = []) => {
+    const n = { name, inert: false, parentElement: null, children: kids };
+    for (const k of kids) k.parentElement = n;
+    return n;
+  };
+  const theater = node('theater'), toasts = node('toasts');
+  const video = node('video', [node('yt'), theater, toasts]);
+  const rose = node('rose'), below = node('below'), sidebar = node('sidebar'), header = node('header'), ghost = node('ghost');
+  const stage = node('stage', [rose, node('portal', [video]), below]);
+  const main = node('main', [node('stage-col', [stage]), sidebar]);
+  const plate = node('plate');
+  plate.inert = true;   // déjà inerte avant le plein écran : le reste à la sortie
+  const body = node('body', [node('shell', [header, main, plate]), ghost]);
+  const head = node('head');
+  node('html', [head, body]);
+  const all = [];
+  (function walk(n) { all.push(n); for (const k of n.children) walk(k); })(body);
+  const inert = () => all.filter((n) => n.inert).map((n) => n.name).sort();
+  const restore = F.inertOthers(video, body);
+  assert.deepEqual(inert(), ['below', 'ghost', 'header', 'plate', 'rose', 'sidebar'].sort());
+  assert.equal(theater.inert || toasts.inert || video.inert, false, 'la vidéo, sa surcouche et le Héraut restent vivants');
+  assert.equal(head.inert, false, 'rien au-dessus de <body>');
+  restore();
+  assert.deepEqual(inert(), ['plate'], 'tout revient, sauf ce qui l’était déjà');
+});
+
 test('clavier en plein écran : saisie, « / » et « ? » ignorés ; Espace et Maj+→/← restent', () => {
   const ctx = { enabled: true, loggedIn: true, inField: false, inPopover: false, onRow: false, onControl: false, dragging: false };
   const act = (ev) => shortcutFor(ev, ctx);

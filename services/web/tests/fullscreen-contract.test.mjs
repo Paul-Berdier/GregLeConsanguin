@@ -120,6 +120,27 @@ test('surcouche : focus pris, piégé, rendu ; libellés ; aucun id ni classe de
   for (const [, key] of src.matchAll(/tx\('(fullscreen\.[\w.]+)'/g)) assert.notEqual(tx(key, { n: 2 }), key, key);
 });
 
+test('surcouche : le Héraut monté à côté est dans le piège du focus ; le reste de la page est inerte', () => {
+  const th = code('src/components/Stage/Theater.tsx');
+  // page.tsx monte le Héraut dans l'élément en plein écran (.video), frère de la surcouche, pas dedans
+  assert.match(read('src/app/page.tsx'), /createPortal\(<Herald dock="center"\/>, fsHost\)/);
+  assert.match(read('src/components/Herald/Herald.tsx'), /<section className="toasts"/);
+  assert.match(th, /root\.parentElement\?\.querySelector<HTMLElement>\(':scope > \.toasts'\)/);
+  // un focus posé sur « Annuler » (Tab, lecteur d'écran) y reste ; ailleurs, il revient à la surcouche
+  assert.match(th, /return root\.contains\(n\) \|\| !!heraldOf\(root\)\?\.contains\(n\);/);
+  assert.match(th, /if \(e\.target instanceof Node && !inside\(root, e\.target\)\) root\.focus\(\{ preventScroll: true \}\);/);
+  // Tab : la surcouche puis le Héraut, plaques repliées ou sur le départ écartées ; d'où que parte la touche
+  assert.match(th, /\[root, heraldOf\(root\)\]\.flatMap\(/);
+  assert.match(th, /const OUT = '\[inert\], \.toast\[data-hidden\], \.toast\[data-leaving\]';/);
+  assert.match(th, /document\.addEventListener\('keydown', onKeyDown\);/);
+  assert.match(th, /document\.removeEventListener\('keydown', onKeyDown\);/);
+  // « Annuler » joué : le Héraut rendrait le focus à la file, inerte ici ; tombé sur <body>, il revient à la surcouche
+  assert.match(th, /document\.addEventListener\('focusout', onFocusOut\);/);
+  assert.match(th, /if \(root\.isConnected && \(!at \|\| at === document\.body\)\) root\.focus\(\{ preventScroll: true \}\);/);
+  // lecteurs d'écran : le reste de la page (hors de l'écran) est inerte le temps du plein écran
+  assert.match(th, /const host = rootRef\.current\?\.parentElement;\s*return host \? inertOthers\(host, document\.body\) : undefined;/);
+});
+
 test('repos : une commande au focus du clavier retient les commandes ; au doigt, l’appui qui réveille n’actionne rien', () => {
   const th = code('src/components/Stage/Theater.tsx');
   const hold = th.slice(th.indexOf('const hold = '), th.indexOf('const rest = '));
