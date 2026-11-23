@@ -164,6 +164,8 @@ _ERROR_MESSAGES = {
 
 _BUSY_MESSAGE = "Greg est déjà occupé avec une autre demande sur ce serveur : réessaie dans un instant."
 _UNPLAYABLE_LINK_MESSAGE = "Ce lien ne pointe vers aucun titre lisible : colle le lien d'une vidéo ou d'une playlist."
+# Lien de playlist là où un titre est attendu (_enqueue_locked, lot du chansonnier).
+_RAW_BUNDLE_MESSAGE = "Lien de playlist non développé : impossible de l'ajouter tel quel."
 # Repli watch?v=ID&list=… → vidéo seule : on prévient que la playlist a été ignorée.
 _PLAYLIST_IGNORED_MESSAGES = {
     "PLAYLIST_UNAVAILABLE": "Playlist privée ou inaccessible : seule la vidéo demandée a été ajoutée.",
@@ -707,7 +709,7 @@ class PlayerService:
         if not url or is_bundle_url(url):
             # Jamais d'URL de playlist brute dans la file : elle serait « lue »
             # comme un seul morceau (ré-extraite en boucle, seul le 1er titre joué).
-            return _fail("UNSUPPORTED_SOURCE", "Lien de playlist non développé : impossible de l'ajouter tel quel.")
+            return _fail("UNSUPPORTED_SOURCE", _RAW_BUNDLE_MESSAGE)
         refusal = _track_link_refusal(url)
         if refusal:
             return _fail("UNSUPPORTED_SOURCE", refusal)
@@ -1571,6 +1573,43 @@ class PlayerService:
             "provider": e.get("provider") or "youtube",
         }
 
+    def _batch_entries(self, batch: list) -> tuple[list[dict], dict | None]:
+        """item["items"] (lot de titres connus) → (entrées à ajouter, 1er refus ou None).
+
+        Normalisées comme les titres d'une playlist développée, le fournisseur donné gardé tel quel (comme
+        user_meta). Sans url → écartées. Refusés ici, AVANT toute connexion vocale (comme un lien seul) :
+        texte libre et Spotify (le lot ne lance ni recherche ni expansion, et _enqueue_locked ne les
+        arrêterait pas), lien de playlist et lien que stream() rejetterait (mêmes règles que
+        _enqueue_locked, qui les revérifie sous le verrou).
+        """
+        entries: list[dict] = []
+        refused: dict | None = None
+        for e in batch:
+            if not isinstance(e, dict):
+                continue
+            it = {**self._entry_to_item(e), "provider": e.get("provider")}
+            for k in ("title", "artist"):  # _normalize_item les .strip() : du texte ou rien
+                if not isinstance(it.get(k), str):
+                    it[k] = None
+            link = normalize_link(str(it.get("url") or "").strip())
+            if not link:
+                continue
+            if is_spotify_url(link) or not is_url(link):
+                refused = refused or _fail("SPOTIFY_UNSUPPORTED" if is_spotify_url(link) else "UNSUPPORTED_SOURCE")
+                logger.warning("Entrée du lot refusée : %s", link[:200])
+                continue
+            reason = (_RAW_BUNDLE_MESSAGE if is_bundle_url(link) else None) or _track_link_refusal(link)
+            if reason:
+                # Sinon Greg rejoindrait le salon vocal pour un lot dont aucun titre ne passe.
+                refused = refused or _fail("UNSUPPORTED_SOURCE", reason)
+                logger.warning("Entrée du lot refusée (%s) : %s", reason, link[:200])
+                continue
+            # Un titre qui n'est qu'un lien est ignoré : le vrai viendra de l'extraction (comme user_meta).
+            if it.get("title") and (str(it["title"]).strip() == link or is_url(str(it["title"]))):
+                it["title"] = None
+            entries.append({**it, "url": link})
+        return entries, refused
+
     @staticmethod
     def _playlist_size(raw_entries) -> int:
         """Taille réelle de la playlist si l'extracteur la fournit (playlist_count), sinon 0."""
@@ -1596,6 +1635,9 @@ class PlayerService:
                  était illisible et que seule la vidéo a été ajoutée).
                  requested = taille de la playlist si l'extracteur la connaît, sinon le
                  nombre de titres vus : une BORNE BASSE quand truncated est posé.
+        Lot (item["items"] liste non vide, /queue/add_many) : ces titres-là (sans url écartés),
+                 plafonnés comme une playlist développée, mêmes contrôles et même boucle d'ajout ;
+                 requested = len(items), playlist = True, title = item["title"] (libellé) ou le 1er titre.
         Échec  : {ok: False, error: CODE, message: texte FR}.
         """
         try:
@@ -1611,16 +1653,27 @@ class PlayerService:
         channel = member.voice.channel
 
         item = dict(item or {})
-        raw = str(item.get("url") or item.get("query") or "").strip()
-        if not raw:
-            return _fail("NO_RESULTS", "Rien à jouer : donne un lien ou un titre.")
-        link = normalize_link(raw)
-        if is_spotify_url(link):
-            return _fail("SPOTIFY_UNSUPPORTED")
-        refusal = None if is_bundle_url(link) else _track_link_refusal(link)
-        if refusal:
-            # stream() le jetterait en silence : refusé AVANT toute connexion vocale.
-            return _fail("UNSUPPORTED_SOURCE", refusal)
+        # Lot de titres connus (chansonnier du Roi, /queue/add_many) : ces titres-là, ni recherche ni expansion.
+        batch = item.get("items")
+        if not isinstance(batch, list) or not batch:
+            batch = None
+        if batch is not None:
+            batch_entries, refused = self._batch_entries(batch)
+            if not batch_entries:
+                # Rien de lisible dans le lot : refusé AVANT toute connexion vocale.
+                return refused or _fail("PLAYLIST_EMPTY")
+            raw = link = ""
+        else:
+            raw = str(item.get("url") or item.get("query") or "").strip()
+            if not raw:
+                return _fail("NO_RESULTS", "Rien à jouer : donne un lien ou un titre.")
+            link = normalize_link(raw)
+            if is_spotify_url(link):
+                return _fail("SPOTIFY_UNSUPPORTED")
+            refusal = None if is_bundle_url(link) else _track_link_refusal(link)
+            if refusal:
+                # stream() le jetterait en silence : refusé AVANT toute connexion vocale.
+                return _fail("UNSUPPORTED_SOURCE", refusal)
 
         busy = self.busy_elsewhere(g, channel)
         if busy is not None:
@@ -1656,7 +1709,17 @@ class PlayerService:
         truncated: Optional[str] = None
         playlist = False
         playlist_error: Optional[str] = None
-        if not is_url(link):
+        if batch is not None:
+            # Même plafond qu'une playlist développée : min(limite d'expansion, quota restant).
+            expand_limit = _playlist_expand_limit()
+            limit = expand_limit if remaining is None else min(expand_limit, remaining)
+            entries = batch_entries
+            requested = len(batch)
+            playlist = True
+            if len(entries) > limit:
+                truncated = "quota" if (remaining is not None and remaining < expand_limit) else "limit"
+                entries = entries[:limit]
+        elif not is_url(link):
             found = await self._search_track(raw, _time_left(_SEARCH_TIMEOUT))
             if not found.get("ok"):
                 return found
@@ -1718,13 +1781,16 @@ class PlayerService:
 
         self._emit(gid)
         self.ensure_playing(g)
+        # Lot : son libellé (nom de la playlist du chansonnier) s'il en a un, sinon le 1er titre ajouté.
+        label = item.get("title") if batch is not None and isinstance(item.get("title"), str) else ""
+        label = label.strip()
         out = {
             "ok": True,
             "added": added,
             "requested": requested,
             "truncated": truncated,
             "playlist": playlist,
-            "title": first_title,
+            "title": label or first_title,
         }
         if playlist_error:
             # Champs additionnels : l'utilisateur qui a collé une playlist doit savoir
