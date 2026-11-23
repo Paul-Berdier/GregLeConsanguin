@@ -227,6 +227,15 @@ def _provider_of(url: str) -> str | None:
     return None
 
 
+def _finite(n: float) -> bool:
+    """Nombre fini et convertible en flottant. Un entier JSON de 400 chiffres est lu tel quel par json.loads :
+    math.isfinite lève alors OverflowError (500) ; il est refusé comme 1e400, que json.loads lit inf."""
+    try:
+        return math.isfinite(n)
+    except OverflowError:
+        return False
+
+
 def _opt_str(raw: dict, *names: str) -> str | None:
     """Premier champ présent et non null parmi `names` : str attendu (sinon INVALID_TRACK)."""
     for n in names:
@@ -243,7 +252,7 @@ def clean_track(raw: Any, added_at: int = 0) -> dict[str, Any]:
     """Track stocké {url, title, artist, duration, thumb, provider, added_at}, ou LibraryError INVALID_TRACK.
 
     Refusé (400) : pas un objet, url absente / pas http(s) / > 500 caractères / avec des blancs, ou un champ
-    du mauvais type JSON (title / artist / thumb / provider : texte ou null ; duration : nombre ou null).
+    du mauvais type JSON (title / artist / thumb / provider : texte ou null ; duration : nombre fini ou null).
     Nettoyé sans refus : title et artist (contrôles retirés, blancs réduits, coupés à 200 / 120 ; title vide →
     l'url), duration hors de 0..86400 → null, thumb qui n'est pas un lien http(s) d'au plus 500 → null,
     provider hors de youtube / soundcloud → déduit de l'hôte. `thumbnail` est accepté pour `thumb`.
@@ -260,7 +269,7 @@ def clean_track(raw: Any, added_at: int = 0) -> dict[str, Any]:
 
     duration = raw.get("duration")
     if duration is not None:
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration):
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not _finite(duration):
             raise LibraryError("INVALID_TRACK", MSG_INVALID_TRACK, 400)
         duration = int(duration)
         if not 0 <= duration <= MAX_DURATION:

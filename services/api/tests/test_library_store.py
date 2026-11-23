@@ -241,7 +241,7 @@ def test_clean_track_cuts_long_texts():
 
 
 @pytest.mark.parametrize("duration,expected", [(None, None), (0, 0), (86400, 86400), (86401, None),
-                                               (-5, None), (59.99, 59)])
+                                               (-5, None), (59.99, 59), (10 ** 300, None), (1e300, None)])
 def test_clean_track_duration_range(duration, expected):
     assert store.clean_track(yt(duration=duration))["duration"] == expected
 
@@ -277,6 +277,8 @@ def test_clean_track_provider(provider, url, expected):
     {"url": "https://x.y/a", "thumb": {"u": 1}}, {"url": "https://x.y/a", "provider": 1},
     {"url": "https://x.y/a", "duration": "3:20"}, {"url": "https://x.y/a", "duration": True},
     {"url": "https://x.y/a", "duration": float("nan")}, {"url": "https://x.y/a", "duration": float("inf")},
+    # Entier JSON au-delà des flottants (comme 1e400, lu inf) : math.isfinite lèverait OverflowError (500).
+    {"url": "https://x.y/a", "duration": 10 ** 400}, {"url": "https://x.y/a", "duration": -(10 ** 400)},
 ])
 def test_clean_track_refuses_invalid_input(raw):
     with pytest.raises(LibraryError) as ei:
@@ -367,6 +369,15 @@ def test_parse_keeps_valid_entries_and_flags_the_rest():
     assert lossy is True
     assert state["likes"] == [good]
     assert state["playlists"] == [{"id": "abc", "name": "Bal", "tracks": [good], "created_at": 1, "updated_at": 2}]
+
+
+def test_parse_drops_a_stored_duration_too_big_for_a_float():
+    # Valeur stockée qui en porte un (écrite hors de l'API) : l'entrée est écartée, GET /library ne tombe pas en 500.
+    good = store.clean_track(yt(1), 10)
+    raw = json.dumps({"v": 1, "likes": [good, {**store.clean_track(yt(2), 10), "duration": 10 ** 400}],
+                      "playlists": []})
+    state, lossy = store.parse_library(raw)
+    assert lossy is True and state["likes"] == [good]
 
 
 def test_parse_clean_value_round_trips():

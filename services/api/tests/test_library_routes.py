@@ -177,6 +177,17 @@ def test_invalid_like_is_400_before_any_redis_access(logged_client, fr, track):
     assert fr.log == []
 
 
+def test_duration_too_big_for_a_float_is_400_not_500(logged_client, fr):
+    # 400 chiffres : un entier JSON valide, que math.isfinite ne sait pas convertir (OverflowError → 500).
+    huge = yt(1, duration=10 ** 400)
+    err(post(logged_client, "/library/likes/add", {"track": huge}), 400, "INVALID_TRACK")
+    body = err(post(logged_client, "/library/playlists/create", {"name": "Bal", "tracks": [yt(0), huge]}),
+               400, "INVALID_TRACK")
+    assert body["index"] == 1
+    err(post(logged_client, "/library/playlists/add", {"id": "abc", "tracks": [huge]}), 400, "INVALID_TRACK")
+    assert fr.log == []
+
+
 @pytest.mark.parametrize("url", [None, 3, "", "   ", "x" * 501])
 def test_invalid_unlike_is_400(logged_client, fr, url):
     err(post(logged_client, "/library/likes/remove", {"url": url}), 400, "INVALID_REQUEST")
