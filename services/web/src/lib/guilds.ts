@@ -93,6 +93,15 @@ export function openingActive(list: readonly { id: string }[], currentId: string
   return (from === 'last' ? list[list.length - 1] : list[0])?.id ?? null;
 }
 
+/**
+ * Touche qui appartient à une composition en cours (IME : japonais, chinois, coréen…) : ni choix, ni déplacement, ni
+ * fermeture du popover. Safari lance le keydown de l'Entrée qui valide la composition après compositionend, avec
+ * isComposing faux mais keyCode 229 : sans ce second test, valider « サーバー » choisirait le serveur actif.
+ */
+export function imeKey(e: { isComposing?: boolean; keyCode?: number }): boolean {
+  return e.isComposing === true || e.keyCode === 229;
+}
+
 export type ListMove = 'next' | 'prev' | 'first' | 'last';
 export type GuildKeyAct = ListMove | 'choose' | 'clear';
 export type KeyLike = { key: string; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean };

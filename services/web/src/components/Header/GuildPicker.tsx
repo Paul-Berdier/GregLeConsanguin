@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import type { FocusEvent, KeyboardEvent } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
 import { revealDelta } from '@/lib/focus';
-import { filterGuilds, foldText, groupGuilds, guildKey, moveIndex, openingActive, searchable } from '@/lib/guilds';
+import { filterGuilds, foldText, groupGuilds, guildKey, imeKey, moveIndex, openingActive, searchable } from '@/lib/guilds';
 import type { GuildInfo } from '@/lib/types';
 import { t } from '@/theme/copy';
 import { tx } from '@/theme/copy.extra';
@@ -162,7 +162,9 @@ export default function GuildPicker() {
 
   // Même modèle dans le champ et sur la liste (lib/guilds : guildKey)
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
-    if (e.nativeEvent.isComposing) return;   // composition en cours (IME) : Entrée et flèches lui appartiennent
+    // Composition en cours (IME, lib/guilds : imeKey) : Entrée, Échap et flèches lui appartiennent. La touche ne remonte
+    // pas : l'Échap qui annule une composition ne ferme pas le popover (usePopover).
+    if (imeKey(e.nativeEvent)) { e.stopPropagation(); return; }
     const inField = e.currentTarget === inputRef.current;
     const act = guildKey(e, { field: inField, query });
     if (!act) {

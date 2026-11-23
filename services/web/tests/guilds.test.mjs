@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTs } from './_loadTs.mjs';
 const {
-  SEARCH_FROM, searchable, foldText, rankName, filterGuilds, groupGuilds, openingActive, guildKey, moveIndex,
+  SEARCH_FROM, searchable, foldText, rankName, filterGuilds, groupGuilds, openingActive, guildKey, imeKey, moveIndex,
 } = await loadTs('../src/lib/guilds.ts');
 
 const g = (id, name, bot_present) => (bot_present === undefined ? { id, name } : { id, name, bot_present });
@@ -176,6 +176,15 @@ test('clavier : les touches modifiées suivent leur cours (sélection du texte, 
   assert.equal(guildKey({ key: 'Home', ctrlKey: true }, field), null);
   assert.equal(guildKey({ key: 'Enter', metaKey: true }, field), null);
   assert.equal(guildKey({ key: 'Enter', shiftKey: true }, field), 'choose');
+});
+
+test('composition (IME) : la touche lui appartient, Entrée de Safari après compositionend comprise', () => {
+  assert.equal(imeKey({ isComposing: true, keyCode: 13 }), true);
+  assert.equal(imeKey({ isComposing: false, keyCode: 229 }), true, 'Safari : Entrée qui valide, isComposing déjà faux');
+  assert.equal(imeKey({ isComposing: true, keyCode: 27 }), true, 'Échap qui annule la composition');
+  assert.equal(imeKey({ isComposing: false, keyCode: 13 }), false);
+  assert.equal(imeKey({ isComposing: false, keyCode: 27 }), false);
+  assert.equal(imeKey({}), false);
 });
 
 test('déplacement : bouclage aux deux bouts, départ sans option active, liste vide', () => {

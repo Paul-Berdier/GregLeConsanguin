@@ -60,7 +60,8 @@ test('clavier : Échap vide le champ sans fermer ; vide, il remonte à usePopove
   assert.match(picker, /guildKey\(e, \{ field: inField, query \}\)/);
   assert.match(picker, /if \(act === 'clear'\) \{\s*e\.stopPropagation\(\);/);
   assert.match(picker, /if \(e\.key === 'Escape' && open && !e\.defaultPrevented\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); close\(true\); \}/);
-  assert.match(picker, /if \(e\.nativeEvent\.isComposing\) return;/);
+  // composition (IME) : ni choix ni déplacement, et l'Échap qui l'annule ne remonte pas jusqu'à usePopover
+  assert.match(picker, /if \(imeKey\(e\.nativeEvent\)\) \{ e\.stopPropagation\(\); return; \}/);
 });
 
 test('usePopover reste exporté pour le menu du compte', () => {
