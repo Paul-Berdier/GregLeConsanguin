@@ -10,6 +10,8 @@ connecté (SEC-C1) : aucune commande au bot, aucune guild en jeu.
   Le site calcule la même clé (trackKey, services/web/src/lib/library.ts).
 - Modifications en lecture-écriture sous WATCH / MULTI / EXEC (deux onglets du même Roi), MAX_TRIES essais,
   sinon STORAGE_UNAVAILABLE (503). Redis injoignable → STORAGE_UNAVAILABLE, jamais de trace renvoyée.
+- Budget de MAX_LIBRARY_BYTES octets par Roi (valeur stockée) : une écriture qui le dépasserait en grossissant
+  → LIMIT_REACHED (limit="size") ; retirer reste toujours possible.
 - Valeur illisible ou étrangère (JSON cassé, autre version, entrées invalides) : lue comme vide (ou sans les
   entrées invalides) et journalisée ; JAMAIS écrasée à l'aveugle : la première écriture qui la remplace copie
   d'abord la valeur brute sous `greg:library:{discord_id}:corrupt:{epoch}` (même transaction).
@@ -43,6 +45,11 @@ LIMIT_PLAYLISTS = 50
 LIMIT_TRACKS = 200
 LIMIT_NAME = 60
 
+# Budget d'octets de la valeur stockée (JSON UTF-8). Les plafonds comptent des titres, pas leur poids : 10 500
+# titres aux champs pleins (liens de 500, textes en caractères de 4 octets) pèseraient ~25 Mo, relus, réécrits et
+# renvoyés en entier à chaque cœur. Un chansonnier plein de vrais titres YouTube en pèse ~3 (test_library_store).
+MAX_LIBRARY_BYTES = 4 * 1024 * 1024
+
 MAX_URL = 500
 MAX_TITLE = 200
 MAX_ARTIST = 120
@@ -62,6 +69,7 @@ MSG_BAD_POSITION = "Cette position n'existe pas dans la playlist."
 MSG_PLAYLIST_NOT_FOUND = "Cette playlist n'existe pas (ou plus)."
 MSG_LIMIT_LIKES = f"Vous avez atteint la limite de {LIMIT_LIKES} coups de cœur."
 MSG_LIMIT_PLAYLISTS = f"Vous avez atteint la limite de {LIMIT_PLAYLISTS} playlists."
+MSG_LIMIT_SIZE = "Votre chansonnier est plein : retirez des titres ou des playlists avant d'en ajouter."
 MSG_STORAGE_UNAVAILABLE = "Le chansonnier est injoignable pour le moment : réessayez dans un instant."
 MSG_STORAGE_BUSY = "Le chansonnier est modifié ailleurs en même temps : réessayez dans un instant."
 
@@ -477,7 +485,9 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
     """Lecture-modification-écriture atomique (WATCH / MULTI / EXEC), MAX_TRIES essais.
 
     Renvoie (bibliothèque publique, champs propres de l'opération). Rien n'est écrit si l'opération ne
-    change rien. Conflits à chaque essai ou Redis injoignable → LibraryError STORAGE_UNAVAILABLE (503).
+    change rien. Valeur qui grossirait au-delà de MAX_LIBRARY_BYTES → LibraryError LIMIT_REACHED (409,
+    limit="size") ; ce qui la garde ou la réduit passe toujours (retirer, déplacer, supprimer).
+    Conflits à chaque essai ou Redis injoignable → LibraryError STORAGE_UNAVAILABLE (503).
     Seul un vrai conflit (WATCH) fait rejouer l'opération : une connexion perdue pendant l'EXEC laisse
     l'écriture incertaine, l'opération (pas toujours idempotente) n'est jamais rejouée → 503.
     """
@@ -494,12 +504,20 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
                     if not changed:
                         pipe.unwatch()
                         return public(state), extra
+                    data = _dump(state)
+                    # Budget d'octets : refusé seulement si la valeur grossit au-delà ; un chansonnier déjà
+                    # trop lourd (budget abaissé) peut toujours maigrir. L'erreur sort du `with` (UNWATCH).
+                    size = len(data.encode("utf-8"))
+                    if size > MAX_LIBRARY_BYTES and size > len((raw or "").encode("utf-8")):
+                        logger.warning("Chansonnier de %s : %d octets refusés (budget %d)", uid, size,
+                                       MAX_LIBRARY_BYTES)
+                        raise LibraryError("LIMIT_REACHED", MSG_LIMIT_SIZE, 409, limit="size")
                     # Jamais d'écrasement à l'aveugle : une valeur illisible est gardée à côté, même transaction.
                     backup = f"{key}:corrupt:{int(time.time())}" if lossy and raw is not None else None
                     pipe.multi()
                     if backup:
                         pipe.set(backup, raw)
-                    pipe.set(key, _dump(state))
+                    pipe.set(key, data)
                     try:
                         pipe.execute()
                     except redis.WatchError as e:

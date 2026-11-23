@@ -161,6 +161,17 @@ def test_like_limit_is_409(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(3)}))
 
 
+def test_library_over_the_byte_budget_is_409_size_and_can_still_shrink(logged_client, fr, monkeypatch):
+    ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
+    # Budget sous le chansonnier vide lui-même : tout ajout est refusé, retirer passe encore.
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", 10)
+    body = err(post(logged_client, "/library/likes/add", {"track": yt(2)}), 409, "LIMIT_REACHED")
+    assert body["limit"] == "size" and body["message"] == store.MSG_LIMIT_SIZE
+    err(post(logged_client, "/library/playlists/create", {"name": "Bal"}), 409, "LIMIT_REACHED")
+    assert [t["url"] for t in json.loads(fr.kv[KEY])["likes"]] == [yt(1)["url"]]
+    assert ok(post(logged_client, "/library/likes/remove", {"url": yt(1)["url"]}))["library"]["likes"] == []
+
+
 def test_unlike_by_identity_and_idempotent(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
     ok(post(logged_client, "/library/likes/add", {"track": yt(2)}))
