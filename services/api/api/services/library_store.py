@@ -25,7 +25,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import redis
@@ -498,7 +498,7 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
             for attempt in range(1, MAX_TRIES + 1):
                 try:
                     pipe.watch(key)
-                    raw = pipe.get(key)
+                    raw = cast("str | None", pipe.get(key))  # decode_responses=True : du texte, ou None
                     state, lossy = parse_library(raw, uid)
                     changed, extra = op(state)
                     if not changed:
