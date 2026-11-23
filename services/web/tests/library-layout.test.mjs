@@ -15,8 +15,16 @@ test('titre en cours : le demandeur cède avec l’artiste (le cœur et « Ajout
   const now = css('src/components/Stage/now.css');
   const by = rule(now, '.meta-slot .by');
   assert.match(by, /flex: 0 4 auto;/, 'le demandeur cède d’abord, comme dans la file');
-  assert.match(by, /min-width: 0;/);
   assert.ok(!/flex: none/.test(by), 'un demandeur rigide laissait une lettre à l’artiste');
+  // mais pas jusqu'à rien : à min-width 0, un long artiste (≥ 200 px à 1366×657) l'effaçait, le point séparateur seul
+  // au bout de la ligne, ou le sceau sans texte. 4em : le sceau entier et quelques lettres ; l'artiste garde le reste
+  const floor = by.match(/min-width: (\d+(?:\.\d+)?)em;/);
+  assert.ok(floor, 'un plancher en em (suit la taille du texte)');
+  const font = Number(rule(now, '.meta-slot').match(/font-size: ([\d.]+)px;/)[1]);
+  const px = Number(floor[1]) * font, seal = 20, gap = 6;
+  assert.ok(px >= seal + gap + 2 * font, `le sceau et au moins « D… » (${px} px)`);
+  // la ligne la plus étroite (1366×657 : 167 px à la souris) : artiste, point et ses deux espaces (7 + 3 + 7), demandeur
+  assert.ok(167 - 17 - px >= 80, `l’artiste garde au moins 80 px (${167 - 17 - px})`);
   assert.match(rule(now, '.meta-slot .by-txt'), /overflow: hidden; text-overflow: ellipsis;/);
   assert.match(rule(now, '.meta-slot .artist'), /min-width: 0;/);
   assert.match(read('src/components/Stage/NowPlaying.tsx'), /<span className="by-txt">\{t\(keys\.plain, vars\)\}<\/span>/);

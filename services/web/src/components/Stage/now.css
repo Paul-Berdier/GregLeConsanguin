@@ -66,9 +66,11 @@
 .title-slot > .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta-slot > .line { display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; }
 /* la ligne trop longue (les deux boutons du bout lui prennent 70 px, 90 au toucher) : l'artiste et le demandeur cèdent
-   ensemble, le demandeur d'abord (comme dans la file, queue.css) ; le sceau reste entier */
+   ensemble, le demandeur d'abord (comme dans la file, queue.css). Le demandeur garde 4em (le sceau entier et « Dem… ») :
+   à 0, un long artiste le faisait disparaître, le point séparateur seul au bout, ou le sceau sans texte ; tous ses
+   textes (« Demandé par… », « Ajouté depuis Discord ») sont plus longs, rien n'est ajouté à une ligne qui tient */
 .meta-slot .artist { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: 0 4 auto; min-width: 0; overflow: hidden; color: var(--os-2); }
+.meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: 0 4 auto; min-width: 4em; overflow: hidden; color: var(--os-2); }
 .meta-slot .by-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .meta-slot .seal { width: 20px; height: 20px; flex: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .6)); }
 .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--cendre-2); flex: none; }
