@@ -228,7 +228,7 @@ export default function GuildPicker() {
   };
 
   return (
-    <div {...wrapProps}>
+    <div className="guild-wrap" {...wrapProps}>
       <button ref={btnRef} type="button" className="chip" aria-haspopup="listbox" aria-expanded={open}
         aria-controls={listId} aria-label={`${t('guild.label')} : ${label} (${live})`} title={t('guild.tooltip')}
         onPointerDown={(e) => { pointer.current = e.pointerType; }} onClick={onTriggerClick} onKeyDown={onTriggerKey}>

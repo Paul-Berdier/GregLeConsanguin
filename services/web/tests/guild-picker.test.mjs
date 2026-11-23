@@ -94,6 +94,10 @@ test('feuille : champ fixe, la liste défile seule ; `.top .pop` inchangé ; auc
   assert.match(css, /@media \(pointer: coarse\)\s*\{\s*\.guild-find input\s*\{\s*font-size:\s*16px;/);
   const rules = [...css.matchAll(/[^{}]*\.guild-[\w-]+[^{}]*\{[^}]*\}/g)].map((m) => m[0]).join('\n');
   assert.ok(rules.includes('.guild-opt[data-active=true]'));
+  // un nom long ne pousse plus le popover (et son champ) hors de l'écran ; sur téléphone, il s'aligne sur l'en-tête
+  assert.match(css, /\.top \.guild-pop\s*\{\s*max-width:\s*min\(420px, calc\(100vw - 2 \* var\(--page-x\)\)\);/);
+  assert.match(css, /@media \(max-width: 520px\)\s*\{\s*\.top-right\s*\{\s*position:\s*relative;\s*\}\s*\.top-right > \.guild-wrap\s*\{\s*position:\s*static;/);
+  assert.match(picker, /<div className="guild-wrap" \{\.\.\.wrapProps\}>/);
   // couleurs forcées : fond et ombre effacés, le contour transparent y devient visible (seul repère de l'option active)
   assert.match(css, /\.guild-opt\[data-active=true\]\s*\{[^}]*outline:\s*2px solid transparent;/);
   assert.deepEqual(animated(rules), []);
