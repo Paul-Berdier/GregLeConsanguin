@@ -80,6 +80,7 @@ test('panel.css : trois colonnes, pilule d’un tiers qui glisse en transform ; 
   assert.match(css, /\.tabs\[data-tab=lib\] \.pill \{ transform: translateX\(200%\); \}/);
   assert.match(css, /\.panel-head \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(css, /\.panel-head > \.tabs \{ grid-row: 3; \}/);
+  assert.match(css, /@media \(max-width: 359px\) \{ \.tab \{ padding: 0 4px; \} \}/, '320 px : « Chansonnier » entier');
 });
 
 test('library.css : transform et opacity seulement, mouvement réduit prévu, pas de flou', () => {

@@ -52,6 +52,8 @@
   .ptitle { font-size: 28px; }
   .psub { white-space: normal; }
 }
+/* 320 px : « Chansonnier » (72 px) ne tient pas entre 10 px de marge dans un tiers de rangée (65 px) */
+@media (max-width: 359px) { .tab { padding: 0 4px; } }
 @media (prefers-reduced-motion: reduce) {
   .tabs .pill { transition: none; }
 }
