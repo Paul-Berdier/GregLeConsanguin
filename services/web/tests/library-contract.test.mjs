@@ -133,6 +133,8 @@ test('listes du chansonnier : des .qlist > .row (raccourcis de page muets), un a
   assert.match(view, /requeue\(itemOf\(x\), sourceOf\(trackKey\(x\.url\)\)\)/, '« + » : comme l’historique, avec Le Sceau');
   assert.match(view, /once\.current\('add', performance\.now\(\)\)/, 'un ajout par 500 ms');
   assert.match(view, /tx\(likes \? 'library\.keysLikes' : 'library\.keys'\)/);
+  // durées inconnues (ou toutes sous 30 s) : le nombre de titres seul, jamais « 0 min »
+  assert.match(read('src/components/Library/meta.ts'), /return s >= 30 \? `\$\{tx\('library\.count\.tracks', \{ n \}\)\} · \$\{fmtLong\(s\)\}` : tx\('library\.count\.tracks', \{ n \}\);/);
   // vue disparue sans geste (supprimée ailleurs, création refusée) : le focus tombé sur la page revient à la liste
   const panel = read('src/components/Library/LibraryPanel.tsx');
   assert.match(panel, /const lost = !want && !!was && !view && \(!at \|\| at === document\.body\) && !root\.closest\('\[aria-hidden="true"\]'\);/);
