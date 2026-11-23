@@ -10,6 +10,8 @@ connecté (SEC-C1) : aucune commande au bot, aucune guild en jeu.
   Le site calcule la même clé (trackKey, services/web/src/lib/library.ts).
 - Modifications en lecture-écriture sous WATCH / MULTI / EXEC (deux onglets du même Roi), MAX_TRIES essais,
   sinon STORAGE_UNAVAILABLE (503). Redis injoignable → STORAGE_UNAVAILABLE, jamais de trace renvoyée.
+- Budget de MAX_LIBRARY_BYTES octets par Roi (valeur stockée) : une écriture qui le dépasserait en grossissant
+  → LIMIT_REACHED (limit="size") ; retirer reste toujours possible.
 - Valeur illisible ou étrangère (JSON cassé, autre version, entrées invalides) : lue comme vide (ou sans les
   entrées invalides) et journalisée ; JAMAIS écrasée à l'aveugle : la première écriture qui la remplace copie
   d'abord la valeur brute sous `greg:library:{discord_id}:corrupt:{epoch}` (même transaction).
@@ -23,7 +25,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import redis
@@ -42,6 +44,11 @@ LIMIT_LIKES = 500
 LIMIT_PLAYLISTS = 50
 LIMIT_TRACKS = 200
 LIMIT_NAME = 60
+
+# Budget d'octets de la valeur stockée (JSON UTF-8). Les plafonds comptent des titres, pas leur poids : 10 500
+# titres aux champs pleins (liens de 500, textes en caractères de 4 octets) pèseraient ~25 Mo, relus, réécrits et
+# renvoyés en entier à chaque cœur. Un chansonnier plein de vrais titres YouTube en pèse ~3 (test_library_store).
+MAX_LIBRARY_BYTES = 4 * 1024 * 1024
 
 MAX_URL = 500
 MAX_TITLE = 200
@@ -62,6 +69,7 @@ MSG_BAD_POSITION = "Cette position n'existe pas dans la playlist."
 MSG_PLAYLIST_NOT_FOUND = "Cette playlist n'existe pas (ou plus)."
 MSG_LIMIT_LIKES = f"Vous avez atteint la limite de {LIMIT_LIKES} coups de cœur."
 MSG_LIMIT_PLAYLISTS = f"Vous avez atteint la limite de {LIMIT_PLAYLISTS} playlists."
+MSG_LIMIT_SIZE = "Votre chansonnier est plein : retirez des titres ou des playlists avant d'en ajouter."
 MSG_STORAGE_UNAVAILABLE = "Le chansonnier est injoignable pour le moment : réessayez dans un instant."
 MSG_STORAGE_BUSY = "Le chansonnier est modifié ailleurs en même temps : réessayez dans un instant."
 
@@ -227,6 +235,15 @@ def _provider_of(url: str) -> str | None:
     return None
 
 
+def _finite(n: float) -> bool:
+    """Nombre fini et convertible en flottant. Un entier JSON de 400 chiffres est lu tel quel par json.loads :
+    math.isfinite lève alors OverflowError (500) ; il est refusé comme 1e400, que json.loads lit inf."""
+    try:
+        return math.isfinite(n)
+    except OverflowError:
+        return False
+
+
 def _opt_str(raw: dict, *names: str) -> str | None:
     """Premier champ présent et non null parmi `names` : str attendu (sinon INVALID_TRACK)."""
     for n in names:
@@ -243,7 +260,7 @@ def clean_track(raw: Any, added_at: int = 0) -> dict[str, Any]:
     """Track stocké {url, title, artist, duration, thumb, provider, added_at}, ou LibraryError INVALID_TRACK.
 
     Refusé (400) : pas un objet, url absente / pas http(s) / > 500 caractères / avec des blancs, ou un champ
-    du mauvais type JSON (title / artist / thumb / provider : texte ou null ; duration : nombre ou null).
+    du mauvais type JSON (title / artist / thumb / provider : texte ou null ; duration : nombre fini ou null).
     Nettoyé sans refus : title et artist (contrôles retirés, blancs réduits, coupés à 200 / 120 ; title vide →
     l'url), duration hors de 0..86400 → null, thumb qui n'est pas un lien http(s) d'au plus 500 → null,
     provider hors de youtube / soundcloud → déduit de l'hôte. `thumbnail` est accepté pour `thumb`.
@@ -260,7 +277,7 @@ def clean_track(raw: Any, added_at: int = 0) -> dict[str, Any]:
 
     duration = raw.get("duration")
     if duration is not None:
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration):
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not _finite(duration):
             raise LibraryError("INVALID_TRACK", MSG_INVALID_TRACK, 400)
         duration = int(duration)
         if not 0 <= duration <= MAX_DURATION:
@@ -468,7 +485,9 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
     """Lecture-modification-écriture atomique (WATCH / MULTI / EXEC), MAX_TRIES essais.
 
     Renvoie (bibliothèque publique, champs propres de l'opération). Rien n'est écrit si l'opération ne
-    change rien. Conflits à chaque essai ou Redis injoignable → LibraryError STORAGE_UNAVAILABLE (503).
+    change rien. Valeur qui grossirait au-delà de MAX_LIBRARY_BYTES → LibraryError LIMIT_REACHED (409,
+    limit="size") ; ce qui la garde ou la réduit passe toujours (retirer, déplacer, supprimer).
+    Conflits à chaque essai ou Redis injoignable → LibraryError STORAGE_UNAVAILABLE (503).
     Seul un vrai conflit (WATCH) fait rejouer l'opération : une connexion perdue pendant l'EXEC laisse
     l'écriture incertaine, l'opération (pas toujours idempotente) n'est jamais rejouée → 503.
     """
@@ -479,18 +498,26 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
             for attempt in range(1, MAX_TRIES + 1):
                 try:
                     pipe.watch(key)
-                    raw = pipe.get(key)
+                    raw = cast("str | None", pipe.get(key))  # decode_responses=True : du texte, ou None
                     state, lossy = parse_library(raw, uid)
                     changed, extra = op(state)
                     if not changed:
                         pipe.unwatch()
                         return public(state), extra
+                    data = _dump(state)
+                    # Budget d'octets : refusé seulement si la valeur grossit au-delà ; un chansonnier déjà
+                    # trop lourd (budget abaissé) peut toujours maigrir. L'erreur sort du `with` (UNWATCH).
+                    size = len(data.encode("utf-8"))
+                    if size > MAX_LIBRARY_BYTES and size > len((raw or "").encode("utf-8")):
+                        logger.warning("Chansonnier de %s : %d octets refusés (budget %d)", uid, size,
+                                       MAX_LIBRARY_BYTES)
+                        raise LibraryError("LIMIT_REACHED", MSG_LIMIT_SIZE, 409, limit="size")
                     # Jamais d'écrasement à l'aveugle : une valeur illisible est gardée à côté, même transaction.
                     backup = f"{key}:corrupt:{int(time.time())}" if lossy and raw is not None else None
                     pipe.multi()
                     if backup:
                         pipe.set(backup, raw)
-                    pipe.set(key, _dump(state))
+                    pipe.set(key, data)
                     try:
                         pipe.execute()
                     except redis.WatchError as e:

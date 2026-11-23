@@ -161,6 +161,27 @@ def test_like_limit_is_409(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(3)}))
 
 
+def test_library_over_the_byte_budget_is_409_size_and_can_still_shrink(logged_client, fr, monkeypatch):
+    ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
+    # Budget sous le chansonnier vide lui-même : tout ajout est refusé, retirer passe encore.
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", 10)
+    body = err(post(logged_client, "/library/likes/add", {"track": yt(2)}), 409, "LIMIT_REACHED")
+    assert body["limit"] == "size" and body["message"] == store.MSG_LIMIT_SIZE
+    err(post(logged_client, "/library/playlists/create", {"name": "Bal"}), 409, "LIMIT_REACHED")
+    assert [t["url"] for t in json.loads(fr.kv[KEY])["likes"]] == [yt(1)["url"]]
+    assert ok(post(logged_client, "/library/likes/remove", {"url": yt(1)["url"]}))["library"]["likes"] == []
+
+
+def test_library_responses_are_utf8_not_escaped(logged_client, fr):
+    # jsonify écrirait « 👑 » (12 octets) pour 👑 et « à » pour à : jusqu'à 3 fois le stocké.
+    title = "Couronnement 👑 du Roi, à l’église"
+    r = post(logged_client, "/library/likes/add", {"track": yt(1, title=title)})
+    assert ok(r)["library"]["likes"][0]["title"] == title
+    for resp in (r, logged_client.get(f"{BASE}/library")):
+        assert resp.mimetype == "application/json"
+        assert title.encode("utf-8") in resp.data and b"\\u" not in resp.data
+
+
 def test_unlike_by_identity_and_idempotent(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
     ok(post(logged_client, "/library/likes/add", {"track": yt(2)}))
@@ -174,6 +195,17 @@ def test_unlike_by_identity_and_idempotent(logged_client, fr):
                                    {"url": "https://x.y/" + "a" * 500}, {"url": "https://x.y", "title": 5}])
 def test_invalid_like_is_400_before_any_redis_access(logged_client, fr, track):
     err(post(logged_client, "/library/likes/add", {"track": track}), 400, "INVALID_TRACK")
+    assert fr.log == []
+
+
+def test_duration_too_big_for_a_float_is_400_not_500(logged_client, fr):
+    # 400 chiffres : un entier JSON valide, que math.isfinite ne sait pas convertir (OverflowError → 500).
+    huge = yt(1, duration=10 ** 400)
+    err(post(logged_client, "/library/likes/add", {"track": huge}), 400, "INVALID_TRACK")
+    body = err(post(logged_client, "/library/playlists/create", {"name": "Bal", "tracks": [yt(0), huge]}),
+               400, "INVALID_TRACK")
+    assert body["index"] == 1
+    err(post(logged_client, "/library/playlists/add", {"id": "abc", "tracks": [huge]}), 400, "INVALID_TRACK")
     assert fr.log == []
 
 

@@ -241,7 +241,7 @@ def test_clean_track_cuts_long_texts():
 
 
 @pytest.mark.parametrize("duration,expected", [(None, None), (0, 0), (86400, 86400), (86401, None),
-                                               (-5, None), (59.99, 59)])
+                                               (-5, None), (59.99, 59), (10 ** 300, None), (1e300, None)])
 def test_clean_track_duration_range(duration, expected):
     assert store.clean_track(yt(duration=duration))["duration"] == expected
 
@@ -277,6 +277,8 @@ def test_clean_track_provider(provider, url, expected):
     {"url": "https://x.y/a", "thumb": {"u": 1}}, {"url": "https://x.y/a", "provider": 1},
     {"url": "https://x.y/a", "duration": "3:20"}, {"url": "https://x.y/a", "duration": True},
     {"url": "https://x.y/a", "duration": float("nan")}, {"url": "https://x.y/a", "duration": float("inf")},
+    # Entier JSON au-delà des flottants (comme 1e400, lu inf) : math.isfinite lèverait OverflowError (500).
+    {"url": "https://x.y/a", "duration": 10 ** 400}, {"url": "https://x.y/a", "duration": -(10 ** 400)},
 ])
 def test_clean_track_refuses_invalid_input(raw):
     with pytest.raises(LibraryError) as ei:
@@ -367,6 +369,15 @@ def test_parse_keeps_valid_entries_and_flags_the_rest():
     assert lossy is True
     assert state["likes"] == [good]
     assert state["playlists"] == [{"id": "abc", "name": "Bal", "tracks": [good], "created_at": 1, "updated_at": 2}]
+
+
+def test_parse_drops_a_stored_duration_too_big_for_a_float():
+    # Valeur stockée qui en porte un (écrite hors de l'API) : l'entrée est écartée, GET /library ne tombe pas en 500.
+    good = store.clean_track(yt(1), 10)
+    raw = json.dumps({"v": 1, "likes": [good, {**store.clean_track(yt(2), 10), "duration": 10 ** 400}],
+                      "playlists": []})
+    state, lossy = store.parse_library(raw)
+    assert lossy is True and state["likes"] == [good]
 
 
 def test_parse_clean_value_round_trips():
@@ -498,6 +509,69 @@ def test_clean_value_is_never_backed_up(fake_store):
     fake_store.write(KEY, doc([store.clean_track(yt(1), 1)]))
     store.mutate(UID, store.op_add_like(store.clean_track(yt(2))))
     assert [k for k in fake_store.kv if ":corrupt:" in k] == []
+
+
+# ─────────────────────────── budget d'octets ───────────────────────────
+
+def _bytes(state) -> int:
+    return len(store._dump(state).encode("utf-8"))
+
+
+def test_byte_budget_holds_a_full_library_of_real_titles():
+    # Les plafonds (500 coups de cœur, 50 playlists de 200 titres) restent atteignables avec de vrais titres.
+    def real(i):
+        return store.clean_track(yt(i, title=f"Le Barde n°{i} – Une chanson au titre plutôt long ({i})",
+                                    artist="Un artiste assez connu"), 1_700_000_000)
+
+    state = _state([real(i) for i in range(store.LIMIT_LIKES)],
+                   [{**_pl(f"p{p}"), "name": "N" * store.LIMIT_NAME,
+                     "tracks": [real(1000 * (p + 1) + i) for i in range(store.LIMIT_TRACKS)],
+                     "created_at": 1_700_000_000, "updated_at": 1_700_000_000}
+                    for p in range(store.LIMIT_PLAYLISTS)])
+    assert _bytes(state) < store.MAX_LIBRARY_BYTES
+
+
+def test_growth_past_the_byte_budget_is_refused_and_writes_nothing(fake_store, monkeypatch):
+    two = _state([store.clean_track(yt(i), 1) for i in range(2)])
+    raw = store._dump(two)
+    fake_store.write(KEY, raw)
+    three = _state([store.clean_track(yt(9), 2)] + two["likes"])
+    # Juste au budget : écrit (le budget est un « au plus »).
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", _bytes(three))
+    store.mutate(UID, store.op_add_like(store.clean_track(yt(9), 2)))
+    assert stored(fr=fake_store) == {"v": 1, **three}
+
+    # Un octet de moins : refusé, rien n'est écrit.
+    fake_store.write(KEY, raw)
+    fake_store.log.clear()
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", _bytes(three) - 1)
+    with pytest.raises(LibraryError) as ei:
+        store.mutate(UID, store.op_add_like(store.clean_track(yt(9), 2)))
+    assert ei.value.code == "LIMIT_REACHED" and ei.value.status == 409 and ei.value.extra == {"limit": "size"}
+    assert ei.value.message == store.MSG_LIMIT_SIZE
+    assert "EXEC" not in fake_store.commands() and fake_store.kv[KEY] == raw
+
+
+def test_over_the_byte_budget_the_king_can_still_shrink(fake_store, monkeypatch):
+    # Déjà au-delà du budget (abaissé après coup) : retirer, déplacer, supprimer passent ; grossir, non.
+    pl = _pl("p", n=3, start=10)
+    fake_store.write(KEY, store._dump(_state([store.clean_track(yt(i), 1) for i in range(4)], [pl])))
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", 100)
+    store.mutate(UID, store.op_remove_like(yt(0)["url"]))
+    store.mutate(UID, store.op_move_track("p", 0, 2, 5))
+    store.mutate(UID, store.op_remove_track("p", yt(11)["url"], 6))
+    for op in (store.op_add_like(store.clean_track(yt(99), 7)),
+               store.op_add_tracks("p", [store.clean_track(yt(98), 7)], 7),
+               store.op_rename_playlist("p", "Un nom bien plus long", 7),
+               store.op_create_playlist("Vide", [], 7)):
+        with pytest.raises(LibraryError) as ei:
+            store.mutate(UID, op)
+        assert ei.value.code == "LIMIT_REACHED" and ei.value.extra == {"limit": "size"}
+    saved = stored(fr=fake_store)
+    assert [t["url"] for t in saved["likes"]] == [yt(i)["url"] for i in (1, 2, 3)]
+    assert [t["url"] for t in saved["playlists"][0]["tracks"]] == [yt(12)["url"], yt(10)["url"]]
+    store.mutate(UID, store.op_delete_playlist("p"))
+    assert stored(fr=fake_store)["playlists"] == []
 
 
 # ─────────────────────────── opérations ───────────────────────────
