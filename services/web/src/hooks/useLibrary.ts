@@ -11,8 +11,9 @@ import type { LibraryOp, TrackLike } from '@/lib/library';
 import type { Library, LibraryTrack } from '@/lib/types';
 import { parseTitle } from '@/lib/titles';
 import { playerActions, useStore } from '@/hooks/usePlayer';
-import { herald, say, sayError } from '@/components/Herald/store';
+import { herald, say, sayError, speak } from '@/components/Herald/store';
 import { t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 
 export type LibraryStatus = 'off' | 'loading' | 'ready' | 'error';
 
@@ -137,12 +138,19 @@ const songOf = (x: { title: string; artist: string | null }): string => parseTit
 const trackOf = (x: TrackLike): LibraryTrack | null => toLibraryTrack(x, Date.now());
 const playlistOf = (id: string) => findPlaylist(useLibrary.getState().lib, engine.idOf(id));
 
-/** Cœur d'un titre de la file, de l'historique ou en lecture : pressé, il le garde ; relâché, il le retire. */
-function toggleLike(item: TrackLike): void {
-  if (!ready()) return;
+/**
+ * Cœur d'un titre de la file, de l'historique ou en lecture : pressé, il le garde ; relâché, il le retire.
+ * `spoken` : basculé au clavier (J sur une ligne) ; le cœur de la ligne n'a pas le focus, son état n'est pas lu :
+ * l'accusé est dit aux lecteurs d'écran, sans notification visible (comme un déplacement Alt+↑ ↓).
+ */
+function toggleLike(item: TrackLike, o: { spoken?: boolean } = {}): Promise<boolean> {
+  if (!ready()) return Promise.resolve(false);
   const tr = trackOf(item);
-  if (!tr) { say('library.error.INVALID_TRACK', { kind: 'warn' }); return; }
-  void run(useLibrary.getState().liked.has(trackKey(tr.url)) ? { kind: 'unlike', url: tr.url } : { kind: 'like', track: tr });
+  if (!tr) { say('library.error.INVALID_TRACK', { kind: 'warn' }); return Promise.resolve(false); }
+  const on = !useLibrary.getState().liked.has(trackKey(tr.url));
+  const done = run(on ? { kind: 'like', track: tr } : { kind: 'unlike', url: tr.url });
+  if (o.spoken) void done.then((ok) => { if (ok) speak(tx(on ? 'library.toast.liked.text' : 'library.toast.unliked.text', { title: songOf(tr) })); });
+  return done;
 }
 
 /** Retirer un coup de cœur depuis sa liste : annonce annulable (le titre revient en tête). */

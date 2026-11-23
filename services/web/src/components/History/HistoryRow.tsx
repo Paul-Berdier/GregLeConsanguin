@@ -32,7 +32,8 @@ export type HistoryRowProps = {
  * (les trois premiers dorés), pochette, titre nettoyé, méta, « + » pour remettre dans la file.
  * Clic : sélection ; double-clic, « + » : remettre ; le cœur : les coups de cœur du Roi (délégués à la liste,
  * useRequeue). Styles : history.css.
- * Clavier : la ligne est l'arrêt de Tab, Entrée la remet dans la file ; « + » et le cœur restent hors de la tabulation.
+ * Clavier : la ligne est l'arrêt de Tab, Entrée la remet dans la file, J bascule son cœur ; « + » et le cœur restent hors
+ * de la tabulation. Le cœur pressé se dit dans le nom de la ligne.
  */
 function HistoryRow({ item, rank, meta, byName, variant, picked, liked, tabIndex }: HistoryRowProps) {
   const p = parseTitle(item.title, item.artist);
@@ -40,7 +41,7 @@ function HistoryRow({ item, rank, meta, byName, variant, picked, liked, tabIndex
   const thumb = thumbOf({ thumb: item.thumb, url: item.url });
   return (
     <li className={`row ${variant}`} data-url={item.url} data-picked={picked || undefined}
-      aria-label={[song, p.artist, meta].filter(Boolean).join(', ')} tabIndex={tabIndex}>
+      aria-label={[song, p.artist, meta, liked && tx('library.like.state')].filter(Boolean).join(', ')} tabIndex={tabIndex}>
       <div className="card">
         <span className={`rank tnum${rank && rank <= 3 ? ' top' : ''}`} aria-hidden="true">{rank || ''}</span>
         <div className="thumb"><div className="im">{thumb && <img src={thumb} alt="" loading="lazy" decoding="async" draggable={false}/>}</div></div>

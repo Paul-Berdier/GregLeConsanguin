@@ -42,7 +42,8 @@ const GRIP_HINT = <svg viewBox="0 0 8 14" fill="currentColor" aria-hidden="true"
  * liste dans le défilement (« Souvent demandés ici », tâche 7). Styles : queue.css.
  * Étape 4 : l'ajout du Roi attendu (sealBook) entre avec Le Sceau (seal.ts) ; la file vidée d'un coup (arrêt) sort
  * de la dernière ligne à la première ; « jouer maintenant » note l'ordre du Roi (kingOrders) pour la scène.
- * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée, Suppr, Alt+↑ ↓ (déplacement annoncé), Alt+Début.
+ * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée, Suppr, Alt+↑ ↓ (déplacement annoncé), Alt+Début,
+ * J (le cœur, annoncé).
  */
 export default function QueuePanel({ after }: { after?: ReactNode }) {
   const queue = useStore((s) => s.player.queue);
@@ -116,6 +117,8 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
   /** Alt+↑↓ : seul le dernier déplacement est annoncé (un précédent, remplacé ou accusé en retard, dirait une place dépassée). */
   const moves = useRef(0);
   const roving = useRoving(listRef, shownKeys, 'key', (act, key, i) => {
+    // J : le cœur de la ligne (hors de la tabulation), basculé et dit aux lecteurs d'écran ; le focus reste
+    if (act.kind === 'like') { const item = byKey.current.get(key); if (item) void libraryActions.toggleLike(item, { spoken: true }); return undefined; }
     const near = shownKeys[i + 1] ?? shownKeys[i - 1] ?? null;
     if (act.kind === 'activate') return playNow(key, 'key') ? near : null;
     if (act.kind === 'remove') { settle(); void playerActions.removeTrack(key); return near; }

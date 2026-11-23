@@ -6,7 +6,8 @@ export type KeyEv = { key: string; code?: string; shiftKey?: boolean; ctrlKey?: 
 /** onRow : ligne d'une liste (ses touches sont à elle) ; onControl : bouton, lien, onglet (Espace l'active). */
 export type KeyCtx = { enabled: boolean; loggedIn: boolean; inField: boolean; inPopover: boolean; onRow: boolean; onControl: boolean; dragging: boolean };
 export type Shortcut = 'togglePause' | 'skip' | 'restart' | 'search' | 'help' | 'type';
-export type ListAct = { kind: 'focus'; index: number } | { kind: 'activate' } | { kind: 'remove' } | { kind: 'move'; dir: -1 | 1 } | { kind: 'next' };
+export type ListAct = { kind: 'focus'; index: number } | { kind: 'activate' } | { kind: 'remove' } | { kind: 'move'; dir: -1 | 1 } | { kind: 'next' }
+  | { kind: 'like' };
 export const SHORTCUTS_STORAGE_KEY = 'greg.webplayer.keys';
 export const HELP_EVENT = 'greg:help';
 export const shortcutsOn = (stored: string | null | undefined): boolean => stored !== 'off';
@@ -22,11 +23,15 @@ export function shortcutFor(ev: KeyEv, c: KeyCtx): Shortcut | null {
   return ev.key.length === 1 && /\S/.test(ev.key) ? 'type' : null;
 }
 
-/** Touche maintenue : on parcourt et on déplace encore, mais Entrée, Suppr et Alt+Début n'agissent qu'une fois
- * (sinon, la ligne suivante prenant le focus, elles joueraient ou retireraient la file en chaîne). */
+/** J (« J'aime ») : le cœur de la ligne, une touche de la ligne qui a le focus (WCAG 2.1.4 : rien hors d'elle). */
+const LIKE_KEYS = new Set(['j', 'J']);
+
+/** Touche maintenue : on parcourt et on déplace encore, mais Entrée, Suppr, Alt+Début et J n'agissent qu'une fois
+ * (sinon, la ligne suivante prenant le focus, elles joueraient ou retireraient la file en chaîne ; J, lui, basculerait
+ * le cœur à chaque répétition). */
 export function listKey(ev: KeyEv, index: number, count: number): ListAct | null {
   if (ev.ctrlKey || ev.metaKey || count <= 0) return null;
-  if (ev.repeat && (ev.key === 'Enter' || ev.key === 'Delete' || (ev.altKey && ev.key === 'Home'))) return null;
+  if (ev.repeat && (ev.key === 'Enter' || ev.key === 'Delete' || LIKE_KEYS.has(ev.key) || (ev.altKey && ev.key === 'Home'))) return null;
   const last = count - 1;
   if (ev.altKey) {
     if (ev.key === 'ArrowUp') return index > 0 ? { kind: 'move', dir: -1 } : null;
@@ -40,7 +45,7 @@ export function listKey(ev: KeyEv, index: number, count: number): ListAct | null
     case 'End': return { kind: 'focus', index: last };
     case 'Enter': return { kind: 'activate' };
     case 'Delete': return { kind: 'remove' };
-    default: return null;
+    default: return LIKE_KEYS.has(ev.key) ? { kind: 'like' } : null;
   }
 }
 

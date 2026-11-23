@@ -29,7 +29,8 @@ export function requeue(item: HistoryItem, from?: HTMLElement | null): void {
  * garde le titre parmi les coups de cœur du Roi (useLibrary).
  * Un seul ajout par 500 ms : « + » cliqué deux fois, ou la ligne de « Souvent demandés ici » qui remonte sous le
  * pointeur quand la précédente entre dans la file, ne remettent pas un second titre.
- * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre dans la file (depuis sa pochette).
+ * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre dans la file (depuis sa pochette), J
+ * bascule son cœur (annoncé).
  * `leaves` : la ligne remise quitte la liste (« Souvent demandés ici » écarte ce qui est dans la file) ; Entrée passe alors
  * le focus à sa voisine, au lieu de le laisser tomber sur <body>. Les autres touches n'ont rien à refocaliser.
  */
@@ -63,6 +64,8 @@ export function useRequeueList(items: readonly HistoryItem[], listRef: RefObject
   };
   const keys = useMemo(() => items.map((x) => x.url || ''), [items]);
   const roving = useRoving(listRef, keys, 'url', (act, url, i) => {   // Entrée : remettre dans la file, depuis sa pochette
+    // J : le cœur de la ligne (hors de la tabulation), basculé et dit aux lecteurs d'écran ; la ligne reste (et le focus)
+    if (act.kind === 'like') { const it = items.find((x) => x.url === url); if (it) void libraryActions.toggleLike(it, { spoken: true }); return undefined; }
     const hit = act.kind === 'activate' ? items.find((x) => x.url === url) : undefined;
     if (!hit || !add(hit)) return null;
     return leaves ? keys[i + 1] ?? keys[i - 1] ?? null : null;

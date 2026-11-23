@@ -40,9 +40,10 @@ export type QueueRowProps = {
  * Une ligne de la file (DESIGN §12.5) : poignée 6 points, pochette (poignée elle aussi), titre nettoyé (le brut en
  * info-bulle), artiste, blason et demandeur, durée et heure estimée ; actions rapides sur une puce opaque.
  * Les clics sont délégués à la liste (QueuePanel : data-act). Styles : queue.css.
- * Clavier : la ligne est l'arrêt de Tab ; ses boutons restent hors de la tabulation (Entrée, Suppr et Alt+Début les
+ * Clavier : la ligne est l'arrêt de Tab ; ses boutons restent hors de la tabulation (Entrée, Suppr, Alt+Début et J les
  * remplacent, DESIGN §12.7). Le sceau du Roi se charge en différé (QueuePanel le décode au premier temps mort).
- * Le cœur (data-act="like", bouton à bascule) garde le titre parmi les coups de cœur du Roi (chansonnier).
+ * Le cœur (data-act="like", bouton à bascule) garde le titre parmi les coups de cœur du Roi (chansonnier) ; pressé,
+ * le nom de la ligne le dit.
  */
 function QueueRow({ item, eta, next, sealSrc, picked, leaving, liked, tabIndex }: QueueRowProps) {
   const p = parseTitle(item.title, item.artist);
@@ -54,10 +55,12 @@ function QueueRow({ item, eta, next, sealSrc, picked, leaving, liked, tabIndex }
   const raw = mine ? tx('queue.rowAriaMine', { title: song, ...art })
     : who ? tx('queue.rowAria', { title: song, ...art, name: who }) : tx('queue.rowAriaUnknown', { title: song, ...art });
   const label = p.artist ? raw : raw.replace(', {artist}', '');
+  // le nom de la ligne remplace son contenu : l'état du cœur (aria-pressed, hors de la tabulation) s'y dit
+  const said = liked ? `${label}, ${tx('library.like.state')}` : label;
   const thumb = thumbOf(item);
   return (
     <li className={`row${next ? ' next' : ''}`} data-key={item.key} data-leaving={leaving || undefined}
-      data-picked={picked || undefined} aria-label={label} tabIndex={tabIndex}>
+      data-picked={picked || undefined} aria-label={said} tabIndex={tabIndex}>
       <div className="card">
         <span className="grip" aria-hidden="true">{GRIP}</span>
         <div className="thumb">
