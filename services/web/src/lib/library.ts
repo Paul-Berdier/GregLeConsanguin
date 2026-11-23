@@ -285,11 +285,13 @@ export type Notice = { key: string; vars?: Record<string, string | number>; kind
  * Le refus `code` d'une modification `op`, dit par le Héraut. null : à l'appelant (NOT_AUTHENTICATED passe par la perte
  * de session, une erreur inconnue par le texte générique, NOOP et DUPLICATE par leur propre message ou rien).
  */
-export function noticeOf(code: string, op: LibraryOp, lib: Library | null | undefined): Notice | null {
+export function noticeOf(code: string, op: LibraryOp, lib: Library | null | undefined, limit?: unknown): Notice | null {
   const limits = lib?.limits ?? DEFAULT_LIMITS;
   const name = 'id' in op ? findPlaylist(lib, op.id)?.name ?? ('name' in op ? op.name : '') : '';
   switch (code) {
     case 'LIMIT_REACHED':
+      // budget d'octets du chansonnier entier (API, MAX_LIBRARY_BYTES) : ni un plafond de titres, ni de playlists
+      if (limit === 'size') return { key: 'library.error.limitSize', kind: 'warn' };
       if (op.kind === 'like') return { key: 'library.error.limitLikes', vars: { n: limits.likes }, kind: 'warn' };
       if (op.kind === 'create') return { key: 'library.error.limitPlaylists', vars: { n: limits.playlists }, kind: 'warn' };
       return { key: 'library.error.limitTracks', vars: { n: limits.tracks, name }, kind: 'warn' };

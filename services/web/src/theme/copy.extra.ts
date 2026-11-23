@@ -140,6 +140,7 @@ export const EXTRA = {
       limitLikes: { text: 'Vous avez atteint le plafond de {n} coups de cœur. Retirez-en un pour en garder un autre.' },
       limitPlaylists: { text: 'Vous avez atteint le plafond de {n} playlists. Supprimez-en une pour en créer une autre.' },
       limitTracks: { text: '« {name} » a atteint le plafond de {n} titres.' },
+      limitSize: { text: 'Votre chansonnier est plein : retirez des titres ou des playlists avant d’en ajouter.' },
       notReady: { text: 'Le chansonnier s’ouvre encore. Réessayez dans un instant.' },
     },
   },

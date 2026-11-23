@@ -239,6 +239,10 @@ test('libraryCode / noticeOf : le Héraut dit le plafond touché, le nom, l’in
   assert.equal(noticeOf('STORAGE_UNAVAILABLE', { kind: 'unlike', url: 'x' }, null).kind, 'err');
   assert.equal(noticeOf('PLAYLIST_NOT_FOUND', { kind: 'delete', id: 'p1' }, base).key, 'library.error.PLAYLIST_NOT_FOUND');
   assert.equal(noticeOf('NOT_AUTHENTICATED', { kind: 'delete', id: 'p1' }, base), null, 'la perte de session parle seule');
+  // budget d'octets de l'API (limit: 'size') : son propre message, quelle que soit l'opération
+  for (const op of [{ kind: 'like', track: tr('a') }, { kind: 'create', id: 'tmp:1', name: 'x', tracks: [] }, { kind: 'add', id: 'p1', tracks: [] }]) {
+    assert.deepEqual(noticeOf('LIMIT_REACHED', op, base, 'size'), { key: 'library.error.limitSize', kind: 'warn' });
+  }
   assert.equal(noticeOf('', { kind: 'delete', id: 'p1' }, base), null);
 });
 

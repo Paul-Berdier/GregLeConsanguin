@@ -72,7 +72,7 @@ const REREAD = new Set(['PLAYLIST_NOT_FOUND', 'STORAGE_UNAVAILABLE', 'INVALID_RE
 function failed(op: LibraryOp, e: unknown): void {
   const code = libraryCode(e);
   if (code === 'NOT_AUTHENTICATED') return;
-  const n = noticeOf(code, op, engine.view());
+  const n = noticeOf(code, op, engine.view(), (e as { payload?: { limit?: unknown } } | null)?.payload?.limit);
   if (n) say(n.key, { vars: n.vars, kind: n.kind });
   else sayError(e);
   if (REREAD.has(code)) void load();
