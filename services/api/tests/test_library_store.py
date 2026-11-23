@@ -234,7 +234,8 @@ def test_clean_track_duration_range(duration, expected):
 
 
 @pytest.mark.parametrize("thumb", ["javascript:alert(1)", "/relatif.jpg", "data:image/png;base64,AAAA",
-                                   "https://img/" + "x" * 500, "https://img/a b.jpg", ""])
+                                   "https://img/" + "x" * 500, "https://img/a b.jpg", "",
+                                   r"https://evil.example\@i.ytimg.com/vi/x.jpg"])
 def test_clean_track_drops_a_thumb_that_is_not_a_short_http_link(thumb):
     assert store.clean_track(yt(thumb=thumb))["thumb"] is None
 
@@ -257,6 +258,8 @@ def test_clean_track_provider(provider, url, expected):
     {"url": "www.youtube.com/watch?v=dQw4w9WgXcQ"},  # sans schéma : le site envoie des liens complets
     {"url": "https://"}, {"url": "https://example.com/a b"}, {"url": "https://example.com/\x00"},
     {"url": "https://example.com/" + "a" * 481},
+    # urlsplit y voit l'hôte www.youtube.com, le navigateur evil.example : refusé plutôt que yt:… mensonger.
+    {"url": r"https://evil.example\@www.youtube.com/watch?v=dQw4w9WgXcQ"},
     {"url": "https://x.y/a", "title": 12}, {"url": "https://x.y/a", "artist": ["a"]},
     {"url": "https://x.y/a", "thumb": {"u": 1}}, {"url": "https://x.y/a", "provider": 1},
     {"url": "https://x.y/a", "duration": "3:20"}, {"url": "https://x.y/a", "duration": True},

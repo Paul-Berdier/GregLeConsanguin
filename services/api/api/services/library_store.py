@@ -198,9 +198,11 @@ def clean_text(value: str) -> str:
 
 
 def _http_url(value: str, max_len: int) -> str | None:
-    """Lien http(s) absolu d'au plus max_len caractères, sans blanc ni caractère de contrôle, sinon None."""
+    """Lien http(s) absolu d'au plus max_len caractères, sans blanc, contrôle ni « \\ », sinon None."""
     s = value.strip()
-    if not s or len(s) > max_len or _WS_RE.search(s) or _CTRL_RE.search(s):
+    # « \ » : urlsplit le garde dans l'hôte (https://a.b\@youtube.com → youtube.com) quand le navigateur le
+    # lit comme « / » (→ a.b) ; refusé, sinon l'identité (yt:…) et le fournisseur mentiraient sur la cible.
+    if not s or len(s) > max_len or "\\" in s or _WS_RE.search(s) or _CTRL_RE.search(s):
         return None
     try:
         u = urlsplit(s)
