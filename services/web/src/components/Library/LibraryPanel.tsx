@@ -151,13 +151,23 @@ export default function LibraryPanel() {
 
   useEffect(() => { if (open && lib && !tracksOf(lib, open)) libraryActions.setOpen(null); }, [open, lib]);
 
+  /** Vue rendue au passage précédent : une vue disparue sous le Roi se reconnaît à son départ. */
+  const shown = useRef<string | null>(null);
+
   useLayoutEffect(() => {
-    const want = focusNext.current;
+    const want = focusNext.current, was = shown.current;
     focusNext.current = null;
+    shown.current = view;
     const root = paneRef.current;
-    if (!want || !root) return;
-    const el = want === 'back' ? root.querySelector<HTMLElement>('.lback')
-      : root.querySelector<HTMLElement>(`.lcards > .row[data-key="${CSS.escape(libraryActions.idOf(want))}"]`)
+    if (!root) return;
+    // vue ouverte disparue sans geste du Roi (playlist supprimée dans un autre onglet, création refusée) : le focus,
+    // tombé sur la page avec elle, revient à la liste ; jamais dans un volet caché
+    const at = document.activeElement;
+    const lost = !want && !!was && !view && (!at || at === document.body) && !root.closest('[aria-hidden="true"]');
+    const to = want ?? (lost ? was : null);
+    if (!to) return;
+    const el = to === 'back' ? root.querySelector<HTMLElement>('.lback')
+      : root.querySelector<HTMLElement>(`.lcards > .row[data-key="${CSS.escape(libraryActions.idOf(to))}"]`)
         ?? root.querySelector<HTMLElement>('.lcards > .row[tabindex="0"]');
     el?.focus();
   }, [view]);
