@@ -267,6 +267,17 @@ export function libraryCode(e: unknown): string {
   return typeof code === 'string' ? code.trim().toUpperCase() : '';
 }
 
+/** Écart minimal entre deux relectures au retour sur la fenêtre (comme la session, app/page.tsx). */
+export const REREAD_MIN_MS = 15_000;
+
+/**
+ * Retour sur la fenêtre : le chansonnier est relu (changé depuis un autre appareil ou onglet : un déplacement compté sur
+ * l'ancien ordre viserait un autre titre). Seulement chargé, rien en attente (chaque accusé rend le chansonnier entier),
+ * au plus une fois par REREAD_MIN_MS.
+ */
+export const rereadOnFocus = (o: { status: string; pending: number; now: number; last: number }): boolean =>
+  o.status === 'ready' && o.pending === 0 && o.now - o.last >= REREAD_MIN_MS;
+
 /** Message du Héraut (section `library.error` de copy.extra.ts) ; `vars` : plafond, nom de la playlist. */
 export type Notice = { key: string; vars?: Record<string, string | number>; kind: 'info' | 'warn' | 'err' };
 

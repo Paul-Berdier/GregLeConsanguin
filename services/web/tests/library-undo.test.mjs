@@ -88,3 +88,19 @@ test('échec à l’issue inconnue (503 « le site relit », réseau) : le chans
   const load = body(src, 'async function load(');
   assert.match(load, /const acks = engine\.acks\(\);[\s\S]*await api\.getLibrary\(\)[\s\S]*if \(engine\.acks\(\) === acks \|\| !engine\.view\(\)\) engine\.load\(lib\);/);
 });
+
+test('retour sur la fenêtre : relu (changé sur un autre appareil, Alt+↑ ↓ viserait un autre titre), sans excès', async () => {
+  const { rereadOnFocus, REREAD_MIN_MS } = await loadTs('../src/lib/library.ts');
+  assert.equal(REREAD_MIN_MS, 15000, 'comme la session (app/page.tsx)');
+  const at = (o) => rereadOnFocus({ status: 'ready', pending: 0, now: 100_000, last: 100_000 - REREAD_MIN_MS, ...o });
+  assert.equal(at({}), true);
+  assert.equal(at({ last: 100_000 - REREAD_MIN_MS + 1 }), false, 'pas plus d’une fois par 15 s');
+  assert.equal(at({ pending: 1 }), false, 'en attente : chaque accusé rend le chansonnier entier');
+  for (const status of ['off', 'loading', 'error']) assert.equal(at({ status }), false, status);
+  // branché sur le focus de la fenêtre, retiré au démontage ; espacé de toute lecture (connexion, échec, Réessayer)
+  const src = read('src/hooks/useLibrary.ts');
+  const init = body(src, 'export function useLibraryInit(');
+  assert.match(init, /if \(rereadOnFocus\(\{ status: useLibrary\.getState\(\)\.status, pending: engine\.pending\(\), now: Date\.now\(\), last: _readAt \}\)\) void load\(\);/);
+  assert.match(init, /window\.addEventListener\('focus', onFocus\);\s*return \(\) => window\.removeEventListener\('focus', onFocus\);/);
+  assert.match(body(src, 'async function load('), /if \(!meId\) return;\s*_readAt = Date\.now\(\);/);
+});

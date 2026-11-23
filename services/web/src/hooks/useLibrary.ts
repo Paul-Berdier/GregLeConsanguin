@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { api } from '@/lib/api';
 import {
   DEFAULT_LIMITS, LIKES, TMP, addPlan, checkOp, cleanName, createLibraryEngine, findPlaylist, libraryCode, likedKeys,
-  moveIndices, nameOk, noticeOf, parseLibrary, toLibraryTrack, trackKey, wireTrack,
+  moveIndices, nameOk, noticeOf, parseLibrary, rereadOnFocus, toLibraryTrack, trackKey, wireTrack,
 } from '@/lib/library';
 import type { LibraryOp, TrackLike } from '@/lib/library';
 import type { Library, LibraryTrack } from '@/lib/types';
@@ -88,6 +88,8 @@ const engine = createLibraryEngine({
 });
 
 let _loadSeq = 0;
+/** Heure de la dernière lecture lancée (Date.now()) : la relecture au retour sur la fenêtre s'espace d'elle (rereadOnFocus). */
+let _readAt = 0;
 
 /**
  * Lit le chansonnier du Roi connecté ; une lecture dépassée (déconnexion, autre Roi, relecture, modification accusée
@@ -96,6 +98,7 @@ let _loadSeq = 0;
 async function load(): Promise<void> {
   const meId = useStore.getState().me?.id;
   if (!meId) return;
+  _readAt = Date.now();
   const seq = ++_loadSeq;
   const live = () => seq === _loadSeq && useStore.getState().me?.id === meId;
   const acks = engine.acks();
@@ -329,6 +332,9 @@ export const libraryActions = {
 /**
  * Le chansonnier suit le Roi connecté : lu quand `me` arrive (ou change), vidé à la déconnexion, y compris quand un 401
  * fait perdre la session (handleLoggedOut). Abonnement au store : la déconnexion vide avant toute réponse en vol.
+ * Relu au retour sur la fenêtre (rereadOnFocus, 15 s au moins après la lecture précédente) : modifié depuis un autre
+ * appareil, l'ordre d'une playlist n'est plus le même, et Alt+↑ ↓ (rangs comptés sur la copie confirmée) déplacerait
+ * un autre titre.
  * À appeler une fois (Sidebar, toujours monté).
  */
 export function useLibraryInit(): void {
@@ -342,5 +348,12 @@ export function useLibraryInit(): void {
     };
     sync(useStore.getState().me?.id ?? '');
     return useStore.subscribe((s) => sync(s.me?.id ?? ''));
+  }, []);
+  useEffect(() => {
+    const onFocus = () => {
+      if (rereadOnFocus({ status: useLibrary.getState().status, pending: engine.pending(), now: Date.now(), last: _readAt })) void load();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 }
