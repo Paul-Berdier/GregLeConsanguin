@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { FocusEvent, KeyboardEvent } from 'react';
+import type { FocusEvent, KeyboardEvent, MouseEvent } from 'react';
 import { usePlayer } from '@/hooks/usePlayer';
 import { revealDelta } from '@/lib/focus';
 import { filterGuilds, foldText, groupGuilds, guildKey, imeKey, moveIndex, openingActive, searchable } from '@/lib/guilds';
@@ -168,8 +168,14 @@ export default function GuildPicker() {
     const inField = e.currentTarget === inputRef.current;
     const act = guildKey(e, { field: inField, query });
     if (!act) {
-      // Lettre tapée sur la liste alors que le champ existe : focus passé au champ pendant keydown, la lettre y tombe
-      if (withField && !inField && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) inputRef.current?.focus();
+      // Lettre tapée sur la liste alors que le champ existe : focus passé au champ pendant keydown, la lettre y tombe,
+      // curseur en fin (comme la saisie directe de page.tsx : jamais à l'ancien curseur ni sur une sélection restée là)
+      const field = inputRef.current;
+      if (field && !inField && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        field.focus();
+        const n = field.value.length;
+        field.setSelectionRange(n, n);
+      }
       return;
     }
     e.preventDefault();
@@ -199,6 +205,13 @@ export default function GuildPicker() {
     else openList(e.key === 'ArrowUp' ? 'last' : 'first');
   };
 
+  // Clic dans le popover ailleurs que dans le champ (icône, marges, intertitre, état vide) : le focus reste où il est.
+  // Sans cela il tombait sur <body>, popover ouvert : plus de flèches ni d'Échap, et la saisie directe de page.tsx
+  // envoyait les lettres à la recherche des titres. La barre de défilement de la liste garde son geste.
+  const keepFocus = (e: MouseEvent) => {
+    if (e.target !== inputRef.current && e.target !== listRef.current) e.preventDefault();
+  };
+
   // Options sans focus propre (aria-activedescendant) : le clic ne prend pas le focus au champ
   const option = (g: GuildInfo) => {
     const presence = grouped ? null : gregPresence(g);   // intertitres affichés : la présence est déjà dite au-dessus
@@ -225,16 +238,17 @@ export default function GuildPicker() {
         <span className="guild-name">{label}</span>
         <svg className="chev ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"/></svg>
       </button>
-      <div className="pop plaque guild-pop" data-open={open} style={{ minWidth: 270 }}>
+      <div className="pop plaque guild-pop" data-open={open} style={{ minWidth: 270 }} onMouseDown={keepFocus}>
         {withField ? (
-          <div className="guild-find">
+          // <label> : un clic sur la loupe ou les marges du cadre met le focus dans le champ
+          <label className="guild-find">
             <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="M15.5 15.5l4.5 4.5"/></svg>
             <input ref={inputRef} type="text" value={query} onChange={(e) => onType(e.target.value)} onKeyDown={onKey}
               placeholder={tx('guildFilter.placeholder')} aria-label={tx('guildFilter.label')}
               autoComplete="off" autoCapitalize="none" spellCheck={false} enterKeyHint="go"
               role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list"
               aria-activedescendant={activeOpt}/>
-          </div>
+          </label>
         ) : (
           <div className="pop-title" aria-hidden="true">{t('guild.label')}</div>
         )}

@@ -64,6 +64,16 @@ test('clavier : Échap vide le champ sans fermer ; vide, il remonte à usePopove
   assert.match(picker, /if \(imeKey\(e\.nativeEvent\)\) \{ e\.stopPropagation\(\); return; \}/);
 });
 
+test('focus : un clic dans le popover hors du champ ne le fait pas tomber sur <body>', () => {
+  // Sans cela, popover ouvert, plus de flèches ni d'Échap, et la saisie directe de page.tsx partait aux titres
+  assert.match(picker, /className="pop plaque guild-pop"[^>]*onMouseDown=\{keepFocus\}/);
+  assert.match(picker, /if \(e\.target !== inputRef\.current && e\.target !== listRef\.current\) e\.preventDefault\(\);/);
+  // la loupe et les marges du cadre mènent au champ
+  assert.match(picker, /<label className="guild-find">/);
+  // lettre tapée sur la liste : curseur en fin du champ, comme la saisie directe de page.tsx
+  assert.match(picker, /field\.focus\(\);\s*const n = field\.value\.length;\s*field\.setSelectionRange\(n, n\);/);
+});
+
 test('usePopover reste exporté pour le menu du compte', () => {
   assert.match(picker, /export function usePopover\(\)/);
   assert.match(read('src/components/Header/AccountMenu.tsx'), /import \{ usePopover \} from '\.\/GuildPicker';/);
