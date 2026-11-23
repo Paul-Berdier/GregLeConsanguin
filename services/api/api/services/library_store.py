@@ -76,11 +76,13 @@ _YT_ID_RE = re.compile(
 _YT_HOST_RE = re.compile(r"(?:^|\.)(?:youtube\.com|youtu\.be|youtube-nocookie\.com)$")
 _SC_HOST_RE = re.compile(r"(?:^|\.)soundcloud\.com$")
 _WS_RE = re.compile(r"\s")
-# Caractères de contrôle (catégorie Cc : U+0000..U+001F, U+007F..U+009F). Regex et non boucle par caractère :
-# chaque lecture renettoie toute la bibliothèque (jusqu'à ~10 000 titres).
-_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Caractères de contrôle (catégorie Cc : U+0000..U+001F, U+007F..U+009F) et demi-paires de substitution
+# (U+D800..U+DFFF : un « \ud83d » isolé, emoji coupé en deux côté JS, passe json.loads mais pas l'encodeur
+# UTF-8 strict de redis-py → UnicodeEncodeError, 500). Regex et non boucle par caractère : chaque lecture
+# renettoie toute la bibliothèque (jusqu'à ~10 000 titres).
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 # Ceux qui ne sont pas des blancs (str.isspace) : retirés du texte ; les blancs, eux, sont réduits par split().
-_CTRL_NOT_SPACE_RE = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f]")
+_CTRL_NOT_SPACE_RE = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f\ud800-\udfff]")
 
 
 class LibraryError(Exception):
@@ -193,12 +195,13 @@ def track_key(url: str) -> str:
 # ─── Nettoyage des entrées ───
 
 def clean_text(value: str) -> str:
-    """Caractères de contrôle retirés, blancs réduits à une espace, bords rognés."""
+    """Caractères de contrôle et demi-paires isolées retirés, blancs réduits à une espace, bords rognés."""
     return " ".join(_CTRL_NOT_SPACE_RE.sub("", value).split())
 
 
 def _http_url(value: str, max_len: int) -> str | None:
-    """Lien http(s) absolu d'au plus max_len caractères, sans blanc, contrôle ni « \\ », sinon None."""
+    """Lien http(s) absolu d'au plus max_len caractères, sans blanc, contrôle, demi-paire isolée ni « \\ »,
+    sinon None."""
     s = value.strip()
     # « \ » : urlsplit le garde dans l'hôte (https://a.b\@youtube.com → youtube.com) quand le navigateur le
     # lit comme « / » (→ a.b) ; refusé, sinon l'identité (yt:…) et le fournisseur mentiraient sur la cible.

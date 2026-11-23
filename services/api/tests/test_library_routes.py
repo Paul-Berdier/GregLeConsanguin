@@ -132,6 +132,16 @@ def test_like_is_stored_with_the_seven_keys_and_returned_with_the_library(logged
     assert json.loads(fr.kv[KEY])["likes"] == [like]
 
 
+def test_lone_surrogates_are_stored_cleaned_not_a_500(logged_client, fr):
+    # Emoji coupé en deux par le site (« \ud83d » isolé) : json.loads l'accepte, Redis (UTF-8 strict) non.
+    ok(post(logged_client, "/library/likes/add", {"track": yt(1, title="Rick \ud83d")}))
+    assert json.loads(fr.kv[KEY])["likes"][0]["title"] == "Rick"
+    pid = create(logged_client, "Bal \udc00du Roi")
+    assert json.loads(fr.kv[KEY])["playlists"][0]["name"] == "Bal du Roi"
+    ok(post(logged_client, "/library/playlists/rename", {"id": pid, "name": "\ud83d Fête"}))
+    assert json.loads(fr.kv[KEY])["playlists"][0]["name"] == "Fête"
+
+
 def test_likes_newest_first_and_idempotent_across_url_forms(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
     ok(post(logged_client, "/library/likes/add", {"track": yt(2)}))

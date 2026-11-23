@@ -48,6 +48,7 @@ class FakeRedis:
     def write(self, key: str, value: str):
         """Écriture hors transaction (un autre client) : change la version vue par WATCH."""
         assert isinstance(value, str), "decode_responses=True : Redis stocke du texte"
+        value.encode("utf-8")  # encodeur strict de redis-py : UnicodeEncodeError sur une demi-paire isolée
         self.kv[key] = value
         self.version[key] = self.version.get(key, 0) + 1
 
@@ -218,6 +219,18 @@ def test_clean_track_defaults_and_cleaning():
     assert t["provider"] == "soundcloud"                 # déduit de l'hôte
     assert t["added_at"] == 0                            # posé par le serveur, jamais lu du corps
     assert set(t) == {"url", "title", "artist", "duration", "thumb", "provider", "added_at"}
+
+
+def test_clean_track_drops_lone_surrogates():
+    # « \ud83d » seul (emoji coupé en deux côté JS) : json.loads l'accepte, l'encodeur UTF-8 strict de
+    # redis-py non (UnicodeEncodeError → 500). Retiré des textes ; un lien qui en porte est refusé.
+    body = json.loads('{"url": "https://x.y/a", "title": "Rick \\ud83d", "artist": "\\udc00Barde",'
+                      ' "thumb": "https://img/\\ud83d.jpg"}')
+    t = store.clean_track(body)
+    assert t["title"] == "Rick" and t["artist"] == "Barde" and t["thumb"] is None
+    assert store.clean_text("👑 Roi") == "👑 Roi"  # une vraie paire (un seul point de code) reste
+    with pytest.raises(LibraryError):
+        store.clean_track(json.loads('{"url": "https://x.y/\\ud83d"}'))
 
 
 def test_clean_track_cuts_long_texts():
