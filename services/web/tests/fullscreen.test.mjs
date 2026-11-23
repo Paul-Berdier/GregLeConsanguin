@@ -170,3 +170,12 @@ test('progression : bornée de 0 à 1, durée inconnue à 0', () => {
   assert.equal(F.progressOf(30, 0), 0);
   assert.equal(F.progressOf(30, NaN), 0);
 });
+
+test('surcouche tout juste parue : la suite d’un double-clic est ignorée, un clic simple ou au clavier passe', () => {
+  assert.equal(F.FS_DBLCLICK_MS, 500);
+  assert.equal(F.fsSwallowClick(2, 120), true, 'second clic du double-clic sur « Plein écran »');
+  assert.equal(F.fsSwallowClick(3, 499), true, 'triple clic');
+  assert.equal(F.fsSwallowClick(1, 120), false, 'un clic simple, même aussitôt');
+  assert.equal(F.fsSwallowClick(0, 120), false, 'au clavier (Entrée, Espace)');
+  assert.equal(F.fsSwallowClick(2, 500), false, 'un double-clic voulu, plus tard : sortie');
+});

@@ -30,6 +30,15 @@ export const FS_SKIPPED: readonly Shortcut[] = ['type', 'search', 'help'];
 export const FS_ACTIVE = '.video[data-fs]';
 /** Double-clic sur la vidéo : plein écran, entrée comme sortie ; pas sur une commande, un popover ou la file de la surcouche. */
 export const FS_NO_DBLCLICK = 'button, a[href], input, .pop, .th-queue';
+/** Durée d'un double-clic (celle des systèmes, au plus) : la surcouche, tout juste parue, ignore les clics qui suivent. */
+export const FS_DBLCLICK_MS = 500;
+
+/**
+ * La surcouche paraît sous un pointeur immobile : le second clic d'un double-clic sur « Plein écran » (le premier l'a
+ * ouverte) tomberait sur une commande (lecture, pause) ou, double-clic sur la vidéo, ferait sortir aussitôt.
+ * `detail` : rang du clic dans la salve (2 et plus : la suite d'un double-clic) ; `since` : ms depuis qu'elle a paru.
+ */
+export const fsSwallowClick = (detail: number, since: number): boolean => detail > 1 && since < FS_DBLCLICK_MS;
 
 export const fsSkips = (act: Shortcut): boolean => FS_SKIPPED.includes(act);
 export const fsQueueOn = (stored: string | null | undefined): boolean => stored !== 'off';

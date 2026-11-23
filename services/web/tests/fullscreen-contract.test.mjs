@@ -133,6 +133,14 @@ test('file de la surcouche : une action ne retombe pas sur la voisine (double-cl
   assert.match(th, /<ol className="th-list" ref=\{listRef\} onClick=\{onListClick\} onKeyDown=\{onListKeyDown\}/);
 });
 
+test('surcouche tout juste parue : le second clic d’un double-clic sur « Plein écran » n’atteint rien', () => {
+  const th = code('src/components/Stage/Theater.tsx');
+  assert.match(th, /const \[shownAt\] = useState\(\(\) => performance\.now\(\)\);/);
+  assert.match(th, /if \(!fsSwallowClick\(e\.detail, performance\.now\(\) - shownAt\)\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);/);
+  // en capture, sur la surcouche : ni la commande dessous (lecture, pause), ni le double-clic de .video (sortie aussitôt)
+  assert.match(th, /onClickCapture=\{swallow\} onDoubleClickCapture=\{swallow\}/);
+});
+
 test('textes : section « fullscreen » complète, hors du deck', () => {
   for (const k of ['enter', 'enterTip', 'exit', 'exitTip', 'region', 'queue', 'queueToggle', 'queueShow', 'queueHide', 'current']) {
     assert.equal(typeof EXTRA.fullscreen[k], 'string', k);

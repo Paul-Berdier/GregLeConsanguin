@@ -10,7 +10,7 @@ import { livePosition } from '@/lib/playerUtils';
 import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { kingOrders } from '@/lib/stage/coronation';
 import { fmtSpoken } from '@/lib/stage/dial';
-import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, loadFsQueue, neighbourKey, progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
+import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, fsSwallowClick, loadFsQueue, neighbourKey, progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
 import { kickerKey, kingSealSrc, requesterKeys, requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import type { Track } from '@/lib/types';
@@ -94,6 +94,8 @@ export default function Theater({ exit }: { exit: () => void }) {
   const [idle, setIdle] = useState(false);
   const [dedupe] = useState(createDedupe);
   const [settle] = useState(createSettle);
+  // rendue après un geste du Roi, jamais côté serveur : l'heure de son apparition se lit au premier rendu
+  const [shownAt] = useState(() => performance.now());
 
   const parsed = current ? parseTitle(current.title, current.artist) : null;
   const song = parsed?.song || current?.title || '';
@@ -173,6 +175,16 @@ export default function Theater({ exit }: { exit: () => void }) {
     if (e.repeat && e.key === 'Enter' && (e.target as Element).closest('[data-act]')) e.preventDefault();
   };
 
+  /**
+   * Second clic d'un double-clic sur « Plein écran » : la surcouche a paru entre les deux, sous le pointeur. Il n'atteint
+   * ni la commande dessous (lecture, pause), ni le double-clic de la vidéo (Portal.tsx), qui ferait sortir aussitôt.
+   */
+  const swallow = (e: MouseEvent<HTMLElement>): void => {
+    if (!fsSwallowClick(e.detail, performance.now() - shownAt)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const toggleQueue = (): void => {
     const next = !queueOn;
     setQueueOn(next);
@@ -208,7 +220,7 @@ export default function Theater({ exit }: { exit: () => void }) {
 
   return (
     <section ref={rootRef} className="theater" aria-label={tx('fullscreen.region')} tabIndex={-1}
-      data-idle={idle || undefined} onKeyDown={onKeyDown}>
+      data-idle={idle || undefined} onKeyDown={onKeyDown} onClickCapture={swallow} onDoubleClickCapture={swallow}>
       <div className="th-top th-ui">
         <div className="th-now">
           <p className="th-kicker">{current && t(kickerKey({ paused, repeat }))}</p>
