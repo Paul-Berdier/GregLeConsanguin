@@ -94,5 +94,7 @@ test('feuille : champ fixe, la liste défile seule ; `.top .pop` inchangé ; auc
   assert.match(css, /@media \(pointer: coarse\)\s*\{\s*\.guild-find input\s*\{\s*font-size:\s*16px;/);
   const rules = [...css.matchAll(/[^{}]*\.guild-[\w-]+[^{}]*\{[^}]*\}/g)].map((m) => m[0]).join('\n');
   assert.ok(rules.includes('.guild-opt[data-active=true]'));
+  // couleurs forcées : fond et ombre effacés, le contour transparent y devient visible (seul repère de l'option active)
+  assert.match(css, /\.guild-opt\[data-active=true\]\s*\{[^}]*outline:\s*2px solid transparent;/);
   assert.deepEqual(animated(rules), []);
 });

@@ -218,8 +218,10 @@
 .guild-list:focus-visible { outline-offset: -2px; }
 .guild-list:focus-visible:has([data-active=true]) { outline: none; }
 .guild-opt { cursor: pointer; }
-/* option active (aria-activedescendant) : filet d'or à gauche, l'or du focus clavier de la page */
-.guild-opt[data-active=true] { background: var(--voute-2); box-shadow: inset 2px 0 0 var(--or); }
+/* option active (aria-activedescendant) : filet d'or à gauche, l'or du focus clavier de la page. Couleurs forcées
+   (contraste élevé de Windows) : fond et ombre y sont effacés ; le contour transparent, lui, y prend une couleur
+   système et reste le seul repère de l'option qu'Entrée choisira (le focus est dans le champ, pas sur l'option). */
+.guild-opt[data-active=true] { background: var(--voute-2); box-shadow: inset 2px 0 0 var(--or); outline: 2px solid transparent; outline-offset: -2px; }
 /* intertitres « Greg présent » / « Sans Greg » : petites capitales et un filet jusqu'au bord */
 .guild-group {
   display: flex; align-items: center; gap: 8px; padding: 10px 10px 5px;
