@@ -172,6 +172,16 @@ def test_library_over_the_byte_budget_is_409_size_and_can_still_shrink(logged_cl
     assert ok(post(logged_client, "/library/likes/remove", {"url": yt(1)["url"]}))["library"]["likes"] == []
 
 
+def test_library_responses_are_utf8_not_escaped(logged_client, fr):
+    # jsonify écrirait « 👑 » (12 octets) pour 👑 et « à » pour à : jusqu'à 3 fois le stocké.
+    title = "Couronnement 👑 du Roi, à l’église"
+    r = post(logged_client, "/library/likes/add", {"track": yt(1, title=title)})
+    assert ok(r)["library"]["likes"][0]["title"] == title
+    for resp in (r, logged_client.get(f"{BASE}/library")):
+        assert resp.mimetype == "application/json"
+        assert title.encode("utf-8") in resp.data and b"\\u" not in resp.data
+
+
 def test_unlike_by_identity_and_idempotent(logged_client, fr):
     ok(post(logged_client, "/library/likes/add", {"track": yt(1)}))
     ok(post(logged_client, "/library/likes/add", {"track": yt(2)}))
