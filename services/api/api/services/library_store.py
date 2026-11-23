@@ -47,8 +47,9 @@ LIMIT_NAME = 60
 
 # Budget d'octets de la valeur stockée (JSON UTF-8). Les plafonds comptent des titres, pas leur poids : 10 500
 # titres aux champs pleins (liens de 500, textes en caractères de 4 octets) pèseraient ~25 Mo, relus, réécrits et
-# renvoyés en entier à chaque cœur. Un chansonnier plein de vrais titres YouTube en pèse ~3 (test_library_store).
-MAX_LIBRARY_BYTES = 4 * 1024 * 1024
+# renvoyés en entier à chaque cœur. Un chansonnier plein de vrais titres YouTube en pèse ~3 (test_library_store) ;
+# 6 Mio laissent de la marge aux vignettes longues des playlists développées, sans rouvrir la porte aux 25 Mo.
+MAX_LIBRARY_BYTES = 6 * 1024 * 1024
 
 MAX_URL = 500
 MAX_TITLE = 200
