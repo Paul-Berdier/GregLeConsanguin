@@ -28,6 +28,8 @@ class FakeRedis:
     - `interleave` : écritures « d'un autre onglet » jouées juste avant les prochains EXEC (une par EXEC),
       pour provoquer un WatchError comme le ferait Redis.
     - `log` : commandes reçues, dans l'ordre.
+    - `lost_exec` : nombre d'EXEC dont Redis applique l'écriture mais dont la réponse se perd (connexion
+      coupée) ; redis-py le signale alors par un WatchError levé PENDANT la gestion du ConnectionError.
     """
 
     def __init__(self):
@@ -36,6 +38,7 @@ class FakeRedis:
         self.fail: BaseException | None = None
         self.interleave: list = []
         self.log: list[tuple] = []
+        self.lost_exec = 0
 
     def _cmd(self, *args):
         self.log.append(args)
@@ -111,6 +114,13 @@ class FakePipeline:
                 raise redis.WatchError("Watched variable changed.")
             for k, v in self.queued or []:
                 self.r.write(k, v)
+            if self.r.lost_exec:
+                self.r.lost_exec -= 1
+                try:
+                    raise redis.ConnectionError("Connection reset by peer")
+                except redis.ConnectionError:
+                    # Pipeline._disconnect_raise_reset (redis-py 5) : WatchError quand on surveillait une clé.
+                    raise redis.WatchError("A ConnectionError occurred on while watching one or more keys")
             return [True] * len(self.queued or [])
         finally:
             self.reset()
@@ -393,6 +403,28 @@ def test_mutate_gives_up_after_five_conflicts(fake_store):
     assert ei.value.message == store.MSG_STORAGE_BUSY
     assert fake_store.commands().count("EXEC") == store.MAX_TRIES == 5
     assert yt(1)["url"] not in fake_store.kv[KEY]
+
+
+def test_lost_exec_reply_is_never_replayed(fake_store):
+    # Redis a appliqué l'EXEC mais la réponse s'est perdue : rejouer créerait une 2e playlist.
+    fake_store.lost_exec = 1
+    with pytest.raises(LibraryError) as ei:
+        store.mutate(UID, store.op_create_playlist("Bal", [], 5))
+    assert ei.value.code == "STORAGE_UNAVAILABLE" and ei.value.status == 503
+    assert ei.value.message == store.MSG_STORAGE_UNAVAILABLE
+    assert fake_store.commands().count("EXEC") == 1
+    assert [pl["name"] for pl in stored(fr=fake_store)["playlists"]] == ["Bal"]
+
+
+def test_lost_exec_reply_does_not_move_twice(fake_store):
+    tracks = [store.clean_track(yt(i), 1) for i in range(3)]
+    pl = {"id": "pl1", "name": "Bal", "tracks": tracks, "created_at": 1, "updated_at": 1}
+    fake_store.write(KEY, json.dumps({"v": 1, "likes": [], "playlists": [pl]}))
+    fake_store.lost_exec = 1
+    with pytest.raises(LibraryError):
+        store.mutate(UID, store.op_move_track("pl1", 0, 2, 5))
+    saved = stored(fr=fake_store)["playlists"][0]["tracks"]
+    assert [t["url"] for t in saved] == [yt(1)["url"], yt(2)["url"], yt(0)["url"]]
 
 
 def test_operation_error_writes_nothing(fake_store):

@@ -460,6 +460,8 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
 
     Renvoie (bibliothèque publique, champs propres de l'opération). Rien n'est écrit si l'opération ne
     change rien. Conflits à chaque essai ou Redis injoignable → LibraryError STORAGE_UNAVAILABLE (503).
+    Seul un vrai conflit (WATCH) fait rejouer l'opération : une connexion perdue pendant l'EXEC laisse
+    l'écriture incertaine, l'opération (pas toujours idempotente) n'est jamais rejouée → 503.
     """
     key = library_key(uid)
     r = _client_for(uid)
@@ -480,7 +482,15 @@ def mutate(uid: int, op: Op) -> tuple[dict[str, Any], dict[str, Any]]:
                     if backup:
                         pipe.set(backup, raw)
                     pipe.set(key, _dump(state))
-                    pipe.execute()
+                    try:
+                        pipe.execute()
+                    except redis.WatchError as e:
+                        if isinstance(e.__context__, (redis.ConnectionError, redis.TimeoutError, OSError)):
+                            # Connexion perdue PENDANT l'EXEC : redis-py le signale par un WatchError, mais
+                            # Redis a peut-être déjà appliqué l'écriture. Rejouer l'opération créerait une
+                            # 2e playlist, déplacerait deux fois… : issue inconnue → 503, le site relit.
+                            raise _unavailable(uid, e.__context__) from None
+                        raise
                     if backup:
                         logger.warning("Chansonnier de %s : valeur illisible gardée sous %s", uid, backup)
                     return public(state), extra
