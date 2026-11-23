@@ -5,10 +5,11 @@ import { tx } from '@/theme/copy.extra';
 
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
-/** « 12 titres · 47 min », « 1 titre · 3 min », « Aucun titre ». */
+/** « 12 titres · 47 min », « 1 titre · 3 min », « 2 titres » (durées inconnues : pas de « 0 min »), « Aucun titre ». */
 export function tracksMeta(tracks: readonly LibraryTrack[]): string {
-  const n = tracks.length;
-  return n ? `${tx('library.count.tracks', { n })} · ${fmtLong(totalSeconds(tracks))}` : cap(tx('library.count.tracksNone'));
+  const n = tracks.length, s = totalSeconds(tracks);
+  if (!n) return cap(tx('library.count.tracksNone'));
+  return s >= 30 ? `${tx('library.count.tracks', { n })} · ${fmtLong(s)}` : tx('library.count.tracks', { n });
 }
 
 /** Sous-titre de l'onglet : « 12 coups de cœur · 3 playlists », « Aucun coup de cœur · 1 playlist ». */
