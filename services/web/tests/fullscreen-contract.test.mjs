@@ -113,6 +113,20 @@ test('surcouche : focus pris, piégé, rendu ; libellés ; aucun id ni classe de
   for (const [, key] of src.matchAll(/tx\('(fullscreen\.[\w.]+)'/g)) assert.notEqual(tx(key, { n: 2 }), key, key);
 });
 
+test('file de la surcouche : une action ne retombe pas sur la voisine (double-clic, Entrée maintenue)', () => {
+  const th = code('src/components/Stage/Theater.tsx');
+  // la ligne partie, la suivante glisse sous le pointeur : le second clic d'un double-clic attend l'accalmie (QueuePanel)
+  assert.match(th, /const \[settle\] = useState\(createSettle\);/);
+  const at = th.indexOf('const onListClick'), click = th.slice(at, th.indexOf('\n  };', at));
+  const guard = click.indexOf('if (e.detail > 0 && settle.active(now)) return;');
+  assert.ok(guard > 0, 'clic de pointeur pendant l’accalmie : ignoré (au clavier, detail 0, le focus a suivi exprès)');
+  assert.ok(guard < click.indexOf('settle.start(now);') && click.indexOf('settle.start(now);') < click.indexOf('playerActions.'), 'accalmie posée avant l’action');
+  assert.match(th, /onPointerMove=\{\(e\) => \{ settle\.move\(e\.clientX, e\.clientY, performance\.now\(\)\); \}\}/, 'le pointeur qui bouge la lève');
+  // le focus suit la voisine (même bouton) : Entrée maintenue la retirerait ou la jouerait à son tour, toute la file y passerait
+  assert.match(th, /if \(e\.repeat && e\.key === 'Enter' && \(e\.target as Element\)\.closest\('\[data-act\]'\)\) e\.preventDefault\(\);/);
+  assert.match(th, /<ol className="th-list" ref=\{listRef\} onClick=\{onListClick\} onKeyDown=\{onListKeyDown\}/);
+});
+
 test('textes : section « fullscreen » complète, hors du deck', () => {
   for (const k of ['enter', 'enterTip', 'exit', 'exitTip', 'region', 'queue', 'queueToggle', 'queueShow', 'queueHide', 'current']) {
     assert.equal(typeof EXTRA.fullscreen[k], 'string', k);

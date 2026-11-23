@@ -7,7 +7,7 @@ import { kingName } from '@/components/Header/KingAvatar';
 import { thumbOf } from '@/components/Queue/QueueRow';
 import { fmt } from '@/lib/format';
 import { livePosition } from '@/lib/playerUtils';
-import { createDedupe } from '@/lib/queue/drag';
+import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { kingOrders } from '@/lib/stage/coronation';
 import { fmtSpoken } from '@/lib/stage/dial';
 import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, loadFsQueue, neighbourKey, progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
@@ -93,6 +93,7 @@ export default function Theater({ exit }: { exit: () => void }) {
   const [queueOn, setQueueOn] = useState(() => loadFsQueue(() => localStorage));
   const [idle, setIdle] = useState(false);
   const [dedupe] = useState(createDedupe);
+  const [settle] = useState(createSettle);
 
   const parsed = current ? parseTitle(current.title, current.artist) : null;
   const song = parsed?.song || current?.title || '';
@@ -164,19 +165,34 @@ export default function Theater({ exit }: { exit: () => void }) {
     (i < 0 ? root : list[i]).focus();
   };
 
+  /**
+   * Entrée maintenue sur « Retirer » ou « Jouer maintenant » : une fois. Le focus passe à la voisine (même bouton) et
+   * chaque répétition la retirerait ou la jouerait à son tour : toute la file y passerait (comme listKey, lib/keys.ts).
+   */
+  const onListKeyDown = (e: KeyboardEvent<HTMLOListElement>): void => {
+    if (e.repeat && e.key === 'Enter' && (e.target as Element).closest('[data-act]')) e.preventDefault();
+  };
+
   const toggleQueue = (): void => {
     const next = !queueOn;
     setQueueOn(next);
     saveFsQueue(() => localStorage, next);
   };
 
-  /** « Jouer maintenant » et « Retirer », délégués : actions optimistes de la file (usePlayer). */
+  /**
+   * « Jouer maintenant » et « Retirer », délégués : actions optimistes de la file (usePlayer). Accalmie comme la file
+   * (createSettle, QueuePanel) : la ligne partie, la suivante glisse sous le pointeur immobile ; le second clic d'un
+   * double-clic la retirerait ou la jouerait aussi. Au clavier (detail 0), le focus l'a suivie exprès : rien n'attend.
+   */
   const onListClick = (e: MouseEvent<HTMLOListElement>): void => {
     const btn = (e.target as Element).closest<HTMLButtonElement>('button[data-act]');
     const key = btn?.closest<HTMLElement>('.th-row')?.dataset.key;
     const act = btn?.dataset.act;
     if (!btn || !key || !act) return;
-    if (act === 'play' && dedupe(key, performance.now())) return;
+    const now = performance.now();
+    if (e.detail > 0 && settle.active(now)) return;
+    if (act === 'play' && dedupe(key, now)) return;
+    settle.start(now);
     // la ligne va partir : le focus passe avant à sa voisine (même bouton), sinon il tomberait sur <body>, hors de l'écran
     if (btn === document.activeElement) {
       const near = neighbourKey(shown.map((x) => x.key), key);
@@ -220,7 +236,8 @@ export default function Theater({ exit }: { exit: () => void }) {
 
       <aside className="th-queue th-ui" id={queueId} aria-labelledby={queueTitleId} hidden={!queueOn}>
         <h3 className="th-qtitle" id={queueTitleId}>{tx('fullscreen.queue')}</h3>
-        <ol className="th-list" ref={listRef} onClick={onListClick}>
+        <ol className="th-list" ref={listRef} onClick={onListClick} onKeyDown={onListKeyDown}
+          onPointerMove={(e) => { settle.move(e.clientX, e.clientY, performance.now()); }}>
           {current && <TheaterRow item={current} now/>}
           {shown.map((x) => <TheaterRow key={x.key} item={x} now={false}/>)}
         </ol>
