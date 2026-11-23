@@ -25,12 +25,17 @@ type Card = { key: string; name: string; tracks: LibraryTrack[] };
  * Vue d'ensemble du chansonnier : « Nouvelle playlist » et « Enregistrer la file » (nom en ligne), puis la liste :
  * la carte des coups de cœur (sigil du cœur, sceau du Roi) et les playlists (nom, nombre de titres, durée), chacune
  * avec « Tout jouer ». Un clic ouvre ; clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée ouvre.
- * Une playlist créée prend le focus de sa ligne (gardée montée quand elle reçoit son id : originOf).
+ * Une playlist créée prend le focus de sa ligne (gardée montée quand elle reçoit son id : originOf) ; refusée par
+ * l'API, son nom revient dans le champ rouvert.
  */
 function Overview({ lib, onOpen }: { lib: Library; onOpen: (id: string) => void }) {
   const me = useStore((s) => s.me);
   const canSave = useStore((s) => !!s.player.current || s.player.queue.length > 0);
   const [form, setForm] = useState<'new' | 'queue' | null>(null);
+  /** Nom d'une création refusée par l'API, rendu à son champ rouvert (sinon le nom proposé). */
+  const [draft, setDraft] = useState<string | null>(null);
+  const formRef = useRef(form);
+  formRef.current = form;
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const newRef = useRef<HTMLButtonElement>(null);
@@ -66,14 +71,25 @@ function Overview({ lib, onOpen }: { lib: Library; onOpen: (id: string) => void 
 
   const submit = (raw: string): boolean => {
     if (!libraryActions.nameValid(raw)) return false;
-    const made = form === 'queue' ? libraryActions.saveQueue(raw) : libraryActions.createPlaylist(raw);
+    const kind = form ?? 'new';
+    const made = kind === 'queue' ? libraryActions.saveQueue(raw) : libraryActions.createPlaylist(raw);
     if (!made) return false;
     backTo.current = null;
     setForm(null);
+    setDraft(null);
     setFocusKey(made.id);
+    // refusée par l'API (indisponible, réseau) : la ligne provisoire repart, le nom tapé revient dans son champ ;
+    // pas si un autre nom s'écrit déjà, si la vue est partie, ou si le Roi est passé ailleurs (focus hors du volet)
+    void made.done.then((ok) => {
+      const list = listRef.current, root = list?.closest('.lpane'), at = document.activeElement;
+      if (ok || formRef.current || !list || !root || root.closest('[aria-hidden="true"]')
+        || (at && at !== document.body && !root.contains(at))) return;
+      setDraft(raw);
+      setForm(kind);
+    });
     return true;
   };
-  const cancel = () => { backTo.current = form; setForm(null); };
+  const cancel = () => { backTo.current = form; setForm(null); setDraft(null); };
 
   const onClick = (e: MouseEvent) => {
     const key = (e.target as HTMLElement).closest<HTMLElement>('.row')?.dataset.key;
@@ -87,7 +103,7 @@ function Overview({ lib, onOpen }: { lib: Library; onOpen: (id: string) => void 
   return (
     <>
       {form ? (
-        <NameForm initial={form === 'queue' ? tx('library.queueName', { date: today }) : ''}
+        <NameForm initial={draft ?? (form === 'queue' ? tx('library.queueName', { date: today }) : '')}
           submitLabel={tx(form === 'queue' ? 'library.save' : 'library.create')}
           submitAria={tx(form === 'queue' ? 'library.save' : 'library.createAria')} onSubmit={submit} onCancel={cancel}/>
       ) : (

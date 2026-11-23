@@ -62,6 +62,20 @@ test('focus gardé : « Réessayer » reste pendant la relecture, puis la liste 
   assert.match(panel, /if \(!lib \|\| !root \|\| \(at && at !== document\.body\) \|\| root\.closest\('\[aria-hidden="true"\]'\)\) return;\s*root\.querySelector<HTMLElement>\('\.lcards > \.row\[tabindex="0"\], \.lback'\)\?\.focus\(\);/);
 });
 
+test('création refusée par l’API (indisponible) : le nom tapé revient dans son champ rouvert', () => {
+  const panel = read('src/components/Library/LibraryPanel.tsx');
+  const submit = panel.slice(panel.indexOf('const submit = (raw: string): boolean => {'), panel.indexOf('const cancel = '));
+  assert.match(submit, /void made\.done\.then\(\(ok\) => \{/);
+  // ni pendant qu'un autre nom s'écrit, ni vue partie, ni volet caché, ni focus parti hors du volet
+  assert.match(submit, /if \(ok \|\| formRef\.current \|\| !list \|\| !root \|\| root\.closest\('\[aria-hidden="true"\]'\)\s*\|\| \(at && at !== document\.body && !root\.contains\(at\)\)\) return;\s*setDraft\(raw\);\s*setForm\(kind\);/);
+  assert.match(panel, /<NameForm initial=\{draft \?\? \(form === 'queue' \? tx\('library\.queueName', \{ date: today \}\) : ''\)\}/);
+  assert.match(panel, /const cancel = \(\) => \{ backTo\.current = form; setForm\(null\); setDraft\(null\); \};/, 'annulé : le nom proposé la fois suivante');
+  // NameForm reprend `initial` à chaque ouverture (démonté fermé), le champ prend le focus et sélectionne le nom
+  const form = read('src/components/Library/NameForm.tsx');
+  assert.match(form, /const \[value, setValue\] = useState\(initial\);/);
+  assert.match(form, /useLayoutEffect\(\(\) => \{ ref\.current\?\.focus\(\); ref\.current\?\.select\(\); \}, \[\]\);/);
+});
+
 test('focus gardé : Suppr sur la dernière ligne d’une playlist l’envoie au retour', () => {
   const view = read('src/components/Library/PlaylistView.tsx');
   assert.match(view, /emptied\.current = act\.kind === 'remove' && keys\.length === 1;/);
