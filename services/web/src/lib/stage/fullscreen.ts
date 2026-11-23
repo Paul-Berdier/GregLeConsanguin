@@ -14,12 +14,22 @@ export type FsMode = 'native' | 'pseudo';
 export const FS_IDLE_MS = 3000;
 /** Plus de titre en cours pendant 1,5 s (fin de file, arrêt) : on sort du plein écran. Un creux entre deux titres passe. */
 export const FS_EXIT_MS = 1500;
+/**
+ * Demande sans réponse au bout d'une seconde (ni `fullscreenchange` ni erreur : vue web embarquée qui ne l'accorde
+ * jamais) : le repli prend le relais. Un accord tardif l'emporte encore (fsModeAfterChange).
+ */
+export const FS_ASK_MS = 1000;
 /** File « À suivre » montrée ou masquée, mémorisée ; absente ou illisible : montrée. */
 export const FS_QUEUE_KEY = 'greg.webplayer.fsQueue';
 /** Lignes de la file dans la surcouche (au-delà : « …et N autres titres ») : chaque ligne a deux arrêts de Tab. */
 export const FS_MAX_ROWS = 30;
 /** Raccourcis de la page sans objet en plein écran : la recherche et l'aide sont hors de l'écran (Espace, Maj+→/← restent). */
 export const FS_SKIPPED: readonly Shortcut[] = ['type', 'search', 'help'];
+
+/** La vidéo en plein écran, API ou repli (Portal.tsx pose data-fs) : ce que lit le clavier de la page (page.tsx). */
+export const FS_ACTIVE = '.video[data-fs]';
+/** Double-clic sur la vidéo : plein écran, entrée comme sortie ; pas sur une commande, un popover ou la file de la surcouche. */
+export const FS_NO_DBLCLICK = 'button, a[href], input, .pop, .th-queue';
 
 export const fsSkips = (act: Shortcut): boolean => FS_SKIPPED.includes(act);
 export const fsQueueOn = (stored: string | null | undefined): boolean => stored !== 'off';

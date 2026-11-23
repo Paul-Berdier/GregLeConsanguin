@@ -102,6 +102,9 @@ test('fullscreenchange : l’API entre et sort ; le repli ne dépend pas d’ell
   assert.equal(F.fsModeAfterChange('native', false), null, 'Échap, sortie imposée par le navigateur');
   assert.equal(F.fsModeAfterChange('pseudo', false), 'pseudo');
   assert.equal(F.fsModeAfterChange(null, false), null);
+  // demande restée sans réponse : repli après FS_ASK_MS ; l'accord tardif du navigateur l'emporte
+  assert.equal(F.FS_ASK_MS, 1000);
+  assert.equal(F.fsModeAfterChange('pseudo', true), 'native');
 });
 
 test('API : préfixes webkit, autorisation du document, élément sans API (iPhone)', () => {
