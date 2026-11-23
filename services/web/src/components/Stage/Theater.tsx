@@ -11,8 +11,8 @@ import { livePosition } from '@/lib/playerUtils';
 import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { kingOrders } from '@/lib/stage/coronation';
 import { fmtSpoken } from '@/lib/stage/dial';
-import { FS_IDLE_MS, FS_MAX_ROWS, createIdle, createWakeTap, fsSwallowClick, inertOthers, loadFsQueue, neighbourKey,
-  progressOf, saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
+import { FS_IDLE_MS, FS_MAX_ROWS, FS_NARROW, createIdle, createWakeTap, fsSwallowClick, inertOthers, loadFsQueue, neighbourKey, progressOf,
+  saveFsQueue, trapIndex } from '@/lib/stage/fullscreen';
 import { kickerKey, kingSealSrc, requesterKeys, requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import type { Track } from '@/lib/types';
@@ -108,8 +108,10 @@ export default function Theater({ exit }: { exit: () => void }) {
   const paused = useStore((s) => s.player.paused);
   const repeat = useStore((s) => s.player.repeat);
   const me = useStore((s) => s.me);
-  // rendue après un geste du Roi, jamais côté serveur : le réglage se lit dès le premier rendu
-  const [queueOn, setQueueOn] = useState(() => loadFsQueue(() => localStorage));
+  // rendue après un geste du Roi, jamais côté serveur : le réglage et la largeur de l'écran se lisent dès le premier rendu
+  // (téléphone debout, sans choix du Roi : la file, entre le titre et le transport, couvrirait l'image ; masquée)
+  const [queueOn, setQueueOn] = useState(() => loadFsQueue(() => localStorage,
+    typeof matchMedia === 'function' && matchMedia(FS_NARROW).matches));
   const [idle, setIdle] = useState(false);
   const [dedupe] = useState(createDedupe);
   const [settle] = useState(createSettle);
@@ -289,7 +291,7 @@ export default function Theater({ exit }: { exit: () => void }) {
             {parsed?.artist && <><span className="th-artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
             {req && keys && <span className="th-by">
               {req.kind === 'mine' && <img className="th-seal" src={kingSealSrc(kingName(me))} alt="" width={18} height={18} decoding="async"/>}
-              {t(keys.plain, vars)}
+              <span>{t(keys.plain, vars)}</span>
             </span>}
           </p>
         </div>

@@ -46,6 +46,27 @@ test('plein écran : fond noir, posters entiers ; la nuit n’éteint ni ne bloq
   assert.match(ruleBody(css, '.th-queue[hidden]'), /display:\s*none/, 'display: flex ne doit pas rouvrir la file masquée');
 });
 
+test('file de la surcouche lisible sur tablette et téléphone couché ; artiste et demandeur lisibles sur téléphone', () => {
+  const css = noComments(read(THEATER_CSS));
+  // 34vw ne laissait au titre que quelques pixels à côté de la pochette, de la durée et des deux actions (768 px : 5 px)
+  const w = ruleBody(css, '.th-queue').match(/width:\s*clamp\((\d+)px,\s*34vw,\s*380px\)/);
+  assert.ok(w && Number(w[1]) >= 320, 'largeur plancher de la plaque');
+  assert.match(css, /@media \(max-width: 1023px\) \{ \.th-dur \{ display: none; \} \}/, 'plaque étroite : la durée part');
+  // téléphone couché : entre les deux bandeaux, la file ne montrait qu'une ligne et demie ; elle monte à côté du titre
+  assert.match(css, /@media \(max-height: 520px\) and \(min-width: 701px\) \{\s*\.theater \{ grid-template-areas: "top queue" "\. queue" "bottom bottom"; \}/);
+  // une colonne au seuil de FS_NARROW (file masquée d'emblée, Theater.tsx)
+  const at = css.indexOf(`@media ${F.FS_NARROW} {`);
+  assert.ok(at > 0, 'même seuil que FS_NARROW');
+  const phone = css.slice(at, css.indexOf('\n}', at));
+  assert.match(phone, /\.th-meta-line \{[^}]*flex-wrap:\s*wrap/, 'l’artiste et le demandeur sur deux lignes');
+  assert.match(phone, /\.th-meta-line > \.dot-sep \{ display: none; \}/);
+  assert.match(phone, /\.th-artist \{ flex-basis: 100%; \}/);
+  assert.match(phone, /\.th-by \{ flex: 0 1 auto; \}/);
+  assert.match(ruleBody(css, '.th-by'), /min-width:\s*0/);
+  assert.match(ruleBody(css, '.th-by > span'), /text-overflow:\s*ellipsis/, 'le demandeur s’abrège seul');
+  assert.match(code('src/components/Stage/Theater.tsx'), /<span>\{t\(keys\.plain, vars\)\}<\/span>/);
+});
+
 test('portal.css : un seul bloc de mouvement réduit (choreo-stage lit le dernier), le bouton d’entrée y est', () => {
   const css = noComments(read('src/components/Stage/portal.css'));
   assert.equal(css.match(/@media \(prefers-reduced-motion: reduce\)/g)?.length, 1);
@@ -157,6 +178,11 @@ test('repos : une commande au focus du clavier retient les commandes ; au doigt,
   assert.match(th, /root\.addEventListener\('click', eat, true\);/);
   assert.match(th, /if \(!tap\.eats\(e\.detail\)\) return;\s*e\.preventDefault\(\);\s*e\.stopPropagation\(\);/);
   assert.match(th, /root\.removeEventListener\('click', eat, true\);/);
+});
+
+test('file de la surcouche masquée d’emblée sur un téléphone debout, sauf choix du Roi', () => {
+  const th = code('src/components/Stage/Theater.tsx');
+  assert.match(th, /useState\(\(\) => loadFsQueue\(\(\) => localStorage,\s*typeof matchMedia === 'function' && matchMedia\(FS_NARROW\)\.matches\)\)/);
 });
 
 test('file de la surcouche : une action ne retombe pas sur la voisine (double-clic, Entrée maintenue)', () => {

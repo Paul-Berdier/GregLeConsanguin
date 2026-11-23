@@ -147,6 +147,23 @@ test('file mémorisée : clé, montrée par défaut, stockage bloqué sans erreu
   assert.doesNotThrow(() => F.saveFsQueue(blocked, false));
 });
 
+test('file sur un écran étroit (téléphone debout) : masquée d’emblée, montrée si le Roi l’a montrée', () => {
+  assert.equal(F.FS_NARROW, '(max-width: 700px)');
+  assert.deepEqual([null, undefined, 'on', 'off', ''].map((v) => F.fsQueueOn(v, true)), [false, false, true, false, false]);
+  assert.deepEqual([null, 'on', 'off'].map((v) => F.fsQueueOn(v, false)), [true, true, false], 'écran large : comme avant');
+  const map = new Map();
+  const store = () => ({ getItem: (k) => map.get(k) ?? null, setItem: (k, v) => { map.set(k, v); } });
+  assert.equal(F.loadFsQueue(store, true), false, 'sans choix : la file couvrirait l’image');
+  assert.equal(F.loadFsQueue(store, false), true);
+  F.saveFsQueue(store, true);
+  assert.equal(F.loadFsQueue(store, true), true, 'montrée par le Roi : elle reste montrée');
+  F.saveFsQueue(store, false);
+  assert.equal(F.loadFsQueue(store, false), false, 'masquée par le Roi : partout');
+  const blocked = () => { throw new Error('SecurityError'); };
+  assert.equal(F.loadFsQueue(blocked, true), false);
+  assert.equal(F.loadFsQueue(blocked, false), true);
+});
+
 test('au doigt, l’appui sur des commandes effacées les réveille seulement : le clic qui suit est avalé', () => {
   const tap = F.createWakeTap();
   tap.down('touch', true);

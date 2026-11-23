@@ -65,7 +65,8 @@
   display: flex; align-items: center; gap: 8px; min-width: 0; margin: 6px 0 0; font-size: 16.5px; color: var(--os-2); white-space: nowrap;
 }
 .th-artist { overflow: hidden; text-overflow: ellipsis; }
-.th-by { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.th-by { display: inline-flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
+.th-by > span { overflow: hidden; text-overflow: ellipsis; }
 .th-seal { width: 18px; height: 18px; flex: none; }
 .th-acts { display: flex; gap: 8px; flex: none; }
 
@@ -86,9 +87,10 @@
 .video[data-fs] .toasts[data-dock=center] { bottom: calc(210px + env(safe-area-inset-bottom, 0px)); }
 @media (hover: hover) and (pointer: fine) { .th-icon:hover { color: var(--os); background: rgb(29 25 21 / .85); } }
 
-/* « À suivre » : la plaque translucide, défilante */
+/* « À suivre » : la plaque translucide, défilante ; 320 px au moins (tablette debout, téléphone couché) : à côté de la
+   pochette, de la durée et des deux actions, le titre garde de quoi se lire */
 .th-queue {
-  grid-area: queue; display: flex; flex-direction: column; min-height: 0; width: min(380px, 34vw); margin: 0 24px 12px 0;
+  grid-area: queue; display: flex; flex-direction: column; min-height: 0; width: clamp(320px, 34vw, 380px); margin: 0 24px 12px 0;
   border-radius: 12px; corner-shape: bevel; background: rgb(11 9 8 / .6);
   box-shadow: inset 0 0 0 1px var(--hair), inset 0 1px 0 rgb(var(--lumiere-rgb) / .22);
 }
@@ -123,6 +125,8 @@
   .th-act.del:hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
 }
 @media (hover: none) { .th-act { width: 40px; height: 40px; } }
+/* plaque étroite (tablette, téléphone) : la durée part, le titre garde sa place */
+@media (max-width: 1023px) { .th-dur { display: none; } }
 .th-more, .th-empty { margin: 0; padding: 8px 16px 14px; font-size: 13.5px; color: var(--cendre); }
 
 /* en bas : temps, barre (lecture seule : le bot n'a pas de seek), transport de la scène (now.css) */
@@ -147,6 +151,12 @@
   .theater { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "queue" "bottom"; }
   .th-top { gap: 12px; padding: 16px 16px 40px; }
   .th-title { font-size: 26px; }
+  /* l'artiste sur sa ligne, le demandeur dessous : côte à côte, à côté des trois boutons, l'artiste n'y gardait qu'une
+     lettre ; chacun s'abrège seul */
+  .th-meta-line { flex-wrap: wrap; row-gap: 4px; }
+  .th-meta-line > .dot-sep { display: none; }
+  .th-artist { flex-basis: 100%; }
+  .th-by { flex: 0 1 auto; }
   .th-queue { width: auto; max-height: 42vh; margin: 0 12px; align-self: end; }
   .th-bottom { padding: 32px 16px 16px; gap: 12px; }
 }
@@ -155,6 +165,12 @@
   .th-top { padding-top: 14px; padding-bottom: 28px; }
   .th-title { font-size: 24px; }
   .th-bottom { padding-top: 24px; padding-bottom: 12px; gap: 8px; }
+}
+/* bas et large (téléphone couché) : entre les deux bandeaux, la file ne montrait qu'une ligne et demie ; elle monte en
+   haut, à côté de ce qui joue */
+@media (max-height: 520px) and (min-width: 701px) {
+  .theater { grid-template-areas: "top queue" ". queue" "bottom bottom"; }
+  .th-queue { margin-top: 14px; }
 }
 
 /* mouvement réduit : les commandes paraissent et partent sans fondu, la barre saute, les boutons ne s'enfoncent pas */
