@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { speak } from '@/components/Herald/store';
@@ -9,7 +9,7 @@ import { useStore } from '@/hooks/usePlayer';
 import { libraryActions } from '@/hooks/useLibrary';
 import { useRoving } from '@/hooks/useRoving';
 import { LIKES, findPlaylist, trackKey } from '@/lib/library';
-import { createDedupe } from '@/lib/queue/drag';
+import { createDedupe, createSettle } from '@/lib/queue/drag';
 import type { HistoryItem } from '@/lib/queue/view';
 import type { Library, LibraryTrack } from '@/lib/types';
 import { parseTitle } from '@/lib/titles';
@@ -39,9 +39,10 @@ export type PlaylistViewProps = {
  * Une playlist (ou les coups de cœur) : retour, nom modifiable en ligne, nombre de titres et durée, « Tout jouer »,
  * « Ajouter le titre en cours », « Supprimer » (confirmé, comme l'arrêt du transport : le focus sur « Garder »).
  * Lignes au style de l'historique (LibraryRow). Clics délégués : « + » ou double-clic remettent dans la file avec
- * Le Sceau (requeue), un par 500 ms ; « Retirer » retire (annonce annulable). Clavier (useRoving) : un arrêt de Tab,
- * ↑ ↓ Début Fin, Entrée ajoute à la file, Suppr retire, Alt+↑ / Alt+↓ déplacent (pas dans les coups de cœur, rangés
- * du plus récent au plus ancien) ; touches décrites (aria-describedby). Styles : library.css.
+ * Le Sceau (requeue), un par 500 ms ; « Retirer » retire (annonce annulable), puis la liste s'accalmit (settle).
+ * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée ajoute à la file, Suppr retire, Alt+↑ / Alt+↓
+ * déplacent (pas dans les coups de cœur, rangés du plus récent au plus ancien) ; touches décrites (aria-describedby).
+ * Styles : library.css.
  */
 export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewProps) {
   const likes = id === LIKES;
@@ -55,12 +56,18 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const renameRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const once = useRef(createDedupe());
+  const settleRef = useRef(createSettle());
+  const backRef = useRef<HTMLButtonElement>(null);
+  /** Suppr vient de viser la dernière ligne (le focus ira au retour). */
+  const emptied = useRef(false);
   const moves = useRef(0);
   const keysId = useId(), titleId = useId(), bodyId = useId();
 
   const keys = useMemo(() => tracks.map((x) => trackKey(x.url)), [tracks]);
   const byKey = useMemo(() => new Map(tracks.map((x) => [trackKey(x.url), x])), [tracks]);
   const curKey = current?.url ? trackKey(current.url) : '';
+  /** « Ajouter le titre en cours » : un titre joue et la vue ne l'a pas encore. */
+  const canAdd = !!current && !(curKey && keys.includes(curKey));
 
   // la confirmation de suppression met le focus sur le choix sûr (DESIGN §7)
   useEffect(() => { if (confirm.open) noRef.current?.focus(); }, [confirm.open]);
@@ -88,6 +95,7 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   const roving = useRoving(listRef, keys, 'key', (act, k, i) => {
     const x = byKey.get(k);
     if (!x) return null;
+    emptied.current = act.kind === 'remove' && keys.length === 1;   // la dernière : la liste part avec elle
     if (act.kind === 'activate') { add(x); return null; }
     if (act.kind === 'remove') { void remove(x); return keys[i + 1] ?? keys[i - 1] ?? null; }
     if (act.kind !== 'move' || likes) return undefined;   // Alt+Début : rien ici ; les coups de cœur gardent leur ordre
@@ -98,18 +106,43 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
     });
     return undefined;
   });
+  // Suppr sur la dernière ligne : la liste démontée, le focus tombait sur la page (ou sur l'onglet, rendu par useRoving) ;
+  // il va au retour, en tête de la vue vide. Après useRoving, qui a déjà tenté de le rendre.
+  useLayoutEffect(() => {
+    const was = emptied.current;
+    emptied.current = false;
+    const at = document.activeElement;
+    if (was && !tracks.length && (!at || at === document.body || at.getAttribute('role') === 'tab')) backRef.current?.focus();
+  }, [tracks.length]);
+
+  /**
+   * « Retirer » au pointeur : la ligne suivante remonte sous le pointeur immobile, sa puce montrée ; le second clic d'un
+   * double-clic la retirait aussi. La liste s'accalmit comme la file (QueuePanel) : clics, double-clics et puces
+   * ignorés 400 ms ou jusqu'à 3 px de mouvement (.qlist.settling, queue.css).
+   */
+  const settle = () => {
+    const list = listRef.current, s = settleRef.current;
+    s.start(performance.now());
+    list?.classList.add('settling');
+    const done = () => { if (!s.active(performance.now())) list?.classList.remove('settling'); };
+    const onMove = (e: PointerEvent) => { if (s.move(e.clientX, e.clientY, performance.now())) { done(); window.removeEventListener('pointermove', onMove); } };
+    window.addEventListener('pointermove', onMove);
+    setTimeout(() => { done(); window.removeEventListener('pointermove', onMove); }, 420);
+  };
+  const settling = () => settleRef.current.active(performance.now());
 
   const keyOf = (e: MouseEvent) => (e.target as HTMLElement).closest<HTMLElement>('.row')?.dataset.key ?? '';
   const onClick = (e: MouseEvent) => {
     const k = keyOf(e), x = byKey.get(k);
-    if (!x) return;
+    if (!x || settling()) return;
     const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
     if (act === 'add') add(x);
-    else if (act === 'del') void remove(x);
+    else if (act === 'del') { settle(); void remove(x); }
     else setPicked(k);
   };
   const onDoubleClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-act]')) return;
+    // accalmie : la puce sans pointeur, le dblclick d'un « Retirer » doublé viserait la ligne remontée dessous
+    if (settling() || (e.target as HTMLElement).closest('[data-act]')) return;
     const x = byKey.get(keyOf(e));
     if (x) add(x);
   };
@@ -129,7 +162,7 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
   return (
     <div className="lview">
       <div className="lhead">
-        <button type="button" className="lback" onClick={onBack} aria-label={tx('library.back')}>{BACK}<span>{tx('library.tab')}</span></button>
+        <button ref={backRef} type="button" className="lback" onClick={onBack} aria-label={tx('library.back')}>{BACK}<span>{tx('library.tab')}</span></button>
         {renaming && pl
           ? <NameForm initial={pl.name} submitLabel={tx('library.save')} submitAria={tx('library.save')} onSubmit={rename} onCancel={() => setRenaming(false)}/>
           : (
@@ -144,8 +177,10 @@ export default function PlaylistView({ id, lib, tracks, onBack }: PlaylistViewPr
           <button type="button" className="lbtn primary" disabled={!tracks.length} aria-label={tx('library.playAllAria', { name })} onClick={playAll}>
             {PLAY}{tx('library.playAll')}
           </button>
-          <button type="button" className="lbtn" disabled={!current || (!!curKey && keys.includes(curKey))} aria-label={tx('library.addCurrent')}
-            onClick={() => { if (current) void libraryActions.addTo(id, current); }}>
+          {/* aria-disabled, pas disabled : le titre ajouté, le bouton garde le focus (désactivé, il le perdait sur la page,
+              et l'Espace suivant mettait tout le salon en pause) */}
+          <button type="button" className="lbtn" aria-disabled={!canAdd} aria-label={tx('library.addCurrent')}
+            onClick={() => { if (canAdd && current) void libraryActions.addTo(id, current); }}>
             {PLUS}{tx('library.addCurrent')}
           </button>
           {pl && (

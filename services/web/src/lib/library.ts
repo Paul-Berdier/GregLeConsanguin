@@ -267,6 +267,17 @@ export function libraryCode(e: unknown): string {
   return typeof code === 'string' ? code.trim().toUpperCase() : '';
 }
 
+/** Écart minimal entre deux relectures au retour sur la fenêtre (comme la session, app/page.tsx). */
+export const REREAD_MIN_MS = 15_000;
+
+/**
+ * Retour sur la fenêtre : le chansonnier est relu (changé depuis un autre appareil ou onglet : un déplacement compté sur
+ * l'ancien ordre viserait un autre titre). Seulement chargé, rien en attente (chaque accusé rend le chansonnier entier),
+ * au plus une fois par REREAD_MIN_MS.
+ */
+export const rereadOnFocus = (o: { status: string; pending: number; now: number; last: number }): boolean =>
+  o.status === 'ready' && o.pending === 0 && o.now - o.last >= REREAD_MIN_MS;
+
 /** Message du Héraut (section `library.error` de copy.extra.ts) ; `vars` : plafond, nom de la playlist. */
 export type Notice = { key: string; vars?: Record<string, string | number>; kind: 'info' | 'warn' | 'err' };
 
@@ -351,9 +362,11 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
   let shown: Library | null = null;
   let busy = false;
   let epoch = 0;
+  let acks = 0;
   const aliases = new Map<string, string>(), origins = new Map<string, string>();
   const idOf = (id: string): string => aliases.get(id) ?? id;
   const rename = (op: LibraryOp, from: string, to: string): LibraryOp => ('id' in op && op.id === from ? ({ ...op, id: to } as LibraryOp) : op);
+  const resolve = (op: LibraryOp): LibraryOp => ('id' in op && aliases.has(op.id) ? rename(op, op.id, idOf(op.id)) : op);
 
   const emit = () => {
     shown = server && pending.reduce((lib, p) => applyOp(lib, p.op, p.at), server);
@@ -370,6 +383,7 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
     if (e0 !== epoch) { void pump(); return; }   // oublié entre-temps (déconnexion) : ni accusé ni retour arrière
     pending.shift();
     if (ok) {
+      acks++;
       // réponse sans chansonnier lisible : la modification telle qu'appliquée devient l'état confirmé
       server = parseLibrary(res, base.limits) ?? applyOp(base, head.op, head.at);
       if (head.op.kind === 'create') {
@@ -412,15 +426,25 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
     /** Modification du Roi : visible tout de suite, envoyée à son tour. false : refusée (vue revenue en arrière) ou oubliée. */
     dispatch(op: LibraryOp): Promise<boolean> {
       if (!server) return Promise.resolve(false);
-      const real = 'id' in op && aliases.has(op.id) ? rename(op, op.id, idOf(op.id)) : op;
+      const real = resolve(op);
       return new Promise<boolean>((done) => { pending.push({ op: real, at: o.now(), done }); emit(); void pump(); });
     },
     /** Id d'une playlist, provisoire compris (« tmp:… » devenu celui de l'API). */
     idOf,
+    /**
+     * `op` visant l'id définitif de sa playlist : un geste préparé quand elle n'avait que son id provisoire (l'annulation
+     * d'un retrait fait juste après sa création) se vérifie sur la vue, qui ne connaît plus que le vrai. Sinon `op` même.
+     */
+    resolve,
     /** Premier id d'une playlist (le provisoire qu'elle a porté, sinon le sien) : clé React stable, la ligne reste montée. */
     originOf: (id: string): string => origins.get(id) ?? id,
     /** Modifications pas encore accusées (en vol comprise). */
     pending: (): number => pending.length,
+    /**
+     * Réponses acceptées par l'API jusqu'ici (chacune rend le chansonnier entier, fait foi) : une relecture (GET) partie
+     * avant l'une d'elles peut la précéder chez Redis ; comparé avant et après, il dit qu'elle ne doit pas l'écraser.
+     */
+    acks: (): number => acks,
   };
 }
 

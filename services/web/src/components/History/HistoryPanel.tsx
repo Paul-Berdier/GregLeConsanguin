@@ -21,7 +21,8 @@ const REFRESH = <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><pat
  * « Plus joués » est la liste du store (usePlayer.refreshHistory, aussi lue par « Souvent demandés ici ») ;
  * « Récents » reste locale. Un clic sélectionne, un double-clic ou « + » remet le titre dans la file.
  * Le demandeur n'est nommé que s'il est connu : le Roi (« vous ») ou un courtisan présent dans la file.
- * Clavier (useRequeueList) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre ; touches décrites (history.keys).
+ * Clavier (useRequeueList) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre, J son cœur ; touches décrites
+ * (history.keys).
  */
 export default function HistoryPanel() {
   const guildId = useStore((s) => s.guildId);

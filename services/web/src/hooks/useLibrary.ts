@@ -5,14 +5,15 @@ import { create } from 'zustand';
 import { api } from '@/lib/api';
 import {
   DEFAULT_LIMITS, LIKES, TMP, addPlan, checkOp, cleanName, createLibraryEngine, findPlaylist, libraryCode, likedKeys,
-  moveIndices, nameOk, noticeOf, parseLibrary, toLibraryTrack, trackKey, wireTrack,
+  moveIndices, nameOk, noticeOf, parseLibrary, rereadOnFocus, toLibraryTrack, trackKey, wireTrack,
 } from '@/lib/library';
 import type { LibraryOp, TrackLike } from '@/lib/library';
 import type { Library, LibraryTrack } from '@/lib/types';
 import { parseTitle } from '@/lib/titles';
 import { playerActions, useStore } from '@/hooks/usePlayer';
-import { herald, say, sayError } from '@/components/Herald/store';
+import { herald, say, sayError, speak } from '@/components/Herald/store';
 import { t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 
 export type LibraryStatus = 'off' | 'loading' | 'ready' | 'error';
 
@@ -58,8 +59,15 @@ function send(op: LibraryOp, base: Library): Promise<unknown> {
 }
 
 /**
+ * Échecs après lesquels le chansonnier confirmé est relu : playlist disparue (supprimée dans un autre onglet) ; issue
+ * inconnue, l'écriture peut avoir eu lieu (503 STORAGE_UNAVAILABLE : « le site relit », dit l'API ; réseau, réponse
+ * illisible : sans code) ; requête invalide, souvent comptée sur une copie dépassée (rangs d'un déplacement).
+ */
+const REREAD = new Set(['PLAYLIST_NOT_FOUND', 'STORAGE_UNAVAILABLE', 'INVALID_REQUEST', '']);
+
+/**
  * Refus de l'API, la vue déjà revenue en arrière : le Héraut dit pourquoi. Session perdue (401) : la perte de session
- * le dit déjà (usePlayer, onAuthLost) et vide le chansonnier. Playlist disparue (supprimée dans un autre onglet) : relue.
+ * le dit déjà (usePlayer, onAuthLost) et vide le chansonnier. Copie peut-être dépassée (REREAD) : relue.
  */
 function failed(op: LibraryOp, e: unknown): void {
   const code = libraryCode(e);
@@ -67,7 +75,7 @@ function failed(op: LibraryOp, e: unknown): void {
   const n = noticeOf(code, op, engine.view());
   if (n) say(n.key, { vars: n.vars, kind: n.kind });
   else sayError(e);
-  if (code === 'PLAYLIST_NOT_FOUND') void load();
+  if (REREAD.has(code)) void load();
 }
 
 const engine = createLibraryEngine({
@@ -80,19 +88,27 @@ const engine = createLibraryEngine({
 });
 
 let _loadSeq = 0;
+/** Heure de la dernière lecture lancée (Date.now()) : la relecture au retour sur la fenêtre s'espace d'elle (rereadOnFocus). */
+let _readAt = 0;
 
-/** Lit le chansonnier du Roi connecté ; une lecture dépassée (déconnexion, autre Roi, relecture) ne s'écrit pas. */
+/**
+ * Lit le chansonnier du Roi connecté ; une lecture dépassée (déconnexion, autre Roi, relecture, modification accusée
+ * entre-temps) ne s'écrit pas.
+ */
 async function load(): Promise<void> {
   const meId = useStore.getState().me?.id;
   if (!meId) return;
+  _readAt = Date.now();
   const seq = ++_loadSeq;
   const live = () => seq === _loadSeq && useStore.getState().me?.id === meId;
+  const acks = engine.acks();
   if (!engine.view()) useLibrary.setState({ status: 'loading' });
   try {
     const lib = parseLibrary(await api.getLibrary());
     if (!live()) return;
     if (!lib) throw new Error('library');
-    engine.load(lib);
+    // une modification accusée pendant la lecture a rendu le chansonnier entier, peut-être plus récent que lui : gardé
+    if (engine.acks() === acks || !engine.view()) engine.load(lib);
     useLibrary.setState({ status: 'ready' });
   } catch {
     // déjà chargé (relecture ratée) : la vue reste ; sinon l'onglet dit l'indisponibilité et propose de réessayer
@@ -100,10 +116,15 @@ async function load(): Promise<void> {
   }
 }
 
-/** Déconnexion ou autre Roi : rien ne reste du chansonnier précédent, ses réponses en vol sont ignorées. */
+/**
+ * Déconnexion ou autre Roi : rien ne reste du chansonnier précédent, ses réponses en vol sont ignorées, ses
+ * annulations désarmées. Elles sont au Roi (scope 'king') : un changement de serveur, lui, les laisse (usePlayer
+ * ne désarme que celles du serveur quitté).
+ */
 function clear(): void {
   _loadSeq++;
   engine.reset();
+  herald.disarm('king');
   useLibrary.setState({ status: 'off', open: null });
 }
 
@@ -126,23 +147,35 @@ function refused(lib: Library, op: LibraryOp): boolean {
   return true;
 }
 
-/** Modification vérifiée d'avance, puis optimiste. false : refusée (d'avance, ou par l'API : vue revenue en arrière). */
+/**
+ * Modification vérifiée d'avance, puis optimiste. false : refusée (d'avance, ou par l'API : vue revenue en arrière).
+ * L'id provisoire d'une playlist créée depuis (une annulation préparée avant sa réponse) devient le vrai avant la
+ * vérification : la vue ne connaît plus que lui (sinon « Cette playlist n'existe plus », le titre perdu).
+ */
 function run(op: LibraryOp): Promise<boolean> {
   const lib = ready();
-  if (!lib || refused(lib, op)) return Promise.resolve(false);
-  return engine.dispatch(op);
+  const real = engine.resolve(op);
+  if (!lib || refused(lib, real)) return Promise.resolve(false);
+  return engine.dispatch(real);
 }
 
 const songOf = (x: { title: string; artist: string | null }): string => parseTitle(x.title, x.artist ?? undefined).song || x.title;
 const trackOf = (x: TrackLike): LibraryTrack | null => toLibraryTrack(x, Date.now());
 const playlistOf = (id: string) => findPlaylist(useLibrary.getState().lib, engine.idOf(id));
 
-/** Cœur d'un titre de la file, de l'historique ou en lecture : pressé, il le garde ; relâché, il le retire. */
-function toggleLike(item: TrackLike): void {
-  if (!ready()) return;
+/**
+ * Cœur d'un titre de la file, de l'historique ou en lecture : pressé, il le garde ; relâché, il le retire.
+ * `spoken` : basculé au clavier (J sur une ligne) ; le cœur de la ligne n'a pas le focus, son état n'est pas lu :
+ * l'accusé est dit aux lecteurs d'écran, sans notification visible (comme un déplacement Alt+↑ ↓).
+ */
+function toggleLike(item: TrackLike, o: { spoken?: boolean } = {}): Promise<boolean> {
+  if (!ready()) return Promise.resolve(false);
   const tr = trackOf(item);
-  if (!tr) { say('library.error.INVALID_TRACK', { kind: 'warn' }); return; }
-  void run(useLibrary.getState().liked.has(trackKey(tr.url)) ? { kind: 'unlike', url: tr.url } : { kind: 'like', track: tr });
+  if (!tr) { say('library.error.INVALID_TRACK', { kind: 'warn' }); return Promise.resolve(false); }
+  const on = !useLibrary.getState().liked.has(trackKey(tr.url));
+  const done = run(on ? { kind: 'like', track: tr } : { kind: 'unlike', url: tr.url });
+  if (o.spoken) void done.then((ok) => { if (ok) speak(tx(on ? 'library.toast.liked.text' : 'library.toast.unliked.text', { title: songOf(tr) })); });
+  return done;
 }
 
 /** Retirer un coup de cœur depuis sa liste : annonce annulable (le titre revient en tête). */
@@ -150,7 +183,7 @@ function unlike(track: LibraryTrack): Promise<boolean> {
   const done = run({ kind: 'unlike', url: track.url });
   const id = say('library.toast.unliked', {
     vars: { title: songOf(track) }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { void run({ kind: 'like', track }); } },
+    action: { label: t('toast.undo'), run: () => { void run({ kind: 'like', track }); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(id); });
   return done;
@@ -220,7 +253,7 @@ function deletePlaylist(id: string): Promise<boolean> {
   const done = run({ kind: 'delete', id: pl.id });
   const toast = say('library.toast.deleted', {
     vars: { name: pl.name }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { createPlaylist(pl.name, pl.tracks); } },
+    action: { label: t('toast.undo'), run: () => { createPlaylist(pl.name, pl.tracks); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(toast); });
   return done;
@@ -247,11 +280,17 @@ function addToPlaylist(id: string, items: readonly TrackLike[]): Promise<boolean
   return done;
 }
 
-/** Ajouter à une vue du chansonnier : les coups de cœur (LIKES) ou une playlist. */
+/** Ajouter à une vue du chansonnier : les coups de cœur (LIKES) ou une playlist ; annoncé comme l'ajout à une playlist. */
 function addTo(id: string, item: TrackLike): Promise<boolean> {
   if (id !== LIKES) return addToPlaylist(id, [item]);
-  const tr = ready() && trackOf(item);
-  return tr ? run({ kind: 'like', track: tr }) : Promise.resolve(false);
+  const lib = ready(), tr = lib && trackOf(item);
+  if (!lib || !tr) return Promise.resolve(false);
+  const op: LibraryOp = { kind: 'like', track: tr };
+  if (refused(lib, op)) return Promise.resolve(false);   // refus dit d'avance : pas d'annonce d'ajout
+  const done = engine.dispatch(op);
+  const toast = say('library.toast.liked', { vars: { title: songOf(tr) }, kind: 'ok' });
+  void done.then((ok) => { if (!ok) herald.retract(toast); });
+  return done;
 }
 
 /** Retirer un titre d'une playlist : annonce annulable (le titre revient à sa place). */
@@ -264,7 +303,7 @@ function removeFromPlaylist(id: string, track: LibraryTrack): Promise<boolean> {
   const toast = say('library.toast.removed', {
     vars: { name: pl.name, title: songOf(track) }, kind: 'info',
     // rajouté (à la fin), puis ramené à son rang : les deux partent l'un après l'autre (lib/library.ts)
-    action: { label: t('toast.undo'), run: () => { void run({ kind: 'add', id: pl.id, tracks: [track] }); void run({ kind: 'move', id: pl.id, url: track.url, to: at }); } },
+    action: { label: t('toast.undo'), run: () => { void run({ kind: 'add', id: pl.id, tracks: [track] }); void run({ kind: 'move', id: pl.id, url: track.url, to: at }); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(toast); });
   return done;
@@ -293,6 +332,9 @@ export const libraryActions = {
 /**
  * Le chansonnier suit le Roi connecté : lu quand `me` arrive (ou change), vidé à la déconnexion, y compris quand un 401
  * fait perdre la session (handleLoggedOut). Abonnement au store : la déconnexion vide avant toute réponse en vol.
+ * Relu au retour sur la fenêtre (rereadOnFocus, 15 s au moins après la lecture précédente) : modifié depuis un autre
+ * appareil, l'ordre d'une playlist n'est plus le même, et Alt+↑ ↓ (rangs comptés sur la copie confirmée) déplacerait
+ * un autre titre.
  * À appeler une fois (Sidebar, toujours monté).
  */
 export function useLibraryInit(): void {
@@ -306,5 +348,12 @@ export function useLibraryInit(): void {
     };
     sync(useStore.getState().me?.id ?? '');
     return useStore.subscribe((s) => sync(s.me?.id ?? ''));
+  }, []);
+  useEffect(() => {
+    const onFocus = () => {
+      if (rereadOnFocus({ status: useLibrary.getState().status, pending: engine.pending(), now: Date.now(), last: _readAt })) void load();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 }

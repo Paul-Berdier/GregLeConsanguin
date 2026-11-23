@@ -73,7 +73,8 @@ export default function NowPlaying() {
             {parsed?.artist && <><span className="artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
             {req && keys && <span className="by">
               {req.kind === 'mine' && <img className="seal" src={kingSealSrc(kingName(me))} alt="" width={20} height={20} decoding="async"/>}
-              {t(keys.plain, vars)}
+              {/* le demandeur cède sa place en points de suspension (now.css) : l'artiste n'est plus réduit à une lettre */}
+              <span className="by-txt">{t(keys.plain, vars)}</span>
             </span>}
           </Swap>
         </p>

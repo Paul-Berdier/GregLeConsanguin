@@ -34,14 +34,14 @@ export const EXTRA = {
     rowAria: '{title}, {artist}, demandé par {name}',
     rowAriaMine: '{title}, {artist}, votre titre',
     rowAriaUnknown: '{title}, {artist}',
-    keys: 'Flèches haut et bas : parcourir. Entrée : jouer maintenant. Suppr : retirer. Alt+flèches : déplacer. Alt+Début : jouer ensuite.',
+    keys: 'Flèches haut et bas : parcourir. Entrée : jouer maintenant. Suppr : retirer. Alt+flèches : déplacer. Alt+Début : jouer ensuite. J : coup de cœur.',
   },
   often: {
     title: 'Souvent demandés ici',
   },
   history: {
     list: 'Titres joués sur ce serveur',
-    keys: 'Flèches haut et bas : parcourir. Entrée : remettre le titre dans la file.',
+    keys: 'Flèches haut et bas : parcourir. Entrée : remettre le titre dans la file. J : coup de cœur.',
     plays: { one: '1 écoute', other: '{n} écoutes' },
     ago: {
       now: 'à l’instant',
@@ -108,6 +108,8 @@ export const EXTRA = {
     },
     like: {
       aria: 'Coup de cœur : {title}',
+      // fin du nom d'une ligne de la file ou de l'historique dont le titre est un coup de cœur (son cœur n'a pas le focus)
+      state: 'dans vos coups de cœur',
       add: 'Ajouter aux coups de cœur',
       remove: 'Retirer des coups de cœur',
     },
@@ -126,6 +128,7 @@ export const EXTRA = {
       saved: { text: { one: 'File enregistrée dans « {name} » : 1 titre', other: 'File enregistrée dans « {name} » : {n} titres' } },
       nothingToSave: { text: 'Rien en lecture ni dans la file : rien à enregistrer.' },
       removed: { text: 'Retiré de « {name} » : {title}' },
+      liked: { text: 'Ajouté aux coups de cœur : {title}' },
       unliked: { text: 'Retiré des coups de cœur : {title}' },
       deleted: { text: 'Playlist « {name} » supprimée' },
     },
@@ -184,7 +187,7 @@ export const KEYS: readonly (readonly [string, string])[] = [
   ['Espace', 'Lecture / pause'], ['Maj+→', 'Titre suivant'], ['Maj+←', 'Recommencer le titre'], ['/', 'Rechercher'],
   ['A…Z', 'Chercher en tapant'], ['?', 'Afficher cette aide'], ['Ctrl+Z', 'Annuler la dernière action'],
   ['↑ ↓', 'Parcourir une liste'], ['Entrée', 'Jouer le titre maintenant'], ['Alt+↑ ↓', 'Déplacer le titre choisi'],
-  ['Alt+Début', 'Mettre en suivant'], ['Suppr', 'Retirer le titre'], ['Échap', 'Fermer'],
+  ['Alt+Début', 'Mettre en suivant'], ['Suppr', 'Retirer le titre'], ['J', 'J’aime : coup de cœur du titre choisi'], ['Échap', 'Fermer'],
 ];
 
 function at(path: string): Node | undefined {
