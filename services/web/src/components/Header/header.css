@@ -197,6 +197,48 @@
 .keys dd { margin: 0; }
 .keys kbd { font: 600 12.5px/1 var(--f-ui); color: var(--os); border: 1px solid var(--hair-2); border-radius: 5px; padding: 4px 6px; justify-self: start; white-space: nowrap; }
 
+/* Choix du serveur (spec 2026-11-23 §1), jusqu'à des centaines de serveurs : à partir de 8, un champ de recherche
+   fixe en tête (GuildPicker.tsx) et la liste qui défile seule dessous. Le popover reste borné par `.top .pop`
+   ci-dessus, mais ne défile plus lui-même : le champ partirait avec la liste. Aucune transition ajoutée. */
+.top .guild-pop[data-open=true] { display: flex; flex-direction: column; overflow-y: hidden; }
+/* Largeur bornée : un nom long (jusqu'à 100 caractères chez Discord) élargissait le popover à sa mesure, jusqu'à
+   sortir de l'écran par la gauche, champ compris ; le nom se coupe alors (…), entier dans son infobulle. */
+.top .guild-pop { max-width: min(420px, calc(100vw - 2 * var(--page-x))); }
+/* Téléphone : le compte suit la puce du serveur, loin du bord ; le popover s'aligne sur le bord droit de l'en-tête,
+   sans quoi ses 270 px au moins débordaient à gauche (écran de 320 px). */
+@media (max-width: 520px) {
+  .top-right { position: relative; }
+  .top-right > .guild-wrap { position: static; }
+}
+.guild-find {
+  flex: none; display: flex; align-items: center; gap: 8px; height: 38px; margin: 2px 2px 6px; padding: 0 10px;
+  border-radius: 7px; corner-shape: bevel; background: var(--nef); box-shadow: inset 0 0 0 1px var(--hair-2);
+}
+/* même anneau que le champ de recherche des titres (.field) ; le focus reste dans le champ, jamais sur une option */
+.guild-find:focus-within { box-shadow: inset 0 0 0 1px rgb(var(--lumiere-rgb) / .55), 0 0 0 3px rgb(var(--lumiere-rgb) / .08); }
+.guild-find .ico { width: 16px; height: 16px; color: var(--cendre); flex: none; }
+.guild-find input { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; background: none; outline: none; font-size: 15px; color: var(--os); }
+.guild-find input::placeholder { color: var(--cendre); }
+/* iOS agrandit la page au focus d'un champ écrit sous 16 px */
+@media (pointer: coarse) { .guild-find input { font-size: 16px; } }
+/* Positionnée : les options y mesurent leur offsetTop (l'option active reste en vue, GuildPicker.tsx). */
+.guild-list { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* Focus sur la liste (moins de 8 serveurs) : l'option active le porte ; sans elle, la liste garde l'anneau d'or. */
+.guild-list:focus-visible { outline-offset: -2px; }
+.guild-list:focus-visible:has([data-active=true]) { outline: none; }
+.guild-opt { cursor: pointer; }
+/* option active (aria-activedescendant) : filet d'or à gauche, l'or du focus clavier de la page. Couleurs forcées
+   (contraste élevé de Windows) : fond et ombre y sont effacés ; le contour transparent, lui, y prend une couleur
+   système et reste le seul repère de l'option qu'Entrée choisira (le focus est dans le champ, pas sur l'option). */
+.guild-opt[data-active=true] { background: var(--voute-2); box-shadow: inset 2px 0 0 var(--or); outline: 2px solid transparent; outline-offset: -2px; }
+/* intertitres « Greg présent » / « Sans Greg » : petites capitales et un filet jusqu'au bord */
+.guild-group {
+  display: flex; align-items: center; gap: 8px; padding: 10px 10px 5px;
+  font: 700 10.5px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--cendre);
+}
+.guild-group::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+.guild-empty { margin: 0; padding: 10px 10px 8px; font-size: 14px; color: var(--cendre); overflow-wrap: anywhere; text-wrap: pretty; }
+
 /* mouvement réduit : ni échelle ni glissement, un simple fondu */
 @media (prefers-reduced-motion: reduce) {
   .sug[data-open=true], .pop[data-open=true] { transition: opacity var(--dur-pop-in) ease, display 0s allow-discrete; }

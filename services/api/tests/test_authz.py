@@ -21,6 +21,7 @@ GUILD_ROUTES = [
     ("get", "/playlist?guild_id=5", None),
     ("post", "/player/enqueue", {"query": "x"}),
     ("post", "/queue/add", {"query": "x"}),
+    ("post", "/queue/add_many", {"items": [{"url": "https://youtu.be/dQw4w9WgXcQ", "title": "T"}]}),
     ("post", "/player/skip", {}),
     ("post", "/queue/skip", {}),
     ("post", "/player/stop", {}),
@@ -62,9 +63,8 @@ def _call(client, method, path, body, headers=None):
     (None, None),
 ])
 def test_session_user_id(app, user, expected):
-    from flask import session
-
     from api.services.authz import session_user_id
+    from flask import session
 
     with app.test_request_context("/"):
         if user is not None:

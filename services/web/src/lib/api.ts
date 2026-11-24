@@ -8,6 +8,8 @@
  *   POST /playlist/play_at, /playlist/toggle_pause, /playlist/repeat, /playlist/restart
  *   POST /voice/join
  *   GET  /history?guild_id=...&mode=top|recent
+ *   POST /queue/add_many
+ *   GET  /library ; POST /library/likes/add|remove, /library/playlists/create|rename|delete|add|remove|move
  */
 
 const DEFAULT_BASE = '/api/v1';
@@ -251,6 +253,21 @@ export const api = {
 
   getHistoryRecent: (guildId: string, limit = 20) =>
     get('/history/recent', { guild_id: guildId, limit: String(limit) }),
+
+  // Jouer une playlist du chansonnier d'un geste : 1 à 100 titres {url, title, artist, duration, thumb, provider}
+  queueAddMany: (guildId: string, userId: string, items: readonly Record<string, any>[], label?: string) =>
+    post('/queue/add_many', basePayload(guildId, userId, label ? { items, label } : { items })),
+
+  // Chansonnier du Roi (spec 2026-11-23 §3) : l'identité vient de la session ; chaque modification rend {ok, library}
+  getLibrary: () => get('/library'),
+  libraryLike: (track: Record<string, any>) => post('/library/likes/add', { track }),
+  libraryUnlike: (url: string) => post('/library/likes/remove', { url }),
+  playlistCreate: (name: string, tracks: readonly Record<string, any>[] = []) => post('/library/playlists/create', { name, tracks }),
+  playlistRename: (id: string, name: string) => post('/library/playlists/rename', { id, name }),
+  playlistDelete: (id: string) => post('/library/playlists/delete', { id }),
+  playlistAdd: (id: string, tracks: readonly Record<string, any>[]) => post('/library/playlists/add', { id, tracks }),
+  playlistRemove: (id: string, url: string) => post('/library/playlists/remove', { id, url }),
+  playlistMove: (id: string, src: number, dst: number) => post('/library/playlists/move', { id, src, dst }),
 };
 
 type SearchResult = import('./types').SearchResult;

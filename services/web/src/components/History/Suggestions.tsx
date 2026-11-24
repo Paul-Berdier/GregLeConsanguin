@@ -2,6 +2,8 @@
 
 import { useId, useMemo, useRef } from 'react';
 import { useStore } from '@/hooks/usePlayer';
+import { useLibrary } from '@/hooks/useLibrary';
+import { trackKey } from '@/lib/library';
 import { oftenAsked } from '@/lib/queue/view';
 import { tx } from '@/theme/copy.extra';
 import HistoryRow from './HistoryRow';
@@ -17,6 +19,7 @@ export default function Suggestions() {
   const queue = useStore((s) => s.player.queue);
   const currentUrl = useStore((s) => s.player.current?.url ?? null);
   const loggedIn = useStore((s) => !!s.me);
+  const liked = useLibrary((s) => s.liked);
   const id = useId();
   const keysId = useId();
   const listRef = useRef<HTMLOListElement>(null);
@@ -29,7 +32,7 @@ export default function Suggestions() {
       <ol className="qlist" ref={listRef} aria-labelledby={id} aria-describedby={keysId}
         onClick={list.onClick} onDoubleClick={list.onDoubleClick} onKeyDown={list.onKeyDown} onFocus={list.onFocus}>
         {pick.map((it) => (
-          <HistoryRow key={it.url} item={it} rank={0} byName="" variant="srow" picked={list.picked === it.url}
+          <HistoryRow key={it.url} item={it} rank={0} byName="" variant="srow" picked={list.picked === it.url} liked={liked.has(trackKey(it.url))}
             tabIndex={list.tabIndexOf(it.url || '')} meta={tx('history.plays', { n: it.play_count ?? 0 })}/>
         ))}
       </ol>

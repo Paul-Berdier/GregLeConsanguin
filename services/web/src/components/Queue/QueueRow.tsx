@@ -6,6 +6,7 @@ import { parseTitle } from '@/lib/titles';
 import { extractVideoId, fmt } from '@/lib/format';
 import { t } from '@/theme/copy';
 import { tx } from '@/theme/copy.extra';
+import { HEART } from '@/components/Library/glyphs';
 import Shield from './Shield';
 
 // Icônes du prototype (app.js, lignes 168–177 : ICON.play, next, del, grip).
@@ -29,6 +30,8 @@ export type QueueRowProps = {
   sealSrc: string | null;
   picked: boolean;
   leaving: boolean;
+  /** Parmi les coups de cœur du Roi (chansonnier, useLibrary) : le cœur de la puce est pressé. */
+  liked: boolean;
   /** Tabindex itinérant (QueuePanel, useRoving) : 0 pour la ligne active de la liste, -1 pour les autres. */
   tabIndex: 0 | -1;
 };
@@ -37,10 +40,12 @@ export type QueueRowProps = {
  * Une ligne de la file (DESIGN §12.5) : poignée 6 points, pochette (poignée elle aussi), titre nettoyé (le brut en
  * info-bulle), artiste, blason et demandeur, durée et heure estimée ; actions rapides sur une puce opaque.
  * Les clics sont délégués à la liste (QueuePanel : data-act). Styles : queue.css.
- * Clavier : la ligne est l'arrêt de Tab ; ses boutons restent hors de la tabulation (Entrée, Suppr et Alt+Début les
+ * Clavier : la ligne est l'arrêt de Tab ; ses boutons restent hors de la tabulation (Entrée, Suppr, Alt+Début et J les
  * remplacent, DESIGN §12.7). Le sceau du Roi se charge en différé (QueuePanel le décode au premier temps mort).
+ * Le cœur (data-act="like", bouton à bascule) garde le titre parmi les coups de cœur du Roi (chansonnier) ; pressé,
+ * le nom de la ligne le dit.
  */
-function QueueRow({ item, eta, next, sealSrc, picked, leaving, tabIndex }: QueueRowProps) {
+function QueueRow({ item, eta, next, sealSrc, picked, leaving, liked, tabIndex }: QueueRowProps) {
   const p = parseTitle(item.title, item.artist);
   const song = p.song || item.title || '—';
   const mine = !!sealSrc;
@@ -50,10 +55,12 @@ function QueueRow({ item, eta, next, sealSrc, picked, leaving, tabIndex }: Queue
   const raw = mine ? tx('queue.rowAriaMine', { title: song, ...art })
     : who ? tx('queue.rowAria', { title: song, ...art, name: who }) : tx('queue.rowAriaUnknown', { title: song, ...art });
   const label = p.artist ? raw : raw.replace(', {artist}', '');
+  // le nom de la ligne remplace son contenu : l'état du cœur (aria-pressed, hors de la tabulation) s'y dit
+  const said = liked ? `${label}, ${tx('library.like.state')}` : label;
   const thumb = thumbOf(item);
   return (
     <li className={`row${next ? ' next' : ''}`} data-key={item.key} data-leaving={leaving || undefined}
-      data-picked={picked || undefined} aria-label={label} tabIndex={tabIndex}>
+      data-picked={picked || undefined} aria-label={said} tabIndex={tabIndex}>
       <div className="card">
         <span className="grip" aria-hidden="true">{GRIP}</span>
         <div className="thumb">
@@ -72,6 +79,7 @@ function QueueRow({ item, eta, next, sealSrc, picked, leaving, tabIndex }: Queue
         <div className="acts">
           <button type="button" tabIndex={-1} className="act" data-act="play" aria-label={t('queue.actions.playNowAria', { title: song })} title={t('queue.actions.playNow')}>{PLAY}</button>
           <button type="button" tabIndex={-1} className="act" data-act="next" aria-label={t('queue.actions.playNextAria', { title: song })} title={t('queue.actions.playNext')}>{NEXT}</button>
+          <button type="button" tabIndex={-1} className="act like" data-act="like" aria-pressed={liked} aria-label={tx('library.like.aria', { title: song })} title={tx(liked ? 'library.like.remove' : 'library.like.add')}>{HEART}</button>
           <button type="button" tabIndex={-1} className="act del" data-act="del" aria-label={t('queue.actions.removeAria', { title: song })} title={t('queue.actions.remove')}>{DEL}</button>
         </div>
         <span className="flash" aria-hidden="true"/>

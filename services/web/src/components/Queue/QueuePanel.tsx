@@ -4,8 +4,10 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react';
 import { playerActions, useStore } from '@/hooks/usePlayer';
 import { useFlip } from '@/hooks/useFlip';
+import { libraryActions, useLibrary } from '@/hooks/useLibrary';
 import { useRoving } from '@/hooks/useRoving';
 import { moveBefore } from '@/lib/keys';
+import { trackKey } from '@/lib/library';
 import { livePosition } from '@/lib/playerUtils';
 import { createDedupe, createSettle } from '@/lib/queue/drag';
 import { sealBook } from '@/lib/queue/seal';
@@ -33,13 +35,15 @@ const GRIP_HINT = <svg viewBox="0 0 8 14" fill="currentColor" aria-hidden="true"
 
 /**
  * La file (spec §5, DESIGN §12.5) : un clic sélectionne, un double-clic ou ▶ joue maintenant (une fois par
- * 500 ms et par titre), ⤒ met en suivant, ✕ retire. Après un changement qui fait glisser les lignes sous le
+ * 500 ms et par titre), ⤒ met en suivant, le cœur garde le titre parmi les coups de cœur du Roi (useLibrary),
+ * ✕ retire. Après un changement qui fait glisser les lignes sous le
  * pointeur, la liste s'accalmit (clics et puces ignorés 400 ms ou jusqu'à 3 px de mouvement).
  * Lignes animées par useFlip (entrées, sorties, FLIP) ; glisser par useQueueDrag. `after` : ce qui suit la
  * liste dans le défilement (« Souvent demandés ici », tâche 7). Styles : queue.css.
  * Étape 4 : l'ajout du Roi attendu (sealBook) entre avec Le Sceau (seal.ts) ; la file vidée d'un coup (arrêt) sort
  * de la dernière ligne à la première ; « jouer maintenant » note l'ordre du Roi (kingOrders) pour la scène.
- * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée, Suppr, Alt+↑ ↓ (déplacement annoncé), Alt+Début.
+ * Clavier (useRoving) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée, Suppr, Alt+↑ ↓ (déplacement annoncé), Alt+Début,
+ * J (le cœur, annoncé).
  */
 export default function QueuePanel({ after }: { after?: ReactNode }) {
   const queue = useStore((s) => s.player.queue);
@@ -48,6 +52,7 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
   const paused = useStore((s) => s.player.paused);
   const tickBase = useStore((s) => s.tickBase);
   const me = useStore((s) => s.me);
+  const liked = useLibrary((s) => s.liked);
   const [picked, setPicked] = useState<string | null>(null);
   const seal = me ? kingSealSrc(kingName(me)) : null;
   const [, setMinute] = useState(0);
@@ -112,6 +117,8 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
   /** Alt+↑↓ : seul le dernier déplacement est annoncé (un précédent, remplacé ou accusé en retard, dirait une place dépassée). */
   const moves = useRef(0);
   const roving = useRoving(listRef, shownKeys, 'key', (act, key, i) => {
+    // J : le cœur de la ligne (hors de la tabulation), basculé et dit aux lecteurs d'écran ; le focus reste
+    if (act.kind === 'like') { const item = byKey.current.get(key); if (item) void libraryActions.toggleLike(item, { spoken: true }); return undefined; }
     const near = shownKeys[i + 1] ?? shownKeys[i - 1] ?? null;
     if (act.kind === 'activate') return playNow(key, 'key') ? near : null;
     if (act.kind === 'remove') { settle(); void playerActions.removeTrack(key); return near; }
@@ -147,6 +154,7 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
     if (act === 'del') { settle(); void playerActions.removeTrack(key); return; }
     if (act === 'next') { settle(); void playerActions.playNext(key); return; }
     if (act === 'play') { playNow(key, 'pointer'); return; }
+    if (act === 'like') { const item = byKey.current.get(key); if (item) libraryActions.toggleLike(item); return; }   // cœur : le chansonnier
     setPicked(key);
   };
   const onDoubleClick = (e: MouseEvent) => {
@@ -171,7 +179,7 @@ export default function QueuePanel({ after }: { after?: ReactNode }) {
               const eta = etas.get(key);
               const mine = requesterOf(item.addedBy, me?.id).kind === 'mine';
               return (
-                <QueueRow key={key} item={item} leaving={leaving} picked={picked === key} next={!!eta?.next}
+                <QueueRow key={key} item={item} leaving={leaving} picked={picked === key} next={!!eta?.next} liked={liked.has(trackKey(item.url))}
                   tabIndex={leaving ? -1 : roving.tabIndexOf(key)}
                   eta={!eta ? '' : eta.next ? tx('queue.etaNext') : eta.mins == null ? '' : tx('queue.eta', { n: eta.mins })}
                   sealSrc={mine ? seal : null}/>

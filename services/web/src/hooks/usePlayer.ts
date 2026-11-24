@@ -20,8 +20,10 @@ import { AFTER_CEREMONY_MS, kingOrders } from '@/lib/stage/coronation';
 import { requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import { classifyLink } from '@/lib/links';
+import { ADD_MANY_MAX } from '@/lib/library';
 import { herald, say, sayError } from '@/components/Herald/store';
 import { t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 import type { PlayerState, Snapshot, TickBase, Track, UserInfo, GuildInfo } from '@/lib/types';
 
 // ── Helpers ──
@@ -435,6 +437,49 @@ async function enqueue(payload: Record<string, any>): Promise<boolean> {
   return ok;
 }
 
+/**
+ * Joue d'un geste les titres d'une playlist du chansonnier (POST /queue/add_many, ADD_MANY_MAX titres au plus) : même
+ * tour d'ajout, même relecture de la file, même toast annulable qu'un ajout (enqueue), « N titres ajoutés depuis « nom » ».
+ * `tracks` : {url, title, artist, duration, thumb, provider} ; au-delà de 100, le toast dit « sur N ».
+ */
+async function enqueueMany(tracks: readonly Record<string, any>[], label: string): Promise<boolean> {
+  const s = useStore.getState();
+  if (!s.me || !s.guildId) {
+    say(s.me ? 'guild.pickFirst' : 'error.NOT_AUTHENTICATED', { text: s.me ? t('guild.pickFirst.body') : undefined, kind: 'warn' });
+    return false;
+  }
+  const items = tracks.filter((x) => x?.url).slice(0, ADD_MANY_MAX);
+  if (!items.length) return false;
+  const gid = s.guildId, meId = s.me.id;
+  const here = () => guildNow() === gid;
+  const ok = await addTurn(async () => {
+    const before = upcoming().player.queue.map((x) => x.key);
+    // même garde qu'enqueue : file pas encore lue, ou autre serveur, rien d'attribuable à cet ajout
+    const fromHere = here() && _queueOf === gid;
+    let res: any;
+    try {
+      res = await api.queueAddMany(gid, meId, items, label);
+    } catch (e) {
+      sayError(e, { link: 'playlist' });
+      if (here()) await refreshPlaylist({ quiet: true }).catch(() => {});   // le bot a pu ajouter une partie des titres
+      throw e;
+    }
+    if (here()) await refreshPlaylist({ quiet: true }).catch(() => {});
+    const keys = fromHere && here() ? addedKeys(before, upcoming().player.queue, meId) : [];
+    // une playlist, toujours : compléments « sur N » (titres laissés au-delà de 100 compris), quota, limite d'expansion
+    const requested = Math.max(Number(res?.requested) || 0, tracks.length);
+    const c = addedCopy({ playlist: true, added: res?.added, requested, truncated: res?.truncated }, label, 'playlist');
+    const text = tx('library.toast.played.text', { n: c.vars.n, name: label }) + (c.suffix ? t(c.suffix, c.vars) : '');
+    say(c.key, {
+      text, vars: c.vars,
+      action: keys.length ? { label: t(c.action), run: boundUndo(gid, guildNow, () => { for (const k of keys) void removeTrack(k, { silent: true }); }) } : null,
+    });
+    return true;
+  });
+  if (here()) await bestEffortVoiceJoin('add');
+  return ok;
+}
+
 const trackPayload = (x: Track) => ({
   query: x.url || x.title, url: x.url, title: x.title, artist: x.artist, thumb: x.thumb, duration: x.duration,
   provider: x.provider || 'youtube',
@@ -543,7 +588,7 @@ async function boot() {
 }
 
 export const playerActions = {
-  boot, setGuild, logout, refreshMe, refreshGuilds, refreshHistory, enqueue,
+  boot, setGuild, logout, refreshMe, refreshGuilds, refreshHistory, enqueue, enqueueMany,
   skip, togglePause, setDragging, removeTrack, moveTrack, playNext, playNow, bestEffortVoiceJoin,
   stop: () => command((g, u) => api.queueStop(g, u)),
   toggleRepeat: () => command((g, u) => api.repeat(g, u)),

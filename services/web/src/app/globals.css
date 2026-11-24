@@ -6,6 +6,7 @@
 @import '../components/Stage/now.css';
 @import '../components/Stage/clock.css';
 @import '../components/Stage/night.css';
+@import '../components/Stage/theater.css';
 @import '../components/panel.css';
 @import '../components/Queue/queue.css';
 @import '../components/History/history.css';

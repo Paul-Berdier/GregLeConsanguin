@@ -56,21 +56,26 @@
 .stage[data-paused=true] .paused-badge { opacity: 1; transform: translate(-50%, -50%); }
 .video-note { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 4; margin: 0; padding: 8px 12px; font-size: 14px; color: var(--os-2); }
 
-/* sous le portail : « Image seulement… » et le réglage de synchro */
+/* sous le portail : « Image seulement… », le réglage de synchro et le plein écran (même bouton, theater.css pour la suite) */
 .muted-note { display: flex; align-items: center; gap: 6px; margin: 0; min-width: 0; font-size: 13px; color: var(--cendre); }
 .muted-note svg { width: 14px; height: 14px; flex: none; }
 /* margin-left: auto : renvoyé seul à la ligne (téléphone, colonne étroite), le bouton reste à droite ;
    son popover, ancré à droite et large de 300 px, sortirait sinon de l'écran à gauche */
 .sync { position: relative; flex: none; margin-left: auto; }
-.sync-btn {
+.sync-btn, .fs-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 7px; corner-shape: bevel;
   font: 600 13px/1 var(--f-ui); color: var(--cendre); box-shadow: inset 0 0 0 1px var(--hair);
   transition: transform var(--dur-press) var(--ease-out);
 }
-.sync-btn svg { width: 15px; height: 15px; }
+.sync-btn svg, .fs-btn svg { width: 15px; height: 15px; }
 .sync-btn .tnum { color: rgb(var(--lumiere-rgb)); }
-.sync-btn:active { transform: scale(.97); }
-@media (hover: hover) and (pointer: fine) { .sync-btn:hover { color: var(--os); box-shadow: inset 0 0 0 1px var(--hair-2); } }
+.sync-btn:active, .fs-btn:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .sync-btn:hover, .fs-btn:hover { color: var(--os); box-shadow: inset 0 0 0 1px var(--hair-2); } }
+/* « Plein écran » : juste après « Synchro vidéo » ; seul (pochette d'un titre sans vidéo YouTube), il garde la droite.
+   Colonne étroite (même seuil que stage.css) : l'icône seule, sinon la rangée passerait à la ligne et la rose rapetisserait. */
+.fs-btn { flex: none; margin-left: auto; }
+.sync + .fs-btn { margin-left: 0; }
+@container stage-col (max-width: 660px) { .fs-btn { padding: 0 8px; } .fs-btn .fs-lbl { display: none; } }
 .sync-pop { top: auto; right: 0; bottom: calc(100% + 8px); transform-origin: bottom right; min-width: 300px; padding: 12px; }
 .sync-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 12px; font-size: 14px; color: var(--os-2); }
 .sync-row output { font-weight: 700; color: var(--os); }
@@ -91,5 +96,5 @@
   .video .poster, .video .poster[data-leaving] { transform: none; transition: opacity 200ms ease; }
   .video .posters[data-covered=false] { transition-duration: 200ms; }
   .paused-badge, .stage[data-paused=true] .paused-badge { transform: translate(-50%, -50%); }
-  .sync-btn, .sync-reset { transition: none; }
+  .sync-btn, .sync-reset, .fs-btn { transition: none; }
 }

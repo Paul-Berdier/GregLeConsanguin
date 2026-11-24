@@ -71,6 +71,9 @@
 .act { width: 32px; height: 32px; border-radius: 6px; display: grid; place-items: center; color: var(--os-2); transition: transform var(--dur-press) var(--ease-out); }
 .act svg { width: 16px; height: 16px; }
 .act:active { transform: scale(.94); }
+/* le cœur pressé (coups de cœur du Roi, chansonnier) : la lumière du morceau, rempli */
+.act[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
+.act[aria-pressed=true] svg { fill: currentColor; }
 @media (hover: hover) and (pointer: fine) {
   .act:hover { background: rgb(239 231 216 / .07); color: var(--os); }
   .act.del:hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
@@ -79,13 +82,25 @@
 }
 .row:focus-within .acts { opacity: 1; pointer-events: auto; }
 .row:focus-within .side { opacity: 0; }
+/* la file : sa puce compte quatre boutons (le cœur compris), 140 px, plus que la colonne de la durée et son espace ;
+   tant qu'elle est montrée, le titre lui cède la place en points de suspension au lieu d'être coupé dessous.
+   Au toucher, la puce est une colonne de la grille : rien à réserver. */
+@media (hover: hover) {
+  .qcontent > .qlist > .row:not(.dragging):hover .meta, .qcontent > .qlist > .row:focus-within .meta { padding-right: 44px; }
+}
+/* fenêtre étroite (sans « Jouer ensuite », plus bas) : trois boutons, 106 px, ne débordent que de 8 px */
+@media (hover: hover) and (max-width: 520px) {
+  .qcontent > .qlist > .row:not(.dragging):hover .meta, .qcontent > .qlist > .row:focus-within .meta { padding-right: 12px; }
+}
 /* accalmie : une ligne qui glisse sous un pointeur immobile ne montre rien et ignore les clics */
 .qlist.settling .row .acts { opacity: 0 !important; pointer-events: none !important; transition: none !important; }
 .qlist.settling .row .side { opacity: 1 !important; }
 .qlist.settling .row .card { background: transparent !important; }
+/* au toucher : 40 px de haut pour le doigt, 32 de large (WCAG 2.5.8 en demande 24) ; à 40, le quatrième bouton (le
+   cœur) prenait 42 px au titre, réduit à deux lettres sur un petit téléphone ou une tablette en paysage */
 @media (hover: none) {
   .acts { opacity: 1; pointer-events: auto; position: static; transform: none; background: none; box-shadow: none; padding: 0; }
-  .act { width: 40px; height: 40px; }
+  .act { width: 32px; height: 40px; }
   .row .side { display: none; }
   .row .card { grid-template-columns: 24px 64px minmax(0, 1fr) auto; }
   .thumb { width: 64px; }

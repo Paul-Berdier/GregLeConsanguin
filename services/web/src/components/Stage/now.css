@@ -41,12 +41,37 @@
   font: 600 var(--title-size)/1.08 var(--f-title); letter-spacing: -.015em; color: var(--os);
 }
 .meta-slot { display: grid; margin: 4px 0 0; min-height: 22px; font-size: 15.5px; color: var(--cendre); }
+/* la ligne du demandeur porte au bout le cœur du Roi et « Ajouter à une playlist » (Library/) : 30 px de haut, avec ou
+   sans titre (les boutons, cachés, gardent leur place : la mise en page de la scène n'en dépend pas) */
+.now-meta { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 4px; }
+.now-meta > .meta-slot { flex: 0 1 auto; min-width: 0; margin: 0; }
+.now-acts { display: flex; align-items: center; gap: 2px; flex: none; }
+.now-acts[data-shown=false] { visibility: hidden; }
+.nbtn {
+  width: 30px; height: 30px; border-radius: 7px; corner-shape: bevel; display: grid; place-items: center; color: var(--cendre);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.nbtn svg { width: 18px; height: 18px; }
+.nbtn:active:not(:disabled) { transform: scale(.92); }
+/* désactivé (chansonnier pas encore lu, ou illisible) : il le paraît, comme .lbtn (library.css) et .tbtn */
+.nbtn:disabled { opacity: .4; cursor: default; }
+@media (hover: hover) and (pointer: fine) { .nbtn:where(:not(:disabled)):hover { background: var(--voute); color: var(--os); } }
+/* cœur pressé : la lumière du morceau, comme la boucle du transport */
+.nbtn[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
+.nbtn[aria-pressed=true] svg { fill: currentColor; }
+.nbtn[aria-expanded=true] { background: var(--voute); color: var(--os); }
+@media (hover: none) { .nbtn { width: 40px; height: 40px; } }
 /* légendes croisées : l'ancienne (aria-hidden) sort pendant que la nouvelle entre, sur la même case */
 .title-slot > .line, .meta-slot > .line { grid-area: 1 / 1; min-width: 0; }
 .title-slot > .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta-slot > .line { display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; }
-.meta-slot .artist { overflow: hidden; text-overflow: ellipsis; }
-.meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--os-2); }
+/* la ligne trop longue (les deux boutons du bout lui prennent 70 px, 90 au toucher) : l'artiste et le demandeur cèdent
+   ensemble, le demandeur d'abord (comme dans la file, queue.css). Le demandeur garde 4em (le sceau entier et « Dem… ») :
+   à 0, un long artiste le faisait disparaître, le point séparateur seul au bout, ou le sceau sans texte ; tous ses
+   textes (« Demandé par… », « Ajouté depuis Discord ») sont plus longs, rien n'est ajouté à une ligne qui tient */
+.meta-slot .artist { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.meta-slot .by { display: inline-flex; align-items: center; gap: 6px; flex: 0 4 auto; min-width: 4em; overflow: hidden; color: var(--os-2); }
+.meta-slot .by-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .meta-slot .seal { width: 20px; height: 20px; flex: none; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .6)); }
 .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--cendre-2); flex: none; }
 
@@ -124,7 +149,7 @@
 @media (prefers-reduced-motion: reduce) {
   .glint { display: none; }
   .kicker .eq i { animation: none; transform: scaleY(.6); }
-  .kicker .eq, .tbtn, .tip { transition: none; }
+  .kicker .eq, .tbtn, .tip, .nbtn { transition: none; }
   .tbtn.main svg[data-shown=false] { transform: none; }
   .tip { transform: translateX(-50%); }
 }

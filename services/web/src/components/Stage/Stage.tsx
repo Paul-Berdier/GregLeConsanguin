@@ -1,19 +1,22 @@
 'use client';
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, RefObject } from 'react';
+import type { CSSProperties, KeyboardEvent, RefObject } from 'react';
 import { useStore } from '@/hooks/usePlayer';
+import { useFullscreen } from '@/hooks/useFullscreen';
 import { useStageLayout } from '@/hooks/useStageLayout';
 import { useStageClock } from '@/hooks/useStageClock';
 import { useVideoOffset } from '@/hooks/useVideoOffset';
 import { extractVideoId } from '@/lib/format';
 import { DUR, EASE, reducedMotion } from '@/lib/motion';
+import { fsExitDelay, fsHeldKey } from '@/lib/stage/fullscreen';
 import { fitNight, nightBottom, sameLayout, stageCssVars } from '@/lib/stage/layout';
 import type { StageLayout } from '@/lib/stage/layout';
 import { dialGeometry, paneMask } from '@/lib/stage/dial';
 import { stageScene } from '@/lib/stage/scene';
 import type { Scene } from '@/lib/stage/scene';
 import { t } from '@/theme/copy';
+import { tx } from '@/theme/copy.extra';
 import Rose from './Rose';
 import Clock, { TimesRow } from './Clock';
 import NightState from './NightState';
@@ -107,6 +110,25 @@ function Stage({ booted }: { booted: boolean }) {
   // Titre sans vidéo YouTube (SoundCloud, que le bot joue aussi) : sa pochette tient lieu d'image.
   const art = day && !videoId ? thumb : null;
 
+  // Plein écran de la vidéo (conception du 2026-11-23, §2) : `.video` y passe (Portal.tsx), dès qu'un titre joue ;
+  // à la sortie, le focus revient au bouton d'entrée. Sortie par la fin de lecture : le bouton est parti avec le titre,
+  // le focus va à l'appel de la nuit (« Ajouter un titre »), pas sur <body>.
+  const videoElRef = useRef<HTMLDivElement>(null);
+  const fsBtnRef = useRef<HTMLButtonElement>(null);
+  const fs = useFullscreen(videoElRef, () => (fsBtnRef.current
+    ?? stageRef.current?.querySelector<HTMLElement>('.night button, .night a[href]'))?.focus({ preventScroll: true }));
+  const { mode: fsMode, exit: fsExit } = fs;
+  // Entrée maintenue sur « Quitter le plein écran » : le focus revient au bouton d'entrée, la répétition de la touche n'y
+  // rentre pas (fsHeldKey) ; la vidéo n'entre et ne sort pas en boucle.
+  const onFsKey = (e: KeyboardEvent<HTMLButtonElement>): void => { if (fsHeldKey(e)) e.preventDefault(); };
+  // Fin de lecture (arrêt, file finie) : plus de titre pendant 1,5 s, on sort ; un creux entre deux titres passe.
+  useEffect(() => {
+    const ms = fsExitDelay(!!fsMode, day);
+    if (ms == null) return;
+    const tm = setTimeout(fsExit, ms);
+    return () => clearTimeout(tm);
+  }, [fsMode, day, fsExit]);
+
   // Écart 10 de l'étape 2 : R qui change avec la scène passe en FLIP (420 ms), pas un redimensionnement de fenêtre.
   // Vers la nuit, le portail et la lumière s'effacent encore pleins : eux aussi gardent leur boîte d'avant, avec la rose
   // (vers le jour, ils entrent depuis 0, à leur place).
@@ -122,7 +144,9 @@ function Stage({ booted }: { booted: boolean }) {
     lastBoxes.current = boxes;
     if (!rose || !prev || !R || Math.abs(prev - R) < 1 || performance.now() - sceneAt.current > 400 || reducedMotion()) return;
     rose.animate([{ transform: `scale(${prev / R})` }, { transform: 'none' }], { duration: DUR.reveal, easing: EASE.out });
-    if (day) return;
+    // en plein écran (la nuit tombe pendant les 1,5 s avant la sortie), pas de FLIP du portail : en repli « pseudo », un
+    // transform sur .portal y piégerait la vidéo fixée (bloc conteneur)
+    if (day || fsMode) return;
     fading.forEach((el, i) => {
       const from = before[i], to = boxes[i];
       if (el && from && to && to.w > 0 && to.h > 0) el.animate(flipFrames(flipBox(from, to)), { duration: DUR.reveal, easing: EASE.out });
@@ -145,14 +169,15 @@ function Stage({ booted }: { booted: boolean }) {
 
   return (
     <section className="stage-col" ref={colRef} aria-label={day ? t('now.kicker') : undefined}>
-      <div className="stage" ref={stageRef} style={style}
+      <div className="stage" ref={stageRef} style={style} data-fs={fsMode ?? undefined}
         data-scene={day ? 'day' : 'night'} data-paused={day && paused} data-springs={layout?.springs ?? 'spring'}>
         <Rose videoId={videoId} nextId={nextId} R={layout?.R ?? 0} mask={paneMask(day ? pane : -1)} crown={crown}/>
         <div className="lightpool" aria-hidden="true"/>
         <Clock dial={dial} active={day} labelledBy={NOW_TITLE_ID}/>
         {/* une nuit par état : chargement → rien en lecture remonte la nuit, son entrée (night-in) rejoue */}
         {scene !== 'day' && <NightState key={scene} kind={scene} afterDay={prevScene === 'day'}/>}
-        <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art} crown={crown}/>
+        <Portal videoId={videoId} nextId={nextId} paused={paused} offset={offset} art={art} crown={crown}
+          videoElRef={videoElRef} fullscreen={{ mode: fsMode, ready: day, toggle: fs.toggle, exit: fsExit }}/>
         <div className="below" ref={belowRef}>
           <TimesRow/>
           <div className="now">
@@ -165,6 +190,13 @@ function Stage({ booted }: { booted: boolean }) {
               {t('now.embedMuted')}
             </p>
             {videoId && <SyncOffset value={offset} onChange={setOffset}/>}
+            {/* requestFullscreen dans le gestionnaire du clic (activation de l'utilisateur) ; double-clic sur la vidéo aussi */}
+            {/* colonne étroite : l'icône seule (portal.css), le nom reste (aria-label) */}
+            {day && <button ref={fsBtnRef} type="button" className="fs-btn" aria-label={tx('fullscreen.enter')} title={tx('fullscreen.enterTip')}
+              onKeyDown={onFsKey} onClick={() => fs.toggle()}>
+              <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+              <span className="fs-lbl">{tx('fullscreen.enter')}</span>
+            </button>}
           </div>
         </div>
       </div>

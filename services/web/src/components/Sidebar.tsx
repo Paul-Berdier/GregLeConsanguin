@@ -11,18 +11,25 @@ import { tx } from '@/theme/copy.extra';
 import QueuePanel from '@/components/Queue/QueuePanel';
 import HistoryPanel from '@/components/History/HistoryPanel';
 import Suggestions from '@/components/History/Suggestions';
+import LibraryPanel from '@/components/Library/LibraryPanel';
+import { librarySummary } from '@/components/Library/meta';
+import { useLibrary, useLibraryInit } from '@/hooks/useLibrary';
 
-type Tab = 'queue' | 'hist';
+type Tab = 'queue' | 'hist' | 'lib';
+/** Ordre des onglets : ← → les parcourent en boucle, Début et Fin vont au premier et au dernier. */
+const TABS: readonly Tab[] = ['queue', 'hist', 'lib'];
 /** Place libre sous la file au-delà de laquelle les ménestrels du Codex Manesse tiennent compagnie (DESIGN §12.5). */
 const ROOMY_PX = 190;
 
 /**
  * Le panneau de droite (DESIGN §3, §12.5 ; body.html, lignes 159–209) : titre en Grenze Gotisch, résumé de la
- * file (« File d'attente · 8 titres · 47 min · fin vers 22 h 47 »), onglets à pilule glissante, deux volets
+ * file (« File d'attente · 8 titres · 47 min · fin vers 22 h 47 »), onglets à pilule glissante, trois volets
  * toujours montés (défilement gardé) qui se relaient : sortie 60 ms, entrée 140 ms (motion.md §6.14).
+ * Troisième volet : le chansonnier du Roi (Library/, spec 2026-11-23 §3), lu à la connexion (useLibraryInit).
  * Styles : panel.css.
  */
 export default function Sidebar({ booted = true }: { booted?: boolean }) {
+  useLibraryInit();
   const [tab, setTab] = useState<Tab>('queue');
   const [roomy, setRoomy] = useState(false);
   const [, setMinute] = useState(0);
@@ -30,6 +37,8 @@ export default function Sidebar({ booted = true }: { booted?: boolean }) {
   const hasCurrent = useStore((s) => !!s.player.current);
   const paused = useStore((s) => s.player.paused);
   const tickBase = useStore((s) => s.tickBase);
+  const lib = useLibrary((s) => s.lib);
+  const libStatus = useLibrary((s) => s.status);
   const panelRef = useRef<HTMLElement>(null);
   const incoming = useRef<Tab | null>(null);
   /** L'onglet visé pendant le fondu de sortie (60 ms) : le dernier choix, clic ou flèche, l'emporte. */
@@ -45,6 +54,7 @@ export default function Sidebar({ booted = true }: { booted?: boolean }) {
   const remaining = hasCurrent ? Math.max(0, tickBase.dur - livePosition(tickBase, paused, performance.now())) : 0;
   const summary = !booted ? t('queue.tab.zero') : !n ? t('queue.empty.title')
     : `${t('queue.subtitle', { n })}${t('queue.durationSuffix', { dur: fmtLong(queueSeconds(queue)) })} · ${tx('queue.endsAt', { time: clockText(endsAt(Date.now(), remaining, queue)) })}`;
+  const libSummary = lib ? librarySummary(lib) : libStatus === 'error' ? tx('library.failed') : libStatus === 'loading' ? tx('library.loading') : '';
 
   const groupOf = (x: Tab) => Array.from(panelRef.current?.querySelectorAll<HTMLElement>(`[data-pane="${x}"]`) ?? []);
 
@@ -84,21 +94,25 @@ export default function Sidebar({ booted = true }: { booted?: boolean }) {
     return () => ro.disconnect();
   }, [tab]);
 
+  // ← → : l'onglet voisin, en boucle, depuis l'onglet visé (pendant un fondu, le dernier choix) ; Début, Fin : les bouts
   const onTabsKey = (e: KeyboardEvent) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const at = TABS.indexOf(target.current ?? tab);
+    const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? TABS.length - 1 : 0;
+    const next = e.key === 'Home' ? TABS[0] : e.key === 'End' ? TABS[TABS.length - 1] : step ? TABS[(at + step) % TABS.length] : null;
+    if (!next) return;
     e.preventDefault();
-    const next: Tab = (target.current ?? tab) === 'queue' ? 'hist' : 'queue';
     switchTo(next);
     panelRef.current?.querySelector<HTMLElement>(`#tab-${next}`)?.focus();
   };
 
   return (
-    <aside className="panel" ref={panelRef} aria-label={tx('panel.label')} data-roomy={roomy}>
+    <aside className="panel" ref={panelRef} aria-label={tx('library.panelLabel')} data-roomy={roomy}>
       <img className="minstrels" src="/gothique/minstrels-manesse-line.webp" alt="" aria-hidden="true" width={480} height={355} decoding="async"/>
       <div className="panel-head">
         <div className="ptitle-slot">
           <h2 className="ptitle" data-pane="queue" aria-hidden={tab !== 'queue'}>{t('queue.title')}</h2>
           <h2 className="ptitle" data-pane="hist" aria-hidden={tab !== 'hist'}>{t('history.title')}</h2>
+          <h2 className="ptitle" data-pane="lib" aria-hidden={tab !== 'lib'}>{tx('library.title')}</h2>
         </div>
         <div className="tabs" role="tablist" aria-label={tx('panel.tabs')} data-tab={tab} onKeyDown={onTabsKey}>
           <span className="pill" aria-hidden="true"/>
@@ -110,11 +124,16 @@ export default function Sidebar({ booted = true }: { booted?: boolean }) {
             tabIndex={tab === 'hist' ? 0 : -1} className="tab" onClick={() => switchTo('hist')}>
             {t('history.tab')}
           </button>
+          <button type="button" role="tab" id="tab-lib" aria-selected={tab === 'lib'} aria-controls="pane-lib"
+            tabIndex={tab === 'lib' ? 0 : -1} className="tab" onClick={() => switchTo('lib')}>
+            {tx('library.tab')}
+          </button>
         </div>
-        {/* le résumé passe sous le titre ET les onglets : toute la largeur du panneau */}
+        {/* le résumé, sous le titre : toute la largeur du panneau (les onglets ont leur propre rangée) */}
         <div className="ptitle-slot psubs">
           <div className="psub tnum" data-pane="queue" aria-hidden={tab !== 'queue'}>{summary}</div>
           <div className="psub" data-pane="hist" aria-hidden={tab !== 'hist'}>{t('history.subtitle')}</div>
+          <div className="psub tnum" data-pane="lib" aria-hidden={tab !== 'lib'}>{libSummary}</div>
         </div>
       </div>
       <div className="panes">
@@ -123,6 +142,9 @@ export default function Sidebar({ booted = true }: { booted?: boolean }) {
         </div>
         <div className="pane" id="pane-hist" role="tabpanel" aria-labelledby="tab-hist" data-pane="hist" aria-hidden={tab !== 'hist'}>
           <HistoryPanel/>
+        </div>
+        <div className="pane" id="pane-lib" role="tabpanel" aria-labelledby="tab-lib" data-pane="lib" aria-hidden={tab !== 'lib'}>
+          <LibraryPanel/>
         </div>
       </div>
     </aside>

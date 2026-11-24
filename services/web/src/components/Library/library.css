@@ -1,0 +1,110 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   LE CHANSONNIER DU ROI (spec 2026-11-23 §3) : vue d'ensemble, vue d'une playlist, nom en ligne, confirmation de
+   suppression, menu « Ajouter à une playlist » (sous le titre en lecture). Importée par panel.css.
+   - les lignes reprennent .row, .card, .thumb, .meta, .side, .acts de queue.css et .rank, .hstate de history.css ;
+     ce qui les change porte .lpane (spécificité 0,3,0) et l'emporte quel que soit l'ordre des feuilles ;
+   - les popovers reprennent .pop et .plaque (header.css, globals.css), leur entrée et leur mouvement réduit compris ;
+   - les couleurs de survol changent sans transition ; seul l'appui s'anime, en transform ;
+   - mouvement réduit : rien ne bouge (prefers-reduced-motion, et <html data-motion=reduced> posé par la page).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.lpane, .lview { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* barres d'actions : les boutons de texte du volet (le segment de l'historique, en bouton) */
+.lbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 18px 10px; }
+.lbtn {
+  height: 34px; padding: 0 12px; border-radius: 7px; corner-shape: bevel; display: inline-flex; align-items: center; gap: 7px;
+  font-size: 14.5px; color: var(--os-2); white-space: nowrap; box-shadow: inset 0 0 0 1px var(--hair);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.lbtn svg { width: 16px; height: 16px; flex: none; }
+/* désactivé : disabled, ou aria-disabled pour un bouton qui garde le focus en se désactivant (« Ajouter le titre en
+   cours ») ; :not() à liste pèse comme son argument le plus lourd, l'ordre des règles ne change pas */
+.lbtn:active:not(:disabled, [aria-disabled=true]) { transform: scale(.97); }
+.lbtn:is(:disabled, [aria-disabled=true]) { opacity: .4; cursor: default; }
+.lbtn.primary { color: var(--os); background: var(--voute-2); box-shadow: none; }
+.lbtn.licon { width: 34px; padding: 0; justify-content: center; }
+@media (hover: hover) and (pointer: fine) {
+  .lbtn:not(:disabled, [aria-disabled=true]):hover { color: var(--os); background: var(--voute); }
+  .lbtn.primary:not(:disabled, [aria-disabled=true]):hover { background: var(--voute-2); box-shadow: inset 0 0 0 1px var(--hair-2); }
+  .lbtn.danger:not(:disabled, [aria-disabled=true]):hover { color: var(--gueules); background: rgb(224 88 62 / .12); }
+}
+
+/* le nom en ligne : un petit champ de la voûte, le focus d'or de la page */
+.lform { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 18px 10px; }
+.lfield {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 0; border-radius: 7px; corner-shape: bevel;
+  background: var(--voute); color: var(--os); font: inherit; font-size: 14.5px; box-shadow: inset 0 0 0 1px var(--hair-2);
+}
+
+/* vue d'ensemble : la carte des coups de cœur, puis les playlists (une ligne s'ouvre d'un clic) */
+.lpane .row .thumb { cursor: default; touch-action: auto; }
+.lpane .lrow { cursor: pointer; }
+.lpane .lrow .card { grid-template-columns: 56px minmax(0, 1fr) 40px; height: 56px; padding: 0 6px 0 10px; }
+.lpane .lrow .thumb { width: 56px; cursor: pointer; }
+.lsigil { position: absolute; inset: 0; display: grid; place-items: center; color: var(--cendre); }
+.lsigil svg { width: 18px; height: 18px; }
+/* les coups de cœur : le cœur plein, de la lumière du morceau ; le sceau du Roi sur le coin (.thumb .seal, queue.css) */
+.lpane .lrow[data-key=likes] .lsigil { color: rgb(var(--lumiere-rgb)); }
+.lpane .lrow[data-key=likes] .lsigil svg { fill: currentColor; }
+.lplay {
+  width: 34px; height: 34px; border-radius: 7px; corner-shape: bevel; display: grid; place-items: center; color: var(--cendre);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.lplay svg { width: 16px; height: 16px; }
+.lplay:active:not(:disabled) { transform: scale(.94); }
+.lplay:disabled { opacity: .35; cursor: default; }
+@media (hover: hover) and (pointer: fine) {
+  .lrow:hover .lplay:not(:disabled) { color: var(--os); background: rgb(239 231 216 / .05); }
+  .lplay:not(:disabled):hover { background: var(--voute-2); }
+}
+.lrow:focus-within .lplay:not(:disabled) { color: var(--os); }
+@media (hover: none) { .lplay { width: 40px; height: 40px; } }
+.lnote { margin: 10px 12px 0; font-size: 14px; color: var(--cendre); }
+
+/* vue d'une playlist : retour, nom (Grenze, la voix des titres), compteurs, actions */
+.lhead { display: grid; gap: 4px; padding: 0 18px; }
+.lhead .lbar { padding: 6px 0 10px; }
+.lhead .lform { padding: 0; }
+.lback {
+  justify-self: start; height: 28px; margin-left: -6px; padding: 0 8px 0 2px; border-radius: 6px; corner-shape: bevel;
+  display: inline-flex; align-items: center; gap: 2px;
+  font: 700 11.5px/1 var(--f-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--cendre);
+  transition: transform var(--dur-press) var(--ease-out);
+}
+.lback svg { width: 16px; height: 16px; }
+.lback:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) { .lback:hover { color: var(--os); background: var(--voute); } }
+.lname-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.lname { margin: 0; min-width: 0; font: 600 26px/1.1 var(--f-title); color: var(--os); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lmeta { margin: 0; font-size: 14px; color: var(--cendre); }
+.ldel { position: relative; margin-left: auto; }
+
+/* « Supprimer « … » ? » : depuis son bouton, vers le bas, comme les popovers de l'en-tête (le focus sur « Garder »).
+   Ancrée à droite du bouton, qui finit la rangée : sa largeur laisse la marge de la page et celles de .lhead (2 × 18 px),
+   sinon elle sortait de l'écran à gauche à 320 px */
+.ldel .lconfirm { width: min(290px, calc(100vw - 2 * var(--page-x, 16px) - 36px)); padding: 14px; }
+.lconfirm h3 { margin: 0 0 6px; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+.lconfirm p { margin: 0 0 12px; font-size: 15px; color: var(--os-2); }
+.lconfirm .row-btns { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* lignes d'une playlist : celles de la file, le rang à la place de la poignée */
+.lpane .trow .rank { justify-self: end; }
+
+/* « Ajouter à une playlist » : sous le titre en lecture, il s'ouvre vers le haut, au-dessus de la vidéo ; décalé vers la
+   gauche s'il sortait de la fenêtre (--lmenu-dx, AddToPlaylist.tsx), son échelle part toujours du bouton */
+.ladd { position: relative; }
+.ladd .lmenu {
+  top: auto; right: auto; bottom: calc(100% + 8px); left: var(--lmenu-dx, 0px); transform-origin: calc(0px - var(--lmenu-dx, 0px)) 100%;
+  width: 280px; max-height: min(360px, 55dvh); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+}
+.lmenu-list { list-style: none; margin: 0; padding: 0; }
+.lmenu-none { margin: 0; padding: 4px 10px 8px; font-size: 14px; color: var(--cendre); }
+.lmenu .pop-item[aria-disabled=true] .two b { color: var(--cendre); }
+.lmenu .lnew svg { width: 16px; height: 16px; flex: none; color: var(--cendre); }
+.lmenu .lform { padding: 4px 4px 2px; }
+@media (max-width: 520px) { .ladd .lmenu { width: min(280px, calc(100vw - 32px)); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .lbtn, .lplay, .lback { transition: none; }
+}
+:root[data-motion=reduced] :is(.lbtn, .lplay, .lback) { transition: none; }

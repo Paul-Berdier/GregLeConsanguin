@@ -2,7 +2,9 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { playerActions, useStore } from '@/hooks/usePlayer';
+import { useLibrary } from '@/hooks/useLibrary';
 import { api } from '@/lib/api';
+import { trackKey } from '@/lib/library';
 import { EASE, reducedMotion } from '@/lib/motion';
 import { agoOf } from '@/lib/queue/view';
 import type { HistoryItem } from '@/lib/queue/view';
@@ -19,7 +21,8 @@ const REFRESH = <svg className="ico" viewBox="0 0 24 24" aria-hidden="true"><pat
  * « Plus joués » est la liste du store (usePlayer.refreshHistory, aussi lue par « Souvent demandés ici ») ;
  * « Récents » reste locale. Un clic sélectionne, un double-clic ou « + » remet le titre dans la file.
  * Le demandeur n'est nommé que s'il est connu : le Roi (« vous ») ou un courtisan présent dans la file.
- * Clavier (useRequeueList) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre ; touches décrites (history.keys).
+ * Clavier (useRequeueList) : un arrêt de Tab, ↑ ↓ Début Fin, Entrée remet le titre, J son cœur ; touches décrites
+ * (history.keys).
  */
 export default function HistoryPanel() {
   const guildId = useStore((s) => s.guildId);
@@ -27,6 +30,7 @@ export default function HistoryPanel() {
   const meId = useStore((s) => s.me?.id ?? '');
   const queue = useStore((s) => s.player.queue);
   const current = useStore((s) => s.player.current);
+  const liked = useLibrary((s) => s.liked);
   const [mode, setMode] = useState<'top' | 'recent'>('top');
   const [recent, setRecent] = useState<HistoryItem[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,7 +102,7 @@ export default function HistoryPanel() {
               onClick={list.onClick} onDoubleClick={list.onDoubleClick} onKeyDown={list.onKeyDown} onFocus={list.onFocus}>
               {items.map((it, i) => (
                 <HistoryRow key={`${it.url}-${i}`} item={it} rank={mode === 'top' ? i + 1 : 0} meta={metaOf(it)}
-                  byName={nameOf(it.last_played_by)} variant="hrow" picked={list.picked === it.url}
+                  byName={nameOf(it.last_played_by)} variant="hrow" picked={list.picked === it.url} liked={liked.has(trackKey(it.url))}
                   tabIndex={list.tabIndexOf(it.url || '')}/>
               ))}
             </ol>

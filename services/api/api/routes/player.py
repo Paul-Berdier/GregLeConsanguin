@@ -7,6 +7,12 @@ from flask import Blueprint, jsonify, request
 
 from api.services.authz import require_session_user, session_user_id
 from api.services.bot_bridge import send_command
+from api.services.library_store import (
+    QUEUE_ITEM_KEYS,
+    LibraryError,
+    clean_label,
+    clean_tracks,
+)
 from api.services.relay_clock import now_ms, with_relay_at
 
 bp = Blueprint("player", __name__)
@@ -25,6 +31,9 @@ MSG_PLAY_TIMEOUT = (
 # play_for_user. On attend autant que lui, sinon on répondrait TIMEOUT pour une
 # commande que le bot exécute quand même juste après (→ double skip au 2e clic).
 MUTATING_TIMEOUT = PLAY_FOR_USER_TIMEOUT
+# /queue/add_many (chansonnier du Roi) : une playlist d'un geste, 1 à ADD_MANY_MAX titres.
+ADD_MANY_MAX = 100
+MSG_ADD_MANY_COUNT = f"Envoyez entre 1 et {ADD_MANY_MAX} titres à la fois."
 
 
 def _body(req) -> dict:
@@ -141,6 +150,32 @@ def enqueue():
     }
 
     return play_for_user_response(gid, uid, item)
+
+
+@bp.post("/queue/add_many")
+@require_session_user
+def queue_add_many():
+    """Ajoute une liste de titres connus (playlist ou coups de cœur du chansonnier) en UNE commande.
+
+    Titres nettoyés comme ceux du chansonnier (library_store.clean_tracks : lien http(s) obligatoire), puis
+    transmis au bot réduits aux 6 clés d'un item de file : item = {"items": [...], "title": label}.
+    Même délai et même réponse HTTP que /player/enqueue (play_for_user_response).
+    """
+    data = _body(request)
+    gid = _gid(request, data)
+    uid = _uid()
+    if not gid or not uid:
+        return jsonify({"ok": False, "error": "missing guild_id"}), 400
+    raw = data.get("items")
+    if not isinstance(raw, list) or not 1 <= len(raw) <= ADD_MANY_MAX:
+        return jsonify({"ok": False, "error": "INVALID_REQUEST", "message": MSG_ADD_MANY_COUNT}), 400
+    try:
+        tracks = clean_tracks(raw, max_items=ADD_MANY_MAX)
+        label = clean_label(data.get("label"))
+    except LibraryError as e:
+        return jsonify(e.body()), e.status
+    items = [{k: t[k] for k in QUEUE_ITEM_KEYS} for t in tracks]
+    return play_for_user_response(gid, uid, {"items": items, "title": label})
 
 
 @bp.post("/player/skip")
