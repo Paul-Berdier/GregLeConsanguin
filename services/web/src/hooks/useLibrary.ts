@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { api } from '@/lib/api';
 import {
   DEFAULT_LIMITS, LIKES, TMP, addPlan, checkOp, cleanName, createLibraryEngine, findPlaylist, libraryCode, likedKeys,
-  moveIndices, nameOk, noticeOf, parseLibrary, rereadOnFocus, toLibraryTrack, trackKey, wireTrack,
+  nameOk, noticeOf, parseLibrary, rereadOnFocus, sendOp, toLibraryTrack, trackKey, undoOf, wireTrack,
 } from '@/lib/library';
 import type { LibraryOp, TrackLike } from '@/lib/library';
 import type { Library, LibraryTrack } from '@/lib/types';
@@ -41,29 +41,16 @@ function show(lib: Library | null): void {
   useLibrary.setState({ lib, liked });
 }
 
-/** Une modification vers l'API ; un déplacement se compte sur le chansonnier confirmé, celui que l'API modifie. */
-function send(op: LibraryOp, base: Library): Promise<unknown> {
-  switch (op.kind) {
-    case 'like': return api.libraryLike(wireTrack(op.track));
-    case 'unlike': return api.libraryUnlike(op.url);
-    case 'create': return api.playlistCreate(op.name, op.tracks.map(wireTrack));
-    case 'rename': return api.playlistRename(op.id, op.name);
-    case 'delete': return api.playlistDelete(op.id);
-    case 'add': return api.playlistAdd(op.id, op.tracks.map(wireTrack));
-    case 'remove': return api.playlistRemove(op.id, op.url);
-    case 'move': {
-      const mv = moveIndices(findPlaylist(base, op.id)?.tracks ?? [], op.url, op.to);
-      return mv ? api.playlistMove(op.id, mv.src, mv.dst) : Promise.resolve(null);
-    }
-  }
-}
+/** Une modification vers l'API (lib/library.ts, sendOp : déplacement nommant son titre, restauration à son rang). */
+const send = (op: LibraryOp, base: Library): Promise<unknown> => sendOp(api, op, base);
 
 /**
  * Échecs après lesquels le chansonnier confirmé est relu : playlist disparue (supprimée dans un autre onglet) ; issue
  * inconnue, l'écriture peut avoir eu lieu (503 STORAGE_UNAVAILABLE : « le site relit », dit l'API ; réseau, réponse
- * illisible : sans code) ; requête invalide, souvent comptée sur une copie dépassée (rangs d'un déplacement).
+ * illisible : sans code) ; copie dépassée, un déplacement visait un autre titre (409 STALE, rien n'a bougé) ; requête
+ * invalide, souvent comptée sur une copie dépassée (rangs d'un déplacement).
  */
-const REREAD = new Set(['PLAYLIST_NOT_FOUND', 'STORAGE_UNAVAILABLE', 'INVALID_REQUEST', '']);
+const REREAD = new Set(['PLAYLIST_NOT_FOUND', 'STORAGE_UNAVAILABLE', 'STALE', 'INVALID_REQUEST', '']);
 
 /**
  * Refus de l'API, la vue déjà revenue en arrière : le Héraut dit pourquoi. Session perdue (401) : la perte de session
@@ -178,12 +165,14 @@ function toggleLike(item: TrackLike, o: { spoken?: boolean } = {}): Promise<bool
   return done;
 }
 
-/** Retirer un coup de cœur depuis sa liste : annonce annulable (le titre revient en tête). */
+/** Retirer un coup de cœur depuis sa liste : annonce annulable (le titre revient à son rang). */
 function unlike(track: LibraryTrack): Promise<boolean> {
-  const done = run({ kind: 'unlike', url: track.url });
+  const op: LibraryOp = { kind: 'unlike', url: track.url };
+  const undo = undoOf(useLibrary.getState().lib, op) ?? { kind: 'like', track };
+  const done = run(op);
   const id = say('library.toast.unliked', {
     vars: { title: songOf(track) }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { void run({ kind: 'like', track }); }, scope: 'king' },
+    action: { label: t('toast.undo'), run: () => { void run(undo); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(id); });
   return done;
@@ -246,14 +235,19 @@ function renamePlaylist(id: string, rawName: string): Promise<boolean> {
   return run({ kind: 'rename', id: engine.idOf(id), name: cleanName(rawName) });
 }
 
-/** Supprimer une playlist (confirmé par la vue) : annonce annulable, qui la recrée avec ses titres. */
+/**
+ * Supprimer une playlist (confirmé par la vue) : annonce annulable, qui la remet à sa place, sous son id, avec ses titres
+ * et ses dates (POST /library/playlists/restore ; une API plus ancienne la recrée à la fin, lib/library.ts sendOp).
+ */
 function deletePlaylist(id: string): Promise<boolean> {
   const pl = playlistOf(id);
   if (!pl) return run({ kind: 'delete', id: engine.idOf(id) });   // disparue : le refus le dit
-  const done = run({ kind: 'delete', id: pl.id });
+  const op: LibraryOp = { kind: 'delete', id: pl.id };
+  const undo = undoOf(useLibrary.getState().lib, op);
+  const done = run(op);
   const toast = say('library.toast.deleted', {
     vars: { name: pl.name }, kind: 'info',
-    action: { label: t('toast.undo'), run: () => { createPlaylist(pl.name, pl.tracks); }, scope: 'king' },
+    action: { label: t('toast.undo'), run: () => { if (undo) void run(undo); }, scope: 'king' },
   });
   void done.then((ok) => { if (!ok) herald.retract(toast); });
   return done;

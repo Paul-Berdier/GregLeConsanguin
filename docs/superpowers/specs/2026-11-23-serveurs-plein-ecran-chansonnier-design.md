@@ -91,17 +91,25 @@ lui, a son volume. L'API sait qui est connecté (session, SEC-C1) et parle déj�
 ### Routes (préfixe /api/v1, toutes `@require_session_user`, identité de la session seule)
 Toutes les mutations renvoient `{ok: true, library}` (la bibliothèque complète, petite) plus leurs champs propres.
 - `GET /library` → `{ok, library: {likes, playlists, limits: {likes, playlists, tracks, name}}}`.
-- `POST /library/likes/add` `{track}` : idempotent, le plus récent en tête.
+- `POST /library/likes/add` `{track, index?}` : idempotent, le plus récent en tête ; `index` (entier, borné à
+  [0, nombre de coups de cœur]) : l'annulation d'un retrait le remet à son ancien rang.
 - `POST /library/likes/remove` `{url}` : retrait par identité.
 - `POST /library/playlists/create` `{name, tracks?}` → `+ playlist_id` (titres en double écartés, plafonnés à 200).
+- `POST /library/playlists/restore` `{playlist: {id, name, tracks, created_at, updated_at}, index?}` : annulation
+  d'une suppression, la playlist revient à son rang (borné à [0, nombre de playlists], à la fin sans `index`) sous son
+  id (format d'un id de playlist), nettoyée comme à la création, mêmes plafonds (50 playlists, budget d'octets) ; dates
+  d'origine gardées si ce sont des entiers de 0 à maintenant. Id déjà là → succès sans changement. Le site retombe sur
+  `create` (à la fin, nouvel id) seulement si la route répond 404 sans code (API plus ancienne).
 - `POST /library/playlists/rename` `{id, name}`.
 - `POST /library/playlists/delete` `{id}`.
 - `POST /library/playlists/add` `{id, tracks}` → `+ added, skipped` (doublons écartés ; ce qui dépasse 200 est
   compté dans `skipped`).
 - `POST /library/playlists/remove` `{id, url}`.
-- `POST /library/playlists/move` `{id, src, dst}`.
+- `POST /library/playlists/move` `{id, src, dst, url?}` : `url` donné (le site l'envoie toujours), le titre au rang
+  `src` doit avoir cette identité, sinon 409 `STALE` sans rien déplacer (copie du site dépassée : le site revient en
+  arrière, le Héraut le dit, le chansonnier est relu).
 - Erreurs (avec `message` en français) : 400 `INVALID_TRACK` / `INVALID_NAME` / `INVALID_REQUEST`,
-  404 `PLAYLIST_NOT_FOUND`, 409 `LIMIT_REACHED`, 503 `STORAGE_UNAVAILABLE`, 401 `NOT_AUTHENTICATED`.
+  404 `PLAYLIST_NOT_FOUND`, 409 `LIMIT_REACHED` / `STALE`, 503 `STORAGE_UNAVAILABLE`, 401 `NOT_AUTHENTICATED`.
 
 ### Jouer une playlist d'un geste
 - `POST /queue/add_many` `{guild_id, items: [Track], label?}` : 1 à 100 titres (sinon 400), nettoyés comme

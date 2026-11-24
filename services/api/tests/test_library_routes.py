@@ -30,6 +30,7 @@ LIBRARY_ROUTES = [
     ("post", "/library/playlists/add", {"id": "abc", "tracks": [yt(1)]}),
     ("post", "/library/playlists/remove", {"id": "abc", "url": yt(1)["url"]}),
     ("post", "/library/playlists/move", {"id": "abc", "src": 0, "dst": 1}),
+    ("post", "/library/playlists/restore", {"playlist": {"id": "abc", "name": "Bal", "tracks": [yt(1)]}, "index": 0}),
 ]
 _IDS = [f"{m} {p}" for m, p, _ in LIBRARY_ROUTES]
 MUTATION_PATHS = [p for m, p, _ in LIBRARY_ROUTES if m == "post"]
@@ -215,6 +216,35 @@ def test_invalid_unlike_is_400(logged_client, fr, url):
     assert fr.log == []
 
 
+def _likes(body) -> list[str]:
+    return [t["title"] for t in body["library"]["likes"]]
+
+
+def test_like_index_puts_it_back_at_its_old_position(logged_client, fr):
+    for i in (1, 2, 3):
+        ok(post(logged_client, "/library/likes/add", {"track": yt(i)}))
+    ok(post(logged_client, "/library/likes/remove", {"url": yt(2)["url"]}))
+    # annulation du retrait : au rang qu'il avait (1), pas en tête
+    body = ok(post(logged_client, "/library/likes/add", {"track": yt(2), "index": 1}))
+    assert set(body) == {"ok", "library"}
+    assert _likes(body) == ["Titre 3", "Titre 2", "Titre 1"]
+    # borné : au-delà → à la fin, négatif → en tête ; absent ou null → en tête (inchangé)
+    assert _likes(ok(post(logged_client, "/library/likes/add", {"track": yt(4), "index": 99})))[-1] == "Titre 4"
+    assert _likes(ok(post(logged_client, "/library/likes/add", {"track": yt(5), "index": -3})))[0] == "Titre 5"
+    assert _likes(ok(post(logged_client, "/library/likes/add", {"track": yt(6), "index": None})))[0] == "Titre 6"
+    assert _likes(ok(post(logged_client, "/library/likes/add", {"track": yt(7)})))[0] == "Titre 7"
+    # déjà aimé : ne bouge pas, rien d'écrit
+    writes = fr.commands().count("EXEC")
+    assert _likes(ok(post(logged_client, "/library/likes/add", {"track": yt(4), "index": 0})))[-1] == "Titre 4"
+    assert fr.commands().count("EXEC") == writes
+
+
+@pytest.mark.parametrize("index", ["1", True, 1.0, [1], {"i": 1}])
+def test_like_index_not_an_integer_is_400_before_any_redis_access(logged_client, fr, index):
+    err(post(logged_client, "/library/likes/add", {"track": yt(1), "index": index}), 400, "INVALID_REQUEST")
+    assert fr.log == []
+
+
 # ── Playlists ──
 
 def test_create_playlist_with_tracks_deduped_and_capped(logged_client, fr):
@@ -332,6 +362,165 @@ def test_move_out_of_bounds_or_not_an_index_is_400(logged_client, fr, src, dst):
 def test_move_in_unknown_playlist_is_404(logged_client, fr):
     err(post(logged_client, "/library/playlists/move", {"id": "inconnu", "src": 0, "dst": 0}),
         404, "PLAYLIST_NOT_FOUND")
+
+
+def _titles(body, i=0) -> list[str]:
+    return [t["title"] for t in body["library"]["playlists"][i]["tracks"]]
+
+
+def test_move_with_url_moves_when_the_track_at_src_is_that_one(logged_client, fr):
+    pid = create(logged_client, tracks=[yt(0), yt(1), yt(2), yt(3)])
+    # même vidéo sous une autre forme : même identité
+    body = ok(post(logged_client, "/library/playlists/move",
+                   {"id": pid, "src": 3, "dst": 0, "url": "https://youtu.be/vid00000003"}))
+    assert _titles(body) == ["Titre 3", "Titre 0", "Titre 1", "Titre 2"]
+
+
+def test_move_with_url_of_another_track_is_409_stale_and_moves_nothing(logged_client, fr):
+    pid = create(logged_client, tracks=[yt(0), yt(1), yt(2), yt(3)])
+    stored_before = fr.kv[KEY]
+    writes = fr.commands().count("EXEC")
+    # copie du site dépassée : elle croit trouver Titre 3 au rang 1 (réordonnée dans un autre onglet)
+    body = err(post(logged_client, "/library/playlists/move", {"id": pid, "src": 1, "dst": 0, "url": yt(3)["url"]}),
+               409, "STALE")
+    assert body["message"] == store.MSG_STALE and "library" not in body
+    # rang disparu (playlist raccourcie ailleurs) : la copie est dépassée aussi
+    err(post(logged_client, "/library/playlists/move", {"id": pid, "src": 7, "dst": 0, "url": yt(3)["url"]}),
+        409, "STALE")
+    assert fr.kv[KEY] == stored_before and fr.commands().count("EXEC") == writes
+    # bon titre, destination hors de la playlist : 400 comme sans url ; playlist inconnue : 404 d'abord
+    err(post(logged_client, "/library/playlists/move", {"id": pid, "src": 3, "dst": 4, "url": yt(3)["url"]}),
+        400, "INVALID_REQUEST")
+    err(post(logged_client, "/library/playlists/move", {"id": "inconnu", "src": 0, "dst": 1, "url": yt(3)["url"]}),
+        404, "PLAYLIST_NOT_FOUND")
+
+
+@pytest.mark.parametrize("url", [3, "", "   ", "x" * 501, ["https://youtu.be/vid00000003"]])
+def test_move_with_an_invalid_url_is_400_before_any_redis_access(logged_client, fr, url):
+    err(post(logged_client, "/library/playlists/move", {"id": "abc", "src": 0, "dst": 1, "url": url}),
+        400, "INVALID_REQUEST")
+    assert fr.log == []
+
+
+# ── Annulation d'une suppression : POST /library/playlists/restore ──
+
+def _snapshot(client, pid) -> dict:
+    lib = ok(client.get(f"{BASE}/library"))["library"]
+    return next(p for p in lib["playlists"] if p["id"] == pid)
+
+
+def _ids(body) -> list[str]:
+    return [p["id"] for p in body["library"]["playlists"]]
+
+
+def test_restore_puts_a_deleted_playlist_back_in_place_under_its_id(logged_client, fr):
+    old = [store.clean_track(yt(i), 500 + i) for i in range(3)]
+    seed(fr, playlists=[{"id": pid, "name": name, "tracks": old if pid == "bbb" else [],
+                         "created_at": 1000, "updated_at": 2000}
+                        for pid, name in (("aaa", "A"), ("bbb", "Les grands airs"), ("ccc", "C"))])
+    snap = _snapshot(logged_client, "bbb")
+    assert _ids(ok(post(logged_client, "/library/playlists/delete", {"id": "bbb"}))) == ["aaa", "ccc"]
+
+    body = ok(post(logged_client, "/library/playlists/restore", {"playlist": snap, "index": 1}))
+    assert set(body) == {"ok", "library"}
+    assert _ids(body) == ["aaa", "bbb", "ccc"]
+    # à l'identique : id, nom, titres et leurs dates, dates de la playlist
+    assert body["library"]["playlists"][1] == snap
+    assert json.loads(fr.kv[KEY])["playlists"][1] == snap
+
+
+def test_restore_is_idempotent_when_the_id_is_already_there(logged_client, fr):
+    pid = create(logged_client, "Bal", tracks=[yt(1)])
+    snap = _snapshot(logged_client, pid)
+    ok(post(logged_client, "/library/playlists/delete", {"id": pid}))
+    ok(post(logged_client, "/library/playlists/restore", {"playlist": snap, "index": 0}))
+    # restaurée ailleurs entre-temps, puis renommée : rejouer ne change rien, ni n'écrase
+    ok(post(logged_client, "/library/playlists/rename", {"id": pid, "name": "Veillée"}))
+    stored_before = fr.kv[KEY]
+    writes = fr.commands().count("EXEC")
+    body = ok(post(logged_client, "/library/playlists/restore", {"playlist": snap, "index": 0}))
+    assert [(p["id"], p["name"]) for p in body["library"]["playlists"]] == [(pid, "Veillée")]
+    assert fr.kv[KEY] == stored_before and fr.commands().count("EXEC") == writes
+
+
+@pytest.mark.parametrize("index,ids", [
+    (0, ["back", "aaa", "bbb"]), (2, ["aaa", "bbb", "back"]), (99, ["aaa", "bbb", "back"]),
+    (-5, ["back", "aaa", "bbb"]), (None, ["aaa", "bbb", "back"]), ("absent", ["aaa", "bbb", "back"]),
+])
+def test_restore_index_is_clamped_and_defaults_to_the_end(logged_client, fr, index, ids):
+    seed(fr, playlists=[{"id": p, "name": p, "tracks": [], "created_at": 1, "updated_at": 1} for p in ("aaa", "bbb")])
+    body = {"playlist": {"id": "back", "name": "Revenue", "tracks": [yt(1)]}}
+    if index != "absent":
+        body["index"] = index
+    assert _ids(ok(post(logged_client, "/library/playlists/restore", body))) == ids
+
+
+def test_restore_cleans_like_a_creation(logged_client, fr):
+    tracks = [yt(1), {"url": "https://youtu.be/vid00000001"}] + [yt(i) for i in range(2, 252)]
+    body = ok(post(logged_client, "/library/playlists/restore", {
+        "playlist": {"id": "back", "name": "  Les grands\nairs ", "tracks": tracks,
+                     "created_at": 9_999_999_999, "updated_at": "hier"}, "index": 0}))
+    [pl] = body["library"]["playlists"]
+    assert pl["name"] == "Les grands airs" and len(pl["tracks"]) == 200
+    assert pl["tracks"][0]["url"] == yt(1)["url"] and pl["tracks"][1]["url"] == yt(2)["url"]
+    # dates impossibles (futur, texte) : maintenant
+    assert pl["created_at"] == pl["updated_at"] and 1_600_000_000 < pl["created_at"] < 9_999_999_999
+    assert set(pl) == {"id", "name", "tracks", "created_at", "updated_at"}
+
+
+@pytest.mark.parametrize("body,status,code", [
+    ({}, 400, "INVALID_REQUEST"),
+    ({"playlist": None}, 400, "INVALID_REQUEST"),
+    ({"playlist": "back"}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"name": "Bal"}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "tmp:1", "name": "Bal"}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "../etc", "name": "Bal"}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "x" * 65, "name": "Bal"}}, 400, "INVALID_REQUEST"),
+    # « \n » final : « $ » de re.match l'accepterait, et l'id stocké sortirait de l'alphabet promis
+    ({"playlist": {"id": "back\n", "name": "Bal"}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "back"}}, 400, "INVALID_NAME"),
+    ({"playlist": {"id": "back", "name": "x" * 61}}, 400, "INVALID_NAME"),
+    ({"playlist": {"id": "back", "name": "Bal", "tracks": {"url": "https://x.y"}}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "back", "name": "Bal", "tracks": [yt(i) for i in range(501)]}}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "back", "name": "Bal", "tracks": [yt(0), {"url": "ftp://x"}]}}, 400, "INVALID_TRACK"),
+    ({"playlist": {"id": "back", "name": "Bal"}, "index": "1"}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "back", "name": "Bal"}, "index": True}, 400, "INVALID_REQUEST"),
+    ({"playlist": {"id": "back", "name": "Bal"}, "index": 1.5}, 400, "INVALID_REQUEST"),
+])
+def test_invalid_restore_is_400_before_any_redis_access(logged_client, fr, body, status, code):
+    r = err(post(logged_client, "/library/playlists/restore", body), status, code)
+    if code == "INVALID_TRACK":
+        assert r["index"] == 1
+    assert fr.log == []
+
+
+def test_restore_playlist_limit_is_409_but_an_existing_id_still_succeeds(logged_client, fr):
+    seed(fr, playlists=[{"id": f"p{i}", "name": f"P{i}", "tracks": [], "created_at": 1, "updated_at": 1}
+                        for i in range(50)])
+    body = err(post(logged_client, "/library/playlists/restore", {"playlist": {"id": "back", "name": "Bal"}}),
+               409, "LIMIT_REACHED")
+    assert body["limit"] == "playlists"
+    ok(post(logged_client, "/library/playlists/restore", {"playlist": {"id": "p7", "name": "P7"}, "index": 0}))
+
+
+def test_restore_over_the_byte_budget_is_409_size(logged_client, fr, monkeypatch):
+    pid = create(logged_client, "Bal", tracks=[yt(1)])
+    snap = _snapshot(logged_client, pid)
+    ok(post(logged_client, "/library/playlists/delete", {"id": pid}))
+    monkeypatch.setattr(store, "MAX_LIBRARY_BYTES", 10)
+    body = err(post(logged_client, "/library/playlists/restore", {"playlist": snap, "index": 0}), 409, "LIMIT_REACHED")
+    assert body["limit"] == "size"
+    assert json.loads(fr.kv[KEY])["playlists"] == []
+
+
+def test_restore_is_per_king(app, logged_client, login, fr):
+    other = login(app.test_client(), 888)
+    pid = create(logged_client, "À moi", tracks=[yt(1)])
+    snap = _snapshot(logged_client, pid)
+    # l'autre Roi qui rejoue l'instantané le restaure chez lui, jamais chez le premier
+    ok(post(other, "/library/playlists/restore", {"playlist": snap, "index": 0}))
+    assert [p["id"] for p in ok(other.get(f"{BASE}/library"))["library"]["playlists"]] == [pid]
+    assert len(json.loads(fr.kv[KEY])["playlists"]) == 1
 
 
 # ── Corps invalides : 400, jamais 500 ──

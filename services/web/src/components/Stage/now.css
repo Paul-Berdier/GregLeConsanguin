@@ -41,11 +41,13 @@
   font: 600 var(--title-size)/1.08 var(--f-title); letter-spacing: -.015em; color: var(--os);
 }
 .meta-slot { display: grid; margin: 4px 0 0; min-height: 22px; font-size: 15.5px; color: var(--cendre); }
-/* la ligne du demandeur porte au bout le cœur du Roi et « Ajouter à une playlist » (Library/) : 30 px de haut, avec ou
-   sans titre (les boutons, cachés, gardent leur place : la mise en page de la scène n'en dépend pas) */
-.now-meta { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 4px; }
-.now-meta > .meta-slot { flex: 0 1 auto; min-width: 0; margin: 0; }
-.now-acts { display: flex; align-items: center; gap: 2px; flex: none; }
+/* le surtitre porte au bout le cœur du Roi et « Ajouter à une playlist » (Library/), à la place de la fin de la réplique :
+   les boutons débordent de ses 18 px (marges négatives), sa hauteur et la mise en page de la scène ne bougent pas. Ils
+   reprennent la police du corps : le menu des playlists ne doit pas hériter des capitales espacées du surtitre. */
+.now-acts {
+  display: flex; align-items: center; gap: 2px; flex: none; align-self: center; margin: -6px -6px -6px auto;
+  font: 400 15.5px/1.42 var(--f-ui); letter-spacing: normal; text-transform: none; color: var(--os);
+}
 .now-acts[data-shown=false] { visibility: hidden; }
 .nbtn {
   width: 30px; height: 30px; border-radius: 7px; corner-shape: bevel; display: grid; place-items: center; color: var(--cendre);
@@ -60,7 +62,7 @@
 .nbtn[aria-pressed=true] { color: rgb(var(--lumiere-rgb)); }
 .nbtn[aria-pressed=true] svg { fill: currentColor; }
 .nbtn[aria-expanded=true] { background: var(--voute); color: var(--os); }
-@media (hover: none) { .nbtn { width: 40px; height: 40px; } }
+@media (hover: none) { .nbtn { width: 40px; height: 40px; } .now-acts { margin-block: -11px; } }
 /* légendes croisées : l'ancienne (aria-hidden) sort pendant que la nouvelle entre, sur la même case */
 .title-slot > .line, .meta-slot > .line { grid-area: 1 / 1; min-width: 0; }
 .title-slot > .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

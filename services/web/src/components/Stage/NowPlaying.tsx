@@ -63,27 +63,28 @@ export default function NowPlaying() {
         <span className="eq" aria-hidden="true"><i/><i/><i/></span>
         <span className="kk">{t(kickerKey({ paused, repeat }))}</span>
         {q && <span className="kq quip" aria-hidden="true">— {q}</span>}
-      </>}</div>
-      <h2 className="title-slot" id={NOW_TITLE_ID} title={current?.title} ref={titleRef}>
-        <Swap k={key} plan={plan} delay={plan?.titleDelay ?? 0}>{song}</Swap>
-      </h2>
-      <div className="now-meta">
-        <p className="meta-slot">
-          <Swap k={key} plan={plan} delay={plan?.metaDelay ?? 0}>
-            {parsed?.artist && <><span className="artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
-            {req && keys && <span className="by">
-              {req.kind === 'mine' && <img className="seal" src={kingSealSrc(kingName(me))} alt="" width={20} height={20} decoding="async"/>}
-              {/* le demandeur cède sa place en points de suspension (now.css) : l'artiste n'est plus réduit à une lettre */}
-              <span className="by-txt">{t(keys.plain, vars)}</span>
-            </span>}
-          </Swap>
-        </p>
-        {/* le cœur du Roi et « Ajouter à une playlist » (Library/) : toujours rendus, cachés sans titre (hauteur gardée) */}
+      </>}
+        {/* le cœur du Roi et « Ajouter à une playlist » (Library/) au bout du surtitre : ils n'y prennent que la place de
+            la réplique, le titre et la ligne du demandeur gardent toute la largeur (1366 × 657 : la colonne fait 237 px).
+            Toujours rendus, cachés sans titre ; le surtitre garde sa hauteur (now.css). */}
         <div className="now-acts" data-shown={!!current && !!me}>
           <LikeButton track={current}/>
           <AddToPlaylist track={current}/>
         </div>
       </div>
+      <h2 className="title-slot" id={NOW_TITLE_ID} title={current?.title} ref={titleRef}>
+        <Swap k={key} plan={plan} delay={plan?.titleDelay ?? 0}>{song}</Swap>
+      </h2>
+      <p className="meta-slot">
+        <Swap k={key} plan={plan} delay={plan?.metaDelay ?? 0}>
+          {parsed?.artist && <><span className="artist">{parsed.artist}</span><span className="dot-sep" aria-hidden="true"/></>}
+          {req && keys && <span className="by">
+            {req.kind === 'mine' && <img className="seal" src={kingSealSrc(kingName(me))} alt="" width={20} height={20} decoding="async"/>}
+            {/* le demandeur cède sa place en points de suspension (now.css) : l'artiste n'est plus réduit à une lettre */}
+            <span className="by-txt">{t(keys.plain, vars)}</span>
+          </span>}
+        </Swap>
+      </p>
     </div>
   );
 }

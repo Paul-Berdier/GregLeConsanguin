@@ -135,6 +135,8 @@ export const EXTRA = {
     error: {
       STORAGE_UNAVAILABLE: { text: 'Le chansonnier est indisponible pour l’instant. Réessayez dans un instant.' },
       PLAYLIST_NOT_FOUND: { text: 'Cette playlist n’existe plus.' },
+      // déplacement refusé par l'API (409 STALE) : la copie du site était dépassée, la vue revient et le chansonnier est relu
+      STALE: { text: 'Cette playlist a changé ailleurs entre-temps : rien n’a bougé, elle vient d’être relue.' },
       INVALID_NAME: { text: 'Le nom d’une playlist compte de 1 à {n} caractères.' },
       INVALID_TRACK: { text: 'Ce titre n’a pas de lien que le chansonnier sache garder.' },
       limitLikes: { text: 'Vous avez atteint le plafond de {n} coups de cœur. Retirez-en un pour en garder un autre.' },

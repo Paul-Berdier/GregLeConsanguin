@@ -105,6 +105,9 @@
   .row .card { grid-template-columns: 24px 64px minmax(0, 1fr) auto; }
   .thumb { width: 64px; }
 }
+/* très petit téléphone (320 px) : le cœur de la ligne cède sa place au titre (46 → 78 px) ; on aime le titre en cours
+   (sous le portail), depuis l'historique ou le chansonnier */
+@media (hover: none) and (max-width: 360px) { .act.like { display: none; } }
 
 /* glisser */
 .row.dragging { z-index: 20; }
