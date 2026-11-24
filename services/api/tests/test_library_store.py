@@ -323,7 +323,7 @@ def test_clean_name_refuses(raw):
     assert ei.value.code == "INVALID_NAME" and ei.value.status == 400
 
 
-@pytest.mark.parametrize("raw", [None, 3, "", "a/b", "a:b", "../etc", "x" * 65, "é"])
+@pytest.mark.parametrize("raw", [None, 3, "", "a/b", "a:b", "../etc", "x" * 65, "é", "abc\n", "x" * 64 + "\n"])
 def test_clean_playlist_id_refuses(raw):
     with pytest.raises(LibraryError) as ei:
         store.clean_playlist_id(raw)
@@ -677,7 +677,7 @@ def test_op_create_playlist_dedupes_caps_and_avoids_id_collisions():
 def test_op_create_playlist_default_id_is_token_urlsafe_8():
     st = _state()
     _, extra = store.op_create_playlist("Bal", [], 1)(st)
-    assert store._PLAYLIST_ID_RE.match(extra["playlist_id"]) and len(extra["playlist_id"]) == 11
+    assert store._PLAYLIST_ID_RE.fullmatch(extra["playlist_id"]) and len(extra["playlist_id"]) == 11
 
 
 def test_op_create_playlist_limit():

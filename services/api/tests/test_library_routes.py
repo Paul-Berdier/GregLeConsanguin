@@ -476,6 +476,8 @@ def test_restore_cleans_like_a_creation(logged_client, fr):
     ({"playlist": {"id": "tmp:1", "name": "Bal"}}, 400, "INVALID_REQUEST"),
     ({"playlist": {"id": "../etc", "name": "Bal"}}, 400, "INVALID_REQUEST"),
     ({"playlist": {"id": "x" * 65, "name": "Bal"}}, 400, "INVALID_REQUEST"),
+    # « \n » final : « $ » de re.match l'accepterait, et l'id stocké sortirait de l'alphabet promis
+    ({"playlist": {"id": "back\n", "name": "Bal"}}, 400, "INVALID_REQUEST"),
     ({"playlist": {"id": "back"}}, 400, "INVALID_NAME"),
     ({"playlist": {"id": "back", "name": "x" * 61}}, 400, "INVALID_NAME"),
     ({"playlist": {"id": "back", "name": "Bal", "tracks": {"url": "https://x.y"}}}, 400, "INVALID_REQUEST"),

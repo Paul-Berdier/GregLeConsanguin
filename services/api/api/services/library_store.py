@@ -76,7 +76,9 @@ MSG_STORAGE_BUSY = "Le chansonnier est modifié ailleurs en même temps : réess
 MSG_STALE = "Cette playlist a changé ailleurs entre-temps : rien n'a été déplacé, relisez-la."
 
 # id de playlist : alphabet de token_urlsafe, longueur bornée (jamais de « : » ni de « / » dans une requête).
-_PLAYLIST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Lu par fullmatch : « $ » de re.match accepte un « \n » final, qu'une restauration (id choisi par le site)
+# stockerait alors tel quel.
+_PLAYLIST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Mêmes formes que VIDEO_ID / YOUTUBE_HOST du site (services/web/src/lib/format.ts) : ?v=, /shorts/, /live/,
 # /embed/ (sauf videoseries), youtu.be/, anciennes formes /v/ /e/ /watch/ ; hôtes youtube.com (www., m.,
 # music.…), youtu.be, youtube-nocookie.com.
@@ -339,7 +341,7 @@ def clean_label(raw: Any) -> str | None:
 
 
 def clean_playlist_id(raw: Any) -> str:
-    if not isinstance(raw, str) or not _PLAYLIST_ID_RE.match(raw):
+    if not isinstance(raw, str) or not _PLAYLIST_ID_RE.fullmatch(raw):
         raise _invalid()
     return raw
 
