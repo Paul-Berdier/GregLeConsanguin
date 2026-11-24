@@ -66,7 +66,9 @@ def get_library():
 @bp.post("/library/likes/add")
 @require_session_user
 def likes_add():
-    return _mutate(lambda b, now: store.op_add_like(store.clean_track(b.get("track"), now)))
+    # `index` facultatif (annulation d'un retrait : le titre revient à son rang) ; absent, en tête.
+    return _mutate(lambda b, now: store.op_add_like(store.clean_track(b.get("track"), now),
+                                                    store.clean_position(b.get("index"))))
 
 
 @bp.post("/library/likes/remove")
@@ -88,6 +90,19 @@ def _create(b: dict[str, Any], now: int) -> store.Op:
 @require_session_user
 def playlists_create():
     return _mutate(_create)
+
+
+def _restore(b: dict[str, Any], now: int) -> store.Op:
+    return store.op_restore_playlist(store.clean_restored_playlist(b.get("playlist"), now),
+                                     store.clean_position(b.get("index")))
+
+
+@bp.post("/library/playlists/restore")
+@require_session_user
+def playlists_restore():
+    """Annulation d'une suppression : {playlist: {id, name, tracks, created_at, updated_at}, index} la remet à
+    son rang, sous son id ; déjà là → succès sans changement."""
+    return _mutate(_restore)
 
 
 @bp.post("/library/playlists/rename")
@@ -124,9 +139,15 @@ def playlists_remove():
         store.clean_playlist_id(b.get("id")), store.clean_url_ref(b.get("url")), now))
 
 
+def _move(b: dict[str, Any], now: int) -> store.Op:
+    # `url` facultatif : le titre attendu au rang src (409 STALE si la copie du site est dépassée).
+    url = b.get("url")
+    return store.op_move_track(
+        store.clean_playlist_id(b.get("id")), store.clean_index(b.get("src")), store.clean_index(b.get("dst")),
+        now, None if url is None else store.clean_url_ref(url))
+
+
 @bp.post("/library/playlists/move")
 @require_session_user
 def playlists_move():
-    return _mutate(lambda b, now: store.op_move_track(
-        store.clean_playlist_id(b.get("id")), store.clean_index(b.get("src")), store.clean_index(b.get("dst")),
-        now))
+    return _mutate(_move)

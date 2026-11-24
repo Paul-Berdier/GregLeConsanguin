@@ -337,6 +337,65 @@ def test_clean_index_refuses(raw):
     assert ei.value.code == "INVALID_REQUEST"
 
 
+def test_clean_position_is_optional_and_left_to_the_operation_to_clamp():
+    assert store.clean_position(None) is None
+    for raw in (0, 3, -2, 10 ** 30):
+        assert store.clean_position(raw) == raw
+
+
+@pytest.mark.parametrize("raw", [True, False, "1", 1.0, [1], {"i": 1}])
+def test_clean_position_refuses(raw):
+    with pytest.raises(LibraryError) as ei:
+        store.clean_position(raw)
+    assert ei.value.code == "INVALID_REQUEST" and ei.value.status == 400
+
+
+# ─────────────────────────── playlist restaurée ───────────────────────────
+
+def test_clean_restored_playlist_keeps_id_and_dates_and_cleans_like_a_creation():
+    raw = {"id": "Ab3_x-Yz9Q0", "name": "  Les grands\nairs ", "created_at": 1000, "updated_at": 2000,
+           "tracks": [yt(1, added_at=500), {"url": "https://youtu.be/vid00000001", "added_at": 1},
+                      yt(2, added_at=9_999_999_999), yt(3), yt(4, added_at="hier"), yt(5, added_at=True),
+                      yt(6, added_at=-1)],
+           "extra": "ignoré"}
+    pl = store.clean_restored_playlist(raw, 5000)
+    assert set(pl) == {"id", "name", "tracks", "created_at", "updated_at"}
+    assert (pl["id"], pl["name"], pl["created_at"], pl["updated_at"]) == ("Ab3_x-Yz9Q0", "Les grands airs", 1000, 2000)
+    # doublon (autre forme de la vidéo 1) écarté ; date d'origine gardée, sinon maintenant (futur, texte, booléen…)
+    assert [(t["title"], t["added_at"]) for t in pl["tracks"]] == [
+        ("Titre 1", 500), ("Titre 2", 5000), ("Titre 3", 5000), ("Titre 4", 5000), ("Titre 5", 5000),
+        ("Titre 6", 5000)]
+    assert set(pl["tracks"][0]) == {"url", "title", "artist", "duration", "thumb", "provider", "added_at"}
+
+
+def test_clean_restored_playlist_defaults_and_caps():
+    pl = store.clean_restored_playlist({"id": "p1", "name": "Bal"}, 77)
+    assert pl == {"id": "p1", "name": "Bal", "tracks": [], "created_at": 77, "updated_at": 77}
+    for bad in (-1, 78, "1", 1.5, True, None):
+        assert store.clean_restored_playlist({"id": "p1", "name": "Bal", "created_at": bad}, 77)["created_at"] == 77
+    assert store.clean_restored_playlist({"id": "p1", "name": "Bal", "created_at": 0}, 77)["created_at"] == 0
+    full = store.clean_restored_playlist({"id": "p1", "name": "Bal", "tracks": [yt(i) for i in range(250)]}, 1)
+    assert len(full["tracks"]) == store.LIMIT_TRACKS
+
+
+@pytest.mark.parametrize("raw,code", [
+    (None, "INVALID_REQUEST"), ("p1", "INVALID_REQUEST"), ([{"id": "p1"}], "INVALID_REQUEST"),
+    ({"name": "Bal"}, "INVALID_REQUEST"), ({"id": "tmp:1", "name": "Bal"}, "INVALID_REQUEST"),
+    ({"id": "a/b", "name": "Bal"}, "INVALID_REQUEST"), ({"id": "x" * 65, "name": "Bal"}, "INVALID_REQUEST"),
+    ({"id": "p1"}, "INVALID_NAME"), ({"id": "p1", "name": "  "}, "INVALID_NAME"),
+    ({"id": "p1", "name": "x" * 61}, "INVALID_NAME"),
+    ({"id": "p1", "name": "Bal", "tracks": {"url": "https://x.y"}}, "INVALID_REQUEST"),
+    ({"id": "p1", "name": "Bal", "tracks": [yt(i) for i in range(store.MAX_INPUT_TRACKS + 1)]}, "INVALID_REQUEST"),
+    ({"id": "p1", "name": "Bal", "tracks": [yt(0), {"url": "ftp://x"}]}, "INVALID_TRACK"),
+])
+def test_clean_restored_playlist_refuses(raw, code):
+    with pytest.raises(LibraryError) as ei:
+        store.clean_restored_playlist(raw, 1)
+    assert ei.value.code == code and ei.value.status == 400
+    if code == "INVALID_TRACK":
+        assert ei.value.extra == {"index": 1}
+
+
 def test_clean_label():
     assert store.clean_label(None) is None
     assert store.clean_label("   ") is None
@@ -658,3 +717,81 @@ def test_op_remove_track_by_identity():
     assert [t["title"] for t in st["playlists"][0]["tracks"]] == ["Titre 0", "Titre 2"]
     assert store.op_remove_track("p", "https://youtu.be/vid00000001", 6)(st) == (False, {})
     assert st["playlists"][0]["updated_at"] == 5
+
+
+def test_op_add_like_index_puts_it_back_at_its_rank_clamped():
+    st = _state([store.clean_track(yt(i)) for i in (3, 1)])
+    assert store.op_add_like(store.clean_track(yt(2)), 1)(st) == (True, {})
+    assert [t["title"] for t in st["likes"]] == ["Titre 3", "Titre 2", "Titre 1"]
+    assert store.op_add_like(store.clean_track(yt(9)), 99)(st) == (True, {})
+    assert st["likes"][-1]["title"] == "Titre 9"
+    # négatif : en tête (list.insert le lirait depuis la fin)
+    assert store.op_add_like(store.clean_track(yt(8)), -1)(st) == (True, {})
+    assert st["likes"][0]["title"] == "Titre 8"
+    assert store.op_add_like(store.clean_track(yt(7)), None)(st) == (True, {})
+    assert st["likes"][0]["title"] == "Titre 7"
+    # déjà aimé : ne bouge pas, quel que soit le rang demandé
+    assert store.op_add_like(store.clean_track(yt(9)), 0)(st) == (False, {})
+    assert st["likes"][-1]["title"] == "Titre 9"
+
+
+def _restored(pid="back", n=2, start=100):
+    raw = {"id": pid, "name": "Revenue", "created_at": 10, "updated_at": 20,
+           "tracks": [yt(start + i, added_at=5) for i in range(n)]}
+    return store.clean_restored_playlist(raw, 1000)
+
+
+def test_op_restore_playlist_back_at_its_rank_clamped():
+    for index, ids in ((1, ["a", "back", "b", "c"]), (0, ["back", "a", "b", "c"]), (3, ["a", "b", "c", "back"]),
+                       (99, ["a", "b", "c", "back"]), (-4, ["back", "a", "b", "c"]), (None, ["a", "b", "c", "back"])):
+        st = _state(playlists=[_pl("a"), _pl("b"), _pl("c")])
+        assert store.op_restore_playlist(_restored(), index)(st) == (True, {}), index
+        assert [p["id"] for p in st["playlists"]] == ids, index
+    back = st["playlists"][-1]
+    assert (back["name"], back["created_at"], back["updated_at"]) == ("Revenue", 10, 20)
+    assert [t["added_at"] for t in back["tracks"]] == [5, 5]
+
+
+def test_op_restore_playlist_is_idempotent_by_id_even_at_the_limit():
+    st = _state(playlists=[_pl("a"), _pl("back", n=1)])
+    before = json.loads(json.dumps(st))
+    assert store.op_restore_playlist(_restored(), 0)(st) == (False, {})
+    assert st == before  # l'existante (déjà restaurée ailleurs, puis modifiée) n'est pas écrasée
+    full = _state(playlists=[_pl(f"p{i}") for i in range(store.LIMIT_PLAYLISTS - 1)] + [_pl("back")])
+    assert store.op_restore_playlist(_restored(), 0)(full) == (False, {})
+
+
+def test_op_restore_playlist_limit():
+    st = _state(playlists=[_pl(f"p{i}") for i in range(store.LIMIT_PLAYLISTS)])
+    with pytest.raises(LibraryError) as ei:
+        store.op_restore_playlist(_restored(), 0)(st)
+    assert ei.value.code == "LIMIT_REACHED" and ei.value.status == 409 and ei.value.extra == {"limit": "playlists"}
+    assert len(st["playlists"]) == store.LIMIT_PLAYLISTS
+
+
+def test_op_restore_playlist_can_be_replayed_on_a_fresh_state():
+    # WatchError : la même opération rejouée sur l'état relu ; les deux insertions ne partagent pas leur liste.
+    op = store.op_restore_playlist(_restored(), 0)
+    s1, s2 = _state(), _state()
+    op(s1)
+    op(s2)
+    s1["playlists"][0]["tracks"].pop()
+    assert len(s2["playlists"][0]["tracks"]) == 2
+
+
+def test_op_move_track_with_url_checks_the_identity_at_src():
+    st = _state(playlists=[_pl("p", n=4)])
+    # même vidéo sous une autre forme : c'est bien elle
+    assert store.op_move_track("p", 3, 0, 9, "https://youtu.be/vid00000003")(st) == (True, {})
+    assert [t["title"] for t in st["playlists"][0]["tracks"]] == ["Titre 3", "Titre 0", "Titre 1", "Titre 2"]
+    before = json.loads(json.dumps(st))
+    for src, dst, url in ((0, 2, yt(0)["url"]), (2, 2, yt(2)["url"]), (4, 0, yt(3)["url"]), (9, 9, yt(3)["url"])):
+        with pytest.raises(LibraryError) as ei:
+            store.op_move_track("p", src, dst, 10, url)(st)
+        assert ei.value.code == "STALE" and ei.value.status == 409 and ei.value.message == store.MSG_STALE
+    assert st == before  # rien n'a bougé, updated_at compris
+    # bon titre, destination hors de la playlist : 400 comme sans url
+    with pytest.raises(LibraryError) as ei:
+        store.op_move_track("p", 0, 4, 10, yt(3)["url"])(st)
+    assert ei.value.code == "INVALID_REQUEST"
+    assert store.op_move_track("p", 1, 1, 10, yt(0)["url"])(st) == (False, {})
