@@ -201,6 +201,38 @@ test('applyOp : ajout à la fin (doublons écartés, plafond), retrait, déplace
   assert.equal(applyOp(base, { kind: 'move', id: 'p1', url: tr('a').url, to: 0 }, NOW), base);
 });
 
+test('applyOp : coup de cœur remis à son rang (borné) ; playlist restaurée à sa place, sous son id et ses dates', () => {
+  const base = lib({ likes: [tr('a'), tr('c')], playlists: [pl('p1'), pl('p3')], limits: { ...DEFAULT_LIMITS, tracks: 2 } });
+  assert.deepEqual(urls(applyOp(base, { kind: 'like', track: tr('b'), at: 1 }, NOW).likes), ['a', 'b', 'c']);
+  for (const [at, want] of [[99, ['a', 'c', 'b']], [-2, ['b', 'a', 'c']], [NaN, ['b', 'a', 'c']], [Infinity, ['a', 'c', 'b']]]) {
+    assert.deepEqual(urls(applyOp(base, { kind: 'like', track: tr('b'), at }, NOW).likes), want, String(at));
+  }
+  assert.equal(applyOp(base, { kind: 'like', track: tr('c'), at: 0 }, NOW), base, 'déjà aimé : ne bouge pas');
+  const back = { kind: 'restore', id: 'p2', name: 'Revenue', tracks: [tr('x'), tr('x'), tr('y'), tr('z')], created_at: 10, updated_at: 20, at: 1 };
+  const r = applyOp(base, back, NOW);
+  assert.deepEqual(r.playlists.map((p) => p.id), ['p1', 'p2', 'p3']);
+  assert.deepEqual(r.playlists[1], { id: 'p2', name: 'Revenue', tracks: [tr('x'), tr('y')], created_at: 10, updated_at: 20 }, 'dédoublonnée, plafonnée, ses dates');
+  assert.equal(r.playlists[0], base.playlists[0], 'les autres gardent leur référence');
+  assert.deepEqual(applyOp(base, { ...back, at: 99 }, NOW).playlists.map((p) => p.id), ['p1', 'p3', 'p2']);
+  assert.deepEqual(applyOp(base, { ...back, at: -1 }, NOW).playlists.map((p) => p.id), ['p2', 'p1', 'p3']);
+  assert.equal(applyOp(r, back, NOW), r, 'rejouée : rien de plus');
+  const full = lib({ playlists: [pl('p1')], limits: { ...DEFAULT_LIMITS, playlists: 1 } });
+  assert.equal(applyOp(full, back, NOW), full, 'plafond de playlists');
+});
+
+test('checkOp / noticeOf : une restauration se vérifie comme une création ; déjà là, rien à faire', () => {
+  const base = lib({ playlists: [pl('p1', [], 'Taverne')], limits: { ...DEFAULT_LIMITS, playlists: 1, name: 10 } });
+  const back = { kind: 'restore', id: 'p2', name: 'Revenue', tracks: [], created_at: 1, updated_at: 1, at: 0 };
+  assert.deepEqual(checkOp(base, back), { code: 'LIMIT_REACHED', limit: 'playlists' });
+  assert.deepEqual(checkOp(base, { ...back, id: 'p1' }), { code: 'NOOP' }, 'déjà là, même au plafond');
+  assert.deepEqual(checkOp(lib(), { ...back, name: 'x'.repeat(61) }), { code: 'INVALID_NAME' });
+  assert.equal(checkOp(lib(), back), null);
+  assert.deepEqual(noticeOf('LIMIT_REACHED', back, base), { key: 'library.error.limitPlaylists', vars: { n: 1 }, kind: 'warn' });
+  assert.deepEqual(noticeOf('LIMIT_REACHED', back, base, 'size'), { key: 'library.error.limitSize', kind: 'warn' });
+  // déplacement compté sur une copie dépassée : son propre message
+  assert.deepEqual(noticeOf('STALE', { kind: 'move', id: 'p1', url: tr('a').url, to: 0 }, base), { key: 'library.error.STALE', kind: 'warn' });
+});
+
 test('checkOp : refus prévus sans appeler l’API', () => {
   const base = lib({ likes: [tr('a')], playlists: [pl('p1', [tr('a')])], limits: { likes: 1, playlists: 1, tracks: 1, name: 10 } });
   assert.deepEqual(checkOp(base, { kind: 'like', track: tr('b') }), { code: 'LIMIT_REACHED', limit: 'likes' });
@@ -412,6 +444,51 @@ test('moteur : création refusée, ce qui l’attendait tombe avec elle (un seul
   assert.equal(await a, false);
   assert.equal(fails.length, 1);
   assert.equal(findPlaylist(engine.view(), 'tmp:1'), null);
+  await settle();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].op.kind, 'like', 'le reste continue');
+  sent[1].resolve(reply({ likes: [tr('z')], playlists: [] }));
+  assert.equal(await other, true);
+});
+
+const RESTORE = { kind: 'restore', id: 'p2', name: 'Revenue', tracks: [tr('a')], created_at: 10, updated_at: 20, at: 1 };
+
+test('moteur : une restauration garde son id ; seule une réponse playlist_id (création de repli) lui en donne un autre', async () => {
+  const { engine, sent, aliases } = harness(lib({ playlists: [pl('p1'), pl('p3')] }));
+  const r = engine.dispatch(RESTORE);
+  assert.deepEqual(engine.view().playlists.map((p) => p.id), ['p1', 'p2', 'p3'], 'visible tout de suite, à sa place');
+  await settle();
+  // un autre onglet a créé une playlist entre-temps : elle ne passe pas pour la restaurée
+  sent[0].resolve(reply({ likes: [], playlists: [pl('p1'), pl('p2', [tr('a')], 'Revenue'), pl('p3'), pl('other')] }));
+  assert.equal(await r, true);
+  assert.deepEqual(aliases, [], 'son id reste le sien');
+  // API d'avant la route : sendOp l'a recréée, la réponse porte le nouvel id, que ce qui l'attendait suit
+  const h = harness(lib({ playlists: [pl('p1')] }));
+  const r2 = h.engine.dispatch({ ...RESTORE, id: 'old' });
+  const later = h.engine.dispatch({ kind: 'rename', id: 'old', name: 'Veillée' });
+  await settle();
+  h.sent[0].resolve({ ok: true, playlist_id: 'New42', library: { likes: [], playlists: [pl('p1'), pl('New42', [tr('a')], 'Revenue')] } });
+  assert.equal(await r2, true);
+  assert.deepEqual(h.aliases, [['old', 'New42']]);
+  assert.equal(h.engine.idOf('old'), 'New42');
+  assert.equal(h.engine.originOf('New42'), 'old', 'clé React stable');
+  await settle();
+  assert.equal(h.sent[1].op.id, 'New42');
+  h.sent[1].resolve(reply({ likes: [], playlists: [pl('p1'), pl('New42', [tr('a')], 'Veillée')] }));
+  assert.equal(await later, true);
+});
+
+test('moteur : restauration refusée (plafond), ce qui l’attendait tombe avec elle (un seul refus annoncé)', async () => {
+  const { engine, sent, fails } = harness();
+  const r = engine.dispatch(RESTORE);
+  const a = engine.dispatch({ kind: 'add', id: 'p2', tracks: [tr('b')] });
+  const other = engine.dispatch({ kind: 'like', track: tr('z') });
+  await settle();
+  sent[0].reject(Object.assign(new Error('x'), { status: 409, payload: { error: 'LIMIT_REACHED', limit: 'playlists' } }));
+  assert.equal(await r, false);
+  assert.equal(await a, false);
+  assert.equal(fails.length, 1);
+  assert.equal(findPlaylist(engine.view(), 'p2'), null, 'retour arrière');
   await settle();
   assert.equal(sent.length, 2);
   assert.equal(sent[1].op.kind, 'like', 'le reste continue');

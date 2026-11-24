@@ -31,6 +31,12 @@ test('chansonnier : chaque route, son corps, la session (credentials) et jamais 
     [() => api.playlistAdd('p1', [T]), 'POST', '/api/v1/library/playlists/add', { id: 'p1', tracks: [T] }],
     [() => api.playlistRemove('p1', T.url), 'POST', '/api/v1/library/playlists/remove', { id: 'p1', url: T.url }],
     [() => api.playlistMove('p1', 3, 0), 'POST', '/api/v1/library/playlists/move', { id: 'p1', src: 3, dst: 0 }],
+    // annulations à l'ancien rang, déplacement qui nomme son titre (copie dépassée : 409 STALE)
+    [() => api.libraryLike(T, 2), 'POST', '/api/v1/library/likes/add', { track: T, index: 2 }],
+    [() => api.libraryLike(T, 0), 'POST', '/api/v1/library/likes/add', { track: T, index: 0 }],
+    [() => api.playlistRestore({ id: 'p1', name: 'Taverne', tracks: [T], created_at: 10, updated_at: 20 }, 3), 'POST',
+      '/api/v1/library/playlists/restore', { playlist: { id: 'p1', name: 'Taverne', tracks: [T], created_at: 10, updated_at: 20 }, index: 3 }],
+    [() => api.playlistMove('p1', 3, 0, T.url), 'POST', '/api/v1/library/playlists/move', { id: 'p1', src: 3, dst: 0, url: T.url }],
   ];
   for (const [fn, method, path, body] of cases) {
     const { calls } = await capture(fn);
@@ -59,6 +65,11 @@ test('chansonnier : un refus de l’API garde son code (LIMIT_REACHED, STORAGE_U
     await assert.rejects(api.libraryLike(T), (e) => e.status === 409 && e.payload.error === 'LIMIT_REACHED');
     globalThis.fetch = reply(503, { ok: false, error: 'STORAGE_UNAVAILABLE' });
     await assert.rejects(api.getLibrary(), (e) => e.status === 503 && e.payload.error === 'STORAGE_UNAVAILABLE');
+    globalThis.fetch = reply(409, { ok: false, error: 'STALE', message: 'Cette playlist a changé ailleurs.' });
+    await assert.rejects(api.playlistMove('p1', 1, 0, T.url), (e) => e.status === 409 && e.payload.error === 'STALE');
+    // API d'avant la route de restauration : le 404 générique de Flask (errors.py), que sendOp distingue d'une playlist disparue
+    globalThis.fetch = reply(404, { ok: false, error: 'not_found' });
+    await assert.rejects(api.playlistRestore({ id: 'p1', name: 'X', tracks: [] }, 0), (e) => e.status === 404 && e.payload.error === 'not_found');
     assert.equal(seen.length, 0);
     globalThis.fetch = reply(401, { ok: false, error: 'NOT_AUTHENTICATED' });
     await assert.rejects(api.playlistDelete('p1'));
@@ -79,6 +90,10 @@ test('Héraut : les annonces du chansonnier sont des entrées { text } de copy.e
   const err = say('library.error.STORAGE_UNAVAILABLE', {}, 'err');
   assert.equal(err.kind, 'err');
   assert.equal(err.quip, null, 'pas de réplique dans EXTRA');
+  // 409 STALE d'un déplacement : typographie du deck (U+00A0 avant « : », apostrophe courbe)
+  const stale = say('library.error.STALE', {}, 'warn');
+  assert.equal(stale.fact, 'Cette playlist a changé ailleurs entre-temps : rien n’a bougé, elle vient d’être relue.');
+  assert.equal(stale.kind, 'warn');
   // toast de « Tout jouer » (usePlayer.enqueueMany) : la clé du deck (toast.playlistAdded) pour la sorte, ce texte pour le fait
   assert.equal(tx('library.toast.played.text', { n: 12, name: 'Coups de cœur' }), '12 titres ajoutés depuis « Coups de cœur »');
   assert.equal(tx('library.toast.played.text', { n: 1, name: 'X' }), '1 titre ajouté depuis « X »');

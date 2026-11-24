@@ -5,6 +5,7 @@
  * - titre du chansonnier tiré d'un titre de la file, de l'historique ou d'une recherche (toLibraryTrack), nettoyé comme l'API ;
  * - durées, recherche d'une playlist, plan d'un ajout (doublons écartés, plafond de 200 titres) ;
  * - application optimiste des modifications (applyOp) et refus prévus d'avance (checkOp), message du Héraut (noticeOf) ;
+ * - annulations à l'ancien rang (undoOf), appel de l'API de chaque modification (sendOp) ;
  * - moteur qui envoie les modifications une à une et revient en arrière quand l'API refuse (createLibraryEngine).
  */
 import type { Library, LibraryLimits, LibraryPlaylist, LibraryTrack } from './types';
@@ -155,11 +156,19 @@ export function moveIndices(tracks: readonly LibraryTrack[], url: string, to: nu
   return dst === src ? null : { src, dst };
 }
 
-/** Une modification du chansonnier, par identité de titre (jamais par rang : rejouable sur un état plus récent). */
+/** Rang d'insertion borné à [0, n] (NaN : 0, Infinity : n). */
+const clampAt = (i: number, n: number): number => Math.max(0, Math.min(n, Math.trunc(i) || 0));
+
+/**
+ * Une modification du chansonnier, par identité de titre (jamais par rang : rejouable sur un état plus récent). Seules
+ * les annulations portent un rang (`at`, borné par l'API comme ici) : le coup de cœur retiré, la playlist supprimée
+ * reviennent où ils étaient.
+ */
 export type LibraryOp =
-  | { kind: 'like'; track: LibraryTrack }
+  | { kind: 'like'; track: LibraryTrack; at?: number }
   | { kind: 'unlike'; url: string }
   | { kind: 'create'; id: string; name: string; tracks: LibraryTrack[] }
+  | { kind: 'restore'; id: string; name: string; tracks: LibraryTrack[]; created_at: number; updated_at: number; at: number }
   | { kind: 'rename'; id: string; name: string }
   | { kind: 'delete'; id: string }
   | { kind: 'add'; id: string; tracks: LibraryTrack[] }
@@ -179,7 +188,8 @@ function withPlaylist(lib: Library, id: string, fn: (p: LibraryPlaylist) => Libr
 /**
  * Applique une modification comme l'API le fera (vue optimiste). Idempotente : la rejouer sur un état qui la contient
  * déjà ne change rien, et le même objet revient quand rien ne change (le reste du chansonnier garde ses références).
- * Cœur : en tête, sans doublon, plafonné. Création : à la fin, titres dédoublonnés et plafonnés. Ajout : à la fin.
+ * Cœur : en tête (ou au rang `at`), sans doublon, plafonné. Création : à la fin, titres dédoublonnés et plafonnés.
+ * Restauration : au rang `at`, sous son id et ses dates, sauf si cet id est déjà là. Ajout : à la fin.
  */
 export function applyOp(lib: Library, op: LibraryOp, nowMs: number): Library {
   const now = Math.floor(nowMs / 1000);
@@ -187,7 +197,17 @@ export function applyOp(lib: Library, op: LibraryOp, nowMs: number): Library {
     case 'like': {
       const k = trackKey(op.track.url);
       if (!k || lib.likes.length >= lib.limits.likes || lib.likes.some((t) => trackKey(t.url) === k)) return lib;
-      return { ...lib, likes: [op.track, ...lib.likes] };
+      const likes = lib.likes.slice();
+      likes.splice(clampAt(op.at ?? 0, likes.length), 0, op.track);
+      return { ...lib, likes };
+    }
+    case 'restore': {
+      if (findPlaylist(lib, op.id) || lib.playlists.length >= lib.limits.playlists) return lib;
+      const playlists = lib.playlists.slice();
+      playlists.splice(clampAt(op.at, playlists.length), 0, {
+        id: op.id, name: op.name, tracks: addPlan([], op.tracks, lib.limits.tracks).added, created_at: op.created_at, updated_at: op.updated_at,
+      });
+      return { ...lib, playlists };
     }
     case 'unlike': {
       const k = trackKey(op.url);
@@ -244,6 +264,9 @@ export function checkOp(lib: Library, op: LibraryOp): Refusal | null {
     case 'unlike':
       return has(lib.likes, op.url) ? null : { code: 'NOOP' };
     case 'create':
+    case 'restore':
+      // restaurée déjà là (par un autre onglet, relue depuis) : rien à faire ; sinon nom et plafond d'une création
+      if (op.kind === 'restore' && findPlaylist(lib, op.id)) return { code: 'NOOP' };
       if (!nameOk(op.name, limits.name)) return { code: 'INVALID_NAME' };
       return lib.playlists.length >= limits.playlists ? { code: 'LIMIT_REACHED', limit: 'playlists' } : null;
     default: {
@@ -293,13 +316,82 @@ export function noticeOf(code: string, op: LibraryOp, lib: Library | null | unde
       // budget d'octets du chansonnier entier (API, MAX_LIBRARY_BYTES) : ni un plafond de titres, ni de playlists
       if (limit === 'size') return { key: 'library.error.limitSize', kind: 'warn' };
       if (op.kind === 'like') return { key: 'library.error.limitLikes', vars: { n: limits.likes }, kind: 'warn' };
-      if (op.kind === 'create') return { key: 'library.error.limitPlaylists', vars: { n: limits.playlists }, kind: 'warn' };
+      if (op.kind === 'create' || op.kind === 'restore') return { key: 'library.error.limitPlaylists', vars: { n: limits.playlists }, kind: 'warn' };
       return { key: 'library.error.limitTracks', vars: { n: limits.tracks, name }, kind: 'warn' };
     case 'INVALID_NAME': return { key: 'library.error.INVALID_NAME', vars: { n: limits.name }, kind: 'warn' };
     case 'INVALID_TRACK': return { key: 'library.error.INVALID_TRACK', kind: 'warn' };
     case 'PLAYLIST_NOT_FOUND': return { key: 'library.error.PLAYLIST_NOT_FOUND', kind: 'warn' };
+    // déplacement compté sur une copie dépassée (réordonnée ailleurs) : l'API n'a rien bougé, le chansonnier est relu
+    case 'STALE': return { key: 'library.error.STALE', kind: 'warn' };
     case 'STORAGE_UNAVAILABLE': return { key: 'library.error.STORAGE_UNAVAILABLE', kind: 'err' };
     default: return null;
+  }
+}
+
+/** 404 sans code du chansonnier : la route manque (API plus ancienne que le site), pas une playlist disparue. */
+export function routeMissing(e: unknown): boolean {
+  return (e as { status?: unknown } | null)?.status === 404 && libraryCode(e) !== 'PLAYLIST_NOT_FOUND';
+}
+
+/**
+ * L'annulation de `op`, préparée sur le chansonnier `lib` d'avant lui : le coup de cœur retiré revient à son rang, la
+ * playlist supprimée revient à sa place, sous son id, avec ses titres et ses dates. null : rien à défaire (absent), ou
+ * une modification sans annulation de ce genre.
+ */
+export function undoOf(lib: Library | null | undefined, op: LibraryOp): LibraryOp | null {
+  if (!lib) return null;
+  if (op.kind === 'unlike') {
+    const k = trackKey(op.url);
+    const at = lib.likes.findIndex((t) => trackKey(t.url) === k);
+    return at < 0 ? null : { kind: 'like', track: lib.likes[at], at };
+  }
+  if (op.kind === 'delete') {
+    const at = lib.playlists.findIndex((p) => p.id === op.id);
+    const p = lib.playlists[at];
+    return p ? { kind: 'restore', id: p.id, name: p.name, tracks: p.tracks, created_at: p.created_at, updated_at: p.updated_at, at } : null;
+  }
+  return null;
+}
+
+/** Les routes du chansonnier qu'une modification emprunte (lib/api.ts). */
+export type LibraryApi = {
+  libraryLike: (track: Record<string, unknown>, index?: number) => Promise<unknown>;
+  libraryUnlike: (url: string) => Promise<unknown>;
+  playlistCreate: (name: string, tracks: readonly Record<string, unknown>[]) => Promise<unknown>;
+  playlistRestore: (playlist: Record<string, unknown>, index: number) => Promise<unknown>;
+  playlistRename: (id: string, name: string) => Promise<unknown>;
+  playlistDelete: (id: string) => Promise<unknown>;
+  playlistAdd: (id: string, tracks: readonly Record<string, unknown>[]) => Promise<unknown>;
+  playlistRemove: (id: string, url: string) => Promise<unknown>;
+  playlistMove: (id: string, src: number, dst: number, url?: string) => Promise<unknown>;
+};
+
+/**
+ * Une modification vers l'API (`send` du moteur). Un déplacement se compte sur `base`, le chansonnier confirmé, celui que
+ * l'API modifie, et nomme son titre : copie dépassée, l'API répond STALE sans rien bouger. Une restauration garde l'id,
+ * les dates et le rang ; une API d'avant sa route (404 sans code) recrée la playlist à la fin, sous un nouvel id que le
+ * moteur suit comme celui d'une création.
+ */
+export function sendOp(api: LibraryApi, op: LibraryOp, base: Library): Promise<unknown> {
+  switch (op.kind) {
+    case 'like': return api.libraryLike(wireTrack(op.track), op.at);
+    case 'unlike': return api.libraryUnlike(op.url);
+    case 'create': return api.playlistCreate(op.name, op.tracks.map(wireTrack));
+    case 'restore': {
+      const playlist = { id: op.id, name: op.name, tracks: op.tracks.map((t) => ({ ...wireTrack(t), added_at: t.added_at })), created_at: op.created_at, updated_at: op.updated_at };
+      return api.playlistRestore(playlist, op.at).catch((e: unknown) => {
+        if (!routeMissing(e)) throw e;
+        return api.playlistCreate(op.name, op.tracks.map(wireTrack));
+      });
+    }
+    case 'rename': return api.playlistRename(op.id, op.name);
+    case 'delete': return api.playlistDelete(op.id);
+    case 'add': return api.playlistAdd(op.id, op.tracks.map(wireTrack));
+    case 'remove': return api.playlistRemove(op.id, op.url);
+    case 'move': {
+      const mv = moveIndices(findPlaylist(base, op.id)?.tracks ?? [], op.url, op.to);
+      return mv ? api.playlistMove(op.id, mv.src, mv.dst, op.url) : Promise.resolve(null);
+    }
   }
 }
 
@@ -330,10 +422,15 @@ export function parseLibrary(payload: unknown, limits: LibraryLimits = DEFAULT_L
   };
 }
 
-/** Id de la playlist créée : `playlist_id` de la réponse, sinon celle qui n'était pas là avant. */
-function createdId(res: unknown, before: Library, after: Library): string | null {
+/**
+ * Id de la playlist créée : `playlist_id` de la réponse, sinon (`guess`) celle qui n'était pas là avant. Une restauration
+ * ne devine pas (une playlist créée entre-temps par un autre onglet passerait pour elle) : seule la création de repli
+ * (sendOp) répond un `playlist_id`.
+ */
+function createdId(res: unknown, before: Library, after: Library, guess = true): string | null {
   const id = (res as { playlist_id?: unknown } | null)?.playlist_id;
   if (typeof id === 'string' && id) return id;
+  if (!guess) return null;
   const known = new Set(before.playlists.map((p) => p.id));
   return after.playlists.find((p) => !known.has(p.id))?.id ?? null;
 }
@@ -356,7 +453,8 @@ type Pending = { op: LibraryOp; at: number; done: (ok: boolean) => void };
  * Modifications optimistes du chansonnier : la vue est `pending.reduce(applyOp, server)`. Une requête à la fois, dans
  * l'ordre (chaque réponse rend le chansonnier entier, la suivante part de lui) ; refusée, la modification est retirée et
  * la vue revient en arrière. Une création porte un id provisoire (TMP) : ce qui l'attend reçoit le vrai à sa réponse, et
- * tombe avec elle si elle est refusée. reset() (déconnexion) oublie tout ; une réponse arrivée après est ignorée.
+ * tombe avec elle si elle est refusée ; de même pour une restauration (son id, ou celui de la création de repli).
+ * reset() (déconnexion) oublie tout ; une réponse arrivée après est ignorée.
  */
 export function createLibraryEngine(o: LibraryEngineOptions) {
   let server: Library | null = null;
@@ -388,8 +486,8 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
       acks++;
       // réponse sans chansonnier lisible : la modification telle qu'appliquée devient l'état confirmé
       server = parseLibrary(res, base.limits) ?? applyOp(base, head.op, head.at);
-      if (head.op.kind === 'create') {
-        const tmp = head.op.id, id = createdId(res, base, server);
+      if (head.op.kind === 'create' || head.op.kind === 'restore') {
+        const tmp = head.op.id, id = createdId(res, base, server, head.op.kind === 'create');
         if (id && id !== tmp) {
           aliases.set(tmp, id);
           origins.set(id, tmp);
@@ -397,8 +495,8 @@ export function createLibraryEngine(o: LibraryEngineOptions) {
           o.onAlias?.(tmp, id);
         }
       }
-    } else if (head.op.kind === 'create') {
-      // la playlist n'existera pas : ce qui l'attendait tombe avec elle, sans autre annonce
+    } else if (head.op.kind === 'create' || head.op.kind === 'restore') {
+      // la playlist n'existera pas (ni créée, ni revenue) : ce qui l'attendait tombe avec elle, sans autre annonce
       const tmp = head.op.id;
       const orphans = pending.filter((p) => 'id' in p.op && p.op.id === tmp);
       pending = pending.filter((p) => !orphans.includes(p));
