@@ -3,6 +3,11 @@
 # discord.py 2.7 ajoute DAVE ; 2.7.1 tire `davey` via l'extra [voice] et lève une
 # erreur explicite s'il manque. En dessous : connexion vocale refusée (VOICE_CONNECT_FAILED).
 discord.py[voice]>=2.7.1,<3.0.0
+# davey 0.2 (2 novembre 2026) n'applique plus les nouvelles clés DAVE tant que discord.py n'appelle pas
+# prepare_transition / execute_transition, et discord.py 2.7.1 ne le fait pas : Greg joue mais personne ne
+# l'entend (Rapptz/discord.py#10549). [voice] tire « davey>=0.1.0 » sans borne haute, d'où cette ligne.
+# À relever avec le discord.py qui gère davey 0.2 (Rapptz/discord.py#10548) ; le build le vérifie (bot/voice_stack.py).
+davey>=0.1.7,<0.2
 redis>=5.0,<6.0
 python-dotenv>=1.0.1
 aiohttp>=3.10.5,<4.0

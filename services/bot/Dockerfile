@@ -77,6 +77,10 @@ RUN echo "yt-dlp refresh (commit=${RAILWAY_GIT_COMMIT_SHA:-local}, refresh=${YTD
 # ─────────────────────────────────────────────────────────────
 COPY services/bot/ .
 
+# discord.py et davey (chiffrement vocal DAVE) doivent aller ensemble : sinon Greg joue sans qu'on l'entende.
+# Build en échec plutôt qu'un bot muet (Railway garde alors le déploiement précédent).
+RUN python -m bot.voice_stack
+
 # Répertoires persistants
 RUN mkdir -p /app/playlists /app/data /app/history
 
