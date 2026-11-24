@@ -382,6 +382,7 @@ def test_clean_restored_playlist_defaults_and_caps():
     (None, "INVALID_REQUEST"), ("p1", "INVALID_REQUEST"), ([{"id": "p1"}], "INVALID_REQUEST"),
     ({"name": "Bal"}, "INVALID_REQUEST"), ({"id": "tmp:1", "name": "Bal"}, "INVALID_REQUEST"),
     ({"id": "a/b", "name": "Bal"}, "INVALID_REQUEST"), ({"id": "x" * 65, "name": "Bal"}, "INVALID_REQUEST"),
+    ({"id": "likes", "name": "Bal"}, "INVALID_REQUEST"),   # nom de la vue des coups de cœur côté site
     ({"id": "p1"}, "INVALID_NAME"), ({"id": "p1", "name": "  "}, "INVALID_NAME"),
     ({"id": "p1", "name": "x" * 61}, "INVALID_NAME"),
     ({"id": "p1", "name": "Bal", "tracks": {"url": "https://x.y"}}, "INVALID_REQUEST"),

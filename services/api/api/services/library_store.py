@@ -340,6 +340,9 @@ def clean_label(raw: Any) -> str | None:
     return clean_text(raw)[:MAX_TITLE].rstrip() or None
 
 
+RESERVED_PLAYLIST_ID = "likes"
+
+
 def clean_playlist_id(raw: Any) -> str:
     if not isinstance(raw, str) or not _PLAYLIST_ID_RE.fullmatch(raw):
         raise _invalid()
@@ -388,6 +391,10 @@ def clean_restored_playlist(raw: Any, now: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise _invalid()
     pid = clean_playlist_id(raw.get("id"))
+    # « likes » est le nom de la vue des coups de cœur côté site (lib/library.ts) : jamais un id de playlist, et le
+    # client choisit l'id ici (seule route où il le peut)
+    if pid == RESERVED_PLAYLIST_ID:
+        raise _invalid()
     name = clean_name(raw.get("name"))
     raw_tracks = raw.get("tracks")
     tracks = [] if raw_tracks is None else clean_tracks(raw_tracks, now)
