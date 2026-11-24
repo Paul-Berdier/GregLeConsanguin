@@ -23,7 +23,8 @@ test('titre en cours : le demandeur cède avec l’artiste (le cœur et « Ajout
   const font = Number(rule(now, '.meta-slot').match(/font-size: ([\d.]+)px;/)[1]);
   const px = Number(floor[1]) * font, seal = 20, gap = 6;
   assert.ok(px >= seal + gap + 2 * font, `le sceau et au moins « D… » (${px} px)`);
-  // la ligne la plus étroite (1366×657 : 167 px à la souris) : artiste, point et ses deux espaces (7 + 3 + 7), demandeur
+  // la ligne du demandeur à 1366×657 (237 px depuis que les boutons sont montés au surtitre ; 167 px avant, le pire cas gardé) :
+  // artiste, point et ses deux espaces (7 + 3 + 7), demandeur
   assert.ok(167 - 17 - px >= 80, `l’artiste garde au moins 80 px (${167 - 17 - px})`);
   assert.match(rule(now, '.meta-slot .by-txt'), /overflow: hidden; text-overflow: ellipsis;/);
   assert.match(rule(now, '.meta-slot .artist'), /min-width: 0;/);
@@ -67,4 +68,9 @@ test('chansonnier à 320 px : le nom en ligne n’élargit plus le volet ; la co
   const vw = 320, pageX = 16, scrollbar = 10, right = vw - scrollbar - pageX - 18;
   const width = Math.max(250, Math.min(290, vw - 2 * pageX - Number(w[1])));   // .pop : min-width 250 px
   assert.ok(right - width >= 0, `bord gauche à ${right - width} px`);
+});
+
+test('file au toucher sur 320 px : le cœur de la ligne cède sa place au titre', () => {
+  const q = css('src/components/Queue/queue.css');
+  assert.match(q, /@media \(hover: none\) and \(max-width: 360px\) \{ \.act\.like \{ display: none; \} \}/);
 });
