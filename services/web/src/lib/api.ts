@@ -9,7 +9,7 @@
  *   POST /voice/join
  *   GET  /history?guild_id=...&mode=top|recent
  *   POST /queue/add_many
- *   GET  /library ; POST /library/likes/add|remove, /library/playlists/create|rename|delete|add|remove|move
+ *   GET  /library ; POST /library/likes/add|remove, /library/playlists/create|restore|rename|delete|add|remove|move
  */
 
 const DEFAULT_BASE = '/api/v1';
@@ -260,14 +260,20 @@ export const api = {
 
   // Chansonnier du Roi (spec 2026-11-23 §3) : l'identité vient de la session ; chaque modification rend {ok, library}
   getLibrary: () => get('/library'),
-  libraryLike: (track: Record<string, any>) => post('/library/likes/add', { track }),
+  // `index` : rang d'un coup de cœur remis par une annulation (absent : en tête)
+  libraryLike: (track: Record<string, any>, index?: number) =>
+    post('/library/likes/add', index === undefined ? { track } : { track, index }),
   libraryUnlike: (url: string) => post('/library/likes/remove', { url }),
   playlistCreate: (name: string, tracks: readonly Record<string, any>[] = []) => post('/library/playlists/create', { name, tracks }),
+  // annulation d'une suppression : la playlist {id, name, tracks, created_at, updated_at} revient au rang `index`
+  playlistRestore: (playlist: Record<string, any>, index: number) => post('/library/playlists/restore', { playlist, index }),
   playlistRename: (id: string, name: string) => post('/library/playlists/rename', { id, name }),
   playlistDelete: (id: string) => post('/library/playlists/delete', { id }),
   playlistAdd: (id: string, tracks: readonly Record<string, any>[]) => post('/library/playlists/add', { id, tracks }),
   playlistRemove: (id: string, url: string) => post('/library/playlists/remove', { id, url }),
-  playlistMove: (id: string, src: number, dst: number) => post('/library/playlists/move', { id, src, dst }),
+  // `url` : le titre attendu au rang src ; une copie dépassée reçoit 409 STALE, rien n'a bougé
+  playlistMove: (id: string, src: number, dst: number, url?: string) =>
+    post('/library/playlists/move', url === undefined ? { id, src, dst } : { id, src, dst, url }),
 };
 
 type SearchResult = import('./types').SearchResult;

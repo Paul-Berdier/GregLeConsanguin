@@ -73,9 +73,12 @@ MSG_LIMIT_PLAYLISTS = f"Vous avez atteint la limite de {LIMIT_PLAYLISTS} playlis
 MSG_LIMIT_SIZE = "Votre chansonnier est plein : retirez des titres ou des playlists avant d'en ajouter."
 MSG_STORAGE_UNAVAILABLE = "Le chansonnier est injoignable pour le moment : réessayez dans un instant."
 MSG_STORAGE_BUSY = "Le chansonnier est modifié ailleurs en même temps : réessayez dans un instant."
+MSG_STALE = "Cette playlist a changé ailleurs entre-temps : rien n'a été déplacé, relisez-la."
 
 # id de playlist : alphabet de token_urlsafe, longueur bornée (jamais de « : » ni de « / » dans une requête).
-_PLAYLIST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Lu par fullmatch : « $ » de re.match accepte un « \n » final, qu'une restauration (id choisi par le site)
+# stockerait alors tel quel.
+_PLAYLIST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Mêmes formes que VIDEO_ID / YOUTUBE_HOST du site (services/web/src/lib/format.ts) : ?v=, /shorts/, /live/,
 # /embed/ (sauf videoseries), youtu.be/, anciennes formes /v/ /e/ /watch/ ; hôtes youtube.com (www., m.,
 # music.…), youtu.be, youtube-nocookie.com.
@@ -338,7 +341,7 @@ def clean_label(raw: Any) -> str | None:
 
 
 def clean_playlist_id(raw: Any) -> str:
-    if not isinstance(raw, str) or not _PLAYLIST_ID_RE.match(raw):
+    if not isinstance(raw, str) or not _PLAYLIST_ID_RE.fullmatch(raw):
         raise _invalid()
     return raw
 
@@ -358,6 +361,46 @@ def clean_index(raw: Any) -> int:
     if type(raw) is not int or raw < 0:
         raise _invalid(MSG_BAD_POSITION)
     return raw
+
+
+def clean_position(raw: Any) -> int | None:
+    """Rang facultatif d'une insertion (annulations) : absent ou null → None ; sinon entier JSON (ni booléen, ni
+    texte, ni flottant), négatif ou trop grand compris : l'opération le borne à la liste qu'elle trouve."""
+    if raw is None:
+        return None
+    if type(raw) is not int:
+        raise _invalid()
+    return raw
+
+
+def _past_epoch(v: Any, now: int) -> int:
+    """Date d'origine renvoyée par le site : entier de 0 à now gardé, sinon now (ni futur, ni texte, ni booléen)."""
+    return v if type(v) is int and 0 <= v <= now else now
+
+
+def clean_restored_playlist(raw: Any, now: int) -> dict[str, Any]:
+    """Playlist rendue par l'annulation d'une suppression (POST /library/playlists/restore), forme stockée.
+
+    id au format d'un id de playlist (sinon INVALID_REQUEST) ; nom et titres nettoyés comme à la création
+    (INVALID_NAME, INVALID_TRACK avec `index`, 500 titres au plus par requête ; doublons écartés, LIMIT_TRACKS
+    gardés). Les dates d'origine (playlist et titres) restent quand ce sont des entiers de 0 à now, sinon now.
+    """
+    if not isinstance(raw, dict):
+        raise _invalid()
+    pid = clean_playlist_id(raw.get("id"))
+    name = clean_name(raw.get("name"))
+    raw_tracks = raw.get("tracks")
+    tracks = [] if raw_tracks is None else clean_tracks(raw_tracks, now)
+    # clean_tracks rend une entrée par titre reçu, dans l'ordre (sinon il lève) : chacune retrouve sa date.
+    for t, r in zip(tracks, raw_tracks or []):
+        t["added_at"] = _past_epoch(r.get("added_at"), now)
+    return {
+        "id": pid,
+        "name": name,
+        "tracks": _unique(tracks)[:LIMIT_TRACKS],
+        "created_at": _past_epoch(raw.get("created_at"), now),
+        "updated_at": _past_epoch(raw.get("updated_at"), now),
+    }
 
 
 # ─── Lecture de la valeur stockée ───
@@ -566,15 +609,21 @@ def _unique(tracks: list[dict]) -> list[dict]:
     return out
 
 
-def op_add_like(track: dict) -> Op:
-    """Idempotent : un titre déjà aimé (même identité) ne bouge pas ; sinon en tête."""
+def _clamp(index: int | None, n: int, default: int) -> int:
+    """Rang d'insertion borné à [0, n] ; None → default. (list.insert lit un rang négatif depuis la fin.)"""
+    return default if index is None else max(0, min(index, n))
+
+
+def op_add_like(track: dict, index: int | None = None) -> Op:
+    """Idempotent : un titre déjà aimé (même identité) ne bouge pas ; sinon en tête, ou au rang `index` (borné)
+    quand l'annulation d'un retrait le remet à sa place."""
     def run(state):
         k = track_key(track["url"])
         if any(track_key(t["url"]) == k for t in state["likes"]):
             return False, {}
         if len(state["likes"]) >= LIMIT_LIKES:
             raise LibraryError("LIMIT_REACHED", MSG_LIMIT_LIKES, 409, limit="likes")
-        state["likes"].insert(0, track)
+        state["likes"].insert(_clamp(index, len(state["likes"]), 0), track)
         return True, {}
     return run
 
@@ -607,6 +656,22 @@ def op_create_playlist(name: str, tracks: list[dict], now: int,
             "updated_at": now,
         })
         return True, {"playlist_id": pid}
+    return run
+
+
+def op_restore_playlist(playlist: dict, index: int | None) -> Op:
+    """Annulation d'une suppression : la playlist (clean_restored_playlist) revient à son rang `index`, borné à
+    [0, nombre de playlists] (None : à la fin). Déjà là (même id : rejouée, autre onglet) → rien à faire (200),
+    même au plafond ; sinon le plafond de playlists de la création."""
+    def run(state):
+        pls = state["playlists"]
+        if any(pl["id"] == playlist["id"] for pl in pls):
+            return False, {}
+        if len(pls) >= LIMIT_PLAYLISTS:
+            raise LibraryError("LIMIT_REACHED", MSG_LIMIT_PLAYLISTS, 409, limit="playlists")
+        # copie : l'opération peut être rejouée (WatchError) sur un état relu
+        pls.insert(_clamp(index, len(pls), len(pls)), {**playlist, "tracks": list(playlist["tracks"])})
+        return True, {}
     return run
 
 
@@ -662,11 +727,18 @@ def op_remove_track(pid: str, url: str, now: int) -> Op:
     return run
 
 
-def op_move_track(pid: str, src: int, dst: int, now: int) -> Op:
-    """Déplace le titre `src` à la position `dst` (0 ≤ src, dst < nombre de titres, sinon 400)."""
+def op_move_track(pid: str, src: int, dst: int, now: int, url: str | None = None) -> Op:
+    """Déplace le titre `src` à la position `dst` (0 ≤ src, dst < nombre de titres, sinon 400).
+
+    `url` donné : le titre au rang `src` doit être celui-là (même track_key), sinon 409 STALE sans rien
+    déplacer, rang disparu compris. Les rangs sont comptés sur la copie du site, dépassée quand un autre
+    onglet ou appareil a réordonné la playlist : ils viseraient un autre titre.
+    """
     def run(state):
         pl = _find(state, pid)
         n = len(pl["tracks"])
+        if url is not None and (src >= n or track_key(pl["tracks"][src]["url"]) != track_key(url)):
+            raise LibraryError("STALE", MSG_STALE, 409)
         if src >= n or dst >= n:
             raise _invalid(MSG_BAD_POSITION)
         if src == dst:
