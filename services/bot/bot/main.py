@@ -38,6 +38,14 @@ def main():
     try:
         # Import dans le try : un échec (ex. relance comme script au lieu de
         # `python -m bot.main`) passe par le logger (et greg.log), pas seulement stderr.
+        from bot.voice_stack import voice_stack
+
+        # discord.py + davey incompatibles : Greg joue sans qu'on l'entende, rien d'autre ne le signale
+        summary, problem = voice_stack()
+        logger.info("Pile vocale : %s", summary)
+        if problem:
+            logger.error("Pile vocale : %s", problem)
+
         from bot.greg_bot import GregBot
 
         bot = GregBot()
