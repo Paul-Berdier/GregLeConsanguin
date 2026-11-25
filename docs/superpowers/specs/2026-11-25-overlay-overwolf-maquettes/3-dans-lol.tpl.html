@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Greg dans LoL</title>
+<style>
+%%CSS%%
+.frame{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:10px;box-shadow:0 0 0 1px var(--plomb),inset 0 0 0 1px var(--hair)}
+.game{position:absolute;left:0;top:0;width:1600px;height:900px;transform-origin:0 0;transform:scale(var(--s,.7));overflow:hidden;
+  background:radial-gradient(60% 50% at 55% 45%,#3d4a37,#26301f 55%,#161b12)}
+.game::before{content:"";position:absolute;inset:0;background:
+  radial-gradient(14% 10% at 30% 60%,rgb(90 110 140/.35),transparent 70%),
+  radial-gradient(18% 12% at 70% 35%,rgb(90 110 140/.3),transparent 70%),
+  repeating-linear-gradient(35deg,rgb(255 255 255/.015) 0 40px,transparent 40px 80px)}
+.zone{position:absolute;border-radius:6px;background:rgb(20 24 30/.72);box-shadow:inset 0 0 0 1px rgb(255 255 255/.18);display:grid;place-items:center;text-align:center;
+  font:700 15px/1.2 var(--f-ui);letter-spacing:.06em;text-transform:uppercase;color:rgb(255 255 255/.55);padding:6px}
+.zone small{display:block;font:500 12px/1.2 var(--f-ui);letter-spacing:0;text-transform:none;color:rgb(255 255 255/.4);margin-top:3px}
+.slot{position:absolute;width:392px;height:76px;border-radius:12px;border:2px dashed rgb(var(--lumiere-rgb)/.45);display:grid;place-items:center;font:700 13px/1 var(--f-ui);letter-spacing:.08em;text-transform:uppercase;color:rgb(var(--lumiere-rgb)/.75)}
+.game .bandeau{position:absolute}
+.pin{position:absolute;left:418px;font:700 13px/1.25 var(--f-ui);color:var(--or);display:flex;gap:8px;align-items:center}
+.pin::before{content:"";width:34px;height:2px;background:var(--or)}
+.panelg{position:absolute;left:24px;top:104px;width:424px;padding:16px 18px 14px;background:rgb(11 9 8/.86)}
+.ptop{display:flex;align-items:center;gap:12px}
+.ptop .wm{font:600 30px/1 var(--f-display);margin-top:-2px}
+.guild{margin-left:auto;display:flex;align-items:center;gap:6px;font:500 14px/1 var(--f-ui);color:var(--os-2);background:var(--voute);border-radius:7px;padding:8px 10px;box-shadow:inset 0 0 0 1px var(--hair)}
+.live{width:7px;height:7px;border-radius:50%;background:#58c48b;display:inline-block}
+.now{margin-top:16px}.now .title{margin:6px 0 6px;font-size:24px}
+.times{display:flex;justify-content:space-between;margin-top:7px;font:600 14px/1 var(--f-ui)}
+.times b{color:var(--lumiere);font-weight:600}.times span{color:var(--os-2)}
+.search.focus{box-shadow:inset 0 0 0 1px rgb(var(--lumiere-rgb)/.55),0 0 0 4px rgb(var(--lumiere-rgb)/.08);color:var(--os)}
+.caret{display:inline-block;width:1.5px;height:18px;background:var(--os);vertical-align:-3px;margin-left:1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.kbline{margin-top:10px;padding:8px 10px;border-radius:8px;background:rgb(var(--lumiere-rgb)/.08);box-shadow:inset 0 0 0 1px rgb(var(--lumiere-rgb)/.2);font-size:13px;color:var(--os-2)}
+.keysgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kcard{padding:14px;border-radius:12px;background:var(--nef);box-shadow:inset 0 0 0 1px var(--hair)}
+.kcard .keys{display:flex;gap:4px;margin-bottom:10px}
+.kcard kbd{font-size:13px;padding:6px 8px}
+.kcard b{font:500 15px/1.3 var(--f-ui)}
+.legend{display:flex;gap:22px;flex-wrap:wrap;margin:12px 2px 0;color:var(--cendre);font-size:14px}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{display:inline-block;width:22px;height:14px;border-radius:3px}
+@media (max-width:900px){.keysgrid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect class="ico" x="6.5" y="6.5" width="11" height="11"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path class="ico" d="M5.5 12.5a6.5 6.5 0 1 0 2-4.7M7 4.5v3.8h3.8"/></symbol>
+    <symbol id="i-skip" viewBox="0 0 24 24"><path class="ico" d="M6 6.5l8.5 5.5L6 17.5zM18 6v12"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path class="ico" d="M4.5 11V9.5A2.5 2.5 0 0 1 7 7h11.5M16 4.5L18.5 7 16 9.5M19.5 13v1.5A2.5 2.5 0 0 1 17 17H5.5M8 14.5L5.5 17 8 19.5"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect class="fill" x="6.6" y="4.8" width="4.2" height="14.4"/><rect class="fill" x="13.2" y="4.8" width="4.2" height="14.4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle class="ico" cx="10.5" cy="10.5" r="6"/><path class="ico" d="M15 15l5 5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path class="ico" d="M7 10l5 5 5-5"/></symbol>
+    <symbol id="sh-blue" viewBox="0 0 13 15"><path d="M.5.5h12v6c0 4.2-2.9 6.9-6 8-3.1-1.1-6-3.8-6-8z" fill="#3a63b8" stroke="#060403"/><rect x="5" y="1" width="3" height="12.4" fill="#d8b25e"/></symbol>
+    <symbol id="sh-green" viewBox="0 0 13 15"><path d="M.5.5h12v6c0 4.2-2.9 6.9-6 8-3.1-1.1-6-3.8-6-8z" fill="#2f7d46" stroke="#060403"/><path d="M1 9.5L6.5 4 12 9.5" fill="none" stroke="#e6dcc6" stroke-width="2"/></symbol>
+  </defs>
+</svg>
+
+<div class="page">
+  <div class="kick">Maquette 3 · League of Legends</div>
+  <h1>Le bandeau dans une partie de LoL</h1>
+  <p class="lead">L’écran de LoL est déjà chargé. Riot interdit de couvrir la mini-carte, le tableau des scores, la barre de sorts et la boutique&nbsp;: le bandeau se met donc sur le bord gauche, au tiers de la hauteur, là où le jeu n’affiche presque rien.</p>
+
+  <h2>Pendant la partie</h2>
+  <p class="sub">Schéma de l’écran par défaut&nbsp;: les zones grises sont celles du jeu. Les emplacements en pointillé sont les autres choix proposés, et on peut aussi glisser le bandeau où l’on veut.</p>
+  <div class="frame"><div class="game">
+    <div class="zone" style="left:10px;top:10px;width:320px;height:84px">Cible sélectionnée</div>
+    <div class="zone" style="left:690px;top:0;width:220px;height:40px">Score des équipes</div>
+    <div class="zone" style="left:1250px;top:0;width:350px;height:44px">Stats · chrono</div>
+    <div class="zone" style="left:1330px;top:60px;width:260px;height:200px">Fil des éliminations</div>
+    <div class="zone" style="left:1520px;top:280px;width:72px;height:300px">Alliés</div>
+    <div class="zone" style="left:1320px;top:625px;width:280px;height:275px">Mini-carte</div>
+    <div class="zone" style="left:540px;top:752px;width:560px;height:148px">Champion, sorts<small>et objets</small></div>
+    <div class="zone" style="left:16px;top:640px;width:440px;height:180px">Chat</div>
+    <div class="slot" style="left:16px;top:108px">Sous la cible</div>
+    <div class="slot" style="left:16px;top:548px">Au-dessus du chat</div>
+    <div class="bandeau glass" style="left:16px;top:262px">
+      <div class="row">
+        <div class="thumb" style="background:linear-gradient(135deg,#5b3d8f,#c48ae8)"></div>
+        <div class="txt">
+          <div class="kicker"><span class="eq"><i></i><i></i><i></i></span>En lecture</div>
+          <div class="title">Around the World</div>
+          <div class="meta">Daft Punk <span class="dot"></span><img class="seal" src="data:image/webp;base64,%%IMG_SEAL%%" alt=""><span class="who">Demandé par vous</span></div>
+        </div>
+      </div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div class="pin" style="top:290px">Par défaut</div>
+  </div></div>
+  <div class="legend">
+    <span><i style="background:rgb(20 24 30/.9);box-shadow:inset 0 0 0 1px rgb(255 255 255/.25)"></i>Zones du jeu, jamais couvertes</span>
+    <span><i style="border:2px dashed rgb(var(--lumiere-rgb)/.6)"></i>Autres emplacements proposés</span>
+  </div>
+
+  <h2>Le panneau en partie</h2>
+  <p class="sub">Il s’ouvre par-dessus le chat, côté gauche, et se clique à la souris. Pendant qu’on tape une recherche, le clavier va à Greg et pas au jeu&nbsp;: aucun sort ne part par erreur. Échap rend la main au jeu.</p>
+  <div class="frame"><div class="game">
+    <div class="zone" style="left:690px;top:0;width:220px;height:40px">Score des équipes</div>
+    <div class="zone" style="left:1250px;top:0;width:350px;height:44px">Stats · chrono</div>
+    <div class="zone" style="left:1330px;top:60px;width:260px;height:200px">Fil des éliminations</div>
+    <div class="zone" style="left:1520px;top:280px;width:72px;height:300px">Alliés</div>
+    <div class="zone" style="left:1320px;top:625px;width:280px;height:275px">Mini-carte</div>
+    <div class="zone" style="left:540px;top:752px;width:560px;height:148px">Champion, sorts<small>et objets</small></div>
+    <div class="panelg glass">
+      <div class="ptop">
+        <img class="medal" src="data:image/webp;base64,%%IMG_FACE%%" alt="">
+        <div class="wm">Greg</div>
+        <div class="guild"><span class="live"></span>Le Donjon<svg class="ico" width="16" height="16"><use href="#i-chev"/></svg></div>
+      </div>
+      <div class="now">
+        <div class="kicker"><span class="eq"><i></i><i></i><i></i></span>En lecture</div>
+        <div class="title">Around the World</div>
+        <div class="meta">Daft Punk <span class="dot"></span><img class="seal" src="data:image/webp;base64,%%IMG_SEAL%%" alt=""><span class="who">Demandé par vous</span></div>
+      </div>
+      <div style="margin-top:12px"><div class="bar"><i></i></div><div class="times tnum"><b>2:14</b><span>7:09</span></div></div>
+      <div class="transport">
+        <div class="tbtn"><svg><use href="#i-stop"/></svg></div>
+        <div class="tbtn"><svg><use href="#i-restart"/></svg></div>
+        <div class="roundel"><svg><use href="#i-pause"/></svg></div>
+        <div class="tbtn"><svg><use href="#i-skip"/></svg></div>
+        <div class="tbtn on"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="search focus" style="margin-top:12px"><svg><use href="#i-search"/></svg><span>noir dés<span class="caret"></span></span></div>
+      <div class="kbline">Le clavier est à Greg&nbsp;: <kbd>Entrée</kbd> ajoute, <kbd>Échap</kbd> rend la main au jeu.</div>
+      <div class="qhead"><div class="qlabel">À suivre · 2 titres</div><span class="tnum">10&nbsp;min</span></div>
+      <div class="qrow"><div class="thumb" style="background:linear-gradient(135deg,#6b2a1f,#e0a15e)"></div><div style="min-width:0"><div class="t">Bohemian Rhapsody</div><div class="meta">Queen <span class="dot"></span><svg class="shield"><use href="#sh-blue"/></svg>Martin</div></div><div class="side tnum">5:55<small>À SUIVRE</small></div></div>
+      <div class="qrow"><div class="thumb" style="background:linear-gradient(135deg,#1f3b4a,#7ec1d6)"></div><div style="min-width:0"><div class="t">Le vent nous portera</div><div class="meta">Noir Désir <span class="dot"></span><svg class="shield"><use href="#sh-green"/></svg>Léa</div></div><div class="side tnum">4:49</div></div>
+    </div>
+  </div></div>
+
+  <h2>Les raccourcis</h2>
+  <p class="sub">LoL utilise déjà presque toutes les combinaisons de Ctrl, Alt et Maj avec des lettres ou des chiffres (sorts, émotes, niveau des sorts…). Les touches F7 à F11 avec Ctrl sont libres. Chacun pourra les changer.</p>
+  <div class="keysgrid">
+    <div class="kcard"><div class="keys"><kbd>Ctrl</kbd><kbd>F7</kbd></div><b>Pause ou reprise</b></div>
+    <div class="kcard"><div class="keys"><kbd>Ctrl</kbd><kbd>F8</kbd></div><b>Titre suivant</b></div>
+    <div class="kcard"><div class="keys"><kbd>Ctrl</kbd><kbd>F10</kbd></div><b>Ouvrir ou fermer le panneau</b></div>
+    <div class="kcard"><div class="keys"><kbd>Ctrl</kbd><kbd>F11</kbd></div><b>Masquer ou montrer le bandeau</b></div>
+  </div>
+  <p class="note">Les positions des zones sont approximatives et seront vérifiées dans l’outil d’entraînement de LoL, en 1080p et en 1440p.</p>
+</div>
+<script>
+(function(){
+  function fit(){document.querySelectorAll('.frame').forEach(function(f){f.querySelector('.game').style.setProperty('--s',f.clientWidth/1600)})}
+  addEventListener('resize',fit);fit();
+  if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit);
+})();
+</script>
+</body>
+</html>
