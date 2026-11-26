@@ -53,6 +53,8 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from greg_shared.config import settings
 
+from bot.services.playlist_manager import StaleQueueError
+
 logger = logging.getLogger("greg.redis")
 
 CHANNEL_COMMANDS = "greg:commands"
@@ -93,6 +95,12 @@ def _command_timeout(data: Dict[str, Any]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return t if t > 0 else None
+
+
+def _expected_arg(cmd_data: Dict[str, Any]) -> Optional[dict]:
+    """Élément attendu `{url, added_by, ts}` de remove / move / play_at s'il est un objet, sinon None (ignoré)."""
+    expected = cmd_data.get("expected")
+    return expected if isinstance(expected, dict) else None
 
 
 # Activité (greg:player:event) : actions publiées sous leur propre nom.
@@ -448,13 +456,13 @@ class RedisBridge:
 
             elif action == "remove":
                 index = int(cmd_data.get("index", -1))
-                ok = svc.remove_at(guild_id, user_id, index)
+                ok = svc.remove_at(guild_id, user_id, index, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "move":
                 src = int(cmd_data.get("src", -1))
                 dst = int(cmd_data.get("dst", -1))
-                ok = svc.move(guild_id, user_id, src, dst)
+                ok = svc.move(guild_id, user_id, src, dst, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "get_state":
@@ -463,7 +471,7 @@ class RedisBridge:
 
             elif action == "play_at":
                 index = int(cmd_data.get("index", 0))
-                ok = await svc.play_at(guild_id, user_id, index)
+                ok = await svc.play_at(guild_id, user_id, index, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "restart":
@@ -501,6 +509,8 @@ class RedisBridge:
             else:
                 result = {"ok": False, "error": f"UNKNOWN_ACTION:{action}"}
 
+        except StaleQueueError:
+            result = {"ok": False, "error": "STALE"}  # la file a bougé : rien n'a été modifié
         except PermissionError:
             result = {"ok": False, "error": "PRIORITY_FORBIDDEN"}
         except Exception as e:

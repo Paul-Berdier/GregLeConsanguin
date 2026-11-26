@@ -54,7 +54,7 @@ class FakeSvc:
         self.log.append(("get_history", gid))
         return {"ok": True, "items": [], "mode": mode}
 
-    async def play_at(self, gid, uid, index):
+    async def play_at(self, gid, uid, index, expected=None):
         raise PermissionError("insufficient_rank")
 
     def busy_elsewhere(self, guild, channel):

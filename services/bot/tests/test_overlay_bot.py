@@ -6,6 +6,7 @@ import types
 
 import bot.services.redis_bridge as rb
 import pytest
+from bot.services.playlist_manager import StaleQueueError
 from test_redis_bridge import MEMBER, FakeSvc, _cmd, _make_bridge, _responses
 
 pytestmark = pytest.mark.asyncio
@@ -109,3 +110,18 @@ async def test_actor_falls_back_to_the_id_and_title_errors_are_harmless(eb):
 async def test_publish_player_event_keeps_snowflake_as_string(eb):               # Review Focus 4
     await eb.publish_player_event(1234567890123456789, "add", 7, "T")
     assert _events_of(eb)[0]["guild_id"] == "1234567890123456789"
+
+async def test_bridge_forwards_expected_and_maps_stale(eb):
+    seen = {}
+    def remove_at(gid, uid, index, expected=None): seen["expected"] = expected; raise StaleQueueError()
+    eb.bot.player_service.remove_at = remove_at
+    E = {"url": "u", "added_by": "7", "ts": 1700000000}
+    await eb._handle_command(_cmd("remove", rid="r", index=1, expected=E))
+    assert _responses(eb)["r"] == {"request_id": "r", "ok": False, "error": "STALE"}
+    assert seen["expected"] == E and _events_of(eb) == []
+
+async def test_bridge_ignores_a_non_object_expected(eb):
+    seen = {}
+    eb.bot.player_service.move = lambda gid, uid, s, d, expected=None: seen.setdefault("e", expected) or True
+    await eb._handle_command(_cmd("move", rid="m", src=1, dst=0, expected="x"))
+    assert seen["e"] is None

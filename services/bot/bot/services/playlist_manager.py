@@ -11,6 +11,28 @@ from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
 
+class StaleQueueError(Exception):
+    """L'élément attendu (`expected`) n'est plus à l'index visé : la file a bougé, rien n'est modifié."""
+
+
+def _ts_or_none(v: Any) -> Optional[int]:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def queue_item_matches(item: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+    """`item` de la file est-il celui que l'appelant a vu (`expected` : url, added_by, ts) ?
+
+    `ts` comparés en secondes entières ; absent ou illisible → None, et deux None sont
+    égaux (l'appli envoie `ts: null` pour un titre qui n'en a pas).
+    """
+    return ((item.get("url") or "") == (expected.get("url") or "")
+            and str(item.get("added_by") or "") == str(expected.get("added_by") or "")
+            and _ts_or_none(item.get("ts")) == _ts_or_none(expected.get("ts")))
+
+
 class PlaylistManager:
     """
     Gestion d'une playlist *par serveur Discord (guild)*.
