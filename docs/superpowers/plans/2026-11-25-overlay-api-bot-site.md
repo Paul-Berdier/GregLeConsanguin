@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** donner à l'appli Overwolf de Paul une entrée sûre dans `GregLeConsanguin` : un code d'appareil autorisé sur le site (/lier), un jeton porteur révocable valable pour le lecteur et le socket, les données qui manquent à l'appli (serveurs, `player_event`, `guild_id` des ticks), et une garde `expected` contre la file qui a bougé.
+**Goal:** donner à l'appli Overwolf (Paul et ses potes, diffusée par un canal de test, spec §1) une entrée sûre dans `GregLeConsanguin` : un code d'appareil que tout compte connecté au site autorise sur /lier pour son propre compte, un jeton porteur révocable valable pour le lecteur et le socket, les données qui manquent à l'appli (serveurs, `player_event`, `guild_id` des ticks), et une garde `expected` contre la file qui a bougé.
 
-**Architecture:** l'API gagne une garde CSRF, une liste d'origines à deux étages (site / site + appli), un magasin Redis `overlay_tokens` (codes, jetons, limites de débit) et une identité « session OU porteur » (`require_identity`) posée sur le lecteur, l'historique et la recherche. Un nouveau blueprint `/overlay/*` porte le parcours RFC 8628, et le socket accepte `auth.token`. Le bot répond à `user_guilds`, publie `greg:player:event` après chaque commande réussie qui change l'état, et refuse `STALE` quand l'élément attendu n'est plus à l'index. Le site ajoute /lier, l'entrée « Appareils liés » du propriétaire et `expected` sur retirer / déplacer / jouer maintenant.
+**Architecture:** l'API gagne une garde CSRF, une liste d'origines à deux étages (site / site + appli), un magasin Redis `overlay_tokens` (codes, jetons, limites de débit) et une identité « session OU porteur » (`require_identity`) posée sur le lecteur, l'historique et la recherche. Un nouveau blueprint `/overlay/*` porte le parcours RFC 8628, et le socket accepte `auth.token`. Le bot répond à `user_guilds`, publie `greg:player:event` après chaque commande réussie qui change l'état, et refuse `STALE` quand l'élément attendu n'est plus à l'index. Le site ajoute /lier, l'entrée « Appareils liés » pour tout connecté (sans contrôle de propriétaire) et `expected` sur retirer / déplacer / jouer maintenant.
 
 **Tech Stack:** API : Flask 3.1.3, Flask-SocketIO 5.7.2 (python-socketio 5.18.1, `async_mode="threading"`), flask-cors 6.0.5, redis-py 8.2.0, pytest. Bot : discord.py 2.7, `redis.asyncio`, pytest + pytest-asyncio. Site : Next.js 14.2 (App Router), React 18, TypeScript 5, zustand 4, `node:test` sous Node 24.19.
 
-**Spec:** C:\Users\Paul\Documents\Codage\GregLeConsanguin\docs\superpowers\specs\2026-11-25-overlay-overwolf-design.md (§3 API, §4 bot, §5 site, §7 vérification ; §6 est le plan B, lié seulement par le contrat ci-dessous).
+**Spec:** C:\Users\Paul\Documents\Codage\GregLeConsanguin\docs\superpowers\specs\2026-11-25-overlay-overwolf-design.md (§3 API, §4 bot, §5 site, §7 vérification ; §6 est le plan B, lié seulement par le contrat ci-dessous). Mise à jour du 2026-11-26 suivie ici : §1 « Diffusion aux potes », §3.4 « Tout compte connecté au site peut lier l'appli », §5 /lier, §7.
 
 ## Global Constraints
 
@@ -20,13 +20,13 @@
   - `[API]` = `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/api && uv run --no-project --python 3.12 --with-requirements requirements.txt --with pydantic-settings --with pytest python -m pytest -q` (suivi d'un chemin de test, ou `tests`). Base vérifiée le 2026-11-25 : `722 passed` en ~10 s.
   - `[BOT]` = `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/bot && uv run --no-project --python 3.12 --with-requirements requirements.txt --with pydantic-settings --with pytest --with pytest-asyncio python -m pytest -q` (suivi d'un chemin, ou `tests`). Base : `270 passed, 1 warning` (audioop) en ~50 s.
   - `[WEB]` = `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npm test` (base `pass 545`), puis `GREG_TEST_TRANSPILE=1 npm test` (base `pass 545`), puis `npx tsc --noEmit` (sortie vide, code 0).
-  - Lint des fichiers Python **créés** : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811 <fichiers>` → `All checks passed!` (le reste du dépôt a déjà des alertes : ne pas les corriger ici).
+  - Lint des fichiers Python **créés** : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811,E701,E702,E731 <fichiers>` → `All checks passed!` (le reste du dépôt a déjà des alertes : ne pas les corriger ici).
 - **API publique** `https://greg-api.up.railway.app/api/v1` ; préfixe `API_PREFIX = "/api/v1"`.
 - **Codes.** `user_code` : 8 caractères de `BCDFGHJKLMNPQRSTVWXZ`, affiché `XXXX-XXXX`, saisie normalisée (majuscules, tout caractère non alphanumérique retiré). `device_code` : `secrets.token_urlsafe(32)`. Jeton : `"greg_ow_" + secrets.token_urlsafe(32)` (51 caractères), stocké seulement en `sha256` hexadécimal.
 - **Durées.** Appareil 600 s, `interval` 5 s, `slow_down` +5 s ; jeton `OVERLAY_TOKEN_TTL_DAYS` (défaut 180, soit 15 552 000 s) ; `last_used_at` écrit au plus une fois par 300 s ; tous les horodatages en secondes epoch entières.
-- **Limites de débit.** Démarrer : 5 par minute par IP, vérifiée **en premier** ; seules les requêtes qu'elle laisse passer comptent dans le plafond de 30 par heure au total (une IP seule ne peut donc pas bloquer la liaison de Paul). Autoriser : 5 par minute par uid. Dépassement : 429 `{ok:false, error:"RATE_LIMITED"}`. `POST /overlay/device` et `POST /overlay/token` exigent `request.is_json` (sinon 400 `INVALID_REQUEST`, aucun compteur touché) : un formulaire ou un `text/plain` venu d'une page tierce n'entame aucun seau ; l'appli (plan B) envoie du JSON aux deux.
+- **Limites de débit.** Démarrer : 5 par minute par IP, vérifiée **en premier** ; seules les requêtes qu'elle laisse passer comptent dans le plafond de 30 par heure au total (une IP seule ne peut donc pas bloquer la liaison des autres comptes). Autoriser : 5 par minute par uid. Dépassement : 429 `{ok:false, error:"RATE_LIMITED"}`. `POST /overlay/device` et `POST /overlay/token` exigent `request.is_json` (sinon 400 `INVALID_REQUEST`, aucun compteur touché) : un formulaire ou un `text/plain` venu d'une page tierce n'entame aucun seau ; l'appli (plan B) envoie du JSON aux deux.
 - **Clés Redis.** `greg:overlay:device:{sha256(device_code)}` EX 600 ; `greg:overlay:user_code:{CODE}` EX 600 (SET NX) ; `greg:overlay:token:{sha256(jeton)}` EX ttl ; `greg:overlay:tokens:{uid}` HASH `tid → empreinte` ; `greg:ratelimit:{seau}:{sujet}` par `MULTI` · `INCR` · `EXPIRE … NX` · `EXEC` (un compteur a toujours une échéance ; `EXPIRE NX` demande Redis ≥ 7.0 : prod `redis:8.2.9` et local `redis:7-alpine`, vérifiés le 2026-11-25).
-- **Propriétaire** = `settings.owner_id_int` (`GREG_OWNER_ID`). Valeur absente ou 0 : lookup et approve répondent toujours 403 `NOT_OWNER`.
+- **Qui peut lier** (spec §3.4, choix de Paul du 2026-11-26) : tout compte connecté au site lie l'appli à **son propre** compte. Aucun contrôle de propriétaire nulle part, ni dans l'API ni dans le site : ni `require_owner`, ni `is_owner`, ni `NOT_OWNER`, ni lecture de `GREG_OWNER_ID` (`settings.owner_id_int`). Consulter un code (`lookup`) : session seule. Autoriser (`approve`) : session, `csrf_ok`, 5 par minute par uid ; l'uid et le portrait viennent de la session seule (un `uid`, `user_id` ou `user` du corps est ignoré). Révoquer en session : seulement ses propres jetons (le `tid` d'un autre uid → 404 `NOT_FOUND`) ; un porteur ne révoque que lui-même. `GET /overlay/me` rend `{ok, via, user, default_guild_id}`, sans `is_owner` (le plan B ne s'en sert pas). Parades contre l'hameçonnage par code (spec §3.4) : nom et âge de l'appareil, clic obligatoire, avertissement sur /lier, code de 10 min à usage unique, débits limités, chacun voit et délie ses appareils.
 - **Identité.** En-tête `Authorization` présent : il doit valoir `Bearer <jeton valide>`, sinon 401 `{ok:false, error:"NOT_AUTHENTICATED", message:"Connecte-toi avec Discord pour contrôler Greg."}`, sans repli sur le cookie. Sinon, la session. Les requêtes porteuses ne passent pas la garde CSRF. Sur les routes en session seule (`require_session_user` : chansonnier, `/overlay/device/lookup`, `/overlay/device/approve`), un en-tête `Authorization` présent donne toujours ce 401, cookie ou pas.
 - **CSRF** (`csrf_ok`) : méthodes `GET/HEAD/OPTIONS` toujours admises ; sinon `request.is_json` obligatoire, puis `Origin` (s'il est présent) normalisé ∈ `WEB_ORIGINS`, sinon `Referer` (s'il est présent) normalisé ∈ `WEB_ORIGINS`, sinon admis. Échec : 403 `{ok:false, error:"CSRF_FAILED", message}`.
 - **Origines.** `OVERLAY_ORIGINS` : liste séparée par des virgules, chaque entrée (espaces retirés, minuscules) doit vérifier `re.fullmatch(r"overwolf-extension://[a-z]{20,64}", s)`, sinon ignorée avec un avertissement. `app.config["WEB_ORIGINS"] = cors_origins()` ; `app.config["ALLOWED_ORIGINS"]` = site puis appli, utilisée par CORS et `cors_allowed_origins`. Origine attendue : `overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk`.
@@ -38,7 +38,7 @@
 - **Modules purs du site** (`src/lib/*.ts` testés) : aucun import à l'exécution (`import type` seulement), ni `enum` ni `namespace` ; leurs tests passent en natif et avec `GREG_TEST_TRANSPILE=1`.
 - **Blocs de test.** Côté API, ils omettent les imports évidents : `pytest`, `redis`, `re`, `types`, `asyncio`, `threading`, `import api.services.overlay_tokens as ot`, `from api.services import authz`, `from greg_shared.config import settings`, et côté site `test`, `assert`, `loadTs`, `read`. Les fixtures importées d'un autre fichier de test sont citées, avec `# noqa: F401`. Côté bot, chaque fichier de test donne son en-tête d'imports en entier : `services/bot` n'a pas d'`asyncio_mode=auto` et pytest 9 fait échouer un `async def` non marqué, donc tout module de tests `async def` porte `pytestmark = pytest.mark.asyncio` (comme `test_playback.py`), et les tests synchrones vont dans un module à part.
 - **Remplaçabilité.** `authz.py` et `events.py` appellent le magasin par le module (`ot.resolve`, `ot.is_live`), et `routes/overlay.py` appelle `send_command` par son nom de module : les tests les remplacent par `monkeypatch.setattr`.
-- **Railway.** `GREG_OWNER_ID` (même valeur que le service BOT DISCORD) et `OVERLAY_ORIGINS` ne se règlent que sur le service API, et seulement après un « oui » explicite de Paul ; l'UID est d'abord confirmé dans `overwolf://packages`. Avant la fusion, les domaines publics du service WEB sont comparés à `WEB_URL` du service API (tâche 14) : la garde CSRF n'admet que `WEB_ORIGINS` = `cors_origins()` = `CORS_ORIGINS` ∪ `WEB_URL`, et le service API n'a pas de `CORS_ORIGINS`. Une origine du site absente se règle par `CORS_ORIGINS`, elle aussi après un « oui » de Paul. Lecture seule : noms de variables et domaines, jamais la valeur d'un secret (pas de `railway variable list --kv` ni de `--json` non filtré).
+- **Railway.** `GREG_OWNER_ID` et `OVERLAY_ORIGINS` sont déjà posées sur le service API (constat du 2026-11-26, noms seulement) ; l'overlay ne lit jamais `GREG_OWNER_ID`. Ce plan ne règle rien sur Railway sans un « oui » explicite de Paul ; l'UID est confirmé par Paul dans `overwolf://packages`. Avant la fusion (tâche 14, étape 4) : les domaines publics du service WEB sont comparés à `WEB_URL` du service API, car la garde CSRF n'admet que `WEB_ORIGINS` = `cors_origins()` = `CORS_ORIGINS` ∪ `WEB_URL` et le service API n'a pas de `CORS_ORIGINS` ; la valeur d'`OVERLAY_ORIGINS` est comparée à l'origine attendue. Une origine du site absente se règle par `CORS_ORIGINS`, une `OVERLAY_ORIGINS` fausse se corrige, chacune après un « oui » de Paul. Lecture seule : noms de variables, domaines et trois valeurs publiques (`WEB_URL`, `CORS_ORIGINS`, `OVERLAY_ORIGINS`), jamais la valeur d'un secret (pas de `railway variable list --kv` ni de `--json` non filtré).
 
 ## Review Focus
 
@@ -48,12 +48,12 @@ Cinq cas que la spec implique sans qu'un test de tâche « normal » les couvre 
 2. **Jeton révoqué pendant qu'une requête l'utilise** : l'écriture de `last_used_at` ne doit pas recréer la clé supprimée (`SET … XX KEEPTTL`). Test : tâche 3 `test_last_used_write_never_recreates_a_revoked_token`.
 3. **Sondage avec gigue** : l'appli sonde à 4,1 s pour un intervalle de 5 s → `authorization_pending`, pas `slow_down` (marge de 1 s) ; à 3,9 s → `slow_down`. Test : tâche 3 `test_poll_jitter_within_one_second_is_not_slow_down`.
 4. **Id Discord au-delà de 2^53** (`1234567890123456789`) dans un tick, un `player_event` ou `user_guilds` → chaîne décimale exacte (un nombre JSON serait arrondi en JS et l'appli comparerait mal). Tests : tâche 7 `test_user_guilds_ids_are_exact_strings`, tâche 8 `test_publish_player_event_keeps_snowflake_as_string`, tâche 10 `test_tick_guild_id_keeps_snowflake_precision`.
-5. **Code en attente sur le site** : le Roi se connecte, revient sur « / », est renvoyé vers /lier, puis revient sur « / » sans décider → pas de deuxième redirection (le code est consommé sur /lier dès que `getMe()` réussit, avant la branche `is_owner` : un connecté non propriétaire, ou un échec de `/overlay/me`, ne tourne pas en boucle entre « / » et /lier). Tests : tâche 11 `takePendingCode consomme le code`, tâche 12 `/lier consomme le code en attente au montage` et `/lier lit ?code= sans useSearchParams et prend le code avant la branche is_owner`.
+5. **Code en attente sur le site** : le Roi se connecte, revient sur « / », est renvoyé vers /lier, puis revient sur « / » sans décider → pas de deuxième redirection (le code est consommé sur /lier dès que `getMe()` réussit, avant le premier appel `/overlay/*` de la page : un échec de `/overlay/guilds` ou de `/overlay/tokens` ne fait pas tourner en boucle entre « / » et /lier). Tests : tâche 11 `takePendingCode consomme le code`, tâche 12 `/lier consomme le code en attente au montage` et `/lier lit ?code= sans useSearchParams et prend le code avant les appels /overlay`.
 
 ## File Structure
 
 API (`services/api`) :
-- `api/services/authz.py` (modifié) : CSRF, `Identity`, `current_identity`, `current_user_id`, décorateurs `require_session_user` (avec CSRF), `require_identity`, `require_bearer`, `require_owner`, `is_owner`.
+- `api/services/authz.py` (modifié) : CSRF, `Identity`, `current_identity`, `current_user_id`, décorateurs `require_session_user` (avec CSRF), `require_identity`, `require_bearer` (aucun décorateur ni test de propriétaire).
 - `api/__init__.py` (modifié) : `overlay_origins()`, `WEB_ORIGINS` / `ALLOWED_ORIGINS`, enregistrement du blueprint overlay.
 - `api/services/overlay_tokens.py` (créé) : magasin Redis des appareils, codes, jetons et limites de débit.
 - `api/routes/overlay.py` (créé) : `/overlay/device`, `/device/lookup`, `/device/approve`, `/token`, `/me`, `/tokens`, `/tokens/revoke`, `/logout`, `/guilds`.
@@ -434,7 +434,7 @@ def test_token_ttl_env(monkeypatch, env, ttl):
 
 - [ ] **Étape 2 : les voir échouer.** `[API] tests/test_overlay_tokens.py` → `ModuleNotFoundError: No module named 'api.services.overlay_tokens'` (et `overlay_fakes` tant qu'il n'existe pas : écrire le faux d'abord, il fait partie des tests).
 - [ ] **Étape 3 : implémenter** `overlay_tokens.py` selon les signatures ci-dessus. Chaque lecture-modification-écriture d'une clé d'appareil passe par `pipeline(transaction=True)` + `watch` + `multi`, comme `library_store` ; jamais de jeton ni de `device_code` en clair dans Redis ni dans les journaux.
-- [ ] **Étape 4 : les voir passer.** `[API] tests/test_overlay_tokens.py` → tout vert ; `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811 services/api/api/services/overlay_tokens.py services/api/tests/overlay_fakes.py services/api/tests/test_overlay_tokens.py` → `All checks passed!`.
+- [ ] **Étape 4 : les voir passer.** `[API] tests/test_overlay_tokens.py` → tout vert ; `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811,E701,E702,E731 services/api/api/services/overlay_tokens.py services/api/tests/overlay_fakes.py services/api/tests/test_overlay_tokens.py` → `All checks passed!`.
 - [ ] **Étape 5 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/api/api/services/overlay_tokens.py services/api/tests/overlay_fakes.py services/api/tests/test_overlay_tokens.py && git commit -m "feat(api): magasin Redis des codes d'appareil et jetons de l'appli (usage unique, slow_down, révocation)"`
 
 ---
@@ -535,23 +535,23 @@ def test_session_only_route_refuses_an_authorization_header_even_with_a_cookie(l
 
 **Files:**
 - Create : `services/api/api/routes/overlay.py`
-- Modify : `services/api/api/services/authz.py` (`is_owner`, `require_owner`, `require_bearer`)
+- Modify : `services/api/api/services/authz.py` (`require_bearer`)
 - Modify : `services/api/api/__init__.py` (l. 100-115 : `from api.routes.overlay import bp as overlay_bp` et `app.register_blueprint(overlay_bp, url_prefix=API_PREFIX)`)
 - Create : `services/api/tests/test_overlay_routes.py`
 
 **Interfaces:**
-- Consumes : tout `ot.*` (tâche 3), `require_identity`, `current_identity`, `Identity` (tâche 4), `require_session_user`, `csrf_ok` (tâche 1), `api.web_url()`, `api.services.bot_bridge.send_command`, `api.routes.player.error_status`.
+- Consumes : tout `ot.*` (tâche 3), `require_identity`, `current_identity`, `current_user_id`, `Identity` (tâche 4), `require_session_user`, `csrf_ok` (tâche 1), `api.web_url()`, `api.services.bot_bridge.send_command`, `api.routes.player.error_status`.
 - Produces :
-  - `authz.is_owner(uid: Optional[int]) -> bool` (`settings.owner_id_int > 0 and uid == settings.owner_id_int`), `authz.require_owner(view)` (posé sous `require_session_user` ; 403 `{"ok": False, "error": "NOT_OWNER"}`), `authz.require_bearer(view)` (identité `via == "overlay"`, sinon 401 `not_authenticated()`).
+  - `authz.require_bearer(view)` (identité `via == "overlay"`, sinon 401 `not_authenticated()`). Aucun contrôle de propriétaire (Global Constraints, « Qui peut lier ») : `settings.owner_id_int` n'est lu ni par `authz.py` ni par `routes/overlay.py`.
   - `overlay.bp = Blueprint("overlay", __name__)`, `overlay.send_command` (importé, remplaçable en test), `DEFAULT_CLIENT_NAME = "Appli Overwolf"`, `RATE_START_GLOBAL = ("device_start", 30, 3600)`, `RATE_START_IP = ("device_start_ip", 5, 60)`, `RATE_APPROVE = ("approve", 5, 60)`, `_user_snapshot(discord_user: dict) -> dict` (`{id: str, username, global_name, avatar}`, valeurs absentes → `None`).
   - Routes (réponses exactes du contrat) :
     - `POST /overlay/device` (sans auth ; dans cet ordre : `request.is_json` faux → 400 `{"ok": False, "error": "INVALID_REQUEST"}` sans toucher Redis ; puis `RATE_START_IP` sur `request.remote_addr or "unknown"` (`ProxyFix(x_for=1)` le tire déjà de `X-Forwarded-For`) ; puis, seulement si la limite par IP passe, `RATE_START_GLOBAL` sur le sujet `"all"` : une requête refusée par IP ne compte jamais dans le plafond global ; puis `client_name` facultatif, chaîne ≤ 40 après `strip()`, sinon 400 `INVALID_REQUEST` ; vide → `DEFAULT_CLIENT_NAME`) → 200 `{ok, device_code, user_code, verification_uri: web_url()+"/lier", verification_uri_complete: web_url()+"/lier?code="+user_code, expires_in: 600, interval: 5}`.
-    - `GET /overlay/device/lookup?user_code=` (`require_session_user`, `require_owner`) → 200 `{ok, client_name, created_at, expires_in}` ; format invalide 400 `INVALID_REQUEST` ; inconnu 404 `CODE_EXPIRED`.
-    - `POST /overlay/device/approve` (`require_session_user` (CSRF compris), `require_owner`, puis limite `RATE_APPROVE` par uid, puis validation : `user_code` normalisable, `decision` ∈ {`approve`, `deny`}, `guild_id` absent ou `^[0-9]{1,20}$`, sinon 400 `INVALID_REQUEST`). Pour `approve` avec `guild_id`, appel de `send_command("user_guilds", 0, uid, timeout=5)` : échec → `error_status(res, 503)` ; serveur absent de `guilds` → 403 `NOT_GUILD_MEMBER`, **avant** de consommer le code. Puis `ot.decide(...)` avec `user=_user_snapshot(session["discord_user"])` → 200 `{"ok": True}`.
+    - `GET /overlay/device/lookup?user_code=` (`require_session_user` seul : tout compte connecté) → 200 `{ok, client_name, created_at, expires_in}` ; format invalide 400 `INVALID_REQUEST` ; inconnu 404 `CODE_EXPIRED`.
+    - `POST /overlay/device/approve` (`require_session_user` (CSRF compris) : tout compte connecté ; `uid = current_user_id()`, celui de la session ; puis limite `RATE_APPROVE` sur cet uid ; puis validation : `user_code` normalisable, `decision` ∈ {`approve`, `deny`}, `guild_id` absent ou `^[0-9]{1,20}$`, sinon 400 `INVALID_REQUEST` ; les clés `uid`, `user_id` et `user` du corps ne sont jamais lues). Pour `approve` avec `guild_id`, appel de `send_command("user_guilds", 0, uid, timeout=5)` : échec → `error_status(res, 503)` ; serveur absent de `guilds` → 403 `NOT_GUILD_MEMBER`, **avant** de consommer le code. Puis `ot.decide(code, approve=…, uid=uid, user=_user_snapshot(session["discord_user"]), guild_id=…)` → 200 `{"ok": True}` : le jeton émis appartient toujours à celui qui a cliqué.
     - `POST /overlay/token {device_code}` (sans auth ; `request.is_json` faux → 400 `{"ok": False, "error": "INVALID_REQUEST"}` sans toucher Redis ; corps JSON dont `device_code` est absent, non textuel ou inconnu → `expired_token`) → 200 `{ok, access_token, token_type: "Bearer", expires_in, user, default_guild_id}` ou 400 `{"ok": False, "error": <code RFC 8628>}`.
-    - `GET /overlay/me` (`require_identity`) → `{ok, via, user, default_guild_id, is_owner}` (session : `_user_snapshot(session["discord_user"])` et `default_guild_id: None`).
-    - `GET /overlay/tokens` (`require_identity`) → `{ok, tokens: [r.public() | {"current": r.tid == ident.tid}]}`.
-    - `POST /overlay/tokens/revoke {id}` (`require_identity`) : session → `is_owner` sinon 403 `NOT_OWNER` ; porteur → `id` doit valoir son `tid`, sinon 404 `{"ok": False, "error": "NOT_FOUND"}` ; `ot.revoke` faux → 404 `NOT_FOUND`.
+    - `GET /overlay/me` (`require_identity`) → exactement `{ok, via, user, default_guild_id}` (session : `_user_snapshot(session["discord_user"])` et `default_guild_id: None`), sans `is_owner`.
+    - `GET /overlay/tokens` (`require_identity`) → `{ok, tokens: [r.public() | {"current": r.tid == ident.tid} for r in ot.list_tokens(ident.uid)]}` : les jetons de l'appelant seulement.
+    - `POST /overlay/tokens/revoke {id}` (`require_identity`) : session (CSRF par `require_identity`) → `ot.revoke(ident.uid, id)`, qui ne trouve que les jetons du HASH de l'appelant : le `tid` d'un autre uid rend faux → 404 `{"ok": False, "error": "NOT_FOUND"}`, sans rien supprimer ; porteur → `id` doit valoir son `tid`, sinon 404 `NOT_FOUND` ; `ot.revoke` faux → 404 `NOT_FOUND`.
     - `POST /overlay/logout` (`require_bearer`) → `ot.revoke(ident.uid, ident.tid)` → `{"ok": True}`.
     - `GET /overlay/guilds` (`require_identity`) → `send_command("user_guilds", 0, uid, timeout=5)` → `{"ok": True, "guilds": res["guilds"]}` ; échec → `jsonify(res), error_status(res, 503)`.
     - `OverlayError` → `jsonify(e.body()), e.status` partout ; `RATE_LIMITED` → 429 `{"ok": False, "error": "RATE_LIMITED"}`.
@@ -566,10 +566,6 @@ from api import web_url
 
 BASE = "/api/v1"
 GUILD42 = {"id": "42", "name": "Taverne", "icon_url": None, "greg_voice": None, "user_voice": None, "playing": False}
-
-@pytest.fixture()
-def owner(monkeypatch):
-    monkeypatch.setattr(settings, "greg_owner_id", "777")
 
 @pytest.fixture()
 def bot(monkeypatch):
@@ -611,54 +607,67 @@ def test_device_and_token_require_json_before_any_counter(client, overlay_redis,
     assert r.status_code == 400 and r.get_json() == {"ok": False, "error": "INVALID_REQUEST"}
     assert overlay_redis.kv == {}                                                # ni compteur greg:ratelimit:*, ni appareil
 
-def test_lookup_is_owner_only(app, client, logged_client, login, owner, overlay_redis, monkeypatch):
+def test_lookup_needs_a_session_only(app, client, logged_client, login, overlay_redis):
     code = start(client, client_name="GregLC")["user_code"]
-    body = logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").get_json()
-    assert body == {"ok": True, "client_name": "GregLC", "created_at": 1_800_000_000, "expires_in": 600}
-    other = login(app.test_client(), 888)
-    assert other.get(f"{BASE}/overlay/device/lookup?user_code={code}").get_json() == {"ok": False, "error": "NOT_OWNER"}
+    want = {"ok": True, "client_name": "GregLC", "created_at": 1_800_000_000, "expires_in": 600}
+    assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").get_json() == want
+    assert login(app.test_client(), 888).get(f"{BASE}/overlay/device/lookup?user_code={code}").get_json() == want
     assert app.test_client().get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 401
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code=nope").status_code == 400
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code=BCDF-GHJK").get_json() == {"ok": False, "error": "CODE_EXPIRED"}
-    monkeypatch.setattr(settings, "greg_owner_id", "")
-    assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").get_json() == {"ok": False, "error": "NOT_OWNER"}
 
-def test_approve_then_token(client, logged_client, owner, bot, overlay_redis):
+def test_any_logged_in_user_links_its_own_account(app, client, logged_client, login, bot, overlay_redis, monkeypatch):
+    monkeypatch.setattr(settings, "greg_owner_id", "999")                        # GREG_OWNER_ID ne joue aucun rôle
+    other = login(app.test_client(), 888)
+    d1, d2 = start(client, client_name="PC 777"), start(client, client_name="PC 888")
+    assert approve(logged_client, d1["user_code"], guild_id="42").get_json() == {"ok": True}
+    assert approve(other, d2["user_code"], guild_id="42").get_json() == {"ok": True}
+    assert [c["user_id"] for c in bot.calls] == [777, 888]                       # serveurs de celui qui autorise
+    overlay_redis.now += 5
+    t1, t2 = (client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]}).get_json() for d in (d1, d2))
+    assert (t1["user"]["id"], t2["user"]["id"]) == ("777", "888")
+    assert (ot.resolve(t1["access_token"]).uid, ot.resolve(t2["access_token"]).uid) == (777, 888)
+    assert [r.label for r in ot.list_tokens(777)] == ["PC 777"] and [r.label for r in ot.list_tokens(888)] == ["PC 888"]
+    assert [t["label"] for t in other.get(f"{BASE}/overlay/tokens").get_json()["tokens"]] == ["PC 888"]   # pas de croisement
+
+def test_approve_then_token_ignores_identity_in_the_body(client, logged_client, bot, overlay_redis):
     d = start(client, client_name="GregLC")
-    r = approve(logged_client, d["user_code"], guild_id="42", user_id="999", user={"id": "999"})
+    r = approve(logged_client, d["user_code"], guild_id="42", uid="999", user_id="999", user={"id": "999", "username": "pirate"})
     assert r.status_code == 200 and r.get_json() == {"ok": True}
     assert bot.calls == [{"action": "user_guilds", "guild_id": 0, "user_id": 777, "data": None, "timeout": 5}]
     overlay_redis.now += 5
     t = client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]}).get_json()
     assert t["ok"] is True and t["token_type"] == "Bearer" and t["expires_in"] == 15_552_000
     assert t["access_token"].startswith("greg_ow_") and t["default_guild_id"] == "42"
-    assert t["user"] == {"id": "777", "username": "greg-fan", "global_name": None, "avatar": None}   # jamais du corps
+    assert t["user"] == {"id": "777", "username": "greg-fan", "global_name": None, "avatar": None}   # la session, jamais le corps
+    assert ot.resolve(t["access_token"]).uid == 777 and ot.list_tokens(999) == []
 
-def test_approve_csrf_owner_and_guild_checks_keep_the_code(app, client, logged_client, login, owner, bot, overlay_redis):
+def test_approve_csrf_and_guild_checks_keep_the_code(app, client, logged_client, bot, overlay_redis):
     code = start(client)["user_code"]
     form = logged_client.post(f"{BASE}/overlay/device/approve", data=f"user_code={code}&decision=approve",
                               content_type="application/x-www-form-urlencoded", headers={"Origin": "https://evil.example"})
     assert form.status_code == 403 and form.get_json()["error"] == "CSRF_FAILED"
-    assert approve(login(app.test_client(), 888), code).get_json() == {"ok": False, "error": "NOT_OWNER"}
+    assert approve(app.test_client(), code).status_code == 401                    # sans session
     bot.result = {"ok": True, "guilds": []}
     assert approve(logged_client, code, guild_id="43").get_json()["error"] == "NOT_GUILD_MEMBER"
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 200   # pas consommé
 
 @pytest.mark.parametrize("body", [{"user_code": "nope", "decision": "approve"}, {"user_code": "BCDF-GHJK", "decision": "oui"},
                                   {"user_code": "BCDF-GHJK", "decision": "approve", "guild_id": "abc"}])
-def test_approve_invalid_bodies(logged_client, owner, bot, overlay_redis, body):
+def test_approve_invalid_bodies(logged_client, bot, overlay_redis, body):
     r = logged_client.post(f"{BASE}/overlay/device/approve", json=body)
     assert r.status_code == 400 and r.get_json() == {"ok": False, "error": "INVALID_REQUEST"}
 
-def test_approve_expired_used_and_rate_limited(client, logged_client, owner, bot, overlay_redis):
+def test_approve_expired_used_and_rate_limited(app, client, logged_client, login, bot, overlay_redis):
     assert approve(logged_client, "BCDF-GHJK").status_code == 404
     code = start(client)["user_code"]
     assert approve(logged_client, code).status_code == 200
     r = approve(logged_client, code); assert r.status_code == 409 and r.get_json()["error"] == "ALREADY_USED"
     statuses = [approve(logged_client, "BCDF-GHJK").status_code for _ in range(4)]
     assert statuses[-1] == 429                                                    # 5 par minute et par uid
+    assert approve(login(app.test_client(), 888), "BCDF-GHJK").status_code == 404  # un autre uid a son propre seau
 
-def test_deny_then_access_denied(client, logged_client, owner, overlay_redis):
+def test_deny_then_access_denied(client, logged_client, overlay_redis):
     d = start(client)
     logged_client.post(f"{BASE}/overlay/device/approve", json={"user_code": d["user_code"], "decision": "deny"})
     r = client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]})
@@ -671,12 +680,13 @@ def test_token_errors_follow_rfc8628(client, overlay_redis):
     assert poll({"device_code": d["device_code"]}) == "slow_down"
     assert poll({"device_code": "inconnu"}) == poll({}) == poll({"device_code": 5}) == "expired_token"
 
-def test_me_tokens_revoke_and_logout(client, logged_client, owner, overlay_redis, issue_token):
+def test_me_tokens_revoke_and_logout(client, logged_client, overlay_redis, issue_token):
     tok = issue_token(); h = {"Authorization": f"Bearer {tok}"}
     me = client.get(f"{BASE}/overlay/me", headers=h).get_json()
-    assert (me["via"], me["default_guild_id"], me["is_owner"], me["user"]["id"]) == ("overlay", "42", True, "777")
+    assert (me["via"], me["default_guild_id"], me["user"]["id"]) == ("overlay", "42", "777")
     sme = logged_client.get(f"{BASE}/overlay/me").get_json()
-    assert (sme["via"], sme["default_guild_id"], sme["is_owner"]) == ("session", None, True)
+    assert (sme["via"], sme["default_guild_id"], sme["user"]["id"]) == ("session", None, "777")
+    assert set(me) == set(sme) == {"ok", "via", "user", "default_guild_id"}                # pas d'is_owner
     [row] = client.get(f"{BASE}/overlay/tokens", headers=h).get_json()["tokens"]
     assert set(row) == {"id", "label", "created_at", "last_used_at", "expires_at", "current"} and row["current"] is True
     assert logged_client.get(f"{BASE}/overlay/tokens").get_json()["tokens"][0]["current"] is False
@@ -696,6 +706,19 @@ def test_bearer_revokes_itself_and_logout(client, logged_client, overlay_redis, 
     assert client.post(f"{BASE}/overlay/tokens/revoke", json={"id": tid},
                        headers={"Authorization": f"Bearer {b}"}).get_json() == {"ok": True}
 
+def test_session_revokes_only_its_own_tokens(app, client, logged_client, login, overlay_redis, issue_token):
+    mine, theirs = issue_token(uid=777), issue_token(uid=888)
+    my_tid, their_tid = ot.resolve(mine).tid, ot.resolve(theirs).tid
+    r = logged_client.post(f"{BASE}/overlay/tokens/revoke", json={"id": their_tid})
+    assert r.status_code == 404 and r.get_json() == {"ok": False, "error": "NOT_FOUND"}
+    r = client.post(f"{BASE}/overlay/tokens/revoke", json={"id": their_tid}, headers={"Authorization": f"Bearer {mine}"})
+    assert r.status_code == 404 and r.get_json() == {"ok": False, "error": "NOT_FOUND"}   # un porteur : lui-même seulement
+    assert ot.is_live(888, their_tid) and ot.is_live(777, my_tid)
+    assert [t["id"] for t in logged_client.get(f"{BASE}/overlay/tokens").get_json()["tokens"]] == [my_tid]
+    other = login(app.test_client(), 888)
+    assert other.post(f"{BASE}/overlay/tokens/revoke", json={"id": their_tid}).get_json() == {"ok": True}
+    assert not ot.is_live(888, their_tid) and ot.is_live(777, my_tid)
+
 def test_guilds_come_from_the_bot(client, bot, overlay_redis, issue_token):
     r = client.get(f"{BASE}/overlay/guilds", headers={"Authorization": f"Bearer {issue_token(uid=4242)}"})
     assert r.get_json() == {"ok": True, "guilds": [GUILD42]}
@@ -705,9 +728,9 @@ def test_guilds_come_from_the_bot(client, bot, overlay_redis, issue_token):
 ```
 
 - [ ] **Étape 2 : les voir échouer.** `[API] tests/test_overlay_routes.py` → `ModuleNotFoundError: No module named 'api.routes.overlay'`.
-- [ ] **Étape 3 : implémenter** `is_owner`, `require_owner`, `require_bearer` puis `routes/overlay.py` et son enregistrement. Le portrait vient toujours de `session["discord_user"]` ou de l'enregistrement du jeton, jamais du corps.
-- [ ] **Étape 4 : les voir passer.** `[API] tests/test_overlay_routes.py` → tout vert ; `[API] tests` → 0 failed ; `uvx ruff check --select E4,E7,E9,F --ignore F811 services/api/api/routes/overlay.py services/api/tests/test_overlay_routes.py` → `All checks passed!`.
-- [ ] **Étape 5 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/api/api/routes/overlay.py services/api/api/services/authz.py services/api/api/__init__.py services/api/tests/test_overlay_routes.py && git commit -m "feat(api): parcours par code d'appareil /overlay (propriétaire seul), jetons listés et révocables"`
+- [ ] **Étape 3 : implémenter** `require_bearer` puis `routes/overlay.py` et son enregistrement. L'uid vient toujours de la session (`current_user_id()`) ou du jeton ; le portrait de `session["discord_user"]` ou de l'enregistrement du jeton ; jamais du corps. Aucun contrôle de propriétaire.
+- [ ] **Étape 4 : les voir passer.** `[API] tests/test_overlay_routes.py` → tout vert ; `[API] tests` → 0 failed ; `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811,E701,E702,E731 services/api/api/routes/overlay.py services/api/tests/test_overlay_routes.py` → `All checks passed!`. Puis `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && grep -niE "owner" services/api/api/routes/overlay.py services/api/api/services/authz.py` → aucune ligne (code de sortie 1).
+- [ ] **Étape 5 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/api/api/routes/overlay.py services/api/api/services/authz.py services/api/api/__init__.py services/api/tests/test_overlay_routes.py && git commit -m "feat(api): parcours par code d'appareil /overlay pour tout compte connecté, jetons listés et révocables"`
 
 ---
 
@@ -1222,7 +1245,7 @@ def test_invalid_expected_is_400_without_calling_the_bot(logged_client, fake_sen
 
 **Files:**
 - Create : `services/web/src/lib/devices.ts`
-- Modify : `services/web/src/lib/api.ts` (commentaire d'en-tête l. 1-13 ; objet `api` l. 183-277 : six méthodes après le chansonnier)
+- Modify : `services/web/src/lib/api.ts` (commentaire d'en-tête l. 1-13 ; objet `api` l. 183-277 : cinq méthodes après le chansonnier)
 - Modify : `services/web/src/theme/copy.extra.ts` (section `devices` insérée avant `error:` l. 179)
 - Create : `services/web/tests/devices.test.mjs`
 
@@ -1240,7 +1263,7 @@ def test_invalid_expected_is_400_without_calling_the_bot(logged_client, fake_sen
   - `pickDeviceGuild(guilds: readonly DeviceGuild[], saved: string | null): string | null` : `saved` s'il est listé, sinon le premier avec `user_voice`, sinon le premier `playing`, sinon le premier, sinon `null`.
   - `ageMinutes(createdAtS: number, nowMs: number): number` (entier ≥ 0)
   - `deviceErrorKey(e: unknown): string` : `payload.error` → `CODE_EXPIRED`, `ALREADY_USED`, `RATE_LIMITED`, `NOT_GUILD_MEMBER` → `'devices.error.<code>'` ; `INVALID_REQUEST` → `'devices.error.INVALID_CODE'` ; sinon `'devices.error.generic'`.
-- Produces (`api`) : `deviceMe: () => get('/overlay/me')`, `deviceGuilds: () => get('/overlay/guilds')`, `deviceLookup: (code: string) => get('/overlay/device/lookup', { user_code: code })`, `deviceDecide: (code: string, decision: 'approve' | 'deny', guildId?: string) => post('/overlay/device/approve', guildId ? { user_code: code, decision, guild_id: guildId } : { user_code: code, decision })`, `deviceTokens: () => get('/overlay/tokens')`, `deviceRevoke: (id: string) => post('/overlay/tokens/revoke', { id })`.
+- Produces (`api`) : `deviceGuilds: () => get('/overlay/guilds')`, `deviceLookup: (code: string) => get('/overlay/device/lookup', { user_code: code })`, `deviceDecide: (code: string, decision: 'approve' | 'deny', guildId?: string) => post('/overlay/device/approve', guildId ? { user_code: code, decision, guild_id: guildId } : { user_code: code, decision })`, `deviceTokens: () => get('/overlay/tokens')`, `deviceRevoke: (id: string) => post('/overlay/tokens/revoke', { id })`. Pas de `deviceMe` : sans contrôle de propriétaire, le site n'a rien à lire dans `/overlay/me` (`getMe()` donne déjà le compte) ; la route reste pour l'appli (plan B).
 - Produces (`EXTRA.devices`, texte exact) :
 
 ```ts
@@ -1251,6 +1274,7 @@ devices: {
   intro: 'L’appli Greg affiche un code de 8\u00a0lettres. Saisissez-le ici pour la lier à votre compte.',
   codeLabel: 'Code affiché par l’appli',
   device: '«\u00a0{name}\u00a0» attend votre accord.',
+  warning: 'N’autorisez que l’appli que vous venez d’ouvrir vous-même.',
   age: { one: 'Demandé il y a 1\u00a0min', other: 'Demandé il y a {n}\u00a0min' },
   ageNow: 'Demandé à l’instant',
   guildLabel: 'Serveur par défaut',
@@ -1260,7 +1284,6 @@ devices: {
   approved: 'C’est fait, Sire. Retournez à votre jeu.',
   denied: 'Demande refusée. L’appli ne sera pas liée.',
   login: 'Connectez-vous avec Discord pour autoriser l’appli. Le code vous attendra dix minutes.',
-  notAllowed: 'Cette page ne vous est pas ouverte.',
   listTitle: 'Appareils liés',
   listEmpty: 'Aucun appareil lié.',
   lastUsed: 'Dernière utilisation\u00a0: {date}',
@@ -1326,11 +1349,12 @@ test('deviceErrorKey et textes', () => {
   assert.equal(D.ageMinutes(1000, 1000 * 1000 + 125_000), 2); assert.equal(D.ageMinutes(2000, 1000), 0);
   assert.equal(tx('devices.age', { n: 3 }), 'Demandé il y a 3\u00a0min');
   assert.equal(tx('devices.approved'), 'C’est fait, Sire. Retournez à votre jeu.');
+  assert.equal(tx('devices.warning'), 'N’autorisez que l’appli que vous venez d’ouvrir vous-même.');
+  assert.equal(tx('devices.notAllowed'), 'devices.notAllowed');                    // aucune vue « non autorisé »
 });
 
 test('api.device* : chemins, corps, session, jamais d’identité', async () => {
   for (const [fn, method, path, body] of [
-    [() => api.deviceMe(), 'GET', '/api/v1/overlay/me', undefined],
     [() => api.deviceGuilds(), 'GET', '/api/v1/overlay/guilds', undefined],
     [() => api.deviceLookup('BCDFGHJK'), 'GET', '/api/v1/overlay/device/lookup', undefined],
     [() => api.deviceDecide('BCDFGHJK', 'approve', '42'), 'POST', '/api/v1/overlay/device/approve', { user_code: 'BCDFGHJK', decision: 'approve', guild_id: '42' }],
@@ -1342,11 +1366,12 @@ test('api.device* : chemins, corps, session, jamais d’identité', async () => 
     assert.equal(calls[0].credentials, 'include'); assert.ok(!JSON.stringify(calls[0].body ?? {}).includes('user_id'));
   }
   assert.equal((await capture(() => api.deviceLookup('BCDFGHJK'))).calls[0].query, 'user_code=BCDFGHJK');
+  assert.equal(api.deviceMe, undefined);                                           // le site ne lit pas /overlay/me
 });
 ```
   (`capture` recopié de `tests/library-api.test.mjs` l. 10-18, en notant aussi `query: new URL(String(url)).searchParams.toString()`.)
 - [ ] **Étape 2 : les voir échouer.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npm test` → `devices.test.mjs` : `Cannot find module …/src/lib/devices.ts`.
-- [ ] **Étape 3 : implémenter** `devices.ts` (aucun import à l'exécution), les six méthodes (une ligne d'en-tête ajoutée au commentaire de `api.ts`), et la section `devices` telle quelle.
+- [ ] **Étape 3 : implémenter** `devices.ts` (aucun import à l'exécution), les cinq méthodes (une ligne d'en-tête ajoutée au commentaire de `api.ts`), et la section `devices` telle quelle.
 - [ ] **Étape 4 : les voir passer.** `[WEB]` → `npm test` : `fail 0` (dont `copy-extra.test.mjs` : typographie et casting) ; `GREG_TEST_TRANSPILE=1 npm test` : `fail 0` ; `npx tsc --noEmit` : code 0.
 - [ ] **Étape 5 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/web/src/lib/devices.ts services/web/src/lib/api.ts services/web/src/theme/copy.extra.ts services/web/tests/devices.test.mjs && git commit -m "feat(web): logique des appareils liés (code, code en attente, serveur par défaut) et appels /overlay"`
 
@@ -1358,22 +1383,22 @@ test('api.device* : chemins, corps, session, jamais d’identité', async () => 
 - Create : `services/web/src/app/lier/page.tsx`
 - Create : `services/web/src/components/Lier/lier.css`
 - Modify : `services/web/src/app/globals.css` (ajout `@import '../components/Lier/lier.css';` après l. 13)
-- Modify : `services/web/src/components/Header/AccountMenu.tsx` (état propriétaire ; bouton avant le `pop-sep` qui précède la déconnexion, l. 114-117)
+- Modify : `services/web/src/components/Header/AccountMenu.tsx` (bouton avant le `pop-sep` qui précède la déconnexion, l. 114-117 ; le menu n'est rendu qu'une fois `me` connu, `if (!me) return null;` l. 75)
 - Modify : `services/web/src/hooks/usePlayer.ts` (`boot`, l. 577-588)
 - Create : `services/web/tests/lier-contract.test.mjs`
 
 **Interfaces:**
-- Consumes : `api.getMe`, `api.getLoginUrl`, `api.device*`, tout `devices.ts`, `tx`, `t('auth.cta')`.
+- Consumes : `api.getMe`, `api.getLoginUrl`, `api.deviceGuilds`, `api.deviceLookup`, `api.deviceDecide`, `api.deviceTokens`, `api.deviceRevoke` (tâche 11), tout `devices.ts`, `tx`, `t('auth.cta')`.
 - Produces :
-  - `src/app/lier/page.tsx` : `'use client'`, `export default function LierPage()`. Vues : chargement → `out` → `notAllowed` → propriétaire. Au montage, un seul `useEffect(…, [])`, dans cet ordre :
+  - `src/app/lier/page.tsx` : `'use client'`, `export default function LierPage()`. Vues : chargement → `out` (non connecté) ou connecté ; aucune autre (pas de branche propriétaire : ni `is_owner`, ni `notAllowed`, ni `deviceMe` dans la page). Au montage, un seul `useEffect(…, [])`, dans cet ordre :
     1. `const urlCode = normalizeUserCode(new URLSearchParams(window.location.search).get('code'))`. Jamais `useSearchParams` : Next 14.2.35 a `experimental.missingSuspenseWithCSRBailout: true` par défaut (`node_modules/next/dist/server/config-shared.js`), et un `useSearchParams` hors `<Suspense>` dans une page prérendue fait échouer `next build`, donc le déploiement Railway (`RUN npm run build` du Dockerfile). Le mot `useSearchParams` n'apparaît nulle part dans la page, pas même en commentaire : le test de contrat le cherche.
     2. `api.getMe()`. Échec → vue `out` (non connecté) : bouton `<a className="btn-solid" href={api.getLoginUrl()}>` « Se connecter avec Discord » dont le clic appelle `savePendingCode(browserSession(), urlCode, Date.now())` quand `urlCode` existe ; le code en attente n'est pas touché.
-    3. Succès de `getMe()` → **aussitôt**, avant tout appel à `api.deviceMe()` et donc avant la branche `is_owner` : `const pending = takePendingCode(browserSession(), Date.now())` (seul appel de la page). Le code est ainsi consommé pour tout connecté, propriétaire ou non, et même si `/overlay/me` échoue ensuite : `boot()` ne renvoie plus vers /lier.
-    4. `api.deviceMe()` : échec → `<p role="alert">{tx(deviceErrorKey(e))}</p>` ; `me.is_owner !== true` (expression exacte) → `notAllowed` ; sinon vue propriétaire : champ prérempli par `urlCode ?? pending`, puis `history.replaceState(null, '', '/lier')`.
+    3. Succès de `getMe()` → **aussitôt**, avant tout appel `/overlay/*` : `const pending = takePendingCode(browserSession(), Date.now())` (seul appel de la page). Le code est ainsi consommé pour tout connecté, même si `/overlay/guilds` ou `/overlay/tokens` échoue ensuite : `boot()` ne renvoie plus vers /lier.
+    4. Vue connectée, pour tout compte : champ prérempli par `urlCode ?? pending`, puis `history.replaceState(null, '', '/lier')` ; puis `api.deviceGuilds()` et `api.deviceTokens()`, chacun appelé une seule fois dans la page, ici ; un échec de l'un → `<p role="alert">{tx(deviceErrorKey(e))}</p>`, et la vue reste affichée.
 
-    Code complet → `deviceLookup` (nom et âge) ; jamais d'autorisation automatique. Choix du serveur parmi `deviceGuilds()` (`pickDeviceGuild(guilds, localStorage['greg.webplayer.guild_id'])`). Une seule fonction `async function decide(decision: 'approve' | 'deny')` appelle `api.deviceDecide`, appelée seulement par `onClick={() => decide('approve')}` (`.btn-solid`) et `onClick={() => decide('deny')}` (`.btn-ghost`). Liste `deviceTokens()` (nom, `lastUsed`, `expires` en `toLocaleDateString('fr-FR')`) avec « Délier », confirmé par un dialogue `.pop.plaque.confirm` `role="dialog"` (focus sur « Garder », `.btn-ghost` puis `.btn-danger`, Échap ferme), puis `deviceRevoke`. Erreurs : `<p role="alert">{tx(deviceErrorKey(e))}</p>`. Pas de `usePlayerInit`.
+    Code complet → `deviceLookup` : `tx('devices.device', { name })`, l'âge (`devices.ageNow` ou `devices.age`), puis juste dessous l'avertissement `tx('devices.warning')` ; jamais d'autorisation automatique. Choix du serveur parmi `deviceGuilds()` (`pickDeviceGuild(guilds, localStorage['greg.webplayer.guild_id'])`). Une seule fonction `async function decide(decision: 'approve' | 'deny')` appelle `api.deviceDecide`, appelée seulement par `onClick={() => decide('approve')}` (`.btn-solid`) et `onClick={() => decide('deny')}` (`.btn-ghost`). Liste `deviceTokens()` : les jetons de l'utilisateur connecté, l'API ne rend que les siens (nom, `lastUsed`, `expires` en `toLocaleDateString('fr-FR')`), avec « Délier », confirmé par un dialogue `.pop.plaque.confirm` `role="dialog"` (focus sur « Garder », `.btn-ghost` puis `.btn-danger`, Échap ferme), puis `deviceRevoke` ; une fois réussi, la ligne est retirée de l'état local (pas de second `deviceTokens()`). Erreurs : `<p role="alert">{tx(deviceErrorKey(e))}</p>`. Pas de `usePlayerInit`.
   - `lier.css` : `.lier` conteneur fixe défilant (`position: fixed; inset: 0; overflow-y: auto`, le `body` est en `overflow: hidden`), carte `.plaque` centrée, largeur max 520 px, marge latérale 16 px ; réutilise `.vl-kicker`, `.vl-title`, `.vl-body`, `.vl-small`, `.field`, `.btn-solid`, `.btn-ghost`, `.btn-danger` ; aucune courbe `linear(` en dur.
-  - `AccountMenu` : à la première ouverture, `api.deviceMe()` ; si `is_owner === true`, un `<button type="button" className="pop-item">` « {tx('devices.menu')} » qui ferme le menu et fait `window.location.assign('/lier')`.
+  - `AccountMenu` : pour tout utilisateur connecté (le menu n'existe qu'une fois `me` connu), un `<button type="button" className="pop-item">` « {tx('devices.menu')} » qui ferme le menu et fait `window.location.assign('/lier')` ; aucun appel réseau, ni `deviceMe` ni `is_owner`.
   - `boot()` : après `refreshMe()`, si `me` est connu et `peekPendingCode(browserSession(), Date.now())` rend un code → `window.location.replace('/lier')` puis `return`.
 
 - [ ] **Étape 1 : écrire les tests qui échouent** (`tests/lier-contract.test.mjs`) :
@@ -1400,14 +1425,21 @@ test('/lier consomme le code en attente au montage et nettoie l’URL', () => { 
   assert.match(page, /savePendingCode\(browserSession\(\)/);
 });
 
-test('/lier lit ?code= sans useSearchParams et prend le code avant la branche is_owner', () => {   // Review Focus 5
+test('/lier lit ?code= sans useSearchParams et prend le code avant les appels /overlay', () => {   // Review Focus 5
   assert.ok(!page.includes('useSearchParams'));
   assert.match(page, /new URLSearchParams\(window\.location\.search\)\.get\('code'\)/);
   assert.equal(page.match(/takePendingCode\(/g)?.length, 1);
   const me = page.indexOf('api.getMe()'), take = page.indexOf('takePendingCode(browserSession(), Date.now())');
   assert.ok(me >= 0 && me < take, 'le code se prend une fois getMe() réussi');
-  assert.ok(take < page.indexOf('api.deviceMe()') && take < page.indexOf('is_owner !== true'),
-    'et avant /overlay/me et la branche is_owner : pas de boucle « / » ↔ /lier pour un non-propriétaire');
+  assert.equal(page.match(/api\.deviceGuilds\(\)/g)?.length, 1); assert.equal(page.match(/api\.deviceTokens\(\)/g)?.length, 1);
+  assert.ok(take < page.indexOf('api.deviceGuilds()') && take < page.indexOf('api.deviceTokens()'),
+    'et avant /overlay/guilds et /overlay/tokens : un échec de l’un ne fait pas tourner « / » ↔ /lier');
+});
+
+test('/lier : tout connecté, sans branche propriétaire, avec l’avertissement sous l’appareil', () => {
+  assert.ok(!/is_owner|NOT_OWNER|notAllowed|deviceMe/.test(page));
+  const device = page.indexOf("tx('devices.device'"), warning = page.indexOf("tx('devices.warning')");
+  assert.ok(device >= 0 && device < warning, 'l’avertissement suit le nom de l’appareil');
 });
 
 test('/lier : dialogue de « Délier » au motif de Transport, textes présents', () => {
@@ -1415,9 +1447,10 @@ test('/lier : dialogue de « Délier » au motif de Transport, textes présents'
   for (const src of [page, menu]) for (const [, k] of src.matchAll(/tx\('(devices\.[\w.]+)'/g)) assert.notEqual(tx(k), k, k);
 });
 
-test('menu du compte : « Appareils liés » pour le seul propriétaire', () => {
-  assert.match(menu, /api\.deviceMe\(\)/); assert.match(menu, /is_owner === true/);
+test('menu du compte : « Appareils liés » pour tout connecté, sans appel ni contrôle de propriétaire', () => {
   assert.match(menu, /tx\('devices\.menu'\)/); assert.match(menu, /location\.assign\('\/lier'\)/);
+  assert.ok(!/deviceMe|is_owner/.test(menu));
+  assert.ok(menu.indexOf('if (!me) return null;') >= 0 && menu.indexOf('if (!me) return null;') < menu.indexOf("tx('devices.menu')"));
 });
 
 test('boot renvoie vers /lier quand un code attend', () => {
@@ -1433,8 +1466,8 @@ test('feuille de /lier importée', () => {
 - [ ] **Étape 2 : les voir échouer.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npm test` → `ENOENT … src/app/lier/page.tsx`.
 - [ ] **Étape 3 : implémenter** la page, la feuille, l'import, l'entrée du menu et la redirection de `boot`.
 - [ ] **Étape 4 : les voir passer, puis construire.** `[WEB]` → `fail 0` deux fois, `tsc` code 0. Puis `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npx next build` → code 0, et la liste `Route (app)` contient la ligne `○ /lier` (page statique : pas de `useSearchParams` hors `<Suspense>`). `next build` réécrit `tsconfig.json` et régénère `next-env.d.ts` : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git status --short -- services/web/tsconfig.json services/web/next-env.d.ts` → exactement ` M services/web/tsconfig.json` (colonne d'index vide : modifié, jamais indexé ; `next-env.d.ts` est ignoré par `.gitignore`), et `git diff --cached --name-only` ne liste aucun des deux.
-- [ ] **Étape 5 : vérifier dans un navigateur.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npx next dev -p 3001` en arrière-plan ; avec Playwright (MCP), ouvrir `http://localhost:3001/lier?code=bcdf-ghjk` après avoir posé `page.route('**/api/v1/**', …)` (via `browser_run_code_unsafe`) pour trois scénarios : `/users/me` 401 (bouton Discord, code gardé dans `sessionStorage['greg.lier.pending']`) ; connecté non propriétaire (`/overlay/me` `is_owner:false` → message neutre) ; propriétaire (`lookup` → nom et âge, serveurs, « Autoriser » → « C’est fait, Sire. Retournez à votre jeu. », liste et « Délier » avec dialogue). Vérifier à 375 px de large (aucun défilement horizontal), le focus doré au clavier, et qu'aucun POST ne part avant le clic. Arrêter le serveur ; `git status` ne doit lister ni `tsconfig.json` ni `next-env.d.ts` dans ce qui est ajouté.
-- [ ] **Étape 6 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/web/src/app/lier/page.tsx services/web/src/components/Lier/lier.css services/web/src/app/globals.css services/web/src/components/Header/AccountMenu.tsx services/web/src/hooks/usePlayer.ts services/web/tests/lier-contract.test.mjs && git commit -m "feat(web): page /lier (autoriser, refuser, délier) et entrée Appareils liés du propriétaire"`
+- [ ] **Étape 5 : vérifier dans un navigateur.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npx next dev -p 3001` en arrière-plan ; avec Playwright (MCP), ouvrir `http://localhost:3001/lier?code=bcdf-ghjk` après avoir posé `page.route('**/api/v1/**', …)` (via `browser_run_code_unsafe`) pour trois scénarios : `/users/me` 401 (bouton Discord, code gardé dans `sessionStorage['greg.lier.pending']`) ; connecté avec `/overlay/guilds` en 503 (alerte, vue connectée gardée, `sessionStorage['greg.lier.pending']` vide : pas de retour en boucle) ; connecté (`lookup` → nom, âge et « N’autorisez que l’appli que vous venez d’ouvrir vous-même. », serveurs, « Autoriser » → « C’est fait, Sire. Retournez à votre jeu. », liste de ses appareils et « Délier » avec dialogue). Aucune requête vers `/overlay/me`. Vérifier à 375 px de large (aucun défilement horizontal), le focus doré au clavier, et qu'aucun POST ne part avant le clic. Arrêter le serveur ; `git status` ne doit lister ni `tsconfig.json` ni `next-env.d.ts` dans ce qui est ajouté.
+- [ ] **Étape 6 : commit.** `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git add services/web/src/app/lier/page.tsx services/web/src/components/Lier/lier.css services/web/src/app/globals.css services/web/src/components/Header/AccountMenu.tsx services/web/src/hooks/usePlayer.ts services/web/tests/lier-contract.test.mjs && git commit -m "feat(web): page /lier (autoriser, refuser, délier) et entrée Appareils liés pour tout connecté"`
 
 ---
 
@@ -1508,19 +1541,20 @@ test('usePlayer : expected sur les trois mutations, relecture sur STALE', () => 
 
 **Files:** aucun fichier de code ; la PR seulement.
 
-- [ ] **Étape 1 : suites complètes.** `[API] tests` → `722 + nouveaux passed`, 0 failed ; `[BOT] tests` → `270 + nouveaux passed`, 0 failed ; `[WEB]` → `npm test` `fail 0`, `GREG_TEST_TRANSPILE=1 npm test` `fail 0`, `npx tsc --noEmit` code 0. Construction du site : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npx next build` → code 0, la liste `Route (app)` contient `○ /lier` ; puis `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git status --short -- services/web/tsconfig.json services/web/next-env.d.ts` → exactement ` M services/web/tsconfig.json` (non indexé ; `next-env.d.ts` ignoré), et `git diff --cached --name-only` ne liste aucun des deux. Ruff sur les fichiers Python créés : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811 services/api/api/services/overlay_tokens.py services/api/api/routes/overlay.py services/api/tests/overlay_fakes.py services/api/tests/test_overlay_tokens.py services/api/tests/test_identity.py services/api/tests/test_overlay_routes.py services/api/tests/test_overlay_socket.py services/api/tests/test_player_event_relay.py services/api/tests/test_queue_stale.py services/api/tests/test_csrf.py services/bot/tests/test_overlay_bot.py services/bot/tests/test_queue_expected.py services/bot/tests/test_queue_item_matches.py` → `All checks passed!`.
+- [ ] **Étape 1 : suites complètes.** `[API] tests` → `722 + nouveaux passed`, 0 failed ; `[BOT] tests` → `270 + nouveaux passed`, 0 failed ; `[WEB]` → `npm test` `fail 0`, `GREG_TEST_TRANSPILE=1 npm test` `fail 0`, `npx tsc --noEmit` code 0. Construction du site : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin/services/web && npx next build` → code 0, la liste `Route (app)` contient `○ /lier` ; puis `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && git status --short -- services/web/tsconfig.json services/web/next-env.d.ts` → exactement ` M services/web/tsconfig.json` (non indexé ; `next-env.d.ts` ignoré), et `git diff --cached --name-only` ne liste aucun des deux. Ruff sur les fichiers Python créés : `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && uvx ruff check --select E4,E7,E9,F --ignore F811,E701,E702,E731 services/api/api/services/overlay_tokens.py services/api/api/routes/overlay.py services/api/tests/overlay_fakes.py services/api/tests/test_overlay_tokens.py services/api/tests/test_identity.py services/api/tests/test_overlay_routes.py services/api/tests/test_overlay_socket.py services/api/tests/test_player_event_relay.py services/api/tests/test_queue_stale.py services/api/tests/test_csrf.py services/bot/tests/test_overlay_bot.py services/bot/tests/test_queue_expected.py services/bot/tests/test_queue_item_matches.py` → `All checks passed!`.
 - [ ] **Étape 2 : relecture indépendante** (spec §7) par un agent qui n'a pas écrit le code, sur `git diff main...HEAD -- services packages`, avec pour grille les Global Constraints et la Review Focus. Corriger, relancer l'étape 1, committer chaque correctif avec ses chemins explicites.
 - [ ] **Étape 3 : vérifier ce qui part.** `git status --short` : `services/web/tsconfig.json` reste modifié et non indexé ; aucun fichier interdit dans `git log main..HEAD --name-only`. `git log main..HEAD --format=%B | grep -iE "claude|co-authored|generated with"` ne rend rien.
-- [ ] **Étape 4 : comparer les origines du site (lecture seule, avant la PR).** La garde CSRF de la tâche 1 n'admet que `WEB_ORIGINS` = `CORS_ORIGINS` ∪ `WEB_URL` du service API ; un domaine du site absent de cette liste recevrait 403 `CSRF_FAILED` sur toute action après le déploiement (le proxy Next transmet l'`Origin` du navigateur).
+- [ ] **Étape 4 : comparer les origines du site et de l'appli (lecture seule, avant la PR).** `GREG_OWNER_ID` et `OVERLAY_ORIGINS` sont déjà posées sur le service API (constat du 2026-11-26, noms seulement) ; `GREG_OWNER_ID` ne sert pas à l'appli et n'est pas lu ici. La garde CSRF de la tâche 1 n'admet que `WEB_ORIGINS` = `CORS_ORIGINS` ∪ `WEB_URL` du service API ; un domaine du site absent de cette liste recevrait 403 `CSRF_FAILED` sur toute action après le déploiement (le proxy Next transmet l'`Origin` du navigateur).
   - `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && railway domain list --service WEB` → tableau des domaines publics du site (constaté le 2026-11-25 : une ligne `gregleconsanguin.up.railway.app`, type `service`). Jamais `railway domain` sans sous-commande : il crée un domaine.
-  - `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && railway variable list --service API --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);for(const k of ['WEB_URL','CORS_ORIGINS'])console.log(k+' = '+(v[k]??'(absente)'))})"` → deux lignes, les seules valeurs affichées (des adresses publiques, aucun secret ; constaté le 2026-11-25 : l'origine de `WEB_URL` est `https://gregleconsanguin.up.railway.app`, `CORS_ORIGINS = (absente)`). Jamais `--kv` ni `--json` sans ce filtre : ils impriment les secrets du service.
-  - Règle : pour chaque domaine `d` du service WEB, l'origine `https://d` doit égaler l'origine de `WEB_URL` ou une entrée de `CORS_ORIGINS`. Résultat → ligne « Origines du site » du corps de la PR (étape 5) et, s'il manque une origine, question (b) de l'étape 7. La session ne règle rien.
-- [ ] **Étape 5 : écrire le corps de la PR.** Avec l'outil Write, dans le scratchpad de la session qui exécute ce plan (le « Scratchpad directory » de son invite système, jamais dans le dépôt) : fichier `pr-overlay-api.md`. Contenu exact ci-dessous, où `{API}`, `{BOT}` et `{WEB}` sont les décomptes lus à l'étape 1, et `{ORIGINES}` l'une des deux phrases données après le bloc :
+  - `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && railway variable list --service API --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);for(const k of ['WEB_URL','CORS_ORIGINS','OVERLAY_ORIGINS'])console.log(k+' = '+(v[k]??'(absente)'))})"` → trois lignes, les seules valeurs affichées (des adresses publiques, aucun secret ; constaté le 2026-11-25 : l'origine de `WEB_URL` est `https://gregleconsanguin.up.railway.app`, `CORS_ORIGINS = (absente)`). Jamais `--kv` ni `--json` sans ce filtre : ils impriment les secrets du service.
+  - Règle du site : pour chaque domaine `d` du service WEB, l'origine `https://d` doit égaler l'origine de `WEB_URL` ou une entrée de `CORS_ORIGINS`. Résultat → ligne « Origines du site » du corps de la PR (étape 5) et, s'il manque une origine, question (b) de l'étape 7.
+  - Règle de l'appli : `OVERLAY_ORIGINS`, découpée par virgules (espaces retirés, minuscules, comme `api.overlay_origins()`), doit contenir `overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk`. Résultat → ligne « Origine de l'appli » du corps de la PR et, si elle manque, question (a) de l'étape 7. La session ne règle rien.
+- [ ] **Étape 5 : écrire le corps de la PR.** Avec l'outil Write, dans le scratchpad de la session qui exécute ce plan (le « Scratchpad directory » de son invite système, jamais dans le dépôt) : fichier `pr-overlay-api.md`. Contenu exact ci-dessous, où `{API}`, `{BOT}` et `{WEB}` sont les décomptes lus à l'étape 1, et `{ORIGINES}` et `{OVERLAY}` l'une des deux phrases données pour chacun après le bloc :
 
 ```markdown
 ## Résumé
 
-L'appli Overwolf de Paul obtient une entrée sûre dans Greg : un code d'appareil autorisé sur le site (`/lier`), un jeton porteur révocable valable pour le lecteur et le socket, les données qui lui manquaient (serveurs, `player_event`, `guild_id` des ticks) et une garde `expected` contre une file qui a bougé.
+L'appli Overwolf (Paul et ses potes, par un canal de test) obtient une entrée sûre dans Greg : tout compte connecté au site autorise sur `/lier` un code d'appareil qui lie l'appli à son propre compte, un jeton porteur révocable valable pour le lecteur et le socket, les données qui lui manquaient (serveurs, `player_event`, `guild_id` des ticks) et une garde `expected` contre une file qui a bougé.
 
 ### API (`services/api`)
 - Garde CSRF sur les routes de session et sur `/auth/logout` : corps JSON exigé, `Origin` ou `Referer` du site. Un formulaire envoyé depuis un autre site reçoit 403 `CSRF_FAILED` sans atteindre le bot.
@@ -1528,7 +1562,7 @@ L'appli Overwolf de Paul obtient une entrée sûre dans Greg : un code d'apparei
 - Magasin Redis `overlay_tokens` : codes d'appareil RFC 8628 (usage unique, `slow_down`), jetons `greg_ow_…` stockés en sha256 seulement, révocation, limites de débit (par IP d'abord, puis plafond global ; compteurs toujours dotés d'une échéance).
 - `/overlay/device` et `/overlay/token` n'acceptent qu'un corps JSON.
 - Identité « session ou porteur » sur le lecteur, l'historique et la recherche (désormais authentifiée, `limit` borné à 10). Le chansonnier reste en session seule et refuse tout en-tête `Authorization`.
-- Routes `/overlay/*` : `device`, `device/lookup`, `device/approve` (propriétaire seul), `token`, `me`, `tokens`, `tokens/revoke`, `logout`, `guilds`.
+- Routes `/overlay/*` : `device`, `device/lookup`, `device/approve` (tout compte connecté, pour son propre compte ; uid et portrait tirés de la session, jamais du corps ; aucun contrôle de propriétaire), `token`, `me`, `tokens`, `tokens/revoke` (ses propres jetons seulement), `logout`, `guilds`.
 - Socket.IO : jeton dans `auth` du CONNECT, revérifié à chaque `join_guild` ; une révocation déconnecte les sockets du jeton.
 - Relais de `player_event`, `guild_id` dans les ticks, `expected` transmis au bot, 409 `STALE`.
 
@@ -1538,13 +1572,13 @@ L'appli Overwolf de Paul obtient une entrée sûre dans Greg : un code d'apparei
 - Retirer, déplacer et jouer maintenant vérifient l'élément attendu : `STALE` sans rien changer.
 
 ### Site (`services/web`)
-- Page `/lier` : saisir le code, voir l'appareil, choisir le serveur par défaut, autoriser ou refuser ; liste des appareils liés et « Délier ». Retour sur `/lier` après la connexion Discord, une seule fois.
-- Entrée « Appareils liés » dans le menu du compte, pour le seul propriétaire.
+- Page `/lier`, pour tout compte connecté : saisir le code, voir l'appareil (nom, âge, et l'avertissement « N’autorisez que l’appli que vous venez d’ouvrir vous-même. »), choisir le serveur par défaut, autoriser ou refuser ; liste de ses propres appareils liés et « Délier ». Retour sur `/lier` après la connexion Discord, une seule fois.
+- Entrée « Appareils liés » dans le menu du compte, pour tout utilisateur connecté.
 - `expected` sur retirer, déplacer et jouer maintenant ; un 409 `STALE` relit la file.
 
 ## Écarts assumés par rapport à la spec
 - Usage unique du code par `SET … XX GET KEEPTTL` : un code déjà servi donne 409 `ALREADY_USED`, distinct d'un code expiré.
-- Serveur par défaut validé par `user_guilds` ; champ `is_owner` ajouté à `/overlay/me`.
+- Serveur par défaut validé par `user_guilds`.
 - Redis indisponible pendant la vérification d'un jeton : 503 `STORAGE_UNAVAILABLE` (ou `connect_error` du même nom), jamais 401.
 - La recherche demande une session ou un jeton ; un formulaire sur le chansonnier reçoit 403 `CSRF_FAILED` au lieu de 400.
 - `expected` mal formé : 400 ; index hors bornes avec `expected` : `STALE` ; marge de `slow_down` : 1 s ; corps non JSON sur `/overlay/device` ou `/overlay/token` : 400 `INVALID_REQUEST`.
@@ -1557,17 +1591,17 @@ L'appli Overwolf de Paul obtient une entrée sûre dans Greg : un code d'apparei
 
 ## Avant de fusionner
 1. Confirmer l'UID `ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` dans `overwolf://packages`.
-2. Sur le seul service API de Railway : `GREG_OWNER_ID` (même valeur que BOT DISCORD) et `OVERLAY_ORIGINS=overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk`.
+2. Origine de l'appli : {OVERLAY} `GREG_OWNER_ID` n'est pas lu par l'appli : rien à régler.
 3. Origines du site : {ORIGINES}
-4. Après le déploiement : se connecter sur le site, ouvrir `/lier` avec un code de l'appli, autoriser, vérifier « Appareils liés », puis délier.
+4. Après le déploiement : se connecter sur le site, ouvrir `/lier` avec un code de l'appli, autoriser, vérifier « Appareils liés », puis délier ; dès qu'un pote a l'appli, le même parcours avec son compte (son jeton n'apparaît pas dans la liste de Paul).
 
 La fusion déploie sur Railway : elle attend l'accord de Paul.
 ```
 
-  `{ORIGINES}` vaut, selon l'étape 4 : « chaque domaine du service WEB (`<domaines>`) est couvert par `WEB_URL` du service API ; rien à ajouter. » ou « à ajouter dans `CORS_ORIGINS` du service API avant la fusion : `<origines manquantes, séparées par des virgules>` ; sans cela, toute action depuis ces domaines recevra 403 `CSRF_FAILED`. »
+  `{ORIGINES}` vaut, selon l'étape 4 : « chaque domaine du service WEB (`<domaines>`) est couvert par `WEB_URL` du service API ; rien à ajouter. » ou « à ajouter dans `CORS_ORIGINS` du service API avant la fusion : `<origines manquantes, séparées par des virgules>` ; sans cela, toute action depuis ces domaines recevra 403 `CSRF_FAILED`. » `{OVERLAY}` vaut, selon l'étape 4 : « `OVERLAY_ORIGINS` du service API contient `overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` ; rien à changer si l'UID est confirmé au point 1. » ou « `OVERLAY_ORIGINS` du service API vaut `<valeur lue>` et ne contient pas `overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` : à corriger avant la fusion, sans quoi CORS et Socket.IO refusent l'appli. »
 - [ ] **Étape 6 : pousser et ouvrir la PR.** `PR_BODY` = le « Scratchpad directory » de la session, écrit en barres obliques avant (forme `C:/Users/Paul/AppData/Local/Temp/claude/…/scratchpad` ; `gh.exe` les accepte et Git Bash ne les convertit pas), suivi de `/pr-overlay-api.md` :
-  `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && PR_BODY='<Scratchpad directory, barres obliques avant>/pr-overlay-api.md' && test -s "$PR_BODY" && ! grep -qiE "claude|anthropic|co-authored|generated with|\{(API|BOT|WEB|ORIGINES)\}" "$PR_BODY" && git push origin feat/overlay-overwolf && gh pr create --base main --head feat/overlay-overwolf --title "Overlay Overwolf : liaison par code, jeton porteur et données de l'appli" --body-file "$PR_BODY"` → l'URL de la PR (`test -s` exige le fichier de l'étape 5 ; le `grep` refuse un corps qui mentionnerait une IA ou garderait un champ non rempli). Le chemin est celui du fichier écrit à l'étape 5, jamais un chemin inventé.
-- [ ] **Étape 7 : demander à Paul.** Ne pas fusionner. Lui demander, en questions séparées : (a) son accord pour régler `GREG_OWNER_ID` et `OVERLAY_ORIGINS` sur le service API Railway ; (b) seulement si l'étape 4 a trouvé une origine du site absente : qu'il ajoute (ou nous autorise à ajouter) `CORS_ORIGINS=<origines manquantes>` sur le service API ; (c) son accord pour fusionner la PR. Rien n'est réglé ni fusionné sans un « oui » explicite.
+  `cd /c/Users/Paul/Documents/Codage/GregLeConsanguin && PR_BODY='<Scratchpad directory, barres obliques avant>/pr-overlay-api.md' && test -s "$PR_BODY" && ! grep -qiE "claude|anthropic|co-authored|generated with|\{(API|BOT|WEB|ORIGINES|OVERLAY)\}" "$PR_BODY" && git push origin feat/overlay-overwolf && gh pr create --base main --head feat/overlay-overwolf --title "Overlay Overwolf : liaison par code, jeton porteur et données de l'appli" --body-file "$PR_BODY"` → l'URL de la PR (`test -s` exige le fichier de l'étape 5 ; le `grep` refuse un corps qui mentionnerait une IA ou garderait un champ non rempli). Le chemin est celui du fichier écrit à l'étape 5, jamais un chemin inventé.
+- [ ] **Étape 7 : demander à Paul.** Ne pas fusionner. Lui demander, en questions séparées : (a) seulement si l'étape 4 a trouvé `OVERLAY_ORIGINS` sans l'origine attendue : son accord pour la corriger sur le service API Railway (`GREG_OWNER_ID` n'est jamais à régler pour l'appli) ; (b) seulement si l'étape 4 a trouvé une origine du site absente : qu'il ajoute (ou nous autorise à ajouter) `CORS_ORIGINS=<origines manquantes>` sur le service API ; (c) son accord pour fusionner la PR. Rien n'est réglé ni fusionné sans un « oui » explicite.
 
 ---
 
@@ -1577,7 +1611,8 @@ La fusion déploie sur Railway : elle attend l'accord de Paul.
 - §3.1 identité, `flask.g`, routes lecteur / historique / recherche, chansonnier en session seule : tâche 4.
 - §3.2 CSRF (formulaire tiers, JSON du site, logout) : tâche 1 ; origine de l'appli refusée par la garde : tâche 2.
 - §3.3 origines : tâche 2 ; domaines publics du site comparés à `WEB_URL` avant la fusion : tâche 14, étape 4.
-- §3.4 magasin et routes : tâches 3 et 5 (codes, usage unique, `slow_down`, émission atomique, propriétaire seul, révocation, `/overlay/guilds`, limites de débit).
+- §3.4 magasin et routes : tâches 3 et 5 (codes, usage unique, `slow_down`, émission atomique, tout compte connecté pour son propre compte sans contrôle de propriétaire, révocation de ses seuls jetons, `/overlay/guilds`, limites de débit).
+- §1 et §3.4 « tout compte connecté » (mise à jour du 2026-11-26) : tâche 5 `test_any_logged_in_user_links_its_own_account`, `test_approve_then_token_ignores_identity_in_the_body`, `test_session_revokes_only_its_own_tokens` ; tâche 12, page et menu sans branche propriétaire, avertissement sous l'appareil ; tâche 14, étape 4 (`OVERLAY_ORIGINS` déjà posée, `GREG_OWNER_ID` non lu).
 - §3.5 socket : tâche 6.
 - §3.6 `expected`, `guild_id` des ticks, activité : tâches 9, 10 et 13 ; tâches 8 et 10.
 - §4.1 à §4.3 bot : tâches 7, 8, 9.
@@ -1586,12 +1621,11 @@ La fusion déploie sur Railway : elle attend l'accord de Paul.
 
 **Balayage des étapes.** Chaque tâche a un test qui échoue, une commande, une implémentation désignée par signatures, une commande verte et un commit à chemins explicites. Aucun « TBD ».
 
-**Cohérence des types.** `Identity.uid` est un `int` partout. `tid`, les ids des serveurs et le `guild_id` des ticks et de `player_event` sont des chaînes. Le `guild_id` d'un état complet reste l'entier du bot. `default_guild_id` vaut une chaîne ou `null`. Les horodatages sont en secondes entières, sauf `at_ms` et `relay_at_ms` en millisecondes. `expected` garde la même forme dans le site, l'API et le bot.
+**Cohérence des types.** `Identity.uid` est un `int` partout. `tid`, les ids des serveurs et le `guild_id` des ticks et de `player_event` sont des chaînes. Le `guild_id` d'un état complet reste l'entier du bot. `default_guild_id` vaut une chaîne ou `null`. Les horodatages sont en secondes entières, sauf `at_ms` et `relay_at_ms` en millisecondes. `expected` garde la même forme dans le site, l'API et le bot. `GET /overlay/me` rend `{ok, via, user, default_guild_id}` (tâche 5), sans `is_owner` ; le site ne l'appelle pas (pas de `api.deviceMe`, tâches 11 et 12) ; seule l'appli (plan B) s'en sert.
 
 **Écarts assumés par rapport au texte de la spec** (à signaler à Paul et au plan B) :
 - **Usage unique.** Il passe par `SET … "used" XX GET KEEPTTL` plutôt que par un GETDEL. Avec GETDEL, un code déjà servi ne se distingue plus d'un code expiré, et le contrat promet 409 `ALREADY_USED`.
 - **Serveur par défaut.** Il est validé par `user_guilds` plutôt que par `get_state`. `get_state` accepte sans contrôle un serveur où Greg est absent.
-- **Champ `is_owner`.** Il est ajouté à `/overlay/me` (ajout seul), pour que le site sache s'il montre « Appareils liés ».
 - **Redis indisponible pour un jeton.** La réponse est 503 `STORAGE_UNAVAILABLE`, ou `connect_error` `"STORAGE_UNAVAILABLE"` sur le socket.
 - **Recherche authentifiée.** La recherche demande maintenant une session ou un jeton. Elle était publique : `test_search.py` passe donc sur `logged_client`.
 - **Formulaire du chansonnier.** Un corps de formulaire sur une mutation du chansonnier reçoit 403 `CSRF_FAILED`, et non plus 400. Une ligne de `test_library_routes.py` change en conséquence.

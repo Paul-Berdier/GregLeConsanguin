@@ -29,7 +29,7 @@ Rappels qui s'appliquent partout :
 
 ## 1. Ce qui est décidé, et pourquoi
 
-**Plateforme : Overwolf (OW-native), pour Paul seul.** Voici ce que les essais du 2026-11-24/25 ont établi :
+**Plateforme : Overwolf (OW-native), pour Paul et ses potes.** Voici ce que les essais du 2026-11-24/25 ont établi :
 - **Appli Windows autonome (Electron), écartée :**
   - elle ne s'affiche qu'en Sans bordure ;
   - Paul joue en Plein écran ;
@@ -39,8 +39,14 @@ Rappels qui s'appliquent partout :
   - les quatre raccourcis arrivent pendant que LoL a le clavier, panneau ouvert ou fermé ;
   - le panneau prend le clavier grâce à `requestOverlayFocus` ;
   - à la fermeture du panneau, le clavier revient au jeu.
-- **Limite assumée.** Les amis de Paul ne peuvent pas installer l'appli : Overwolf refuse les applis privées, et seul un
-  compte développeur approuvé charge une appli non publiée. Ils continuent d'utiliser le site.
+- **Diffusion aux potes : par un canal de test** (correction du 2026-11-26).
+  - GregLC existe dans la console développeur de Paul (console.overwolf.com), avec une version 1.1.1 en production
+    depuis le 16/10/2025 et le menu « Release management → Testing ».
+  - Paul crée un canal de test, y dépose le `.opk` de la nouvelle version, puis envoie le « lien public pour les
+    testeurs » à ses potes.
+  - Les versions de test échappent à la revue de version d'Overwolf.
+  - Les potes installent Overwolf, ouvrent le lien, puis lient l'appli à leur propre compte (§3.4).
+  - Le site reste disponible pour ceux qui n'ont pas Overwolf.
 - **Vanguard.** Overwolf injecte son propre module dans LoL, et Paul a choisi Overwolf en connaissance de cause. Voir
   `Obsidian/ClaudeBrain/Research/riot-vanguard-overlays-lol.md`.
 
@@ -84,7 +90,7 @@ Rappels qui s'appliquent partout :
 - les likes et playlists du chansonnier ;
 - le volume (Greg ne le gère pas) ;
 - l'avance dans le titre (le bot ne sait pas faire) ;
-- la diffusion aux amis ;
+- la publication sur la boutique d'Overwolf (les potes passent par un canal de test, §6.1 bis) ;
 - l'appli autonome.
 
 **Anti-objectifs :**
@@ -184,15 +190,15 @@ Routes (préfixe `/api/v1`) :
    - Limites : 30 par heure au total, et 5 par minute par IP au mieux.
    - Corps `{client_name?}` (≤ 40 caractères).
    - Réponse : `{device_code, user_code, verification_uri: WEB/lier, verification_uri_complete: WEB/lier?code=…, expires_in: 600, interval: 5}`.
-2. **Consulter.** `GET /overlay/device/lookup?user_code=` (session, propriétaire). Renvoie `{client_name, created_at, expires_in}`,
+2. **Consulter.** `GET /overlay/device/lookup?user_code=` (session). Renvoie `{client_name, created_at, expires_in}`,
    pour que /lier montre ce qu'on autorise.
 3. **Autoriser ou refuser.** `POST /overlay/device/approve`.
-   - Protections : session, `csrf_ok`, propriétaire seulement, 5 par minute par uid.
+   - Protections : session, `csrf_ok`, 5 par minute par uid.
    - Corps `{user_code, decision: "approve"|"deny", guild_id?}`.
    - `guild_id` est le serveur par défaut. Il est validé par `get_state` (contrôle d'appartenance du bot).
    - L'identité et le portrait de l'utilisateur viennent de la session, jamais du corps.
    - Usage unique : GETDEL de l'index `user_code`.
-   - Erreurs : 404 `CODE_EXPIRED`, 409 `ALREADY_USED`, 403 `NOT_OWNER` / `CSRF_FAILED`, 429 `RATE_LIMITED`.
+   - Erreurs : 404 `CODE_EXPIRED`, 409 `ALREADY_USED`, 403 `CSRF_FAILED`, 429 `RATE_LIMITED`.
 4. **Récupérer le jeton.** `POST /overlay/token {device_code}`, sans authentification.
    - Erreurs au format RFC 8628 : `authorization_pending`, `slow_down` (+5 s), `access_denied`, `expired_token`.
    - Succès : `{access_token, token_type: "Bearer", expires_in, user: {id, username, global_name, avatar}, default_guild_id}`.
@@ -201,21 +207,28 @@ Routes (préfixe `/api/v1`) :
    - `GET /overlay/me` (identité) renvoie le portrait enregistré.
    - `GET /overlay/tokens` (session ou jeton) liste `{id, label, created_at, last_used_at, expires_at, current}`, jamais
      d'empreinte.
-   - `POST /overlay/tokens/revoke {id}` : session (avec CSRF et propriétaire), ou le jeton qui se révoque lui-même.
+   - `POST /overlay/tokens/revoke {id}` : session (avec CSRF), pour ses propres jetons seulement, ou le jeton qui se
+     révoque lui-même.
    - `POST /overlay/logout` révoque le jeton courant.
    - Toute révocation supprime les clés et déconnecte les sockets de ce jeton.
 6. **Lister les serveurs.** `GET /overlay/guilds` (identité). Elle appelle l'action bot `user_guilds` (§4.1) et renvoie
    `{guilds: [{id, name, icon_url, greg_voice, user_voice, playing}]}`.
 
 Autres décisions :
-- **Propriétaire seulement.** Seul `GREG_OWNER_ID` peut autoriser un appareil.
-  - L'appli ne sert qu'à Paul, et cela coupe court au hameçonnage par code.
-  - Constat du 2026-11-25 (noms des variables seulement) : `GREG_OWNER_ID` est défini pour le service **BOT DISCORD**
-    mais **pas pour le service API**. Il faut l'ajouter à l'API, avec la même valeur, en même temps
-    qu'`OVERLAY_ORIGINS` et seulement avec l'accord de Paul.
-  - Sans `GREG_OWNER_ID`, l'autorisation refuse tout (403 `NOT_OWNER`) : on ne passe jamais en mode « tout le monde ».
+- **Tout compte connecté au site peut lier l'appli à son propre compte** (choix de Paul, 2026-11-26).
+  - Le jeton ne donne rien de plus que la session du site : commander Greg sur les serveurs dont on est membre, contrôle
+    du bot compris.
+  - Le risque restant est l'hameçonnage par code : quelqu'un fait valider son propre code par une autre personne. Les
+    parades :
+    - /lier affiche le nom et l'âge de l'appareil ;
+    - il faut cliquer soi-même, jamais de validation automatique ;
+    - un avertissement : « N'autorisez que l'appli que vous venez d'ouvrir vous-même. » ;
+    - le code expire en 10 minutes et ne sert qu'une fois ;
+    - les débits sont limités ;
+    - chacun voit et délie ses appareils.
+  - Il n'y a pas de contrôle de propriétaire. `GREG_OWNER_ID`, ajouté à l'API le 2026-11-25, ne sert pas à l'appli.
   - L'API publique est `https://greg-api.up.railway.app`. Le service API n'a pas de `CORS_ORIGINS`, donc les origines du
-    site se limitent à `WEB_URL`.
+    site se limitent à `WEB_URL`. `OVERLAY_ORIGINS` est posée sur le service API depuis le 2026-11-25.
 - **Durée du jeton : 180 jours** (`OVERLAY_TOKEN_TTL_DAYS`, notre choix), révocable à tout moment. `last_used_at` est mis
   à jour au plus une fois toutes les 5 minutes.
 
@@ -283,9 +296,10 @@ touchés. Ils sont notés pour plus tard.
 ## 5. Côté site (`services/web`) : la page /lier
 
 - **Nouvelle route** `src/app/lier/page.tsx` (client), sans `usePlayerInit`.
-- **Connecté et propriétaire :**
+- **Connecté :**
   - un champ code, prérempli par `?code=` mais jamais validé automatiquement ;
-  - le nom de l'appareil et son âge (`lookup`) ;
+  - le nom de l'appareil et son âge (`lookup`), avec l'avertissement « N'autorisez que l'appli que vous venez d'ouvrir
+    vous-même. » ;
   - le choix du serveur par défaut (serveurs où Greg est présent) ;
   - les boutons « Autoriser » (`.btn-solid`) et « Refuser » (`.btn-ghost`) ;
   - puis la confirmation « C'est fait, Sire. Retournez à votre jeu. »
@@ -294,10 +308,9 @@ touchés. Ils sont notés pour plus tard.
   - le code en attente est gardé en `sessionStorage` (`greg.lier.pending`, 10 min) ;
   - au retour sur « / », `boot()` renvoie vers /lier s'il en trouve un.
   - Le serveur ne reçoit aucune URL de retour.
-- **Non propriétaire :** un message neutre, sans détail.
-- **Appareils liés :** liste des jetons (nom, dernière utilisation, échéance) avec « Délier », confirmé par le motif de
-  dialogue de `Transport.tsx`.
-- **Accès :** une entrée « Appareils liés » dans `AccountMenu`, visible du seul propriétaire.
+- **Appareils liés :** la liste des jetons de l'utilisateur connecté (nom, dernière utilisation, échéance), avec
+  « Délier », confirmé par le motif de dialogue de `Transport.tsx`.
+- **Accès :** une entrée « Appareils liés » dans `AccountMenu`, pour tout utilisateur connecté.
 - **Textes :** une section `devices` dans `copy.extra.ts`, avec la typographie du deck (tests `copy-extra`).
 - **API côté site :** de nouvelles méthodes `api.device*` dans le style du chansonnier (identité de session, JSON).
 - **Logique pure :** normalisation du code, garde du code en attente, choix du serveur par défaut. Elle va dans
@@ -328,6 +341,27 @@ touchés. Ils sont notés pour plus tard.
   - régler `OVERLAY_ORIGINS` sur Railway ;
   - délier ;
   - désactiver l'appli.
+
+### 6.1 bis Diffusion par canal de test
+
+- **Script `scripts/pack.mjs`.** Il fabrique le `.opk` à partir d'une copie **propre** du dépôt (`git archive HEAD`),
+  jamais du dossier de travail :
+  - les dossiers jetables `essai-eclair/` (avec son `node_modules`) et `essai-overwolf/` n'y entrent jamais ;
+  - les tests, les scripts et la doc non plus : seuls le manifeste et ce que les fenêtres chargent y vont.
+  - Le constructeur vérifie dans la doc d'Overwolf le format exact d'un `.opk` (une archive zip renommée, manifeste à
+    la racine). Sinon, le script prépare le dossier propre et Paul utilise le bouton « Pack » d'`overwolf://packages`
+    sur ce dossier.
+- **Version.** Chaque dépôt dans un canal exige une version plus haute que la précédente : `3.0.0`, puis `3.0.1`…
+  Le script refuse une version déjà publiée, dont il garde la liste dans `scripts/versions-publiees.json`.
+- **Méta du manifeste.** On garde au minimum ce que la 1.1.1 avait quand la console l'a acceptée : `name`, `author`,
+  `version`, `minimum-overwolf-version`, `description` (≤ 180 caractères), `icon`, `icon_gray`.
+- **Gestes de Paul, décrits dans le README** (section « Partager avec tes potes ») :
+  1. lancer le script ;
+  2. dans la console, Release management → Testing → créer le canal (une seule fois), déposer le `.opk`, lancer la
+     diffusion à 100 % ;
+  3. copier le lien public pour les testeurs et l'envoyer ;
+  4. chez chaque pote : installer Overwolf, ouvrir le lien, lancer GregLC, puis lier son compte sur `/lier`.
+- La version de production 1.1.1 (l'ancienne appli) n'est pas touchée dans ce chantier.
 
 ### 6.2 Manifeste
 
@@ -448,7 +482,7 @@ Il reprend l'essai, la DA du site et les composants du lecteur : `Transport`, `Q
 - **API (pytest) :**
   - parcours complet du code ;
   - usage unique, expiration, `slow_down` ;
-  - propriétaire seulement ;
+  - n'importe quel compte connecté autorise son propre code, et l'identité vient de la session (jamais du corps) ;
   - CSRF (formulaire tiers refusé, JSON du site accepté) ;
   - porteur prioritaire sur le cookie, jeton invalide refusé sans repli ;
   - origine Overwolf acceptée, joker et origines invalides toujours refusés ;

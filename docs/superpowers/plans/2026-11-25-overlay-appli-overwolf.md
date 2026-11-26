@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** remplacer l'ancienne appli GregLC par une appli Overwolf OW-native (dépôt `greg-overlay-ow`, branche `feat/overlay-v3`) : un bandeau et un panneau par-dessus League of Legends, une fenêtre bureau avec liaison par code et réglages, et des raccourcis, le tout branché sur l'API publique par jeton porteur.
+**Goal:** remplacer l'ancienne appli GregLC par une appli Overwolf OW-native (dépôt `greg-overlay-ow`, branche `feat/overlay-v3`) : un bandeau et un panneau par-dessus League of Legends, une fenêtre bureau avec liaison par code et réglages, et des raccourcis, le tout branché sur l'API publique par jeton porteur. Les potes de Paul l'installent par le lien d'un canal de test Overwolf, et chacun lie son propre compte.
 
 **Architecture:**
 - La page de fond (`fond.html`) est le seul cerveau. `createBrain(env)` assemble des modules dont les dépendances sont injectées : connexion par code, socket, jeu et fenêtres, raccourcis, actions. Il expose `window.greg`, et les fenêtres `bandeau`, `panneau` et `bureau` s'y abonnent par `overwolf.windows.getMainWindow().greg`, comme dans l'essai.
@@ -14,9 +14,10 @@
 - Overwolf OW-native (`manifest_version` 1, CEF), testé sur Overwolf 0.317.0.3.
 - JavaScript en modules ES, sans bundler. `socket.io.min.js` 4.7.5 copié dans `vendor/`.
 - Node ≥ 22 (`node --test`, globs dans `--test`), aucun paquet npm.
+- Paquet `.opk` : `git archive` et le `tar.exe` de Windows (bsdtar 3.5.2, `C:\Windows\System32\tar.exe`, qui écrit le zip ; le `tar` GNU de Git Bash ne le sait pas).
 - Aperçus des fenêtres : Playwright (MCP) ou le navigateur intégré, sur un petit serveur local qui injecte un faux `overwolf`.
 
-**Spec:** `C:\Users\Paul\Documents\Codage\GregLeConsanguin\docs\superpowers\specs\2026-11-25-overlay-overwolf-design.md` (ce plan couvre §6, avec §1, §2 et §7 ; §3 à §5 sont le plan A, côté serveur, qui ne nous lie que par le contrat ci-dessous).
+**Spec:** `C:\Users\Paul\Documents\Codage\GregLeConsanguin\docs\superpowers\specs\2026-11-25-overlay-overwolf-design.md` (ce plan couvre §6, dont §6.1 bis « Diffusion par canal de test », avec §1, §2 et §7 ; §3 à §5 sont le plan A, côté serveur, qui ne nous lie que par le contrat ci-dessous).
 
 ## Global Constraints
 
@@ -68,7 +69,7 @@
   - suggestions après 280 ms et 2 caractères.
 - **Bandeau.**
   - Par défaut en bas à gauche : `left = 16`, `top = max(16, hauteur logique − hauteur du bandeau − MARGE_BAS)`.
-  - `MARGE_BAS` vaut 24 px au départ. La tâche 18 (étape 8) l'ajuste sur une capture réelle de LoL, chat ouvert, pour que le bandeau ne le couvre pas (spec §6.4 et §8).
+  - `MARGE_BAS` vaut 24 px au départ. La tâche 19 (étape 8) l'ajuste sur une capture réelle de LoL, chat ouvert, pour que le bandeau ne le couvre pas (spec §6.4 et §8).
   - Autres emplacements : « Bord gauche, au tiers » (`top = 29 %` de la hauteur) et « En haut à gauche ».
   - Tailles « Compacte » et « Normale ».
   - Fond réglable de 0 à 100 %, 70 % par défaut, appliqué au fond seulement, avec une ombre de texte.
@@ -90,6 +91,11 @@
   - On garde leur lumière violette (`--lumiere: hsl(265 78% 74%)`, `--lumiere-rgb: 180 137 240`) et le médaillon de Greg de l'essai.
   - `3-dans-lol` est remplacée par le bas à gauche.
 - **Ressources du site.** Recopiées par `scripts/sync-web.mjs` depuis `../GregLeConsanguin/services/web` et commitées. Elles ne s'éditent jamais à la main.
+- **Diffusion aux potes** (spec §1 et §6.1 bis).
+  - Le `.opk` sort seulement de `scripts/pack.mjs`, à partir de HEAD, jamais d'un zip fait à la main du dossier de travail.
+  - Tout compte connecté au site lie son propre appareil sur `/lier` ; l'appli ne connaît aucun compte privilégié.
+  - Le dépôt sur console.overwolf.com (canal de test), la diffusion et l'envoi du lien aux potes sont des gestes de Paul, tournés vers l'extérieur. La session n'ouvre pas la console, ne téléverse rien (ni navigateur, ni `ow-cli`) et n'envoie le lien à personne.
+  - La version de production 1.1.1 (l'ancienne appli) n'est jamais touchée.
 
 ## Review Focus
 
@@ -105,6 +111,12 @@
    - au début de la partie, une ligne du bandeau nomme les raccourcis manquants ;
    - le pied du panneau et les réglages affichent « non attribué » au lieu d'une touche qui ne marche pas.
    Tests : tâches 12, 14 et 16.
+6. **Paquet envoyé aux potes** :
+   - l'`.opk` sort de HEAD, jamais du dossier de travail, et ne contient que le manifeste et ce que chargent les fenêtres ;
+   - ni `essai-eclair/` (et son `node_modules`), ni `essai-overwolf/`, ni `tests/`, `scripts/`, `apercu/`, `docs/` ;
+   - chaque page, import et `url()` du paquet pointe dans le paquet ;
+   - une version déjà publiée, ou pas plus haute que la dernière, est refusée avant que rien ne soit écrit.
+   Tests : tâche 18.
 
 ---
 
@@ -116,7 +128,7 @@ Chemins relatifs à la racine `C:\Users\Paul\Documents\Codage\greg-overlay-ow\`.
 |---|---|
 | `manifest.json` | Manifeste Overwolf (identité, permissions, raccourcis, quatre fenêtres). |
 | `package.json`, `.gitignore`, `.gitattributes` | Scripts `test`, `sync-web` et `apercu` ; fins de ligne LF ; binaires. |
-| `README.md` | Charger l'appli, régler Railway, délier, désactiver. |
+| `README.md` | Charger l'appli, régler Railway, partager avec les potes, délier, désactiver. |
 | `fond.html`, `bandeau.html`, `panneau.html`, `bureau.html` | Les quatre pages, à la racine comme dans l'essai, pour que `img/…` et `css/…` se résolvent pareil partout. |
 | `assets/icon.png` | Icône (gardée). |
 | `fonts/`, `licences/`, `img/` (`greg-face-*`, `crown-badge-*`, `seals/`), `css/tokens.css`, `lib/deck.js` | Recopiés du site par `scripts/sync-web.mjs`, commités, jamais édités. |
@@ -140,6 +152,7 @@ Chemins relatifs à la racine `C:\Users\Paul\Documents\Codage\greg-overlay-ow\`.
 | `ui/pont.js`, `ui/dom.js`, `ui/bandeau-rendu.js`, `ui/bandeau.js`, `ui/lecteur.js`, `ui/panneau.js`, `ui/bureau.js`, `ui/reglages.js` | Code DOM des fenêtres. |
 | `css/base.css`, `css/bandeau.css`, `css/lecteur.css`, `css/bureau.css` | Styles (polices, atomes des maquettes, fenêtres). |
 | `scripts/sync-web.mjs` | Recopie depuis le site, avec un mode `--check`. |
+| `scripts/pack.mjs`, `scripts/versions-publiees.json` | Paquet `.opk` pour le canal de test, tiré de HEAD ; liste des versions déjà empaquetées. |
 | `apercu/serveur.mjs`, `apercu/faux-overwolf.js`, `apercu/scenarios.js`, `apercu/index.html` | Aperçu des fenêtres dans un navigateur, avec un faux `overwolf`. |
 | `tests/*.test.js`, `tests/fakes/{horloge,stockage,fetch,socket,overwolf}.js` | Tests et faux. |
 
@@ -323,7 +336,7 @@ cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add package.json .gitig
 
 - [ ] **Step 7 : fumée dans Overwolf, avec Paul (modules, origine, pont du bureau natif)**
 
-L'essai chargeait des scripts classiques. Ce plan charge des modules ES (`<script type="module">`) depuis `overwolf-extension://`, sous la CSP. La fenêtre `bureau` est `native_window` et lit `getMainWindow().greg`. On vérifie ces trois choix dans Overwolf maintenant, plutôt qu'à la tâche 18. L'étape confirme aussi l'UID dont le plan A a besoin avant qu'on touche aux réglages Railway (`OVERLAY_ORIGINS`).
+L'essai chargeait des scripts classiques. Ce plan charge des modules ES (`<script type="module">`) depuis `overwolf-extension://`, sous la CSP. La fenêtre `bureau` est `native_window` et lit `getMainWindow().greg`. On vérifie ces trois choix dans Overwolf maintenant, plutôt qu'à la tâche 19. L'étape confirme aussi l'UID dont le plan A a besoin avant qu'on touche aux réglages Railway (`OVERLAY_ORIGINS`).
 
 1. **Aucune partie ouverte** (contrainte « Jeu en cours »). Avant tout geste qui affiche une fenêtre (Load unpacked, relance d'Overwolf, URL `overwolf://`), la session vérifie que LoL ne tourne pas : la fenêtre bureau volerait le focus et réduirait le jeu en Plein écran.
 
@@ -385,13 +398,13 @@ L'essai chargeait des scripts classiques. Ce plan charge des modules ES (`<scrip
        cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add manifest.json tests/manifest.test.js \
          && git commit -m "fix: fenêtre bureau non native, le pont n'atteignait pas la page de fond"
        ```
-     - La contrainte « Fenêtres » de ce plan se lit alors avec `native_window: false`, et la tâche 18 le dit dans le README.
+     - La contrainte « Fenêtres » de ce plan se lit alors avec `native_window: false`, et la tâche 19 le dit dans le README.
 
 6. **Ménage.**
 
    Run : `cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && rm fond.html bureau.html bandeau.html panneau.html fumee/fond.js fumee/bureau.js && rmdir fumee && git status --short`
    Expected : sortie vide.
-   La carte GregLC peut rester chargée : jusqu'à la tâche 14, elle n'a plus de page de fond et ne fait rien en partie. Paul peut aussi la désactiver jusqu'à la tâche 18.
+   La carte GregLC peut rester chargée : jusqu'à la tâche 14, elle n'a plus de page de fond et ne fait rien en partie. Paul peut aussi la désactiver jusqu'à la tâche 19.
 
 ---
 
@@ -1010,7 +1023,7 @@ test('fondBandeau', () => { assert.equal(fondBandeau(70), 0.7); assert.equal(fon
 ```js
 // tests/placement.test.js
 test('bas à gauche par défaut : left 16, top = max(16, h − hauteur − MARGE_BAS), MARGE_BAS = 24', () => {
-  assert.equal(MARGE_BAS, 24);   // valeur de départ ; la tâche 18 (étape 8) l'ajuste sur une capture de LoL, avec les valeurs ci-dessous
+  assert.equal(MARGE_BAS, 24);   // valeur de départ ; la tâche 19 (étape 8) l'ajuste sur une capture de LoL, avec les valeurs ci-dessous
   assert.deepEqual(positionBandeau({ emplacement: 'bas-gauche', taille: 'normale', hauteurJeu: 1080 }), { left: 16, top: 924 });
   assert.deepEqual(positionBandeau({ emplacement: 'bas-gauche', taille: 'compacte', hauteurJeu: 1080 }), { left: 16, top: 964 });
   assert.deepEqual(positionBandeau({ emplacement: 'bas-gauche', taille: 'normale', hauteurJeu: 1440 }), { left: 16, top: 1284 });
@@ -1050,7 +1063,7 @@ Expected : FAIL (`ERR_MODULE_NOT_FOUND`).
 
 `positionBandeau` :
 - `null` si `hauteurJeu < HAUTEUR_MIN` ;
-- `bas-gauche` : `top = Math.max(16, hauteurJeu − TAILLES_BANDEAU[taille].height − marge)`. Le plancher garde le bandeau dans le jeu si la tâche 18 relève fortement `MARGE_BAS` ;
+- `bas-gauche` : `top = Math.max(16, hauteurJeu − TAILLES_BANDEAU[taille].height − marge)`. Le plancher garde le bandeau dans le jeu si la tâche 19 relève fortement `MARGE_BAS` ;
 - `gauche-tiers` : `Math.round(hauteurJeu * 0.29)` ;
 - `haut-gauche` : 16.
 
@@ -2732,14 +2745,258 @@ cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add lib/vue-bureau.js u
 
 ---
 
-## Tâche 18 : README, vérification finale et PR
+## Tâche 18 : paquet pour le canal de test (`scripts/pack.mjs`)
+
+**Format de l'`.opk`, vérifié le 2026-11-26 dans la doc officielle d'Overwolf :**
+- `https://dev.overwolf.com/ow-native/getting-started/release-your-app/` (« Creating the OPK package ») :
+  - un `.opk` est une archive zip ordinaire dont l'extension `.zip` est renommée en `.opk` ;
+  - le manifeste et tous les fichiers et dossiers sont à la racine de l'archive, sans dossier parent ;
+  - compression normale, pas la plus forte.
+- `https://dev.overwolf.com/ow-native/reference/manifest/manifest-json/` :
+  - `name`, `author`, `version`, `minimum-overwolf-version`, `description` et `icon` sont obligatoires ; `icon_gray` l'est pour la boutique ;
+  - `version` : de 1 à 4 entiers séparés par des points ; `description` : 180 caractères au plus ;
+  - `icon` et `icon_gray` : PNG 256 × 256. La doc demande aussi 30 Ko au plus. `assets/icon.png` (256 × 256, 50 292 octets) est l'icône que la console a acceptée avec la 1.1.1 : on la garde telle quelle.
+- `https://dev.overwolf.com/ow-native/developers-console/releases-management/testing/` : les boutons du canal de test (README, tâche 19). Les versions de test échappent à la revue obligatoire, et la boutique ne les montre pas.
+- `https://dev.overwolf.com/ow-native/guides/dev-tools/ow-cli/` : `ow opk pack` existe, mais dans le paquet npm `@overwolf/ow-cli`. On ne s'en sert pas : aucun paquet npm (contrainte « Outillage »), et le dépôt reste un geste de Paul (contrainte « Diffusion aux potes »).
+
+Le format est donc un zip simple, et `scripts/pack.mjs` écrit l'`.opk` lui-même. Le dossier propre qu'il prépare à côté sert à l'inspection. En secours, si la console refusait l'archive elle-même, Paul utilise le bouton « Pack » d'`overwolf://packages` sur ce dossier (README, tâche 19).
+
+**Files:**
+- Create : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\scripts\pack.mjs`, `C:\Users\Paul\Documents\Codage\greg-overlay-ow\scripts\versions-publiees.json`.
+- Modify : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\manifest.test.js` (test de la méta, ci-dessous).
+- Test : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\pack.test.js`, `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\manifest.test.js`.
+
+**Interfaces:**
+- Consumes : `manifest.json` (tâche 1) et les pages des tâches 14 à 17.
+- Produces (`scripts/pack.mjs`) :
+  - `DOSSIERS_PAQUET = ['assets/', 'css/', 'fond/', 'fonts/', 'img/', 'lib/', 'licences/', 'ui/', 'vendor/']` ;
+  - `selectionner(fichiers: string[], manifeste: object): {garder: string[], ecartes: string[]}` ;
+  - `referencesLocales(chemin: string, texte: string): string[]` ;
+  - `racines(garder: string[]): string[]` ;
+  - `fichiersListes(sortieTar: string): string[]` ;
+  - `comparerVersions(a: string, b: string): -1|0|1` ;
+  - `verifierVersion(version: string, publiees: string[]): void`, qui lève une `Error` ;
+  - `main(argv: string[]): number`, lancé seulement si le script est appelé directement (même garde que `sync-web.mjs`), avec `--sortie <dossier>` (obligatoire) et `--essai`.
+- Produces (fichier) : `scripts/versions-publiees.json`, tableau JSON des versions déjà empaquetées, de la plus ancienne à la plus récente.
+
+Règles des fonctions pures :
+- `selectionner` reçoit des chemins POSIX relatifs à la racine, comme ceux de `git ls-tree` :
+  - `garder` : `manifest.json`, le `file` de chaque fenêtre de `data.windows`, `meta.icon`, `meta.icon_gray`, et tout fichier qui commence par un préfixe de `DOSSIERS_PAQUET`, comparé depuis la racine (`essai-eclair/lib/x.js` n'en est pas) ;
+  - `ecartes` : tout le reste ;
+  - les deux listes sont triées par `sort()` ;
+  - un chemin obligatoire (manifeste, page d'une fenêtre, icône) absent de `fichiers` lève une `Error` qui le nomme.
+- `referencesLocales` renvoie, dans l'ordre d'apparition et sans doublon, les chemins que le fichier charge :
+  - `.html` : les `src="…"` et `href="…"` sans `:` ni `#` (la règle de `tests/pages.test.js`) ;
+  - `.js` : les spécificateurs relatifs (`./`, `../`) de `import … from`, `export … from`, `import '…'` et `import('…')`, rien d'autre (`export const X = '…'` n'est pas une référence) ;
+  - `.css` : `url(…)`, avec ou sans guillemets, et `@import '…'`, sauf `data:`, une adresse avec schéma ou un `#…` seul ;
+  - toute autre extension : `[]` ;
+  - chaque référence perd son `?…` et son `#…`, puis se résout depuis la place du fichier (`posix.normalize(posix.join(posix.dirname(chemin), ref))`) ; une référence qui commence par `/` part de la racine.
+- `racines` : les premiers segments distincts des chemins, triés. C'est ce que `tar` reçoit pour écrire l'archive.
+- `fichiersListes` : les lignes de `tar -t`, sans `\r`, sans lignes vides ni dossiers (`…/`), triées.
+- `comparerVersions` accepte de 1 à 4 entiers (`/^\d+(\.\d+){0,3}$/`) ; les parties manquantes valent 0. Un format invalide lève une `Error` qui nomme la version.
+- `verifierVersion` :
+  - `publiees` n'est pas un tableau : `Error` dont le message contient « liste » ;
+  - la version est égale à une version publiée : `Error` « La version X est déjà publiée. » ;
+  - sinon, elle n'est pas plus haute que la plus haute publiée : `Error` « La version X doit être plus haute que Y, la dernière publiée. ».
+
+`main(argv)`, dans cet ordre. Rien n'est écrit avant le point 5.
+1. Sans `--sortie <dossier>` : affiche `Usage : node scripts/pack.mjs --sortie <dossier neuf> [--essai]` et renvoie 2.
+2. Version :
+   - `manifeste` vaut le JSON de `git show HEAD:manifest.json`, et `version` vaut `manifeste.meta.version` ;
+   - `publiees` vaut `scripts/versions-publiees.json`, lu dans le dossier de travail ;
+   - `verifierVersion(version, publiees)`. Après un refus, le script ajoute `La version est lue dans HEAD:manifest.json : montez-la, commitez, puis relancez.`
+   - Toutes les commandes `git` tournent avec `cwd` à la racine du dépôt (`fileURLToPath(new URL('..', import.meta.url))`).
+3. `fichiers` vaut la sortie de `git ls-tree -r -z --name-only HEAD`, puis `{garder, ecartes} = selectionner(fichiers, manifeste)`.
+4. Si `--sortie` existe et n'est pas un dossier vide : refus `Le dossier de sortie n'est pas vide : <chemin>`.
+5. Export propre, depuis HEAD seulement :
+   - `TAR = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')` ;
+   - créer `<sortie>/GregLC-<version>` ;
+   - `git --literal-pathspecs archive --format=tar --output=<sortie>/export.tar HEAD -- ...garder`, puis `TAR -x -f <sortie>/export.tar -C <sortie>/GregLC-<version>`, puis supprimer `export.tar`.
+6. L'`.opk` : `TAR --format zip --options zip:compression=deflate,zip:compression-level=6 -c -f <sortie>/GregLC-<version>.opk -C <sortie>/GregLC-<version> ...racines(garder)`.
+7. Contrôle : `fichiersListes` de `TAR -t -f <opk>` doit valoir `garder`. Sinon, l'`.opk` est supprimé et le script nomme les fichiers en trop ou manquants.
+8. Sans `--essai` seulement : `publiees.push(version)`, puis réécrire le fichier en `JSON.stringify(publiees, null, 2) + '\n'`.
+9. Afficher, puis renvoyer 0 (`<sortie>` vaut `resolve(sortie)`, un chemin Windows absolu) :
+   ```
+   GregLC <version> : <N> fichiers empaquetés, <M> écartés.
+   Paquet : <sortie>\GregLC-<version>.opk
+   Dossier propre : <sortie>\GregLC-<version>
+   ```
+   suivi de `Version <version> ajoutée à scripts/versions-publiees.json : à commiter.`, ou avec `--essai` de `Essai : version <version> non enregistrée.`
+- Toute `Error` des points 2 à 7 : son message sur `stderr`, et le script renvoie 1.
+
+- [ ] **Step 1 : écrire les tests qui échouent**
+
+```js
+// tests/pack.test.js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { DOSSIERS_PAQUET, selectionner, referencesLocales, racines, fichiersListes, comparerVersions, verifierVersion } from '../scripts/pack.mjs';
+
+const MANIFESTE = { meta: { version: '3.0.0', icon: 'assets/icon.png', icon_gray: 'assets/icon.png' },
+  data: { windows: { fond: { file: 'fond.html' }, bureau: { file: 'bureau.html' }, bandeau: { file: 'bandeau.html' }, panneau: { file: 'panneau.html' } } } };
+const DEPOT = ['.gitattributes', '.gitignore', 'README.md', 'package.json', 'manifest.json', 'fond.html', 'bandeau.html', 'panneau.html', 'bureau.html',
+  'assets/icon.png', 'css/base.css', 'css/tokens.css', 'fonts/grenze.woff2', 'licences/LICENSES.md', 'img/icones.svg', 'img/seals/king-seal-P.webp',
+  'lib/config.js', 'lib/deck.js', 'fond/cerveau.js', 'ui/bandeau.js', 'vendor/socket.io.min.js', 'vendor/socket.io-client.LICENSE',
+  'tests/pack.test.js', 'tests/fakes/overwolf.js', 'scripts/pack.mjs', 'scripts/sync-web.mjs', 'scripts/versions-publiees.json',
+  'apercu/serveur.mjs', 'apercu/index.html', 'docs/notes.md',
+  'essai-eclair/main.js', 'essai-eclair/node_modules/x/index.js', 'essai-eclair/lib/x.js', 'essai-overwolf/manifest.json'];
+
+test('selectionner garde le manifeste et ce que chargent les fenêtres', () => {
+  assert.deepEqual(DOSSIERS_PAQUET, ['assets/', 'css/', 'fond/', 'fonts/', 'img/', 'lib/', 'licences/', 'ui/', 'vendor/']);
+  assert.deepEqual(selectionner(DEPOT, MANIFESTE).garder, ['assets/icon.png', 'bandeau.html', 'bureau.html', 'css/base.css', 'css/tokens.css',
+    'fond.html', 'fond/cerveau.js', 'fonts/grenze.woff2', 'img/icones.svg', 'img/seals/king-seal-P.webp', 'lib/config.js', 'lib/deck.js',
+    'licences/LICENSES.md', 'manifest.json', 'panneau.html', 'ui/bandeau.js', 'vendor/socket.io-client.LICENSE', 'vendor/socket.io.min.js']);
+});
+test('Review Focus 6 : jamais les essais, les tests, les scripts, la doc ni l’aperçu', () => {
+  const { garder, ecartes } = selectionner(DEPOT, MANIFESTE);
+  for (const p of garder) assert.doesNotMatch(p, /^(essai-eclair|essai-overwolf|tests|scripts|docs|apercu|node_modules)\//, p);
+  for (const p of ['README.md', 'package.json', '.gitignore', '.gitattributes', 'scripts/versions-publiees.json', 'tests/fakes/overwolf.js', 'apercu/index.html',
+    'docs/notes.md', 'essai-eclair/node_modules/x/index.js', 'essai-eclair/lib/x.js', 'essai-overwolf/manifest.json']) assert.ok(ecartes.includes(p), p);
+  assert.equal(garder.length + ecartes.length, DEPOT.length);
+  assert.deepEqual(ecartes, [...ecartes].sort());
+});
+test('une page, une icône ou le manifeste absents de HEAD arrêtent tout', () => {
+  assert.throws(() => selectionner(DEPOT.filter((p) => p !== 'panneau.html'), MANIFESTE), /panneau\.html/);
+  assert.throws(() => selectionner(DEPOT.filter((p) => p !== 'manifest.json'), MANIFESTE), /manifest\.json/);
+  assert.throws(() => selectionner(DEPOT, { ...MANIFESTE, meta: { ...MANIFESTE.meta, icon_gray: 'assets/icon-gris.png' } }), /assets\/icon-gris\.png/);
+});
+test('referencesLocales lit les pages, les imports relatifs et les url()', () => {
+  assert.deepEqual(referencesLocales('panneau.html', '<link rel="stylesheet" href="css/base.css"><script src="vendor/socket.io.min.js"></script>'
+    + '<script type="module" src="ui/panneau.js"></script><a href="https://greg-api.up.railway.app">x</a><a href="#haut">y</a>'),
+    ['css/base.css', 'vendor/socket.io.min.js', 'ui/panneau.js']);
+  assert.deepEqual(referencesLocales('ui/panneau.js', "import { h } from './dom.js';\nimport * as C from '../lib/config.js';\nimport '../lib/deck.js';\n"
+    + "export { fmt } from '../lib/format.js';\nconst m = await import('./reglages.js');\nexport const CLIENT = 'GregLC · Overwolf';\n"),
+    ['ui/dom.js', 'lib/config.js', 'lib/deck.js', 'lib/format.js', 'ui/reglages.js']);
+  assert.deepEqual(referencesLocales('css/base.css', "@font-face{src:url('../fonts/grenze.woff2') format('woff2')}"
+    + '.x{background:url(data:image/png;base64,AA)}.y{mask:url(../img/icones.svg#croix)}.z{fill:url(#degrade)}'),
+    ['fonts/grenze.woff2', 'img/icones.svg']);
+  assert.deepEqual(referencesLocales('img/icones.svg', '<use href="x.svg"/>'), []);
+});
+test('racines et fichiersListes : ce que tar reçoit et ce qu’il relit', () => {
+  assert.deepEqual(racines(['manifest.json', 'css/a.css', 'css/b.css', 'img/seals/x.webp', 'fond.html']), ['css', 'fond.html', 'img', 'manifest.json']);
+  assert.deepEqual(fichiersListes('assets/\r\nassets/icon.png\r\nmanifest.json\r\n\r\ncss/\ncss/base.css\n'), ['assets/icon.png', 'css/base.css', 'manifest.json']);
+});
+test('comparerVersions : de 1 à 4 entiers, parties manquantes à zéro', () => {
+  assert.equal(comparerVersions('3.0.1', '3.0.0'), 1);
+  assert.equal(comparerVersions('3.0', '3.0.0'), 0);
+  assert.equal(comparerVersions('1.10.0', '1.9.9'), 1);
+  assert.equal(comparerVersions('1.1.1', '3.0.0'), -1);
+  assert.equal(comparerVersions('3.0.0.1', '3.0.0'), 1);
+  assert.throws(() => comparerVersions('3.0.0-beta', '3.0.0'), /3\.0\.0-beta/);
+  assert.throws(() => comparerVersions('1.2.3.4.5', '1'), /1\.2\.3\.4\.5/);
+});
+test('Review Focus 6 : verifierVersion refuse une version déjà publiée ou pas plus haute', () => {
+  assert.doesNotThrow(() => verifierVersion('3.0.0', ['1.1.1']));
+  assert.doesNotThrow(() => verifierVersion('3.0.1', ['1.1.1', '3.0.0']));
+  assert.throws(() => verifierVersion('3.0.0', ['1.1.1', '3.0.0']), /La version 3\.0\.0 est déjà publiée/);
+  assert.throws(() => verifierVersion('3.0', ['1.1.1', '3.0.0']), /déjà publiée/);
+  assert.throws(() => verifierVersion('2.0.0', ['1.1.1', '3.0.0']), /2\.0\.0 doit être plus haute que 3\.0\.0/);
+  assert.throws(() => verifierVersion('3.0.0', {}), /liste/);
+});
+test('scripts/versions-publiees.json : versions croissantes, depuis la 1.1.1 de production', () => {
+  const v = JSON.parse(readFileSync('scripts/versions-publiees.json', 'utf8'));
+  assert.ok(Array.isArray(v)); assert.equal(v[0], '1.1.1');
+  for (let i = 1; i < v.length; i++) assert.equal(comparerVersions(v[i], v[i - 1]), 1, v[i]);
+});
+test('Review Focus 6 : le paquet du dépôt se suffit (pages, imports et url() pointent dans le paquet)', () => {
+  const depot = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
+  const { garder } = selectionner(depot, JSON.parse(readFileSync('manifest.json', 'utf8')));
+  const dans = new Set(garder);
+  for (const f of garder.filter((p) => /\.(html|js|css)$/.test(p) && !p.startsWith('vendor/')))
+    for (const r of referencesLocales(f, readFileSync(f, 'utf8'))) assert.ok(dans.has(r), `${f} → ${r}`);
+});
+```
+
+Le dernier test lit l'index (`git ls-files`) : un fichier chargé par une fenêtre mais pas encore ajouté à Git y échoue, comme il manquerait au paquet.
+
+```js
+// tests/manifest.test.js (ajout, à la suite des tests de la tâche 1)
+test('méta gardée de la 1.1.1 acceptée par la console', () => {
+  const { name, author, version, description, icon, icon_gray: gris } = m.meta;
+  assert.deepEqual([name, author], ['GregLC', 'Paul Berdier']);   // même UID, même carte dans la console
+  assert.match(version, /^\d+(\.\d+){0,3}$/);                      // 1 à 4 entiers (doc du manifeste)
+  assert.equal(m.meta['minimum-overwolf-version'], '0.209.0');
+  assert.equal(typeof description, 'string');
+  assert.ok(description.length > 0 && description.length <= 180, `${description.length} caractères`);
+  assert.deepEqual([icon, gris], ['assets/icon.png', 'assets/icon.png']);
+  const png = readFileSync(icon);
+  assert.equal(png.toString('latin1', 1, 4), 'PNG');
+  assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [256, 256]);   // PNG 256 × 256 (doc du manifeste)
+});
+```
+
+- [ ] **Step 2 : vérifier l'échec**
+
+Run : `cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && node --test tests/pack.test.js tests/manifest.test.js`
+Expected :
+- FAIL dans `tests/pack.test.js` (`ERR_MODULE_NOT_FOUND` pour `scripts/pack.mjs`) ;
+- le nouveau test de `tests/manifest.test.js` passe déjà : il fige la méta écrite à la tâche 1.
+
+- [ ] **Step 3 : écrire `scripts/versions-publiees.json` et `scripts/pack.mjs`**
+
+`scripts/versions-publiees.json` part de la version de production de l'ancienne appli, acceptée par la console le 16/10/2025 :
+
+```json
+[
+  "1.1.1"
+]
+```
+
+`scripts/pack.mjs` suit exactement les règles et le déroulé de `main` ci-dessus.
+
+- [ ] **Step 4 : vérifier le succès**
+
+Run : `cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && npm test`
+Expected : `# fail 0`.
+
+- [ ] **Step 5 : commit**
+
+```bash
+cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add scripts/pack.mjs scripts/versions-publiees.json tests/pack.test.js tests/manifest.test.js \
+  && git commit -m "feat: paquet .opk pour le canal de test (pack.mjs, versions publiées)"
+```
+
+- [ ] **Step 6 : paquet d'essai dans le scratchpad**
+
+Aucune fenêtre ne s'ouvre ici, donc la vérification « Jeu en cours » n'est pas nécessaire. `--essai` n'enregistre pas la version : ce paquet ne part jamais sur la console. Si `paquet-essai` existe déjà d'un passage précédent, prendre `paquet-essai-2`.
+
+```bash
+cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && SCRATCHPAD='<scratchpad>' && test -d "$SCRATCHPAD" && test ! -e "$SCRATCHPAD/paquet-essai" \
+  && SORTIE="$(cygpath -m "$SCRATCHPAD/paquet-essai")" && TAR="$(cygpath "$SYSTEMROOT")/System32/tar.exe" \
+  && node scripts/pack.mjs --essai --sortie "$SORTIE" \
+  && "$TAR" -t -f "$SORTIE/GregLC-3.0.0.opk" > "$SCRATCHPAD/paquet-essai.txt" \
+  && head -c 4 "$SORTIE/GregLC-3.0.0.opk" | od -An -c \
+  && grep -cxE 'manifest\.json|fond\.html|bandeau\.html|panneau\.html|bureau\.html|assets/icon\.png|vendor/socket\.io\.min\.js' "$SCRATCHPAD/paquet-essai.txt" \
+  && ! grep -E '^(essai-eclair|essai-overwolf|tests|scripts|apercu|docs|node_modules)/|^(README\.md|package\.json|\.git)' "$SCRATCHPAD/paquet-essai.txt" \
+  && git status --short && echo fin
+```
+Expected :
+- les quatre lignes du script : `GregLC 3.0.0 : N fichiers empaquetés, M écartés.`, `Paquet : C:\…\paquet-essai\GregLC-3.0.0.opk`, `Dossier propre : C:\…\paquet-essai\GregLC-3.0.0`, `Essai : version 3.0.0 non enregistrée.` ;
+- `   P   K 003 004`, la signature d'un zip ;
+- `7` : le manifeste, les quatre pages, l'icône et socket.io sont à la racine de l'archive, sans dossier parent ;
+- rien pour le second `grep`, ni pour `git status --short` (l'essai n'a rien écrit dans le dépôt), puis `fin`.
+
+- [ ] **Step 7 : vérifier le refus d'une sortie déjà remplie**
+
+Run : `cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && SCRATCHPAD='<scratchpad>' && node scripts/pack.mjs --essai --sortie "$(cygpath -m "$SCRATCHPAD/paquet-essai")"; echo "code $?"`
+Expected : `Le dossier de sortie n'est pas vide : C:\…\paquet-essai`, puis `code 1`.
+
+---
+
+## Tâche 19 : README, vérification finale, PR et canal de test
 
 **Files:**
 - Create : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\README.md`.
-- Modify : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\manifest.test.js` (ajout ci-dessous).
+- Modify :
+  - `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\manifest.test.js` (ajout ci-dessous) ;
+  - `C:\Users\Paul\Documents\Codage\greg-overlay-ow\scripts\versions-publiees.json` (étape 9, écrit par `scripts/pack.mjs`).
 - Test : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\manifest.test.js`.
 
 - [ ] **Step 1 : écrire le test de cohérence du manifeste**
+
+`existsSync` rejoint l'import de `node:fs` en tête du fichier : `import { existsSync, readFileSync } from 'node:fs';`.
 
 ```js
 test('chaque fenêtre du manifeste a sa page', () => {
@@ -2754,23 +3011,44 @@ Expected : PASS, puisque les pages existent depuis les tâches 14 à 17. S'il é
 - [ ] **Step 2 : écrire `README.md`**
 
 En français, sans emoji, sections :
-1. **Ce que c'est** : le bandeau, le panneau, la fenêtre bureau et les raccourcis par défaut (Ctrl+F7 pause, Ctrl+F8 suivant, Ctrl+F10 panneau, Ctrl+F11 bandeau). Pour Paul seul : un compte développeur Overwolf approuvé est nécessaire, et les amis passent par le site.
+1. **Ce que c'est** : le bandeau, le panneau, la fenêtre bureau et les raccourcis par défaut (Ctrl+F7 pause, Ctrl+F8 suivant, Ctrl+F10 panneau, Ctrl+F11 bandeau). Paul charge l'appli en développement (section 2). Ses potes l'installent par le lien d'un canal de test (section 7), et chacun lie son propre compte. Le site reste là pour ceux qui n'ont pas Overwolf.
 2. **Charger l'appli (Load unpacked)** :
    - `overwolf://packages` : retirer la carte de l'ancienne GregLC et désactiver « Greg essai » ;
    - Load unpacked → `C:\Users\Paul\Documents\Codage\greg-overlay-ow` ;
    - vérifier que l'UID affiché est `ahnflfbohhimdmoeoogpiohdmjdokiioleialagk`. Au besoin, lire `GregLC origine` dans `%LOCALAPPDATA%\Overwolf\Log\Apps\GregLC\fond.html.log` ;
    - si la fumée de la tâche 1 (étape 7) a fait passer `bureau` en fenêtre non native, le dire ici, avec la raison (le pont n'atteignait pas la page de fond).
-3. **Réglages Railway (service API)**, à faire seulement avec l'accord de Paul :
-   - `OVERLAY_ORIGINS=overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` ;
-   - `GREG_OWNER_ID` avec la même valeur que le service BOT DISCORD ;
-   - sans eux : CORS et socket refusés, et l'autorisation du code refusée (403 `NOT_OWNER`).
-4. **Lier** : ouvrir la fenêtre Greg, « Ouvrir le site pour l’autoriser », puis Autoriser sur `/lier`.
+3. **Réglages Railway (service API)** :
+   - `OVERLAY_ORIGINS=overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk`, posée sur le service API depuis le 2026-11-25 (spec §3.4). La vérifier ; la changer seulement avec l'accord de Paul ;
+   - sans elle : CORS et socket refusés pour l'appli.
+4. **Lier** : ouvrir la fenêtre Greg, « Ouvrir le site pour l’autoriser », puis Autoriser sur `/lier`. Tout compte connecté au site peut lier l'appli à son propre compte, et commande alors Greg sur les serveurs dont il est membre, comme sur le site.
 5. **Délier** : Réglages → « Délier cet appareil », ou le site → « Appareils liés » → Délier.
 6. **Désactiver ou retirer l'appli** : interrupteur « App activated » de la carte GregLC dans `overwolf://packages`, ou Uninstall. Fermer la fenêtre ne l'arrête pas : la page de fond attend la prochaine partie.
-7. **Développer** :
+7. **Partager avec tes potes** (canal de test ; gestes de Paul) :
+   1. **Monter la version.** Chaque dépôt sur la console exige une version plus haute que la précédente : `3.0.0`, puis `3.0.1`… Pour une nouvelle version :
+      - changer `meta.version` dans `manifest.json`, et la valeur attendue du test « identité, permissions et jeu » de `tests/manifest.test.js` ;
+      - `npm test`, puis commiter ces deux fichiers. Le script lit le manifeste de HEAD, jamais le dossier de travail.
+   2. **Lancer le script** : `node scripts/pack.mjs --sortie C:/Users/Paul/Desktop/GregLC-<version>`, vers un dossier neuf ou vide.
+      - Il écrit `GregLC-<version>.opk` et le dossier propre `GregLC-<version>/`, tirés de HEAD. Ils contiennent seulement le manifeste et ce que chargent les fenêtres : jamais `essai-eclair/`, `essai-overwolf/`, `tests/`, `scripts/`, `apercu/` ni la doc.
+      - Il refuse une version déjà publiée, ou pas plus haute que la dernière de `scripts/versions-publiees.json`.
+      - Après un paquet réussi, il y ajoute la version. Commiter ce fichier (`chore: paquet <version> pour le canal de test`).
+      - Une version empaquetée est consommée : pour tout nouveau paquet (paquet perdu, correction après un refus de la console), monter la version et recommencer. Seule exception, le secours du point 7.
+      - `--essai` fait tout, sauf l'enregistrement de la version. Un paquet d'essai ne part jamais sur la console.
+   3. **Déposer sur la console** (console.overwolf.com → GregLC) :
+      - Release management → Testing → « Create channel », un nom (par exemple « potes »), « Create ». Le canal se crée une seule fois ;
+      - déposer le `.opk` dans « New test release », ou « Upload » ;
+      - après la vérification de la console : « Release rollout percentage » à 100 %, « Start rollout », puis « Rollout ».
+   4. **Envoyer le lien** : Release management → Testing → le canal → « Manage » → « Public link for testers » → « Copy link ». L'envoyer aux potes.
+   5. **Chez chaque pote** :
+      - installer Overwolf, puis ouvrir le lien ;
+      - lancer GregLC. La fenêtre Greg montre un code ;
+      - « Ouvrir le site pour l’autoriser », se connecter au site avec son propre compte Discord, puis Autoriser le code sur `/lier`.
+   6. **Ce qui ne bouge pas.** La version de production 1.1.1 (l'ancienne appli) n'est pas touchée. Les versions de test échappent à la revue d'Overwolf, et la boutique ne les montre pas. Un `.opk` local n'est pas signé et ne s'installe pas d'un double-clic : les potes passent par le lien.
+   7. **Secours, si la console refuse l'archive elle-même** (format, et non contenu) : utiliser le bouton « Pack » d'`overwolf://packages` sur le dossier propre `GregLC-<version>/` (en retirant d'abord la carte de développement, qui a le même UID), puis déposer l'`.opk` obtenu. Sa version n'a pas changé et reste plus haute que les précédentes.
+8. **Développer** :
    - `npm test` ;
    - `npm run sync-web` (après un changement de la DA ou du deck du site), puis commiter les sorties ;
-   - `npm run apercu`, puis `http://127.0.0.1:47323/apercu/index.html`.
+   - `npm run apercu`, puis `http://127.0.0.1:47323/apercu/index.html` ;
+   - `node scripts/pack.mjs --essai --sortie <dossier neuf>` pour regarder le paquet sans consommer de version.
 
 - [ ] **Step 3 : lancer toute la suite**
 
@@ -2813,6 +3091,7 @@ Nouvelle appli Overwolf de Greg (OW-native, version 3.0.0). Elle remplace l'anci
 - **Panneau** en jeu (Ctrl+F10) : titre en cours, commandes, recherche avec suggestions, file (glisser-déposer, Alt+↑/↓) et raccourcis du moment. Il prend le clavier à l'ouverture et le rend à Échap, à Ctrl+F10 ou au premier clic dans le jeu.
 - **Fenêtre bureau**, hors partie seulement : liaison par code avec le site (/lier), lecteur, réglages (raccourcis, emplacement, taille et fond du bandeau, lignes d'amis, répliques, délier).
 - **Raccourcis** : Ctrl+F7 pause, Ctrl+F8 suivant, Ctrl+F10 panneau, Ctrl+F11 bandeau. Un raccourci qu'Overwolf n'a pas pu attribuer est signalé sur le bandeau au début de la partie.
+- **Diffusion aux potes** : `scripts/pack.mjs` fabrique le `.opk` à partir de HEAD, avec seulement le manifeste et ce que chargent les fenêtres, et refuse une version déjà publiée. Paul le dépose sur un canal de test de la console après son passage en jeu ; chaque pote lie son propre compte sur /lier. La 1.1.1 de production n'est pas touchée.
 
 L'appli parle à l'API publique avec un jeton porteur (`Authorization: Bearer`), jamais avec un cookie. Le jeton reste dans le stockage local de l'appli et n'apparaît jamais dans une URL.
 
@@ -2820,10 +3099,9 @@ L'appli parle à l'API publique avec un jeton porteur (`Authorization: Bearer`),
 
 Le plan A (dépôt GregLeConsanguin : API, bot, page /lier) doit être déployé, avec sur le service API :
 
-- `OVERLAY_ORIGINS=overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` ;
-- `GREG_OWNER_ID`, avec la même valeur que sur le service BOT DISCORD.
+- `OVERLAY_ORIGINS=overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk` (posée depuis le 2026-11-25).
 
-Sans eux, l'API refuse l'origine de l'appli, le socket et l'autorisation du code.
+Sans elle, l'API refuse l'origine de l'appli et son socket. Tout compte connecté au site peut lier l'appli à son propre compte.
 
 ## Tests
 
@@ -2855,6 +3133,7 @@ Le banc hors jeu (faux Overwolf, fausse API, faux socket) couvre la liaison par 
    - revérifier en jeu.
 9. Depuis le site ou par un ami : ajouter un titre ; une ligne apparaît 5 s sous le bandeau.
 10. Réglages → Délier : le bandeau dit « Liez l’appli depuis la fenêtre Greg ».
+11. Seulement après ce passage en jeu : la session fabrique le paquet 3.0.0 (`scripts/pack.mjs`), puis Paul le dépose lui-même sur un canal de test de la console (README, « Partager avec tes potes »). La session ne dépose rien et n'envoie le lien à personne.
 
 Ne pas fusionner sans l'accord de Paul.
 ```
@@ -2865,7 +3144,7 @@ Puis :
 cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && SCRATCHPAD='<scratchpad>' && test -f "$SCRATCHPAD/pr-overlay-v3.md" \
   && ! grep -qiE 'co-authored|generated with|claude|anthropic' "$SCRATCHPAD/pr-overlay-v3.md" \
   && git add README.md tests/manifest.test.js \
-  && git commit -m "docs: README de l'appli v3 (chargement, Railway, délier, désactiver)" \
+  && git commit -m "docs: README de l'appli v3 (chargement, Railway, partage, délier, désactiver)" \
   && git push -u origin feat/overlay-v3 \
   && gh pr create --base master --head feat/overlay-v3 --title "Overlay v3 : appli Overwolf de Greg (bandeau, panneau, liaison par code)" --body-file "$SCRATCHPAD/pr-overlay-v3.md"
 ```
@@ -2875,7 +3154,7 @@ La fumée de la tâche 1 (étape 7) a déjà vérifié le pont du bureau. Si la 
 
 - [ ] **Step 7 : demander à Paul**
 
-Donner le lien de la PR. Lui demander de suivre le protocole en jeu du corps de la PR et d'envoyer le chemin de la capture du point 3. Ne pas fusionner.
+Donner le lien de la PR. Lui demander de suivre le protocole en jeu du corps de la PR et d'envoyer le chemin de la capture du point 3. Ne pas fusionner, et ne fabriquer aucun paquet : il vient à l'étape 9, après le passage en jeu.
 
 - [ ] **Step 8 : ajuster `MARGE_BAS` sur la capture de Paul**
 
@@ -2898,7 +3177,38 @@ Donner le lien de la PR. Lui demander de suivre le protocole en jeu du corps de 
      && git commit -m "fix: marge basse du bandeau réglée sur une capture de LoL, chat dégagé" \
      && git push
    ```
-4. Demander à Paul de revérifier le point 3 du protocole en jeu, puis son accord pour fusionner. Ne pas fusionner sans lui.
+4. Demander à Paul de revérifier le point 3 du protocole en jeu, puis passer à l'étape 9. Ne pas fusionner.
+
+- [ ] **Step 9 : paquet 3.0.0, puis dépôt par Paul sur un canal de test**
+
+1. **Attendre le feu vert de Paul.** Il dit, dans la conversation, que tout le protocole en jeu est passé (points 1 à 10, et le point 3 revérifié après l'étape 8). Sans ce message, on ne fabrique rien.
+2. **Fabriquer le paquet** depuis HEAD de la branche, poussée et propre :
+
+   ```bash
+   cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && SCRATCHPAD='<scratchpad>' && test -d "$SCRATCHPAD" && test ! -e "$SCRATCHPAD/paquet-3.0.0" \
+     && test -z "$(git status --short)" && git fetch -q origin && test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feat/overlay-v3)" \
+     && npm test > "$SCRATCHPAD/npm-test-paquet.log" 2>&1 && grep -x '# fail 0' "$SCRATCHPAD/npm-test-paquet.log" \
+     && node scripts/pack.mjs --sortie "$(cygpath -m "$SCRATCHPAD/paquet-3.0.0")" \
+     && git diff -- scripts/versions-publiees.json
+   ```
+   Expected :
+   - `# fail 0` ;
+   - les quatre lignes du script, la dernière étant `Version 3.0.0 ajoutée à scripts/versions-publiees.json : à commiter.` ;
+   - le diff ajoute `"3.0.0"` après `"1.1.1"`, qui prend une virgule.
+
+   Puis :
+
+   ```bash
+   cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add scripts/versions-publiees.json \
+     && git commit -m "chore: paquet 3.0.0 pour le canal de test" \
+     && git push
+   ```
+3. **Remettre le paquet à Paul.**
+   - Lui donner le chemin Windows absolu de l'`.opk` que le script a affiché (`…\paquet-3.0.0\GregLC-3.0.0.opk`), jamais celui de `paquet-essai`.
+   - Le renvoyer à la section « Partager avec tes potes » du README : console.overwolf.com → GregLC → Release management → Testing → créer le canal (une seule fois), déposer l'`.opk`, diffusion à 100 %, puis « Public link for testers » à envoyer.
+   - Le prévenir que le scratchpad peut être vidé (redémarrage, ménage). Il dépose le fichier sans tarder ou le copie ailleurs ; un paquet perdu oblige à passer en 3.0.1 (README, point 7.1).
+4. **Ce que la session ne fait jamais** (gestes tournés vers l'extérieur, qui appartiennent à Paul) : ouvrir console.overwolf.com, y déposer le paquet (navigateur ou `ow-cli`), lancer la diffusion, copier ou envoyer le lien des testeurs.
+5. **Fusion.** Demander l'accord de Paul pour fusionner la PR. Ne pas fusionner sans lui.
 
 ---
 
@@ -2908,20 +3218,22 @@ Donner le lien de la PR. Lui demander de suivre le protocole en jeu du corps de 
 
   | Spec | Tâches |
   |---|---|
-  | §6.1 dépôt et outillage | 1, 2, 10, 18 |
-  | §6.2 manifeste et CSP | 1, 14 à 17 (`pages.test.js`) |
+  | §6.1 dépôt et outillage | 1, 2, 10, 19 |
+  | §6.1 bis diffusion par canal de test | 18 (`pack.mjs`, versions publiées, format de l'`.opk` vérifié), 19 (README « Partager avec tes potes », paquet après le passage en jeu, dépôt par Paul) |
+  | §6.2 manifeste et CSP | 1, 14 à 17 (`pages.test.js`), 18 (méta de la 1.1.1) |
   | §6.3 cerveau : jeton | 9 |
   | §6.3 cerveau : socket, `time_sync`, repli 5 s | 10 |
   | §6.3 cerveau : actions, `expected`, STALE | 13 |
   | §6.3 cerveau : jeu, fenêtres, moins de 200 px | 11 |
   | §6.3 cerveau : raccourcis, fusion, répétition, message sans serveur ni liaison | 12, 13 |
-  | §6.4 bandeau | 7, 15, 18 (marge du bas réglée sur une capture, chat dégagé) |
+  | §6.4 bandeau | 7, 15, 19 (marge du bas réglée sur une capture, chat dégagé) |
   | §6.5 panneau | 11, 16 (en-tête avec « Échap ») |
   | §6.6 bureau | 9, 12, 17 |
   | §6.7 DA | 2, 15 |
-  | §7 vérification de l'appli | 14 (banc), 15 à 17 (aperçus), 18 (protocole en jeu, relecture) |
+  | §7 vérification de l'appli | 14 (banc), 15 à 17 (aperçus), 18 (paquet d'essai), 19 (protocole en jeu, relecture) |
 
   §1 (anti-objectifs) : le clavier rendu et les clics qui traversent (tâches 11 et 14), pas de focus du bandeau (manifeste, tâche 1), aucune donnée de partie.
+  §1 (diffusion aux potes) et §3.4 (tout compte connecté lie son propre appareil) : tâches 18 et 19 ; aucun compte privilégié dans l'appli ni dans le README.
 - **Marqueurs vides :** aucun. Les textes dont la spec laisse le détail au constructeur sont fixés dans `lib/copy.overlay.js` (tâche 5).
 - **Types et noms :**
   - `EtatDiffuse` (tâche 14) est la seule forme lue par `vue-bandeau`, `vue-lecteur`, `vue-bureau` et `SCENARIOS` ;
@@ -2932,9 +3244,13 @@ Donner le lien de la PR. Lui demander de suivre le protocole en jeu du corps de 
   - `DELAIS.reessaiServeur` (5 s, tâche 1) sert au `join_guild` réessayé et à la relance du socket (tâche 10), et au nouvel essai des serveurs (tâche 14) ;
   - `FauxSocket.active` (tâche 10) suit la doc de socket.io-client 4 ; `api.autocomplete` renvoie un tableau, et le faux de la tâche 13 aussi ;
   - `changeSize` prend l'objet plat `{window_id, width, height}` de la doc Overwolf (0.149+), et le faux de la tâche 11 refuse toute autre forme ;
-  - `refclock.anchor()` est une méthode (tâches 3 et 14).
-- **Contrôles réels, dans Overwolf :** l'étape 7 de la tâche 1 vérifie tôt les modules ES sous CSP, l'origine (l'UID du plan A) et le pont du bureau natif ; la tâche 18 garde le protocole complet en jeu.
-- **Review Focus :** les cinq lignes ont leur test, marqué « Review Focus n », dans la tâche qui possède le code : 1 → 11 ; 2 → 5 et 14 ; 3 → 9 ; 4 → 10 et 14 ; 5 → 12, 14 et 16.
+  - `refclock.anchor()` est une méthode (tâches 3 et 14) ;
+  - `selectionner`, `referencesLocales`, `racines`, `fichiersListes`, `comparerVersions`, `verifierVersion` et `DOSSIERS_PAQUET` ont les mêmes noms dans les Interfaces de la tâche 18, ses tests et son `main` ; `scripts/versions-publiees.json` est le même fichier aux tâches 18 et 19 (README, étape 9) ;
+  - le test « identité, permissions et jeu » (tâche 1) fige la version de cette PR (`3.0.0`) ; le test de la méta (tâche 18) n'exige que son format, et le README dit de changer les deux à chaque nouvelle version ;
+  - `tests/manifest.test.js` importe `existsSync` pour le test de la tâche 19.
+- **Contrôles réels, dans Overwolf :** l'étape 7 de la tâche 1 vérifie tôt les modules ES sous CSP, l'origine (l'UID du plan A) et le pont du bureau natif ; la tâche 19 garde le protocole complet en jeu, puis le paquet n'est fabriqué qu'après le feu vert de Paul.
+- **Review Focus :** les six lignes ont leur test, marqué « Review Focus n », dans la tâche qui possède le code : 1 → 11 ; 2 → 5 et 14 ; 3 → 9 ; 4 → 10 et 14 ; 5 → 12, 14 et 16 ; 6 → 18.
 - **Proportion :** pas de corps de fonction, sauf les règles que les tests ne fixent pas seuls :
   - la fusion des raccourcis, la table de `copieAmi` et l'assemblage du cerveau, en prose ;
-  - le texte exact de `copy.overlay.js` et le manifeste, valeurs que la spec ou le constructeur doivent figer.
+  - le texte exact de `copy.overlay.js` et le manifeste, valeurs que la spec ou le constructeur doivent figer ;
+  - le déroulé de `main` dans `scripts/pack.mjs` (commandes `git` et `tar`, en prose), que les tests purs ne couvrent pas ; les étapes 6 et 7 de la tâche 18 le vérifient pour de vrai.
