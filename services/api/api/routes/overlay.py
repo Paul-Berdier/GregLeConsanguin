@@ -100,6 +100,16 @@ def _lists_guild(guilds: Any, guild_id: str) -> bool:
     return isinstance(guilds, list) and any(isinstance(g, dict) and str(g.get("id")) == guild_id for g in guilds)
 
 
+def _disconnect_sockets(tid: str) -> None:
+    """Ferme les sockets ouverts avec le jeton `tid`, qui vient d'être révoqué (spec §3.4, 5).
+
+    Import local : importer les routes n'enregistre pas les handlers Socket.IO, que create_app charge lui-même.
+    """
+    from api.websocket.events import disconnect_token
+
+    disconnect_token(tid)
+
+
 # ── Parcours de l'appareil ──
 
 @bp.post("/overlay/device")
@@ -225,15 +235,17 @@ def tokens_revoke():
     tid = body.get("id") if body is not None else None
     if not isinstance(tid, str) or (ident.via == "overlay" and tid != ident.tid) or not ot.revoke(ident.uid, tid):
         raise ot.OverlayError("NOT_FOUND", 404)
+    _disconnect_sockets(tid)
     return jsonify({"ok": True}), 200
 
 
 @bp.post("/overlay/logout")
 @require_bearer
 def logout():
-    """L'appli se délie : révoque le jeton de la requête."""
+    """L'appli se délie : révoque le jeton de la requête et ferme ses sockets."""
     ident = current_identity()
-    ot.revoke(ident.uid, ident.tid)
+    if ot.revoke(ident.uid, ident.tid):
+        _disconnect_sockets(ident.tid)
     return jsonify({"ok": True}), 200
 
 
