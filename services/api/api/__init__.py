@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import List, Optional
 from urllib.parse import urlsplit
 
@@ -65,6 +66,30 @@ def cors_origins() -> List[str]:
     return out or [DEFAULT_WEB_URL]
 
 
+# Origine exacte d'une extension Overwolf : pas de joker, pas de chemin, pas de port, pas de métacaractère regex.
+OVERLAY_ORIGIN_RE = re.compile(r"overwolf-extension://[a-z]{20,64}")
+
+
+def overlay_origins() -> List[str]:
+    """Origines de l'appli Overwolf : OVERLAY_ORIGINS (séparées par des virgules), vide si non définie.
+
+    Chaque entrée (espaces retirés, minuscules) doit être `overwolf-extension://<uid>` exactement,
+    sinon elle est ignorée avec un avertissement. Ces origines ne sont jamais celles du site
+    (`WEB_ORIGINS`) : la garde CSRF des routes de session les refuse.
+    """
+    out: List[str] = []
+    for raw in (os.getenv("OVERLAY_ORIGINS") or "").split(","):
+        origin = raw.strip().lower()
+        if not origin:
+            continue
+        if not OVERLAY_ORIGIN_RE.fullmatch(origin):
+            log.warning("Origine de l'appli ignorée (invalide) : %r", raw.strip())
+            continue
+        if origin not in out:
+            out.append(origin)
+    return out
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
 
@@ -81,14 +106,16 @@ def create_app() -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
     # Extensions
-    # Même liste pour HTTP et Socket.IO. En prod le front passe par le proxy Next
-    # (même origine pour le navigateur) mais engine.io vérifie quand même l'en-tête
-    # Origin : l'origine du front DOIT être dans la liste (WEB_URL / CORS_ORIGINS).
-    origins = cors_origins()
+    # Même liste pour HTTP et Socket.IO : le site puis l'appli Overwolf. En prod le front
+    # passe par le proxy Next (même origine pour le navigateur) mais engine.io vérifie quand
+    # même l'en-tête Origin : l'origine du front DOIT être dans la liste (WEB_URL / CORS_ORIGINS).
+    web = cors_origins()
+    overlay = overlay_origins()
     # Origines du site seul : la garde CSRF des routes de session (authz.csrf_ok) n'admet qu'elles.
-    app.config["WEB_ORIGINS"] = origins
+    app.config["WEB_ORIGINS"] = web
+    origins = web + [o for o in overlay if o not in web]
     app.config["ALLOWED_ORIGINS"] = origins
-    log.info("Origines autorisées (CORS / Socket.IO) : %s", origins)
+    log.info("Origines autorisées (CORS / Socket.IO) : site %s, appli %s", web, overlay)
     CORS(app, supports_credentials=True, origins=origins)
     compress.init_app(app)
     # Mode "threading" (serveur Werkzeug threadé + simple-websocket pour le
