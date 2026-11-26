@@ -187,15 +187,16 @@ Le format des codes :
 Routes (préfixe `/api/v1`) :
 
 1. **Démarrer.** `POST /overlay/device`, sans authentification.
-   - Limites : 30 par heure au total, et 5 par minute par IP au mieux.
+   - Limites : par IP (une IPv6 compte par son /64), 5 par minute puis 20 par heure ; 300 par heure au total, où seules comptent les requêtes admises par IP. Une adresse seule ne peut donc pas épuiser le plafond global (revue finale du 2026-11-26 ; la première version, 30 par heure au total, se remplissait en 6 minutes depuis une seule IP).
+   - Réponses de démarrage, de jeton et de liste des jetons : `Cache-Control: no-store`.
    - Corps `{client_name?}` (≤ 40 caractères).
    - Réponse : `{device_code, user_code, verification_uri: WEB/lier, verification_uri_complete: WEB/lier?code=…, expires_in: 600, interval: 5}`.
-2. **Consulter.** `GET /overlay/device/lookup?user_code=` (session). Renvoie `{client_name, created_at, expires_in}`,
+2. **Consulter.** `GET /overlay/device/lookup?user_code=` (session, 30 par minute par uid). Renvoie `{client_name, created_at, expires_in}`,
    pour que /lier montre ce qu'on autorise.
 3. **Autoriser ou refuser.** `POST /overlay/device/approve`.
    - Protections : session, `csrf_ok`, 5 par minute par uid.
    - Corps `{user_code, decision: "approve"|"deny", guild_id?}`.
-   - `guild_id` est le serveur par défaut. Il est validé par `get_state` (contrôle d'appartenance du bot).
+   - `guild_id` est le serveur par défaut. Il est validé par `user_guilds` (contrôle d'appartenance du bot ; `get_state` ne le fait pas pour un serveur où Greg est absent).
    - L'identité et le portrait de l'utilisateur viennent de la session, jamais du corps.
    - Usage unique : GETDEL de l'index `user_code`.
    - Erreurs : 404 `CODE_EXPIRED`, 409 `ALREADY_USED`, 403 `CSRF_FAILED`, 429 `RATE_LIMITED`.
@@ -221,7 +222,9 @@ Autres décisions :
   - Le risque restant est l'hameçonnage par code : quelqu'un fait valider son propre code par une autre personne. Les
     parades :
     - /lier affiche le nom et l'âge de l'appareil ;
-    - il faut cliquer soi-même, jamais de validation automatique ;
+    - il faut cliquer soi-même, jamais de validation automatique ; le site refuse d'être affiché dans le cadre d'un autre
+      site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`) et « Autoriser » ne répond qu'une seconde après
+      l'apparition de l'appareil, délai relancé au retour du focus (parade au clic piégé, revue finale du 2026-11-26) ;
     - un avertissement : « N'autorisez que l'appli que vous venez d'ouvrir vous-même. » ;
     - le code expire en 10 minutes et ne sert qu'une fois ;
     - les débits sont limités ;
