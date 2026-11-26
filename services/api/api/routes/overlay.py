@@ -14,6 +14,7 @@ que ses jetons ; un porteur ne révoque que lui-même.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 
@@ -35,9 +36,11 @@ from api.services.bot_bridge import send_command
 bp = Blueprint("overlay", __name__)
 
 DEFAULT_CLIENT_NAME = "Appli Overwolf"
-# (seau, plafond, fenêtre en secondes) de ot.hit_rate_limit.
-RATE_START_GLOBAL = ("device_start", 30, 3600)
+# (seau, plafond, fenêtre en secondes) de ot.hit_rate_limit. Démarrer : une IP (une IPv6 : son /64) passe au plus
+# 20 fois par heure, donc il faut au moins 15 sujets pour remplir le plafond global (spec §8 : limites ajustées).
 RATE_START_IP = ("device_start_ip", 5, 60)
+RATE_START_IP_H = ("device_start_ip_h", 20, 3600)
+RATE_START_GLOBAL = ("device_start", 300, 3600)
 RATE_APPROVE = ("approve", 5, 60)
 # user_guilds se lit dans le cache du bot (spec §4.1) : réponse rapide attendue.
 USER_GUILDS_TIMEOUT = 5
@@ -60,6 +63,23 @@ def _check_rate(rule: tuple[str, int, int], subject: str) -> None:
     bucket, limit, window_s = rule
     if ot.hit_rate_limit(bucket, subject, limit, window_s):
         raise ot.OverlayError("RATE_LIMITED", 429)
+
+
+def ip_subject(addr: str | None) -> str:
+    """Sujet des seaux par IP : une IPv4 entière, une IPv6 par son préfixe /64 (un client en tient souvent tout un
+    /64 et en change d'adresse à volonté) ; une IPv6 qui porte une IPv4 (::ffff:a.b.c.d) compte comme cette IPv4.
+    Une adresse illisible reste telle quelle, une adresse absente devient « unknown »."""
+    if not addr:
+        return "unknown"
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 def _json_object() -> dict[str, Any] | None:
@@ -116,12 +136,16 @@ def _disconnect_sockets(tid: str) -> None:
 def device_start():
     """Démarrer une liaison (sans authentification).
 
-    Limite par IP d'abord : une requête qu'elle refuse ne compte jamais dans le plafond global, donc une IP seule ne
-    bloque pas la liaison des autres comptes. remote_addr est déjà tiré de X-Forwarded-For (ProxyFix).
+    Limites par IP d'abord, 5 par minute puis 20 par heure (une IPv6 compte par son /64), et seulement ensuite le
+    plafond global de 300 par heure : une requête refusée par un seau d'IP n'y compte jamais. Une IP seule y prend
+    donc au plus 20 places par heure et ne bloque pas la liaison des autres comptes ; il faudrait au moins 15
+    adresses (ou /64) distinctes pour le remplir. remote_addr est déjà tiré de X-Forwarded-For (ProxyFix).
     """
     if not request.is_json:
         raise _invalid()
-    _check_rate(RATE_START_IP, request.remote_addr or "unknown")
+    ip = ip_subject(request.remote_addr)
+    _check_rate(RATE_START_IP, ip)
+    _check_rate(RATE_START_IP_H, ip)
     _check_rate(RATE_START_GLOBAL, "all")
     d = ot.start_device(_client_name(_json_object()))
     web = web_url().rstrip("/")

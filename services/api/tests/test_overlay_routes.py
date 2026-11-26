@@ -43,18 +43,43 @@ def test_device_start_rejects_bad_names(client, overlay_redis, name):
     r = client.post(f"{BASE}/overlay/device", json={"client_name": name})
     assert r.status_code == 400 and r.get_json() == {"ok": False, "error": "INVALID_REQUEST"}
 
+def start_from(client, addr): return client.post(f"{BASE}/overlay/device", json={}, environ_base={"REMOTE_ADDR": addr}).status_code
+
 def test_device_start_rate_limits(client, overlay_redis):
     codes = [client.post(f"{BASE}/overlay/device", json={}).status_code for _ in range(6)]
     assert codes == [200] * 5 + [429]
     assert client.post(f"{BASE}/overlay/device", json={}).get_json() == {"ok": False, "error": "RATE_LIMITED"}
-    total = [client.post(f"{BASE}/overlay/device", json={}, environ_base={"REMOTE_ADDR": f"10.0.0.{i}"}).status_code
-             for i in range(30)]
-    assert total == [200] * 25 + [429] * 5                       # plafond global de 30 par heure, dont 5 déjà pris ci-dessus
+    total = [start_from(client, f"10.0.{i // 250}.{i % 250}") for i in range(300)]
+    assert total == [200] * 295 + [429] * 5                      # plafond global de 300 par heure, dont 5 déjà pris ci-dessus
 
 def test_one_ip_never_exhausts_the_global_bucket(client, overlay_redis):
-    assert [client.post(f"{BASE}/overlay/device", json={}).status_code for _ in range(30)] == [200] * 5 + [429] * 25
-    assert overlay_redis.get("greg:ratelimit:device_start:all") == "5"       # refusées par IP : jamais comptées
-    assert client.post(f"{BASE}/overlay/device", json={}, environ_base={"REMOTE_ADDR": "10.9.9.9"}).status_code == 200
+    admitted = []
+    for minute in range(61):                                     # plus d'une heure, une fenêtre d'une minute après l'autre
+        codes = [start_from(client, "203.0.113.7") for _ in range(6)]           # toujours au-delà de son seau par minute
+        admitted.append(codes.count(200))
+        assert start_from(client, f"198.51.100.{minute}") == 200                  # une autre IP passe toujours
+        if minute == 0:
+            assert overlay_redis.get("greg:ratelimit:device_start:all") == "6"    # refusées par IP : jamais comptées
+        overlay_redis.now += 61
+    assert admitted == [5] * 4 + [0] * 56 + [5]                  # 20 par heure au plus, puis l'heure suivante repart
+
+def test_device_start_hourly_bucket_per_ip(client, overlay_redis):
+    for _ in range(4):
+        assert [start_from(client, "203.0.113.7") for _ in range(5)] == [200] * 5; overlay_redis.now += 61
+    r = client.post(f"{BASE}/overlay/device", json={}, environ_base={"REMOTE_ADDR": "203.0.113.7"})
+    assert r.status_code == 429 and r.get_json() == {"ok": False, "error": "RATE_LIMITED"}   # la 21e de l'heure
+    assert overlay_redis.get("greg:ratelimit:device_start:all") == "20"
+    assert start_from(client, "203.0.113.8") == 200
+
+def test_device_start_counts_an_ipv6_by_its_64(client, overlay_redis):
+    assert [start_from(client, f"2001:db8:1:2::{i:x}") for i in range(1, 7)] == [200] * 5 + [429]   # un même /64
+    assert start_from(client, "2001:db8:1:3::1") == 200                                           # un autre /64
+
+@pytest.mark.parametrize("addr,subject", [("203.0.113.7", "203.0.113.7"), ("2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"),
+    ("2001:DB8:1:2::1", "2001:db8:1:2::/64"), ("::ffff:203.0.113.7", "203.0.113.7"), ("pas-une-ip", "pas-une-ip"),
+    ("", "unknown"), (None, "unknown")])
+def test_ip_subject(addr, subject):
+    assert overlay_mod.ip_subject(addr) == subject
 
 @pytest.mark.parametrize("path", ["/overlay/device", "/overlay/token"])
 @pytest.mark.parametrize("ctype", ["text/plain", "application/x-www-form-urlencoded"])
