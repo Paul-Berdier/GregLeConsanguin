@@ -14,6 +14,20 @@ const nextConfig = {
     ],
   },
 
+  // Aucune page ne s'affiche dans le cadre d'un autre site : un /lier encadré ferait cliquer « Autoriser » à
+  // l'insu du Roi (clickjacking). Rien n'encadre le site (l'appli Overwolf a ses propres fenêtres).
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'X-Frame-Options', value: 'DENY' },
+        ],
+      },
+    ];
+  },
+
   async rewrites() {
     // In Railway, api.railway.internal:3000 is the internal API service.
     // Locally, use localhost:3000 or a custom API_URL env.

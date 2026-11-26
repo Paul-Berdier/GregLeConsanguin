@@ -16,6 +16,11 @@ type Found = { code: string; name: string; createdAt: number };
 /** Réponse de lookup pour un code : la demande, ou la clé du texte d'erreur. */
 type Lookup = { code: string; found: Found | null; err: string | null };
 
+/** « Autoriser » reste inerte ce temps après l'affichage de l'appareil, puis à chaque retour sur la fenêtre (focus,
+ * onglet de nouveau visible) : un double-clic piégé (une fenêtre surgissante qui s'efface sous le curseur) ne
+ * tombe jamais sur lui. frame-ancestors (next.config.js) ne pare que l'encadrement. */
+const ARMEMENT_MS = 1000;
+
 function savedGuild(): string | null {
   try { return localStorage.getItem('greg.webplayer.guild_id'); } catch { return null; }
 }
@@ -80,7 +85,9 @@ export default function LierPage() {
   const [tokensErr, setTokensErr] = useState<string | null>(null);
   const [unlinkErr, setUnlinkErr] = useState<string | null>(null);
   const [unlinked, setUnlinked] = useState('');
+  const [armed, setArmed] = useState(false);
   const busyRef = useRef(false);
+  const armedRef = useRef(false);
   const revoking = useRef(new Set<string>());
   const doneRef = useRef<HTMLParagraphElement>(null);
   const listRef = useRef<HTMLHeadingElement>(null);
@@ -136,10 +143,35 @@ export default function LierPage() {
   // 8 lettres ou plus qui ne font pas un code (voyelle, chiffre, une de trop) : on le dit, plutôt que rien
   const badCode = !code && input.replace(/[^\p{L}\p{N}]/gu, '').length >= 8;
 
+  // Armement de « Autoriser » : le délai part de l'affichage de l'appareil et repart de zéro à chaque retour sur
+  // la fenêtre. Le ref sert au clic (lu sans attendre un rendu), l'état à aria-disabled.
+  const foundCode = found?.code ?? null;
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => { armedRef.current = false; setArmed(false); clearTimeout(timer); };
+    disarm();
+    if (!foundCode) return;
+    const arm = () => {
+      disarm();
+      timer = setTimeout(() => { armedRef.current = true; setArmed(true); }, ARMEMENT_MS);
+    };
+    const onVisibility = () => { if (document.visibilityState === 'visible') arm(); };
+    arm();
+    window.addEventListener('focus', arm);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(timer);
+      armedRef.current = false;
+      window.removeEventListener('focus', arm);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [foundCode]);
+
   useEffect(() => { if (outcome) doneRef.current?.focus(); }, [outcome]);
 
   async function decide(decision: 'approve' | 'deny') {
     if (!found || busyRef.current) return;
+    if (decision === 'approve' && !armedRef.current) return;
     busyRef.current = true;
     setBusy(true);
     setDecideErr(null);
@@ -243,7 +275,7 @@ export default function LierPage() {
             )}
 
             <div className="lier-actions">
-              <button type="button" className="btn-solid" aria-disabled={busy} onClick={() => decide('approve')}>{tx('devices.approve')}</button>
+              <button type="button" className="btn-solid" aria-disabled={busy || !armed} onClick={() => decide('approve')}>{tx('devices.approve')}</button>
               <button type="button" className="btn-ghost" aria-disabled={busy} onClick={() => decide('deny')}>{tx('devices.deny')}</button>
             </div>
             {decideErr && <p className="lier-alert" role="alert">{tx(decideErr)}</p>}

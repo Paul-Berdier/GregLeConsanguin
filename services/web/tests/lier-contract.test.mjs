@@ -18,6 +18,19 @@ test('/lier : client, sans lecteur, jamais d’autorisation automatique', () => 
   assert.match(page, /className="btn-ghost"[^>]*onClick=\{\(\) => decide\('deny'\)\}/);
 });
 
+test('/lier : « Autoriser » s’arme 1 s après l’appareil, et de nouveau à chaque retour sur la fenêtre', () => {
+  assert.match(page, /const ARMEMENT_MS = 1000;/);
+  assert.match(page, /setTimeout\([^;]*armedRef\.current = true;[^;]*setArmed\(true\);[^;]*, ARMEMENT_MS\)/);
+  assert.match(page, /window\.addEventListener\('focus', /);
+  assert.match(page, /document\.addEventListener\('visibilitychange', /);
+  assert.match(page, /visibilityState === 'visible'/);
+  const approve = page.match(/<button[^>]*onClick=\{\(\) => decide\('approve'\)\}/)?.[0] ?? '';
+  assert.match(approve, /aria-disabled=\{busy \|\| !armed\}/, 'inerte, mais focusable (aria-disabled)');
+  assert.ok(!/\sdisabled=/.test(approve), 'jamais disabled : le focus clavier reste');
+  const body = page.slice(page.indexOf('async function decide('), page.indexOf('async function unlink('));
+  assert.match(body, /decision === 'approve' && !armedRef\.current\) return;/, 'le clic est ignoré tant qu’il n’est pas armé');
+});
+
 test('/lier consomme le code en attente au montage et nettoie l’URL', () => {      // Review Focus 5
   assert.match(page, /takePendingCode\(browserSession\(\), Date\.now\(\)\)/);
   assert.match(page, /history\.replaceState\(null, '', '\/lier'\)/);
