@@ -12,7 +12,7 @@
 
 **Tech Stack:**
 - Overwolf OW-native (`manifest_version` 1, CEF), testé sur Overwolf 0.317.0.3.
-- JavaScript en modules ES, sans bundler. `socket.io.min.js` 4.7.5 copié dans `vendor/`.
+- JavaScript en modules ES, sans bundler. `socket.io.min.js` 4.8.4 copié dans `vendor/` (ruling C1 : le client du site, au lieu de télécharger 4.7.5).
 - Node ≥ 22 (`node --test`, globs dans `--test`), aucun paquet npm.
 - Paquet `.opk` : `git archive` et le `tar.exe` de Windows (bsdtar 3.5.2, `C:\Windows\System32\tar.exe`, qui écrit le zip ; le `tar` GNU de Git Bash ne le sait pas).
 - Aperçus des fenêtres : Playwright (MCP) ou le navigateur intégré, sur un petit serveur local qui injecte un faux `overwolf`.
@@ -34,7 +34,7 @@
 - **Ancienne appli.** Les fichiers de l'ancienne appli à la racine sont retirés de l'arbre (ils restent dans l'historique). `assets/icon.png` est gardé.
 - **Outillage.**
   - Pas de bundler : modules ES chargés par `<script type="module">`.
-  - `vendor/socket.io.min.js` en version **4.7.5**, chargé en script classique avant le module de `fond.html`.
+  - `vendor/socket.io.min.js` en version **4.8.4** (ruling C1), chargé en script classique avant le module de `fond.html`.
   - Node ≥ 22, aucune dépendance npm. `npm test` lance `node --test "tests/**/*.test.js"`.
 - **Logique pure.** `lib/*.js` n'utilise ni DOM, ni `overwolf`, ni horloge globale (elle est injectée). `fond/*.js` reçoit `overwolf`, `io`, `fetch`, le stockage et les minuteurs en paramètres, jamais par les globales.
 - **Manifeste.**
@@ -133,7 +133,7 @@ Chemins relatifs à la racine `C:\Users\Paul\Documents\Codage\greg-overlay-ow\`.
 | `assets/icon.png` | Icône (gardée). |
 | `fonts/`, `licences/`, `img/` (`greg-face-*`, `crown-badge-*`, `seals/`), `css/tokens.css`, `lib/deck.js` | Recopiés du site par `scripts/sync-web.mjs`, commités, jamais édités. |
 | `img/icones.svg` | Sprite des icônes au trait, reprises des maquettes. |
-| `vendor/socket.io.min.js`, `vendor/socket.io-client.LICENSE` | socket.io-client 4.7.5. |
+| `vendor/socket.io.min.js`, `vendor/socket.io-client.LICENSE` | socket.io-client 4.8.4. |
 | `lib/config.js` | Constantes : adresses, délais, clés de stockage, CSP. |
 | `lib/format.js`, `lib/titles.js`, `lib/scene.js`, `lib/links.js`, `lib/timesync.js`, `lib/refclock.js` | Portages fidèles des modules purs du site. |
 | `lib/player.js` | Portage de `playerUtils` : normalisation de l'état, erreurs, plus `expected`, déplacements et choix du serveur. |
@@ -1330,7 +1330,7 @@ cd /c/Users/Paul/Documents/Codage/greg-overlay-ow && git add fond/connexion.js t
 
 ---
 
-## Tâche 10 : temps réel (`fond/temps-reel.js`) et socket.io-client 4.7.5
+## Tâche 10 : temps réel (`fond/temps-reel.js`) et socket.io-client 4.8.4
 
 **Files:**
 - Create : `C:\Users\Paul\Documents\Codage\greg-overlay-ow\fond\temps-reel.js`, `C:\Users\Paul\Documents\Codage\greg-overlay-ow\vendor\socket.io.min.js`, `C:\Users\Paul\Documents\Codage\greg-overlay-ow\vendor\socket.io-client.LICENSE`, `C:\Users\Paul\Documents\Codage\greg-overlay-ow\tests\fakes\socket.js`.
@@ -1391,7 +1391,7 @@ Comportement :
 
 - [ ] **Step 1 : copier socket.io-client 4.7.5 depuis le registre npm**
 
-C'est un téléchargement : si l'environnement demande un accord, le demander à Paul.
+*Remplacé à l’exécution (ruling C1) : aucun téléchargement ; `dist/socket.io.min.js` et `LICENSE` de socket.io-client 4.8.4 sont recopiés depuis `services/web/node_modules/socket.io-client` du site, et le test attend `Socket.IO v4.8.4`. Le bloc ci-dessous reste la version d’origine.*
 
 Le paquet est déballé dans un dossier neuf du scratchpad de la session qui exécute (contrainte « Scratchpad ») : `SCRATCHPAD` est posé en tête de la commande, au chemin Git Bash de ce scratchpad.
 

@@ -330,7 +330,7 @@ touchés. Ils sont notés pour plus tard.
 - **Branche `feat/overlay-v3`.** L'ancienne appli est retirée de l'arbre ; elle reste dans l'historique.
 - **Pas de bundler :**
   - JavaScript simple en modules ES, chargés par `<script type="module">` ;
-  - `socket.io.min.js` 4.7.5 copié dans le dépôt.
+  - `socket.io.min.js` 4.8.4 copié dans le dépôt (le client que le site embarque et qui tourne en production contre cette API).
 - **Logique pure** (normalisation de l'état, horloge, file, copie, placement, fusion des raccourcis) dans `lib/*.js`.
   Elle est testée avec `node --test`, avec un faux `overwolf` comme dans le banc de l'essai.
 - **Script `scripts/sync-web.mjs`.** Il recopie depuis `../GregLeConsanguin/services/web` :
