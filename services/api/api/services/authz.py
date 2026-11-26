@@ -195,3 +195,23 @@ def require_identity(view):
         return view(*args, **kwargs)
 
     return wrapper
+
+
+def require_bearer(view):
+    """Décorateur de route : jeton porteur de l'appli seul (POST /overlay/logout).
+
+    L'identité est résolue comme pour `require_identity` : 503 STORAGE_UNAVAILABLE si Redis ne peut vérifier le
+    jeton (jamais 401 : l'appli effacerait son jeton), puis 401 NOT_AUTHENTICATED sans identité ou pour une
+    session. Pas de garde CSRF : un navigateur ne joint jamais `Authorization` tout seul.
+    """
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        try:
+            ident = current_identity()
+        except ot.OverlayError as e:
+            return jsonify(e.body()), e.status
+        if ident is None or ident.via != "overlay":
+            return not_authenticated()
+        return view(*args, **kwargs)
+
+    return wrapper
