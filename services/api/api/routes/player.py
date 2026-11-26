@@ -34,6 +34,8 @@ MUTATING_TIMEOUT = PLAY_FOR_USER_TIMEOUT
 # /queue/add_many (chansonnier du Roi) : une playlist d'un geste, 1 à ADD_MANY_MAX titres.
 ADD_MANY_MAX = 100
 MSG_ADD_MANY_COUNT = f"Envoyez entre 1 et {ADD_MANY_MAX} titres à la fois."
+# remove / move / play_at : l'élément attendu (`expected`) n'est plus à l'index visé (spec §3.6).
+MSG_STALE = "La file a bougé : réessayez."
 
 
 def _body(req) -> dict:
@@ -75,7 +77,46 @@ def error_status(res: dict[str, Any], default: int = 409) -> int:
         return 401
     if err == "NOT_GUILD_MEMBER":
         return 403
+    if err == "STALE":
+        return 409
     return default
+
+
+def _expected_of(data: dict) -> dict | None:
+    """Élément attendu `{url, added_by, ts}` de remove / move / play_at (spec §3.6), None s'il n'est pas fourni.
+
+    `url` texte ou None, `added_by` texte, entier ou None, `ts` nombre (pas booléen) ou None ;
+    toute autre forme → ValueError (400 « invalid expected », sans appel au bot).
+    """
+    expected = data.get("expected")
+    if expected is None:
+        return None
+    if not isinstance(expected, dict):
+        raise ValueError("expected n'est pas un objet")
+    url, added_by, ts = expected.get("url"), expected.get("added_by"), expected.get("ts")
+    if url is not None and not isinstance(url, str):
+        raise ValueError("expected.url")
+    if added_by is not None and (isinstance(added_by, bool) or not isinstance(added_by, (str, int))):
+        raise ValueError("expected.added_by")
+    if ts is not None and (isinstance(ts, bool) or not isinstance(ts, (int, float))):
+        raise ValueError("expected.ts")
+    return {"url": url, "added_by": added_by, "ts": ts}
+
+
+def _queue_edit(action: str, gid: int, uid: int, data: dict, cmd: dict[str, Any]):
+    """remove / move / play_at : `expected` transmis au bot seulement s'il est fourni, STALE → 409 et MSG_STALE."""
+    try:
+        expected = _expected_of(data)
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid expected"}), 400
+    if expected is not None:
+        cmd = {**cmd, "expected": expected}
+    res = send_command(action, gid, uid, data=cmd, timeout=MUTATING_TIMEOUT)
+    if res.get("ok"):
+        return jsonify(res), 200
+    if res.get("error") == "STALE":
+        res = {**res, "message": MSG_STALE}
+    return jsonify(res), error_status(res)
 
 
 def _stamped(res: dict[str, Any], at_ms: int) -> dict[str, Any]:
@@ -243,9 +284,7 @@ def move():
     src, dst = _int(src), _int(dst)
     if src is None or dst is None:
         return jsonify({"ok": False, "error": "invalid src/dst"}), 400
-    res = send_command("move", gid, uid, data={"src": src, "dst": dst}, timeout=MUTATING_TIMEOUT)
-    code = 200 if res.get("ok") else error_status(res)
-    return jsonify(res), code
+    return _queue_edit("move", gid, uid, data, {"src": src, "dst": dst})
 
 
 @bp.delete("/player/queue/<int:index>")
@@ -256,9 +295,7 @@ def remove_at(index: int):
     uid = _uid()
     if not gid or not uid:
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
-    res = send_command("remove", gid, uid, data={"index": index}, timeout=MUTATING_TIMEOUT)
-    code = 200 if res.get("ok") else error_status(res)
-    return jsonify(res), code
+    return _queue_edit("remove", gid, uid, data, {"index": index})
 
 
 # ── Compat routes (ancien front player.js) ──
@@ -321,9 +358,7 @@ def playlist_play_at():
         return jsonify({"ok": False, "error": "missing guild_id"}), 400
     if index is None or index < 0:
         return jsonify({"ok": False, "error": "invalid index"}), 400
-    res = send_command("play_at", gid, uid, data={"index": index}, timeout=MUTATING_TIMEOUT)
-    code = 200 if res.get("ok") else error_status(res)
-    return jsonify(res), code
+    return _queue_edit("play_at", gid, uid, data, {"index": index})
 
 
 @bp.post("/playlist/restart")

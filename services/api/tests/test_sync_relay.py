@@ -60,7 +60,7 @@ def test_progress_channel_relays_the_clock_and_the_relay_time():
     assert (event, room) == ("playlist_update", "guild:42")
     assert _between(data.pop("relay_at_ms"), t0, t1)
     assert data == {"only_elapsed": True, "paused": False, "is_paused": False, "position": 83, "duration": 200,
-                    "progress": {"elapsed": 83, "duration": 200}, "clock": CLOCK}
+                    "progress": {"elapsed": 83, "duration": 200}, "clock": CLOCK, "guild_id": "42"}
 
 
 @pytest.mark.parametrize("clock", [None, "playing", 42, ["a"]])
