@@ -200,8 +200,9 @@ export const api = {
     return post('/queue/add', body);
   },
 
-  queueRemove: (guildId: string, userId: string, index: number) =>
-    post('/queue/remove', basePayload(guildId, userId, { index })),
+  // `expected` : le titre visé (expectedOf, playerUtils.ts) ; ce n'est plus lui au rang donné → 409 STALE, rien ne change
+  queueRemove: (guildId: string, userId: string, index: number, expected?: QueueExpected) =>
+    post('/queue/remove', basePayload(guildId, userId, expected === undefined ? { index } : { index, expected })),
 
   queueSkip: (guildId: string, userId: string) =>
     post('/queue/skip', basePayload(guildId, userId)),
@@ -210,12 +211,12 @@ export const api = {
     post('/queue/stop', basePayload(guildId, userId)),
 
   // Déplacer un titre de la file : le bot fait queue.insert(dst, queue.pop(src)) (index 0 = le prochain)
-  move: (guildId: string, userId: string, src: number, dst: number) =>
-    post('/player/move', basePayload(guildId, userId, { src, dst })),
+  move: (guildId: string, userId: string, src: number, dst: number, expected?: QueueExpected) =>
+    post('/player/move', basePayload(guildId, userId, expected === undefined ? { src, dst } : { src, dst, expected })),
 
   // Playlist controls
-  playAt: (guildId: string, userId: string, index: number) =>
-    post('/playlist/play_at', basePayload(guildId, userId, { index })),
+  playAt: (guildId: string, userId: string, index: number, expected?: QueueExpected) =>
+    post('/playlist/play_at', basePayload(guildId, userId, expected === undefined ? { index } : { index, expected })),
 
   togglePause: (guildId: string, userId: string) =>
     post('/playlist/toggle_pause', basePayload(guildId, userId)),
@@ -287,3 +288,4 @@ export const api = {
 };
 
 type SearchResult = import('./types').SearchResult;
+type QueueExpected = import('./playerUtils').QueueExpected;

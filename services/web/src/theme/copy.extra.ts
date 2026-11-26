@@ -217,6 +217,8 @@ export const EXTRA = {
     SEARCH_FAILED: { text: 'La recherche YouTube n’a pas abouti. Réessayez dans un instant.' },
     // EXPAND_TIMEOUT d'une recherche ou d'une vidéo seule : l'attente derrière une autre demande
     BUSY: { text: 'Greg est déjà occupé avec une autre demande sur ce serveur. Réessayez dans un instant.' },
+    // 409 STALE de retirer / déplacer / jouer maintenant : le titre visé n'était plus à son rang, la file est relue
+    STALE: { text: 'La file a bougé entre-temps\u00a0: rien n’a changé. Réessayez.' },
   },
 } satisfies Record<string, Node>;
 

@@ -6,7 +6,7 @@ import { getSocket, overlayRegister, subscribeGuild, unsubscribeGuild, startPing
 import { api, onAuthLost } from '@/lib/api';
 import {
   looksLikeUrl, errorCode, pickDefaultGuild, createSeqGate, livePosition, guildJoinErrorAction,
-  snapshotFromPayload, emptySnapshot, addedCopy, stateKind, withClock,
+  snapshotFromPayload, emptySnapshot, addedCopy, stateKind, withClock, expectedOf,
 } from '@/lib/playerUtils';
 import type { ClockReading } from '@/lib/playerUtils';
 import { refClock, serverNow } from '@/lib/sync/live';
@@ -95,11 +95,15 @@ function sendMutation(m: Mutation, before: Snapshot): Promise<unknown> | null {
   const q = before.player.queue;
   const at = (key: string) => q.findIndex((x) => x.key === key);
   switch (m.kind) {
-    case 'remove': { const i = at(m.key); return i < 0 ? null : api.queueRemove(gid, uid, i); }
-    case 'move': { const mv = moveIndices(q, m.key, m.beforeKey); return mv ? api.move(gid, uid, mv.src, mv.dst) : null; }
+    // retirer, déplacer, jouer maintenant nomment le titre visé (expectedOf) : le bot refuse STALE s'il a bougé
+    case 'remove': { const i = at(m.key); return i < 0 ? null : api.queueRemove(gid, uid, i, expectedOf(q[i])); }
+    case 'move': {
+      const mv = moveIndices(q, m.key, m.beforeKey);
+      return mv ? api.move(gid, uid, mv.src, mv.dst, expectedOf(q[mv.src])) : null;
+    }
     case 'playAt': {
       const i = at(m.key);
-      return i < 0 || (before.player.current?.key ?? null) !== m.fromKey ? null : api.playAt(gid, uid, i);
+      return i < 0 || (before.player.current?.key ?? null) !== m.fromKey ? null : api.playAt(gid, uid, i, expectedOf(q[i]));
     }
     case 'skip': return before.player.current && before.player.current.key === m.fromKey ? api.queueSkip(gid, uid) : null;
     case 'setPaused': return before.player.current && before.player.paused !== m.paused ? api.togglePause(gid, uid) : null;
@@ -123,6 +127,8 @@ const engine = createQueueEngine({
     const r = refusalOf(m, before, useStore.getState().me?.id);
     if ('key' in r && errorCode(e).toUpperCase() === 'PRIORITY_FORBIDDEN') say(r.key);
     else sayError(e, { name: 'blame' in r ? requesterName(r.blame) : undefined, action: m.kind === 'move' ? 'move' : undefined });
+    // STALE : la file a bougé ailleurs (l'appli, Discord), la vue revient et l'état est relu sans second toast
+    if (errorCode(e).toUpperCase() === 'STALE') void refreshPlaylist({ quiet: true }).catch(() => {});
     // « Jouer maintenant » ou « Suivant » refusé : la scène revient au titre qui n'a jamais cessé de jouer. Ce retour
     // est noté comme un ordre (components/Stage/coronation.ts) : cérémonie rapide et sans annonce, le refus a parlé.
     const back = upcoming().player.current?.key;
