@@ -1,0 +1,74 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   /LIER (spec 2026-11-25 §5) : autoriser le code de l'appli Greg, délier ses appareils (app/lier/page.tsx).
+   - body ne défile pas (globals.css) : la page est un conteneur fixe qui défile ;
+   - une plaque centrée, 520 px au plus, 16 px de marge sur les côtés ;
+   - reprend .vl-kicker .vl-title .vl-body .vl-small (night.css), .field et .btn-solid (header.css),
+     .btn-ghost et .btn-danger (stage.css), .pop .plaque .confirm (header.css, globals.css, now.css).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.lier {
+  position: fixed; inset: 0; z-index: 10; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+  padding: clamp(24px, 8dvh, 72px) 16px 48px;
+}
+.lier-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; max-width: 520px; margin: 0 auto; padding: 28px 24px; }
+.lier-card p { margin: 0; }
+.lier-card .vl-body { max-width: none; }
+
+.lier-label {
+  display: block; margin-top: 10px; font: 700 11.5px/1 var(--f-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--cendre);
+}
+/* le champ du code, creusé dans la plaque (même couleur que lui sinon) */
+.lier .field { align-self: stretch; background: var(--nef); }
+.lier .field input { font: 600 18px/1 var(--f-ui); letter-spacing: .14em; text-transform: uppercase; }
+
+.lier-device {
+  align-self: stretch; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 6px; padding: 14px;
+  border-radius: 8px; corner-shape: bevel; box-shadow: inset 0 0 0 1px var(--hair-2);
+}
+.lier-name { font-size: 17px; font-weight: 700; color: var(--os); overflow-wrap: anywhere; }
+/* l'avertissement, juste sous l'appareil : filet d'or, comme la voix de Greg */
+.lier-warning { padding-left: 10px; box-shadow: inset 2px 0 0 var(--or); color: var(--os); font-weight: 600; }
+
+.lier-select { position: relative; align-self: stretch; }
+.lier-select select {
+  width: 100%; height: 46px; padding: 0 40px 0 14px; border: 0; border-radius: 10px; corner-shape: bevel; appearance: none;
+  background: var(--nef); color: var(--os); box-shadow: inset 0 0 0 1px var(--hair); font-size: 15.5px; text-overflow: ellipsis;
+}
+.lier-select select:disabled { color: var(--cendre); }
+.lier-select .ico { position: absolute; right: 14px; top: 50%; margin-top: -8px; color: var(--cendre); pointer-events: none; }
+
+.lier-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.lier-actions [aria-disabled=true] { opacity: .6; cursor: default; }
+
+/* erreurs : texte en os sur un fond de gueules (le rouge seul serait trop pâle sur la plaque) */
+.lier-alert {
+  align-self: stretch; padding: 8px 10px; border-radius: 6px; corner-shape: bevel;
+  background: rgb(224 88 62 / .12); box-shadow: inset 2px 0 0 var(--gueules); color: var(--os); font-size: 15px;
+}
+/* « C'est fait, Sire. » : Greg parle */
+.lier-done { font: italic 400 17px/1.35 var(--f-voice); color: var(--or); }
+.lier-done:focus { outline: none; }
+
+.lier-sep { align-self: stretch; height: 1px; margin: 14px 0 4px; background: var(--hair); }
+.lier-card > section { align-self: stretch; display: flex; flex-direction: column; gap: 10px; }
+.lier-h2 { margin: 0; font: 600 24px/1.1 var(--f-title); color: var(--os); }
+.lier-h2:focus { outline: none; }
+.lier-note:empty { display: none; }
+.lier-note { font-size: 14px; color: var(--os-2); }
+
+.lier-tokens { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.lier-token { display: flex; align-items: center; gap: 12px; padding: 10px 0; box-shadow: inset 0 -1px 0 var(--hair); }
+.lier-token:last-child { box-shadow: none; }
+.lier-token-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.lier-token-text b { font-weight: 700; overflow-wrap: anywhere; }
+.lier-unlink { position: relative; flex: none; }
+/* « Délier « … » ? » : sous son bouton, ancré à droite (le bouton finit la ligne), jamais hors de l'écran à 320 px */
+.lier .confirm {
+  top: calc(100% + 8px); right: 0; bottom: auto; left: auto; margin-left: 0;
+  width: min(310px, calc(100vw - 64px)); transform-origin: top right;
+}
+.lier .confirm h3 { overflow-wrap: anywhere; }
+.lier .confirm p { margin: 0 0 12px; }
+
+@media (max-width: 520px) {
+  .lier-card { padding: 22px 16px; }
+}

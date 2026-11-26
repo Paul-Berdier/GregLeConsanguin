@@ -21,7 +21,8 @@ function readQuips(): boolean {
 // page.tsx le lit à chaque touche, header.css n'affiche l'indice « / » que sous data-keys=on.
 function readKeys(): boolean { try { return shortcutsOn(localStorage.getItem(SHORTCUTS_STORAGE_KEY)); } catch { return true; } }
 
-/** Compte du Roi : avatar couronné, réglages (répliques, raccourcis), liste des raccourcis, déconnexion. `?` l'ouvre. */
+/** Compte du Roi : avatar couronné, réglages (répliques, raccourcis), liste des raccourcis, appareils liés, déconnexion.
+ *  `?` l'ouvre. */
 export default function AccountMenu() {
   const { me, logout } = usePlayer();
   const { open, setOpen, close, btnRef, wrapProps } = usePopover();
@@ -112,6 +113,14 @@ export default function AccountMenu() {
             </Fragment>
           ))}
         </dl>
+        <div className="pop-sep"/>
+        {/* Appareils liés (spec 2026-11-25 §5) : pour tout compte connecté, sans appel réseau ; /lier fait le reste */}
+        <button type="button" className="pop-item" onClick={() => { close(); window.location.assign('/lier'); }}>
+          <svg className="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M3.5 5h17v11h-17zM8.5 19.5h7M12 16v3.5"/>
+          </svg>
+          {tx('devices.menu')}
+        </button>
         <div className="pop-sep"/>
         {/* Focus rendu à l'avatar : il y reste si la déconnexion échoue ; sinon l'en-tête
             le passe à « Se connecter » quand le compte disparaît (Header.tsx). */}

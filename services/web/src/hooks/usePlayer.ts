@@ -21,6 +21,7 @@ import { requesterOf } from '@/lib/stage/scene';
 import { parseTitle } from '@/lib/titles';
 import { classifyLink } from '@/lib/links';
 import { ADD_MANY_MAX } from '@/lib/library';
+import { browserSession, peekPendingCode } from '@/lib/devices';
 import { herald, say, sayError } from '@/components/Herald/store';
 import { t } from '@/theme/copy';
 import { tx } from '@/theme/copy.extra';
@@ -577,7 +578,13 @@ function setDragging(on: boolean) {
 async function boot() {
   const saved = typeof window !== 'undefined' ? localStorage.getItem('greg.webplayer.guild_id') || '' : '';
   if (saved) useStore.getState().setGuildId(saved);
-  await refreshMe();
+  const me = await refreshMe();
+  // Retour de la connexion Discord lancée depuis /lier : le code de l'appli y attend. /lier le retire dès que
+  // le compte est connu, donc on n'y revient pas une seconde fois si le Roi revient ici sans décider.
+  if (me && peekPendingCode(browserSession(), Date.now())) {
+    window.location.replace('/lier');
+    return;
+  }
   await refreshGuilds();
   const s = useStore.getState();
   const chosen = pickDefaultGuild(s.guilds, s.guildId);
