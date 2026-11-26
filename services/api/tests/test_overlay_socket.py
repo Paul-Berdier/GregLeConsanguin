@@ -73,6 +73,18 @@ def test_revoked_token_cannot_join_on_an_open_socket(app, fake_bot, issue_token)
     assert _events(got, "guild_join_error")[0]["args"][0]["error"] == "NOT_AUTHENTICATED"
 
 
+def test_redis_down_on_join_is_redis_unavailable_never_not_authenticated(app, fake_bot, overlay_redis, issue_token,
+                                                                        monkeypatch):   # Review Focus 1
+    c = sock(app, issue_token()); c.get_received()
+    joined = []; monkeypatch.setattr(events, "join_room", lambda room, *a, **k: joined.append(room))
+    overlay_redis.fail = redis.ConnectionError("down")             # l'appli effacerait son jeton sur NOT_AUTHENTICATED
+    c.emit("join_guild", {"guild_id": "42"}); got = c.get_received()
+    [err] = [e["args"][0] for e in _events(got, "guild_join_error")]
+    assert (err["error"], err["retry"]) == ("REDIS_UNAVAILABLE", True) and err["guild_id"] == "42"
+    assert joined == [] and fake_bot.calls == [] and not _events(got, "playlist_update") and not _events(got, "joined")
+    assert c.is_connected()
+
+
 def test_disconnect_forgets_the_sid(app, issue_token):
     t = issue_token(); tid = ot.resolve(t).tid; c = sock(app, t)
     assert events._TOKEN_SIDS.get(tid); c.disconnect()
