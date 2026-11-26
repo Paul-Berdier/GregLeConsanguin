@@ -43,7 +43,8 @@ test('/lier : seul un 401 de /users/me montre la connexion, une autre panne prop
 
 test('/lier : une consultation en échec se relance ; une session finie mène à la connexion, le code gardé', () => {
   assert.match(page, /\}, \[code, retry\]\);/);
-  assert.match(page, /\{shown\?\.err === 'devices\.error\.generic' && \(\s*<button type="button" className="btn-ghost" onClick=\{\(\) => \{ setLookup\(null\); setRetry\(\(n\) => n \+ 1\); \}\}>\{tx\('devices\.retry'\)\}<\/button>/);
+  assert.match(page, /\{shown\?\.err === 'devices\.error\.generic' && \(\s*<button type="button" className="btn-ghost" onClick=\{\(\) => \{ setLookup\(null\); setRetry\(\(n\) => n \+ 1\); inputRef\.current\?\.focus\(\); \}\}>\s*\{tx\('devices\.retry'\)\}\s*<\/button>/);
+  assert.match(page, /<input ref=\{inputRef\} id=\{codeId\}/, 'le bouton disparaît : le focus va au champ du code');
   assert.match(page, /\{shown\?\.err === 'devices\.error\.SESSION' && relogin\}/);
   const relogin = page.slice(page.indexOf('const relogin = ('), page.indexOf('return (', page.indexOf('const relogin = (')));
   assert.match(relogin, /<a className="btn-ghost" href=\{api\.getLoginUrl\(\)\}\s*onClick=\{\(\) => \{ if \(code\) savePendingCode\(browserSession\(\), code, Date\.now\(\)\); \}\}>/);

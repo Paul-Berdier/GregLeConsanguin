@@ -93,6 +93,7 @@ export default function LierPage() {
   const armedRef = useRef(false);
   const revoking = useRef(new Set<string>());
   const doneRef = useRef<HTMLParagraphElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLHeadingElement>(null);
   const codeId = useId();
   const guildSelId = useId();
@@ -276,14 +277,17 @@ export default function LierPage() {
 
         <label className="lier-label" htmlFor={codeId}>{tx('devices.codeLabel')}</label>
         <div className="field">
-          <input id={codeId} value={input} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+          <input ref={inputRef} id={codeId} value={input} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
             aria-invalid={badCode || undefined}
             onChange={(e) => { setInput(e.target.value); setOutcome(null); setDecideErr(null); }}/>
         </div>
         {badCode && <p className="lier-alert" role="alert">{tx('devices.error.INVALID_CODE')}</p>}
         {shown?.err && <p className="lier-alert" role="alert">{tx(shown.err)}</p>}
+        {/* le bouton disparaît pendant la nouvelle consultation : le focus va au champ du code */}
         {shown?.err === 'devices.error.generic' && (
-          <button type="button" className="btn-ghost" onClick={() => { setLookup(null); setRetry((n) => n + 1); }}>{tx('devices.retry')}</button>
+          <button type="button" className="btn-ghost" onClick={() => { setLookup(null); setRetry((n) => n + 1); inputRef.current?.focus(); }}>
+            {tx('devices.retry')}
+          </button>
         )}
         {shown?.err === 'devices.error.SESSION' && relogin}
 
