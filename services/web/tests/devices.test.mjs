@@ -52,6 +52,13 @@ test('deviceErrorKey et textes', () => {
   assert.equal(tx('devices.notAllowed'), 'devices.notAllowed');                    // aucune vue « non autorisé »
 });
 
+test('consultation limitée (429 RATE_LIMITED) : /lier montre le texte de limite', async () => {
+  const err = await capture(() => api.deviceLookup('BCDFGHJK'), { ok: false, error: 'RATE_LIMITED' }, 429).then(() => null, (e) => e);
+  assert.equal(err?.status, 429);
+  assert.equal(D.deviceErrorKey(err), 'devices.error.RATE_LIMITED');
+  assert.equal(tx(D.deviceErrorKey(err)), 'Trop d’essais. Patientez une minute.');
+});
+
 test('api.device* : chemins, corps, session, jamais d’identité', async () => {
   for (const [fn, method, path, body] of [
     [() => api.deviceGuilds(), 'GET', '/api/v1/overlay/guilds', undefined],

@@ -42,6 +42,8 @@ RATE_START_IP = ("device_start_ip", 5, 60)
 RATE_START_IP_H = ("device_start_ip_h", 20, 3600)
 RATE_START_GLOBAL = ("device_start", 300, 3600)
 RATE_APPROVE = ("approve", 5, 60)
+# Consulter un code, par uid de session : RFC 8628 §5.1, la consultation ne sert pas d'oracle des codes vivants.
+RATE_LOOKUP = ("lookup", 30, 60)
 # user_guilds se lit dans le cache du bot (spec §4.1) : réponse rapide attendue.
 USER_GUILDS_TIMEOUT = 5
 _DECISIONS = ("approve", "deny")
@@ -163,7 +165,9 @@ def device_start():
 @bp.get("/overlay/device/lookup")
 @require_session_user
 def device_lookup():
-    """Ce que /lier montre avant d'autoriser (nom et âge de l'appareil), pour tout compte connecté."""
+    """Ce que /lier montre avant d'autoriser (nom et âge de l'appareil), pour tout compte connecté ; 30 consultations
+    par minute et par compte, comptées avant toute lecture du code."""
+    _check_rate(RATE_LOOKUP, str(current_user_id()))  # l'uid de la session : require_session_user refuse tout porteur
     code = ot.normalize_user_code(request.args.get("user_code"))
     if code is None:
         raise _invalid()

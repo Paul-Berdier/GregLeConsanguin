@@ -97,6 +97,17 @@ def test_lookup_needs_a_session_only(app, client, logged_client, login, overlay_
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code=nope").status_code == 400
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code=BCDF-GHJK").get_json() == {"ok": False, "error": "CODE_EXPIRED"}
 
+def test_lookup_is_rate_limited_per_account_before_reading_the_code(app, client, logged_client, login, overlay_redis):
+    code = start(client)["user_code"]
+    assert [logged_client.get(f"{BASE}/overlay/device/lookup?user_code=BCDF-GHJK").status_code for _ in range(30)] == [404] * 30
+    reads = len(overlay_redis.log)
+    r = logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}")
+    assert r.status_code == 429 and r.get_json() == {"ok": False, "error": "RATE_LIMITED"}        # la 31e de la minute
+    assert not [c for c in overlay_redis.log[reads:] if c[0] == "GET"]                            # le code n'est pas lu
+    assert login(app.test_client(), 888).get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 200
+    overlay_redis.now += 61
+    assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 200
+
 def test_any_logged_in_user_links_its_own_account(app, client, logged_client, login, bot, overlay_redis, monkeypatch):
     monkeypatch.setattr(settings, "greg_owner_id", "999")                        # GREG_OWNER_ID ne joue aucun rôle
     other = login(app.test_client(), 888)
