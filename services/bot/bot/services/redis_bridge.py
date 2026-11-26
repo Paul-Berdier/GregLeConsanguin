@@ -66,7 +66,7 @@ _CLAIM_TIMEOUT = 2.0
 _MEMBER_CHECK_TIMEOUT = 5.0
 
 # Commandes en lecture seule : jamais sérialisées derrière une commande lente.
-_READ_ONLY_ACTIONS = frozenset({"get_state", "get_history"})
+_READ_ONLY_ACTIONS = frozenset({"get_state", "get_history", "user_guilds"})
 
 # Échéance des commandes : l'API pose `timeout` (s, relatif à la réception) = le
 # temps qu'elle attend la réponse. Une commande restée en file au-delà est abandonnée
@@ -448,6 +448,9 @@ class RedisBridge:
                 limit = int(cmd_data.get("limit", 20))
                 result = svc.get_history(guild_id, mode=mode, limit=limit)
 
+            elif action == "user_guilds":
+                result = {"ok": True, "guilds": self.user_guilds(user_id)}
+
             elif action == "join":
                 g = self.bot.get_guild(guild_id)
                 if not g:
@@ -532,6 +535,36 @@ class RedisBridge:
             logger.info("Redis: %s mis à jour (%d serveurs).", KEY_BOT_GUILDS, len(ids))
         except Exception as e:
             logger.error("Redis: écriture de %s impossible: %s", KEY_BOT_GUILDS, e)
+
+    def user_guilds(self, user_id: int) -> list[dict]:
+        """Serveurs communs à Greg et à `user_id`, depuis le cache (appli Overwolf).
+
+        Appelée avec guild_id 0 : aucun contrôle d'appartenance, elle ne rend que les
+        serveurs où l'utilisateur est membre. Ids en chaînes (un nombre JSON au-delà
+        de 2^53 serait arrondi côté JS).
+        """
+        if user_id <= 0:
+            return []
+
+        def _channel(ch) -> Optional[Dict[str, str]]:
+            return {"id": str(ch.id), "name": ch.name} if ch is not None else None
+
+        out = []
+        for g in sorted(self.bot.guilds or [], key=lambda g: (g.name or "").casefold()):
+            member = g.get_member(user_id)
+            if member is None:
+                continue
+            vc = g.voice_client
+            voice = member.voice
+            out.append({
+                "id": str(g.id),
+                "name": g.name,
+                "icon_url": str(g.icon.url) if g.icon is not None else None,
+                "greg_voice": _channel(vc.channel) if vc else None,
+                "user_voice": _channel(voice.channel) if voice else None,
+                "playing": bool(vc and (vc.is_playing() or vc.is_paused())),
+            })
+        return out
 
     async def _publish(self, channel: str, data: dict):
         try:
