@@ -10,6 +10,7 @@
  *   GET  /history?guild_id=...&mode=top|recent
  *   POST /queue/add_many
  *   GET  /library ; POST /library/likes/add|remove, /library/playlists/create|restore|rename|delete|add|remove|move
+ *   GET  /overlay/guilds, /overlay/device/lookup?user_code=..., /overlay/tokens ; POST /overlay/device/approve, /overlay/tokens/revoke
  */
 
 const DEFAULT_BASE = '/api/v1';
@@ -274,6 +275,15 @@ export const api = {
   // `url` : le titre attendu au rang src ; une copie dépassée reçoit 409 STALE, rien n'a bougé
   playlistMove: (id: string, src: number, dst: number, url?: string) =>
     post('/library/playlists/move', url === undefined ? { id, src, dst } : { id, src, dst, url }),
+
+  // Appareils liés (spec 2026-11-25 §5) : /lier autorise le code de l'appli pour le compte de la session, jamais un autre
+  deviceGuilds: () => get('/overlay/guilds'),
+  deviceLookup: (code: string) => get('/overlay/device/lookup', { user_code: code }),
+  // `guildId` : serveur par défaut de l'appli (approve seulement), vérifié par le bot avant que le code ne serve
+  deviceDecide: (code: string, decision: 'approve' | 'deny', guildId?: string) =>
+    post('/overlay/device/approve', guildId ? { user_code: code, decision, guild_id: guildId } : { user_code: code, decision }),
+  deviceTokens: () => get('/overlay/tokens'),
+  deviceRevoke: (id: string) => post('/overlay/tokens/revoke', { id }),
 };
 
 type SearchResult = import('./types').SearchResult;

@@ -176,6 +176,41 @@ export const EXTRA = {
     current: 'En cours',
     more: { one: '…et 1 autre titre', other: '…et {n} autres titres' },
   },
+  // Appareils liés (spec 2026-11-25 §5) : la page /lier, la liste des appareils et l'entrée du menu du compte.
+  // Les erreurs de /lier : deviceErrorKey, lib/devices.ts.
+  devices: {
+    menu: 'Appareils liés',
+    kicker: 'Appli Greg',
+    title: 'Lier un appareil',
+    intro: 'L’appli Greg affiche un code de 8\u00a0lettres. Saisissez-le ici pour la lier à votre compte.',
+    codeLabel: 'Code affiché par l’appli',
+    device: '«\u00a0{name}\u00a0» attend votre accord.',
+    warning: 'N’autorisez que l’appli que vous venez d’ouvrir vous-même.',
+    age: { one: 'Demandé il y a 1\u00a0min', other: 'Demandé il y a {n}\u00a0min' },
+    ageNow: 'Demandé à l’instant',
+    guildLabel: 'Serveur par défaut',
+    guildNone: 'Greg n’est sur aucun de vos serveurs pour l’instant.',
+    approve: 'Autoriser',
+    deny: 'Refuser',
+    approved: 'C’est fait, Sire. Retournez à votre jeu.',
+    denied: 'Demande refusée. L’appli ne sera pas liée.',
+    login: 'Connectez-vous avec Discord pour autoriser l’appli. Le code vous attendra dix minutes.',
+    listTitle: 'Appareils liés',
+    listEmpty: 'Aucun appareil lié.',
+    lastUsed: 'Dernière utilisation\u00a0: {date}',
+    expires: 'Échéance\u00a0: {date}',
+    unlink: 'Délier',
+    confirm: { title: 'Délier «\u00a0{name}\u00a0»\u202f?', body: 'L’appli devra être liée de nouveau avec un nouveau code.', yes: 'Délier', no: 'Garder' },
+    unlinked: '«\u00a0{name}\u00a0» est délié.',
+    error: {
+      INVALID_CODE: 'Le code compte 8\u00a0lettres, par exemple BCDF-GHJK.',
+      CODE_EXPIRED: 'Ce code a expiré ou n’existe pas. Demandez-en un nouveau dans l’appli.',
+      ALREADY_USED: 'Ce code a déjà servi.',
+      RATE_LIMITED: 'Trop d’essais. Patientez une minute.',
+      NOT_GUILD_MEMBER: 'Choisissez un serveur où Greg et vous êtes présents.',
+      generic: 'L’opération n’a pas abouti. Réessayez dans un instant.',
+    },
+  },
   // Erreurs d'ajout que le deck confond (errorCopy, lib/playerUtils.ts) ; le Héraut les lit après le deck (withExtras).
   error: {
     // NO_RESULTS transient : recherche trop lente ou bloquée, pas une absence de résultat
