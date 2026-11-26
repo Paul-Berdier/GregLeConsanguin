@@ -15,6 +15,7 @@ from urllib.parse import quote
 import requests as req
 from flask import Blueprint, jsonify, redirect, request, session
 
+from api.services.authz import csrf_failed, csrf_ok
 from greg_shared.config import settings
 
 bp = Blueprint("auth", __name__)
@@ -129,6 +130,9 @@ def callback():
 
 @bp.post("/auth/logout")
 def logout():
+    # Un formulaire d'un site tiers ne déconnecte pas le Roi (spec §3.2).
+    if not csrf_ok():
+        return csrf_failed()
     session.clear()
     return jsonify({"ok": True}), 200
 

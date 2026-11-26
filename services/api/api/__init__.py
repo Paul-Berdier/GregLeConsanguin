@@ -85,6 +85,8 @@ def create_app() -> Flask:
     # (même origine pour le navigateur) mais engine.io vérifie quand même l'en-tête
     # Origin : l'origine du front DOIT être dans la liste (WEB_URL / CORS_ORIGINS).
     origins = cors_origins()
+    # Origines du site seul : la garde CSRF des routes de session (authz.csrf_ok) n'admet qu'elles.
+    app.config["WEB_ORIGINS"] = origins
     app.config["ALLOWED_ORIGINS"] = origins
     log.info("Origines autorisées (CORS / Socket.IO) : %s", origins)
     CORS(app, supports_credentials=True, origins=origins)
