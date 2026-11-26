@@ -31,6 +31,37 @@ test('/lier : « Autoriser » s’arme 1 s après l’appareil, et de nouveau à
   assert.match(body, /decision === 'approve' && !armedRef\.current\) return;/, 'le clic est ignoré tant qu’il n’est pas armé');
 });
 
+test('/lier : seul un 401 de /users/me montre la connexion, une autre panne propose « Réessayer »', () => {
+  const mount = page.slice(page.indexOf('await api.getMe()'), page.indexOf('takePendingCode('));
+  assert.match(mount, /typeof me !== 'object'\) throw /, 'une réponse illisible est une panne');
+  assert.match(mount, /if \(meFailureView\(e\) === 'out'\) \{\s*setLoginCode\(urlCode\);\s*setView\('out'\);\s*\} else \{\s*setView\('error'\);/);
+  assert.match(page, /\}, \[bootTry\]\);/);
+  const error = page.slice(page.indexOf("if (view === 'error')"), page.indexOf("if (view === 'out')"));
+  assert.match(error, /role="alert">\{tx\('devices\.error\.generic'\)\}/);
+  assert.match(error, /onClick=\{\(\) => \{ setView\('loading'\); setBootTry\(\(n\) => n \+ 1\); \}\}>\s*\{tx\('devices\.retry'\)\}/);
+});
+
+test('/lier : une consultation en échec se relance ; une session finie mène à la connexion, le code gardé', () => {
+  assert.match(page, /\}, \[code, retry\]\);/);
+  assert.match(page, /\{shown\?\.err === 'devices\.error\.generic' && \(\s*<button type="button" className="btn-ghost" onClick=\{\(\) => \{ setLookup\(null\); setRetry\(\(n\) => n \+ 1\); \}\}>\{tx\('devices\.retry'\)\}<\/button>/);
+  assert.match(page, /\{shown\?\.err === 'devices\.error\.SESSION' && relogin\}/);
+  const relogin = page.slice(page.indexOf('const relogin = ('), page.indexOf('return (', page.indexOf('const relogin = (')));
+  assert.match(relogin, /<a className="btn-ghost" href=\{api\.getLoginUrl\(\)\}\s*onClick=\{\(\) => \{ if \(code\) savePendingCode\(browserSession\(\), code, Date\.now\(\)\); \}\}>/);
+});
+
+test('/lier : la liste en chargement est annoncée, un lien ramène au lecteur en bas de la carte', () => {
+  const list = page.slice(page.indexOf('aria-labelledby={listId}'));
+  assert.match(list, /: tokens === null \? <p className="vl-small" role="status">\{t\('loading\.boot\.text'\)\}<\/p>/);
+  const back = page.indexOf('<a className="btn-ghost" href="/">{tx(\'devices.back\')}</a>');
+  assert.ok(back > page.indexOf('aria-labelledby={listId}'), 'après la liste des appareils');
+  assert.ok(back < page.lastIndexOf('</main>') && page.slice(back).match(/<\/section>/g)?.length === 1, 'dans la carte, à la fin');
+  assert.match(read('src/components/Lier/lier.css'), /\.lier a\.btn-ghost \{ display: inline-flex; align-items: center; \}/);
+});
+
+test('/lier non connecté : le texte dit si un code est gardé, sans promettre de délai', () => {
+  assert.match(page, /\{loginCode \? tx\('devices\.loginWithCode', \{ code: formatUserCode\(loginCode\) \}\) : tx\('devices\.login'\)\}/);
+});
+
 test('/lier consomme le code en attente au montage et nettoie l’URL', () => {      // Review Focus 5
   assert.match(page, /takePendingCode\(browserSession\(\), Date\.now\(\)\)/);
   assert.match(page, /history\.replaceState\(null, '', '\/lier'\)/);

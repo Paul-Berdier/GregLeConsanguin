@@ -36,6 +36,9 @@
 .lier-select select:disabled { color: var(--cendre); }
 .lier-select .ico { position: absolute; right: 14px; top: 50%; margin-top: -8px; color: var(--cendre); pointer-events: none; }
 
+/* « Aller au lecteur », « Se connecter avec Discord » : des liens au format de .btn-ghost (un bouton dans stage.css) */
+.lier a.btn-ghost { display: inline-flex; align-items: center; }
+
 .lier-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .lier-actions [aria-disabled=true] { opacity: .6; cursor: default; }
 

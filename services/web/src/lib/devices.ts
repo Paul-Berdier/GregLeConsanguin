@@ -99,10 +99,18 @@ export function ageMinutes(createdAtS: number, nowMs: number): number {
 
 const DEVICE_ERRORS: readonly string[] = ['CODE_EXPIRED', 'ALREADY_USED', 'RATE_LIMITED', 'NOT_GUILD_MEMBER'];
 
-/** Clé du texte (EXTRA.devices.error) d'un refus de l'API ; un INVALID_REQUEST est un code mal saisi. */
+/** Clé du texte (EXTRA.devices.error) d'un refus de l'API ; un INVALID_REQUEST est un code mal saisi, un
+ * NOT_AUTHENTICATED une session finie (se reconnecter). */
 export function deviceErrorKey(e: unknown): string {
   const code = (e as { payload?: { error?: unknown } } | null | undefined)?.payload?.error;
   if (typeof code === 'string' && DEVICE_ERRORS.includes(code)) return `devices.error.${code}`;
   if (code === 'INVALID_REQUEST') return 'devices.error.INVALID_CODE';
+  if (code === 'NOT_AUTHENTICATED') return 'devices.error.SESSION';
   return 'devices.error.generic';
+}
+
+/** Vue de /lier quand GET /users/me échoue : seul un 401 veut dire « non connecté » ; une panne (5xx, réseau,
+ * réponse illisible) est une erreur que le Roi peut réessayer, pas une invitation à se connecter. */
+export function meFailureView(e: unknown): 'out' | 'error' {
+  return (e as { status?: unknown } | null | undefined)?.status === 401 ? 'out' : 'error';
 }

@@ -4,8 +4,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { usePopover } from '@/components/Header/GuildPicker';
 import { api } from '@/lib/api';
 import {
-  ageMinutes, browserSession, deviceErrorKey, formatUserCode, normalizeUserCode, pickDeviceGuild, savePendingCode,
-  takePendingCode,
+  ageMinutes, browserSession, deviceErrorKey, formatUserCode, meFailureView, normalizeUserCode, pickDeviceGuild,
+  savePendingCode, takePendingCode,
 } from '@/lib/devices';
 import type { DeviceGuild, DeviceToken } from '@/lib/devices';
 import { t } from '@/theme/copy';
@@ -67,11 +67,14 @@ function TokenRow({ token, onUnlink }: { token: DeviceToken; onUnlink: (token: D
 
 /**
  * /lier (spec 2026-11-25 §5) : tout compte connecté y autorise le code de l'appli Greg pour lui-même, et y délie ses
- * appareils. Sans lecteur ni socket. Non connecté : « Se connecter avec Discord », le code de l'URL
- * gardé pour le retour (boot() de « / » renvoie ici). Rien n'est autorisé sans un clic. Styles : components/Lier/lier.css.
+ * appareils. Sans lecteur ni socket. Non connecté (401 de /users/me seulement) : « Se connecter avec Discord », le code
+ * de l'URL gardé pour le retour (boot() de « / » renvoie ici) ; une autre panne propose « Réessayer ». Rien n'est
+ * autorisé sans un clic. Styles : components/Lier/lier.css.
  */
 export default function LierPage() {
-  const [view, setView] = useState<'loading' | 'out' | 'in'>('loading');
+  const [view, setView] = useState<'loading' | 'out' | 'in' | 'error'>('loading');
+  const [bootTry, setBootTry] = useState(0);
+  const [retry, setRetry] = useState(0);
   const [loginCode, setLoginCode] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [lookup, setLookup] = useState<Lookup | null>(null);
@@ -100,11 +103,17 @@ export default function LierPage() {
     let alive = true;
     (async () => {
       try {
-        await api.getMe();
-      } catch {
+        const me = await api.getMe();
+        if (!me || typeof me !== 'object') throw new Error('/users/me illisible');
+      } catch (e) {
         if (!alive) return;
-        setLoginCode(urlCode);
-        setView('out');
+        // Seul un 401 veut dire « non connecté » ; une panne (5xx, réseau, réponse illisible) se réessaie.
+        if (meFailureView(e) === 'out') {
+          setLoginCode(urlCode);
+          setView('out');
+        } else {
+          setView('error');
+        }
         return;
       }
       if (!alive) return;
@@ -126,9 +135,10 @@ export default function LierPage() {
       }, (e) => { if (alive) setTokensErr(deviceErrorKey(e)); });
     })();
     return () => { alive = false; };
-  }, []);
+  }, [bootTry]);
 
   // Code complet : on montre l'appareil qui le demande (lecture seule) ; l'autorisation attend le clic du Roi.
+  // `retry` relance la consultation du même code après une panne.
   const code = view === 'in' ? normalizeUserCode(input) : null;
   useEffect(() => {
     if (!code) return;
@@ -137,7 +147,7 @@ export default function LierPage() {
       if (alive) setLookup({ code, found: { code, name: String(r?.client_name ?? ''), createdAt: Number(r?.created_at) }, err: null });
     }, (e) => { if (alive) setLookup({ code, found: null, err: deviceErrorKey(e) }); });
     return () => { alive = false; };
-  }, [code]);
+  }, [code, retry]);
   const shown = code && lookup?.code === code ? lookup : null;
   const found = shown?.found ?? null;
   // 8 lettres ou plus qui ne font pas un code (voyelle, chiffre, une de trop) : on le dit, plutôt que rien
@@ -216,13 +226,28 @@ export default function LierPage() {
     );
   }
 
+  if (view === 'error') {
+    return (
+      <main className="lier">
+        <section className="lier-card plaque">
+          <p className="vl-kicker">{tx('devices.kicker')}</p>
+          <h1 className="vl-title">{tx('devices.title')}</h1>
+          <p className="lier-alert" role="alert">{tx('devices.error.generic')}</p>
+          <button type="button" className="btn-solid" onClick={() => { setView('loading'); setBootTry((n) => n + 1); }}>
+            {tx('devices.retry')}
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   if (view === 'out') {
     return (
       <main className="lier">
         <section className="lier-card plaque">
           <p className="vl-kicker">{tx('devices.kicker')}</p>
           <h1 className="vl-title">{tx('devices.title')}</h1>
-          <p className="vl-body">{tx('devices.login')}</p>
+          <p className="vl-body">{loginCode ? tx('devices.loginWithCode', { code: formatUserCode(loginCode) }) : tx('devices.login')}</p>
           <a className="btn-solid" href={api.getLoginUrl()}
             onClick={() => { if (loginCode) savePendingCode(browserSession(), loginCode, Date.now()); }}>
             {t('auth.cta')}
@@ -234,6 +259,13 @@ export default function LierPage() {
   }
 
   const age = found ? ageMinutes(found.createdAt, Date.now()) : 0;
+  // Session finie pendant la page : se reconnecter, le code en cours gardé pour le retour (boot() de « / » renvoie ici).
+  const relogin = (
+    <a className="btn-ghost" href={api.getLoginUrl()}
+      onClick={() => { if (code) savePendingCode(browserSession(), code, Date.now()); }}>
+      {t('auth.cta')}
+    </a>
+  );
 
   return (
     <main className="lier">
@@ -250,6 +282,10 @@ export default function LierPage() {
         </div>
         {badCode && <p className="lier-alert" role="alert">{tx('devices.error.INVALID_CODE')}</p>}
         {shown?.err && <p className="lier-alert" role="alert">{tx(shown.err)}</p>}
+        {shown?.err === 'devices.error.generic' && (
+          <button type="button" className="btn-ghost" onClick={() => { setLookup(null); setRetry((n) => n + 1); }}>{tx('devices.retry')}</button>
+        )}
+        {shown?.err === 'devices.error.SESSION' && relogin}
 
         {found && (
           <div className="lier-device">
@@ -279,6 +315,7 @@ export default function LierPage() {
               <button type="button" className="btn-ghost" aria-disabled={busy} onClick={() => decide('deny')}>{tx('devices.deny')}</button>
             </div>
             {decideErr && <p className="lier-alert" role="alert">{tx(decideErr)}</p>}
+            {decideErr === 'devices.error.SESSION' && relogin}
           </div>
         )}
         {outcome && (
@@ -292,8 +329,9 @@ export default function LierPage() {
         <section aria-labelledby={listId}>
           <h2 ref={listRef} id={listId} className="lier-h2" tabIndex={-1}>{tx('devices.listTitle')}</h2>
           {tokensErr ? <p className="lier-alert" role="alert">{tx(tokensErr)}</p>
-            : tokens && !tokens.length ? <p className="vl-small">{tx('devices.listEmpty')}</p>
-            : tokens && (
+            : tokens === null ? <p className="vl-small" role="status">{t('loading.boot.text')}</p>
+            : !tokens.length ? <p className="vl-small">{tx('devices.listEmpty')}</p>
+            : (
               <ul className="lier-tokens">
                 {tokens.map((tk) => <TokenRow key={tk.id} token={tk} onUnlink={unlink}/>)}
               </ul>
@@ -301,6 +339,8 @@ export default function LierPage() {
           {unlinkErr && <p className="lier-alert" role="alert">{tx(unlinkErr)}</p>}
           <p className="lier-note" role="status">{unlinked}</p>
         </section>
+
+        <a className="btn-ghost" href="/">{tx('devices.back')}</a>
       </section>
     </main>
   );

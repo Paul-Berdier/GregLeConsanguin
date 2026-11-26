@@ -42,7 +42,8 @@ test('pickDeviceGuild : enregistré, puis vocal, puis en lecture, puis le premie
 test('deviceErrorKey et textes', () => {
   for (const [code, key] of [['CODE_EXPIRED', 'devices.error.CODE_EXPIRED'], ['ALREADY_USED', 'devices.error.ALREADY_USED'],
     ['RATE_LIMITED', 'devices.error.RATE_LIMITED'], ['NOT_GUILD_MEMBER', 'devices.error.NOT_GUILD_MEMBER'],
-    ['INVALID_REQUEST', 'devices.error.INVALID_CODE'], ['CSRF_FAILED', 'devices.error.generic'], [undefined, 'devices.error.generic']]) {
+    ['INVALID_REQUEST', 'devices.error.INVALID_CODE'], ['NOT_AUTHENTICATED', 'devices.error.SESSION'],
+    ['CSRF_FAILED', 'devices.error.generic'], [undefined, 'devices.error.generic']]) {
     assert.equal(D.deviceErrorKey({ payload: { error: code } }), key); assert.notEqual(tx(key), key);
   }
   assert.equal(D.ageMinutes(1000, 1000 * 1000 + 125_000), 2); assert.equal(D.ageMinutes(2000, 1000), 0);
@@ -50,6 +51,29 @@ test('deviceErrorKey et textes', () => {
   assert.equal(tx('devices.approved'), 'C’est fait, Sire. Retournez à votre jeu.');
   assert.equal(tx('devices.warning'), 'N’autorisez que l’appli que vous venez d’ouvrir vous-même.');
   assert.equal(tx('devices.notAllowed'), 'devices.notAllowed');                    // aucune vue « non autorisé »
+});
+
+test('/users/me : seul un 401 veut dire « non connecté », toute autre panne est une erreur à réessayer', async () => {
+  assert.equal(D.meFailureView({ status: 401, payload: { ok: false, error: 'not_authenticated' } }), 'out');
+  for (const e of [{ status: 503, payload: { ok: false, error: 'STORAGE_UNAVAILABLE' } }, { status: 502, payload: '<html>Bad Gateway</html>' },
+    { status: 500 }, new TypeError('Failed to fetch'), new Error('/users/me illisible'), null, undefined]) {
+    assert.equal(D.meFailureView(e), 'error', String(e?.status ?? e));
+  }
+  for (const [reply, status, view] of [[{ ok: false, error: 'not_authenticated' }, 401, 'out'], [{ ok: false, error: 'BOT_OFFLINE' }, 503, 'error']]) {
+    const err = await capture(() => api.getMe(), reply, status).then(() => null, (e) => e);
+    assert.equal(D.meFailureView(err), view, String(status));
+  }
+});
+
+test('textes de /lier : connexion sans promesse de délai, code invalide expliqué, session finie, retour, réessayer', () => {
+  assert.equal(tx('devices.login'), 'Connectez-vous avec Discord pour autoriser l’appli.');
+  assert.equal(tx('devices.loginWithCode', { code: 'BCDF-GHJK' }),
+    'Connectez-vous avec Discord pour autoriser l’appli. Vous reviendrez ici avec le code BCDF-GHJK.');
+  for (const k of ['devices.login', 'devices.loginWithCode']) assert.ok(!/minute/.test(tx(k)), k);
+  assert.equal(tx('devices.error.INVALID_CODE'), 'Le code compte 8 lettres, sans voyelle ni chiffre, par exemple BCDF-GHJK.');
+  assert.equal(tx('devices.error.SESSION'), 'Votre session a pris fin, Sire. Reconnectez-vous avec Discord.');
+  assert.equal(tx('devices.back'), 'Aller au lecteur');
+  assert.equal(tx('devices.retry'), 'Réessayer');
 });
 
 test('consultation limitée (429 RATE_LIMITED) : /lier montre le texte de limite', async () => {
