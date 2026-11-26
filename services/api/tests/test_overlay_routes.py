@@ -108,6 +108,17 @@ def test_lookup_is_rate_limited_per_account_before_reading_the_code(app, client,
     overlay_redis.now += 61
     assert logged_client.get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 200
 
+@pytest.mark.parametrize("with_cookie", [False, True])
+def test_a_bearer_never_looks_up_nor_approves_a_code(app, client, login, bot, overlay_redis, issue_token, with_cookie):
+    code = start(client)["user_code"]; h = {"Authorization": f"Bearer {issue_token()}"}   # un jeton volé ne frappe pas d'autres jetons
+    c = login(app.test_client()) if with_cookie else app.test_client()
+    r = c.get(f"{BASE}/overlay/device/lookup?user_code={code}", headers=h)
+    assert r.status_code == 401 and r.get_json()["error"] == "NOT_AUTHENTICATED"
+    r = c.post(f"{BASE}/overlay/device/approve", json={"user_code": code, "decision": "approve", "guild_id": "42"}, headers=h)
+    assert r.status_code == 401 and r.get_json()["error"] == "NOT_AUTHENTICATED"
+    assert bot.calls == []
+    assert login(app.test_client()).get(f"{BASE}/overlay/device/lookup?user_code={code}").status_code == 200   # code intact
+
 def test_any_logged_in_user_links_its_own_account(app, client, logged_client, login, bot, overlay_redis, monkeypatch):
     monkeypatch.setattr(settings, "greg_owner_id", "999")                        # GREG_OWNER_ID ne joue aucun rôle
     other = login(app.test_client(), 888)
