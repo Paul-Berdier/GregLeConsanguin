@@ -98,6 +98,36 @@ def test_code_is_single_use(overlay_redis):
             ot.decide(d.user_code, approve=approve, uid=777, user=USER, guild_id=None)
         assert (e.value.code, e.value.status) == ("ALREADY_USED", 409)
 
+def test_redis_down_before_exec_leaves_the_code_usable(overlay_redis):
+    d = ot.start_device("GregLC"); dev_key = DEV + ot.hash_secret(d.device_code); idx = IDX + d.user_code.replace("-", "")
+    def drop(key):
+        if key == dev_key: overlay_redis.fail = redis.ConnectionError("down")     # après la lecture, avant l'EXEC
+    overlay_redis.on_get = drop
+    with pytest.raises(ot.OverlayError) as e:
+        ot.decide(d.user_code, approve=True, uid=777, user=USER, guild_id="42")
+    assert (e.value.code, e.value.status) == ("STORAGE_UNAVAILABLE", 503)
+    overlay_redis.fail = None; overlay_redis.on_get = None
+    assert overlay_redis.get(idx) == ot.hash_secret(d.device_code)               # rien n'est consommé
+    assert ot.lookup_user_code(d.user_code)["client_name"] == "GregLC"
+    ot.decide(d.user_code, approve=True, uid=777, user=USER, guild_id="42")      # une nouvelle tentative réussit
+    assert overlay_redis.get(idx) == "used" and overlay_redis.ttl(idx) == 600    # KEEPTTL
+    overlay_redis.now += 5; m = ot.poll(d.device_code)
+    assert isinstance(m, ot.Minted) and (m.record.uid, m.record.default_guild_id) == (777, "42")
+
+def test_concurrent_approvals_of_one_code_have_one_winner(overlay_redis):
+    d = ot.start_device("GregLC"); out = {}
+    def attempt(uid):
+        try:
+            ot.decide(d.user_code, approve=True, uid=uid, user={**USER, "id": str(uid)}, guild_id=None); out[uid] = "ok"
+        except ot.OverlayError as e:
+            out[uid] = (e.code, e.status)
+    overlay_redis.interleave.append(lambda: attempt(888))                       # l'autre clic passe juste avant notre EXEC
+    attempt(777)
+    assert sorted(out.values(), key=str) == [("ALREADY_USED", 409), "ok"]
+    winner = next(uid for uid, v in out.items() if v == "ok"); loser = 777 if winner == 888 else 888
+    overlay_redis.now += 5; m = ot.poll(d.device_code)
+    assert isinstance(m, ot.Minted) and m.record.uid == winner and ot.list_tokens(loser) == []
+
 def test_resolve_updates_last_used_at_at_most_every_5_min(overlay_redis, issue_token):
     tok = issue_token(); minted_at = int(overlay_redis.now)
     overlay_redis.now += 10; assert ot.resolve(tok).last_used_at == minted_at

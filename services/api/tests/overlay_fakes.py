@@ -231,7 +231,12 @@ class FakeOverlayRedis:
 class FakeOverlayPipeline:
     """Pipeline transactionnel de redis-py : après WATCH et avant MULTI, chaque commande part tout de suite ;
     sinon elle est mise en file et jouée d'un bloc par execute(), qui rend la liste des résultats (WatchError si
-    une clé surveillée a changé) et remet le pipeline à zéro, comme redis-py."""
+    une clé surveillée a changé) et remet le pipeline à zéro, comme redis-py.
+
+    Connexion perdue (`fail`) alors que des clés sont surveillées : redis-py (Pipeline._disconnect_raise_on_watching
+    et _disconnect_reset_raise_on_watching, 8.2) ferme la connexion et lève WatchError dans son `except`, donc avec
+    l'erreur de connexion pour __context__, sans rejouer la commande ; un EXEC perdu n'écrit rien.
+    """
 
     def __init__(self, r: FakeOverlayRedis) -> None:
         self.r = r
@@ -246,9 +251,19 @@ class FakeOverlayPipeline:
         self.reset()
         return False
 
+    def _send(self, send: Callable[[], Any]) -> Any:
+        """Commande envoyée au serveur ; perdue pendant un WATCH, elle devient WatchError, comme dans redis-py."""
+        try:
+            return send()
+        except (redis.ConnectionError, redis.TimeoutError) as e:
+            if not self._watched:
+                raise
+            self.reset()
+            raise redis.WatchError(f"A {type(e).__name__} occurred while watching one or more keys")
+
     def _call(self, op: str, *args: Any, **kw: Any):
         if self._watched and not self._multi:
-            return getattr(self.r, op)(*args, **kw)
+            return self._send(lambda: getattr(self.r, op)(*args, **kw))
         self.r.log.append((op.upper(), *args))
         self._queue.append((op, args, kw))
         return self
@@ -256,7 +271,7 @@ class FakeOverlayPipeline:
     def watch(self, *names: str) -> None:
         if self._multi:
             raise redis.RedisError("Cannot issue a WATCH after a MULTI")
-        self.r._cmd("WATCH", *names)
+        self._send(lambda: self.r._cmd("WATCH", *names))
         for name in names:
             self.r._alive(name)
             self._watched[name] = self.r._version.get(name, 0)
@@ -294,7 +309,7 @@ class FakeOverlayPipeline:
 
     def execute(self) -> list:
         try:
-            self.r._cmd("EXEC")
+            self._send(lambda: self.r._cmd("EXEC"))
             if self.r.interleave:
                 self.r.interleave.pop(0)()
             for name in self._watched:

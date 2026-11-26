@@ -11,8 +11,9 @@ Clés :
 - `greg:ratelimit:{seau}:{sujet}` → compteur, MULTI · INCR · EXPIRE NX · EXEC.
 
 - Ni jeton ni device_code en clair, ni dans Redis ni dans les journaux : seulement leur sha256.
-- Usage unique d'un code : SET « used » XX GET KEEPTTL de l'index ; l'ancienne valeur dit s'il avait expiré
-  (CODE_EXPIRED) ou déjà servi (ALREADY_USED), ce qu'un GETDEL ne distinguerait pas.
+- Usage unique d'un code : l'index passe à « used » (SET XX KEEPTTL) dans la même transaction que la décision de
+  l'appareil, sous WATCH des deux clés ; l'index lu dit s'il avait expiré (CODE_EXPIRED) ou déjà servi
+  (ALREADY_USED), ce qu'un GETDEL ne distinguerait pas, et une panne avant l'EXEC ne consomme rien.
 - Lecture-modification-écriture d'un appareil sous WATCH / MULTI / EXEC (MAX_TRIES essais) : deux sondages
   simultanés ne frappent qu'un jeton, et un sondage n'écrase jamais une décision prise entre-temps.
 - Redis injoignable → OverlayError STORAGE_UNAVAILABLE (503), le détail seulement dans les journaux.
@@ -316,21 +317,29 @@ def lookup_user_code(code: str) -> dict[str, Any] | None:
 
 
 def decide(code: str, *, approve: bool, uid: int, user: dict, guild_id: str | None) -> None:
-    """Autorise ou refuse l'appareil du code, une seule fois : CODE_EXPIRED (404), ALREADY_USED (409)."""
+    """Autorise ou refuse l'appareil du code, une seule fois : CODE_EXPIRED (404), ALREADY_USED (409).
+
+    Une seule transaction : WATCH de l'index et de l'appareil, lecture et contrôles, puis MULTI · SET « used » XX
+    KEEPTTL de l'index · SET XX KEEPTTL de l'appareil décidé · EXEC. Une panne avant l'EXEC ne consomme pas le code
+    (une nouvelle tentative réussit) ; sous WATCH, redis-py ne rejoue jamais l'EXEC ; un clic concurrent qui passe
+    avant notre EXEC le fait échouer (WatchError) : on relit, et l'index dit alors ALREADY_USED.
+    """
     norm = normalize_user_code(code)
     if norm is None:
         raise OverlayError("CODE_EXPIRED", 404)
+    idx = USER_CODE_KEY + norm
     r = _redis()
     try:
-        h = cast("str | None", r.set(USER_CODE_KEY + norm, USED, xx=True, get=True, keepttl=True))
-        if h is None:
-            raise OverlayError("CODE_EXPIRED", 404)
-        if h == USED:
-            raise OverlayError("ALREADY_USED", 409)
-        key = DEVICE_KEY + h
         with r.pipeline(transaction=True) as pipe:
             for attempt in range(1, MAX_TRIES + 1):
                 try:
+                    pipe.watch(idx)
+                    h = cast("str | None", pipe.get(idx))  # decode_responses=True : du texte
+                    if h is None:
+                        raise OverlayError("CODE_EXPIRED", 404)
+                    if h == USED:
+                        raise OverlayError("ALREADY_USED", 409)
+                    key = DEVICE_KEY + h
                     pipe.watch(key)
                     dev = _load_device(pipe.get(key))
                     if dev is None:
@@ -340,8 +349,10 @@ def decide(code: str, *, approve: bool, uid: int, user: dict, guild_id: str | No
                     dev.update(status="approved" if approve else "denied", uid=int(uid), user=user,
                                guild_id=guild_id)
                     pipe.multi()
+                    pipe.set(idx, USED, xx=True, keepttl=True)
                     pipe.set(key, _dump(dev), xx=True, keepttl=True)
-                    if not pipe.execute()[0]:  # échu entre la lecture et l'écriture
+                    used, written = pipe.execute()
+                    if not (used and written):  # échu entre la lecture et l'écriture
                         raise OverlayError("CODE_EXPIRED", 404)
                     return
                 except redis.WatchError as e:
