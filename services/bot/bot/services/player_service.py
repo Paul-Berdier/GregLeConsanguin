@@ -647,6 +647,21 @@ class PlayerService:
             "clock": clock,
         }
 
+    def title_at(self, guild_id: int, index: Optional[int] = None) -> Optional[str]:
+        """Titre en cours (index None) ou de queue[index], sinon None (événement d'activité).
+
+        Lecture seule : ne crée jamais de PlaylistManager (une file pas encore chargée → None).
+        """
+        gid = int(guild_id)
+        if index is None:
+            item = self.now_playing.get(gid) or self.current_song.get(gid)
+        else:
+            pm = self.pm_map.get(gid)
+            queue = pm.peek_all() if pm is not None else []
+            item = queue[index] if 0 <= index < len(queue) else None
+        title = item.get("title") if isinstance(item, dict) else None
+        return title if isinstance(title, str) else None
+
     # ─── Enqueue ───
 
     def _normalize_item(self, it: dict) -> dict:
