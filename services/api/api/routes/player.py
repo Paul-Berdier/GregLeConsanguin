@@ -5,7 +5,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from api.services.authz import require_session_user, session_user_id
+from api.services.authz import current_user_id, require_identity
 from api.services.bot_bridge import send_command
 from api.services.library_store import (
     QUEUE_ITEM_KEYS,
@@ -58,8 +58,8 @@ def _gid(req, data=None) -> int:
 
 
 def _uid() -> int:
-    """Utilisateur de la session Discord (SEC-C1) — le user_id du corps / X-User-ID est ignoré."""
-    return session_user_id() or 0
+    """Utilisateur de la session ou du jeton de l'appli (SEC-C1) — le user_id du corps / X-User-ID est ignoré."""
+    return current_user_id() or 0
 
 
 def error_status(res: dict[str, Any], default: int = 409) -> int:
@@ -99,7 +99,7 @@ def play_for_user_response(gid: int, uid: int, item: dict[str, Any]):
 
 
 @bp.get("/player/state")
-@require_session_user
+@require_identity
 def get_state():
     gid = _gid(request)
     if not gid:
@@ -128,7 +128,7 @@ def get_state():
 
 
 @bp.post("/player/enqueue")
-@require_session_user
+@require_identity
 def enqueue():
     data = _body(request)
     gid = _gid(request, data)
@@ -153,7 +153,7 @@ def enqueue():
 
 
 @bp.post("/queue/add_many")
-@require_session_user
+@require_identity
 def queue_add_many():
     """Ajoute une liste de titres connus (playlist ou coups de cœur du chansonnier) en UNE commande.
 
@@ -179,7 +179,7 @@ def queue_add_many():
 
 
 @bp.post("/player/skip")
-@require_session_user
+@require_identity
 def skip():
     data = _body(request)
     gid = _gid(request, data)
@@ -192,7 +192,7 @@ def skip():
 
 
 @bp.post("/player/stop")
-@require_session_user
+@require_identity
 def stop():
     data = _body(request)
     gid = _gid(request, data)
@@ -205,7 +205,7 @@ def stop():
 
 
 @bp.post("/player/pause")
-@require_session_user
+@require_identity
 def toggle_pause():
     data = _body(request)
     gid = _gid(request, data)
@@ -218,7 +218,7 @@ def toggle_pause():
 
 
 @bp.post("/player/repeat")
-@require_session_user
+@require_identity
 def repeat():
     data = _body(request)
     gid = _gid(request, data)
@@ -231,7 +231,7 @@ def repeat():
 
 
 @bp.post("/player/move")
-@require_session_user
+@require_identity
 def move():
     data = _body(request)
     gid = _gid(request, data)
@@ -249,7 +249,7 @@ def move():
 
 
 @bp.delete("/player/queue/<int:index>")
-@require_session_user
+@require_identity
 def remove_at(index: int):
     data = _body(request)
     gid = _gid(request, data)
@@ -264,25 +264,25 @@ def remove_at(index: int):
 # ── Compat routes (ancien front player.js) ──
 
 @bp.post("/queue/add")
-@require_session_user
+@require_identity
 def queue_add_compat():
     return enqueue()
 
 
 @bp.post("/queue/skip")
-@require_session_user
+@require_identity
 def queue_skip_compat():
     return skip()
 
 
 @bp.post("/queue/stop")
-@require_session_user
+@require_identity
 def queue_stop_compat():
     return stop()
 
 
 @bp.post("/queue/remove")
-@require_session_user
+@require_identity
 def queue_remove_compat():
     data = _body(request)
     idx = _int(data.get("index", 0))
@@ -292,25 +292,25 @@ def queue_remove_compat():
 
 
 @bp.get("/playlist")
-@require_session_user
+@require_identity
 def playlist_state_compat():
     return get_state()
 
 
 @bp.post("/playlist/toggle_pause")
-@require_session_user
+@require_identity
 def playlist_pause_compat():
     return toggle_pause()
 
 
 @bp.post("/playlist/repeat")
-@require_session_user
+@require_identity
 def playlist_repeat_compat():
     return repeat()
 
 
 @bp.post("/playlist/play_at")
-@require_session_user
+@require_identity
 def playlist_play_at():
     """Joue le morceau à l'index donné dans la queue."""
     data = _body(request)
@@ -327,7 +327,7 @@ def playlist_play_at():
 
 
 @bp.post("/playlist/restart")
-@require_session_user
+@require_identity
 def playlist_restart():
     """Redémarre le morceau en cours."""
     data = _body(request)
@@ -341,7 +341,7 @@ def playlist_restart():
 
 
 @bp.post("/voice/join")
-@require_session_user
+@require_identity
 def voice_join():
     data = _body(request)
     gid = _gid(request, data)

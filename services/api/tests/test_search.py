@@ -52,23 +52,23 @@ URLS = [
 
 @pytest.mark.parametrize("q", URLS)
 @pytest.mark.parametrize("path", ["/search/autocomplete", "/autocomplete"])
-def test_autocomplete_skips_search_for_urls(client, no_network, q, path):
-    r = client.get(f"{BASE}{path}", query_string={"q": q, "limit": 6})
+def test_autocomplete_skips_search_for_urls(logged_client, no_network, q, path):
+    r = logged_client.get(f"{BASE}{path}", query_string={"q": q, "limit": 6})
     assert r.status_code == 200
     assert r.get_json() == {"ok": True, "results": []}
     assert no_network == []
 
 
 @pytest.mark.parametrize("q", ["daft punk around the world", "youtube rewind", "soundcloud rap fr", "https"])
-def test_autocomplete_still_searches_text(client, no_network, q):
-    r = client.get(f"{BASE}/search/autocomplete", query_string={"q": q, "limit": 6})
+def test_autocomplete_still_searches_text(logged_client, no_network, q):
+    r = logged_client.get(f"{BASE}/search/autocomplete", query_string={"q": q, "limit": 6})
     assert r.status_code == 200
     assert len(r.get_json()["results"]) == 1
     assert no_network[0] == ("innertube", q)
 
 
-def test_suggest_skips_urls(client, no_network):
-    r = client.get(f"{BASE}/search/suggest", query_string={"q": "https://youtu.be/abc"})
+def test_suggest_skips_urls(logged_client, no_network):
+    r = logged_client.get(f"{BASE}/search/suggest", query_string={"q": "https://youtu.be/abc"})
     assert r.status_code == 200
     assert r.get_json() == {"ok": True, "suggestions": []}
     assert no_network == []
