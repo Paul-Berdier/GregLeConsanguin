@@ -172,6 +172,26 @@ def test_token_errors_follow_rfc8628(client, overlay_redis):
     assert poll({"device_code": d["device_code"]}) == "slow_down"
     assert poll({"device_code": "inconnu"}) == poll({}) == poll({"device_code": 5}) == "expired_token"
 
+NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+def no_store(r): return {k: r.headers.get(k) for k in NO_STORE} == NO_STORE
+
+def test_device_codes_and_tokens_are_never_cached(client, logged_client, bot, overlay_redis):   # RFC 6749 §5.1
+    r = client.post(f"{BASE}/overlay/device", json={}); d = r.get_json()
+    assert r.status_code == 200 and no_store(r)
+    r = client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]})
+    assert r.get_json()["error"] == "authorization_pending" and no_store(r)
+    r = client.post(f"{BASE}/overlay/token", data="x", content_type="text/plain")
+    assert r.status_code == 400 and no_store(r)
+    assert approve(logged_client, d["user_code"], guild_id="42").status_code == 200; overlay_redis.now += 5
+    r = client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]}); tok = r.get_json()["access_token"]
+    assert r.status_code == 200 and no_store(r)
+    r = client.post(f"{BASE}/overlay/token", json={"device_code": d["device_code"]})
+    assert r.get_json()["error"] == "expired_token" and no_store(r)
+    for r in (logged_client.get(f"{BASE}/overlay/tokens"), client.get(f"{BASE}/overlay/tokens", headers={"Authorization": f"Bearer {tok}"})):
+        assert r.status_code == 200 and no_store(r)
+    codes = [client.post(f"{BASE}/overlay/device", json={}) for _ in range(5)]
+    assert codes[-1].status_code == 429 and no_store(codes[-1])
+
 def test_me_tokens_revoke_and_logout(client, logged_client, overlay_redis, issue_token):
     tok = issue_token(); h = {"Authorization": f"Bearer {tok}"}
     me = client.get(f"{BASE}/overlay/me", headers=h).get_json()

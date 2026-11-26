@@ -56,6 +56,19 @@ def _overlay_error(e: ot.OverlayError):
     return jsonify(e.body()), e.status
 
 
+# Réponses qui portent un device_code, un jeton ou la liste des jetons : jamais gardées par un cache (RFC 6749 §5.1,
+# que RFC 8628 §3.5 reprend), erreurs comprises.
+_NO_STORE_ENDPOINTS = frozenset({"overlay.device_start", "overlay.token", "overlay.tokens"})
+
+
+@bp.after_request
+def _no_store(resp):
+    if request.endpoint in _NO_STORE_ENDPOINTS:
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
 def _invalid() -> ot.OverlayError:
     return ot.OverlayError("INVALID_REQUEST", 400)
 
