@@ -104,6 +104,24 @@ function fingerprint(t: Track): string {
   return `f:${[t.url || r.url || '', r.added_by ?? r.requested_by ?? '', r.ts ?? '', r.repeat_tag ?? ''].join('|')}`;
 }
 
+/** Titre visé par retirer / déplacer / jouer maintenant, tel que le bot l'a (spec 2026-11-25 §3.6). */
+export type QueueExpected = { url: string; added_by: string | null; ts: number | null };
+
+/**
+ * `expected` d'un titre de la file : le bot refuse STALE, sans rien changer, si ce n'est plus lui à l'index visé.
+ * Sans `raw` (titre que le bot n'a pas décrit) : undefined, la requête part sans garde.
+ */
+export function expectedOf(t: Track | null | undefined): QueueExpected | undefined {
+  const r = t?.raw;
+  if (!t || !r || typeof r !== 'object') return undefined;
+  const by = r.added_by ?? r.requested_by;
+  return {
+    url: String(r.url ?? t.url ?? ''),
+    added_by: by == null ? null : String(by),
+    ts: typeof r.ts === 'number' && Number.isFinite(r.ts) ? r.ts : null,
+  };
+}
+
 /**
  * Clés stables : l'empreinte suivie du rang de l'occurrence (`#0`, `#1` pour de vrais doublons).
  * Un titre garde sa clé quand d'autres s'insèrent avant lui : les lignes ne sont jamais remontées.
@@ -324,6 +342,8 @@ export function errorCopy(e: any, ctx: { name?: string; q?: string; link?: LinkK
   if (ctx.action === 'state' && isStalePayload(e?.payload) && (code === 'TIMEOUT' || !DECK_ERRORS.has(code))) {
     return { key: 'toast.stale', path: 'toast.stale.text' };
   }
+  // 409 STALE (garde `expected`) : la file a bougé avant la commande, le bot n'a rien changé
+  if (code === 'STALE') return { key: 'error.STALE', path: 'error.STALE.text' };
   if (DECK_ERRORS.has(code)) return { key: `error.${code}`, path: `error.${code}.text` };
   if (code.startsWith('UNKNOWN_ACTION')) return { key: 'error.UNKNOWN_ACTION', path: 'error.UNKNOWN_ACTION.text' };
   if (!code && ctx.action === 'move' && status === 409) return { key: 'error.MOVE_CONFLICT', path: 'error.MOVE_CONFLICT.text' };

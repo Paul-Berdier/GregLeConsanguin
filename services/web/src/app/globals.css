@@ -11,6 +11,7 @@
 @import '../components/Queue/queue.css';
 @import '../components/History/history.css';
 @import '../components/Herald/herald.css';
+@import '../components/Lier/lier.css';
 
 @tailwind base;
 @tailwind components;

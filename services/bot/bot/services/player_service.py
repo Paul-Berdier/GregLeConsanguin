@@ -80,7 +80,7 @@ from greg_shared.priority import (
 
 from bot.services.audio_clock import CountingSource
 from bot.services.ffmpeg import detect_ffmpeg
-from bot.services.playlist_manager import PlaylistManager
+from bot.services.playlist_manager import PlaylistManager, StaleQueueError, queue_item_matches
 from bot.services.history_manager import HistoryManager
 
 logger = logging.getLogger("greg.player")
@@ -275,6 +275,15 @@ def _track_link_refusal(link: str) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def _check_expected(q: List[dict], indexes: Tuple[int, ...], expected: Optional[dict]) -> None:
+    """Garde `expected` (spec §4.3) : avec lui, un index hors bornes ou un autre titre en
+    q[indexes[0]] → StaleQueueError. Appelée avant tout contrôle de droits ; sans `expected`, rien."""
+    if expected is None:
+        return
+    if not all(0 <= i < len(q) for i in indexes) or not queue_item_matches(q[indexes[0]], expected):
+        raise StaleQueueError()
 
 
 class _VoiceUnavailable(RuntimeError):
@@ -646,6 +655,21 @@ class PlayerService:
             "queue_users": queue_users,
             "clock": clock,
         }
+
+    def title_at(self, guild_id: int, index: Optional[int] = None) -> Optional[str]:
+        """Titre en cours (index None) ou de queue[index], sinon None (événement d'activité).
+
+        Lecture seule : ne crée jamais de PlaylistManager (une file pas encore chargée → None).
+        """
+        gid = int(guild_id)
+        if index is None:
+            item = self.now_playing.get(gid) or self.current_song.get(gid)
+        else:
+            pm = self.pm_map.get(gid)
+            queue = pm.peek_all() if pm is not None else []
+            item = queue[index] if 0 <= index < len(queue) else None
+        title = item.get("title") if isinstance(item, dict) else None
+        return title if isinstance(title, str) else None
 
     # ─── Enqueue ───
 
@@ -1380,12 +1404,13 @@ class PlayerService:
             return True
         return False
 
-    def remove_at(self, guild_id: int, requester_id: int, index: int) -> bool:
+    def remove_at(self, guild_id: int, requester_id: int, index: int, expected: Optional[dict] = None) -> bool:
         gid = int(guild_id)
         pm = self._known_pm(gid)
         if pm is None:
             return False
         q = pm.peek_all()
+        _check_expected(q, (index,), expected)
         if not (0 <= index < len(q)):
             return False
         perm = can_edit_queue_item(self.bot, gid, requester_id, q[index])
@@ -1396,12 +1421,13 @@ class PlayerService:
             self._emit(gid)
         return ok
 
-    def move(self, guild_id: int, requester_id: int, src: int, dst: int) -> bool:
+    def move(self, guild_id: int, requester_id: int, src: int, dst: int, expected: Optional[dict] = None) -> bool:
         gid = int(guild_id)
         pm = self._known_pm(gid)
         if pm is None:
             return False
         q = pm.peek_all()
+        _check_expected(q, (src, dst), expected)
         if not (0 <= src < len(q) and 0 <= dst < len(q)):
             return False
 
@@ -1418,11 +1444,12 @@ class PlayerService:
             self._emit(gid)
         return ok
 
-    async def play_at(self, guild_id: int, user_id: int, index: int) -> bool:
+    async def play_at(self, guild_id: int, user_id: int, index: int, expected: Optional[dict] = None) -> bool:
         """Joue le morceau à l'index donné dans la queue.
 
         C'est un skip déguisé : mêmes droits que skip (contrôle de la lecture en
-        cours) + droits sur l'item + respect des zones de priorité.
+        cours) + droits sur l'item + respect des zones de priorité. `expected` :
+        vérifié sous le verrou de file, avant les droits (StaleQueueError).
         """
         gid = int(guild_id)
         pm = self._known_pm(gid)
@@ -1433,6 +1460,7 @@ class PlayerService:
         loop = asyncio.get_running_loop()
         async with self._queue_lock(gid):
             q = pm.peek_all()
+            _check_expected(q, (index,), expected)
             if not (0 <= index < len(q)):
                 return False
             item = q[index]

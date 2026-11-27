@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Greg hors jeu</title>
+<style>
+%%CSS%%
+/* windows */
+.win{border-radius:12px;background:var(--nef);box-shadow:0 0 0 1px var(--plomb),inset 0 0 0 1px var(--hair),0 30px 60px -24px rgb(0 0 0/.9);overflow:hidden;display:flex;flex-direction:column}
+.wbar{height:36px;display:flex;align-items:center;gap:8px;padding:0 4px 0 12px;border-bottom:1px solid var(--hair);background:rgb(11 9 8/.5);flex:none}
+.wbar .n{font:700 11px/1 var(--f-ui);letter-spacing:.14em;text-transform:uppercase;color:var(--cendre)}
+.wbar .sp{flex:1}
+.wbar .b{width:30px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--cendre)}
+.wbar .b svg{width:16px;height:16px}
+.wbody{padding:22px;flex:1;position:relative}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.step{display:flex;flex-direction:column;gap:10px}
+.snum{display:flex;align-items:center;gap:10px;color:var(--os-2);font:500 15px/1.3 var(--f-ui)}
+.snum b{flex:none;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font:600 15px/1 var(--f-title);color:var(--nuit);background:var(--or)}
+.step .win{flex:1;min-height:440px}
+.center{display:flex;flex-direction:column;align-items:center;text-align:center}
+.portrait{width:84px;height:84px;border-radius:50%;box-shadow:0 0 0 2px var(--plomb),0 0 0 4px rgb(var(--pierre-rgb)/.6),0 0 0 7px var(--nuit),0 0 0 8px rgb(207 167 90/.3);filter:sepia(.18) saturate(.85) contrast(1.05);margin:6px 0 14px}
+.dtitle{font:600 30px/1 var(--f-display);margin:8px 0 10px}
+.body{color:var(--os-2);font-size:15px;margin:0 0 16px;max-width:300px}
+.code{font:600 38px/1 var(--f-title);letter-spacing:.12em;padding:14px 18px 12px;margin:4px 0 8px}
+.small{color:var(--cendre);font-size:13px}
+.browser .wbar{gap:10px}
+.browser .dots{display:flex;gap:6px}.browser .dots i{width:10px;height:10px;border-radius:50%;background:var(--voute-2)}
+.url{flex:1;height:24px;border-radius:6px;background:var(--voute);display:flex;align-items:center;padding:0 10px;font:400 12.5px/1 var(--f-ui);color:var(--cendre);white-space:nowrap;overflow:hidden}
+.url b{color:var(--os-2);font-weight:500}
+.site{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--hair)}
+.site .wm{font:600 20px/1 var(--f-display)}
+.site .wm span{color:var(--cendre)}
+.king{margin-left:auto;position:relative;width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#4b3a6b,#8f6fb8);box-shadow:0 0 0 1px rgb(207 167 90/.55)}
+.king img{position:absolute;right:-9px;top:-11px;width:22px;transform:rotate(16deg);filter:drop-shadow(0 1px 2px rgb(0 0 0/.6))}
+.authbox{margin:22px auto 0;padding:20px;max-width:300px;text-align:center}
+.authbox .title{font-size:24px;white-space:normal;margin:8px 0 10px}
+.btns{display:flex;gap:8px;justify-content:center;margin-top:14px}
+.guilds{display:flex;flex-direction:column;gap:6px;width:100%;margin:6px 0 14px;text-align:left}
+.g{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--voute);box-shadow:inset 0 0 0 1px var(--hair)}
+.g.sel{box-shadow:inset 0 0 0 1px rgb(var(--lumiere-rgb)/.6),0 0 0 3px rgb(var(--lumiere-rgb)/.08)}
+.g.off{opacity:.55}
+.g .gi{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font:600 14px/1 var(--f-title);color:var(--os);flex:none}
+.g .gn{font:500 14.5px/1.2 var(--f-ui)}
+.g .gs{font-size:12.5px;color:var(--cendre);display:flex;align-items:center;gap:5px}
+.live{width:7px;height:7px;border-radius:50%;background:#58c48b;display:inline-block}
+.two{display:grid;grid-template-columns:440px 1fr;gap:22px;align-items:start}
+.ptop{display:flex;align-items:center;gap:12px}
+.ptop .wm{font:600 30px/1 var(--f-display);margin-top:-2px}
+.guild{margin-left:auto;display:flex;align-items:center;gap:6px;font:500 14px/1 var(--f-ui);color:var(--os-2);background:var(--voute);border-radius:7px;padding:8px 10px;box-shadow:inset 0 0 0 1px var(--hair)}
+.now{margin-top:18px}.now .quip{margin:7px 0 3px}.now .title{margin:4px 0 6px}
+.prog{margin-top:14px}
+.times{display:flex;justify-content:space-between;margin-top:7px;font:600 14px/1 var(--f-ui)}
+.times b{color:var(--lumiere);font-weight:600}.times span{color:var(--os-2)}
+.set h4{font:700 11.5px/1 var(--f-ui);letter-spacing:.12em;text-transform:uppercase;color:var(--cendre);margin:22px 0 10px}
+.set h4:first-child{margin-top:0}
+.line{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:8px;background:var(--voute);box-shadow:inset 0 0 0 1px var(--hair);margin-bottom:6px}
+.line .l{flex:1;font:500 14.5px/1.25 var(--f-ui)}
+.line .l small{display:block;font:400 12.5px/1.3 var(--f-ui);color:var(--cendre);margin-top:2px}
+.keys{display:flex;gap:3px}
+.mod{font:700 12.5px/1 var(--f-ui);color:var(--cendre);padding:7px 9px;border-radius:7px}
+.seg{display:flex;background:var(--nuit);border-radius:9px;padding:3px;box-shadow:inset 0 0 0 1px var(--hair)}
+.seg span{padding:6px 10px;border-radius:7px;font:500 13.5px/1 var(--f-ui);color:var(--cendre)}
+.seg span.on{background:var(--voute-2);color:var(--os)}
+.corners{width:74px;height:44px;border-radius:5px;background:var(--nuit);box-shadow:inset 0 0 0 1px var(--hair-2);position:relative;flex:none}
+.corners i{position:absolute;width:18px;height:8px;border-radius:2px;background:var(--voute-2)}
+.corners i.on{background:var(--lumiere)}
+.states{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.st{border-radius:14px;padding:18px;background:var(--nef);box-shadow:inset 0 0 0 1px var(--hair)}
+.st h3{font:600 20px/1.1 var(--f-title);margin:0 0 4px}
+.st p{margin:0 0 14px;color:var(--cendre);font-size:14px}
+.stage{border-radius:10px;padding:22px;background:linear-gradient(180deg,#24303a,#3d4a3a 70%,#4e5a3c);display:grid;justify-items:center;gap:12px;min-height:150px;align-content:center}
+.k-off{color:var(--gueules)}
+.k-wait{color:var(--cendre)}
+.toast{display:grid;grid-template-columns:22px 1fr;gap:12px;align-items:start;padding:12px 14px;width:392px}
+.toast .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;box-shadow:0 0 0 1px var(--plomb);background:radial-gradient(circle at 50% 35%,#f07a5e,#8c2f1c);color:#1c0f08}
+.toast .ic svg{width:12px;height:12px;stroke-width:3}
+.toast .f{font:500 15px/1.3 var(--f-ui)}
+.toast .quip{margin-top:4px}
+.echo{width:392px;margin-top:-6px;padding:8px 14px;border-radius:0 0 12px 12px;background:rgb(11 9 8/.6);box-shadow:inset 0 0 0 1px var(--hair);font:500 13.5px/1.3 var(--f-ui);color:var(--os-2);display:flex;gap:8px;align-items:center}
+.echo b{font-weight:500;color:var(--os)}
+@media (max-width:1000px){.steps,.two,.states{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect class="ico" x="6.5" y="6.5" width="11" height="11"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path class="ico" d="M5.5 12.5a6.5 6.5 0 1 0 2-4.7M7 4.5v3.8h3.8"/></symbol>
+    <symbol id="i-skip" viewBox="0 0 24 24"><path class="ico" d="M6 6.5l8.5 5.5L6 17.5zM18 6v12"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path class="ico" d="M4.5 11V9.5A2.5 2.5 0 0 1 7 7h11.5M16 4.5L18.5 7 16 9.5M19.5 13v1.5A2.5 2.5 0 0 1 17 17H5.5M8 14.5L5.5 17 8 19.5"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect class="fill" x="6.6" y="4.8" width="4.2" height="14.4"/><rect class="fill" x="13.2" y="4.8" width="4.2" height="14.4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle class="ico" cx="10.5" cy="10.5" r="6"/><path class="ico" d="M15 15l5 5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path class="ico" d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24"><path class="ico" d="M6 12h12"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle class="ico" cx="12" cy="12" r="3"/><path class="ico" d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5M6 6l1.8 1.8M16.2 16.2L18 18M6 18l1.8-1.8M16.2 7.8L18 6"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path class="ico" d="M7 10l5 5 5-5"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24"><path class="ico" d="M14 5h5v5M19 5l-8 8M17 14v5H5V7h5"/></symbol>
+    <symbol id="sh-blue" viewBox="0 0 13 15"><path d="M.5.5h12v6c0 4.2-2.9 6.9-6 8-3.1-1.1-6-3.8-6-8z" fill="#3a63b8" stroke="#060403"/><rect x="5" y="1" width="3" height="12.4" fill="#d8b25e"/></symbol>
+    <symbol id="sh-green" viewBox="0 0 13 15"><path d="M.5.5h12v6c0 4.2-2.9 6.9-6 8-3.1-1.1-6-3.8-6-8z" fill="#2f7d46" stroke="#060403"/><path d="M1 9.5L6.5 4 12 9.5" fill="none" stroke="#e6dcc6" stroke-width="2"/></symbol>
+    <symbol id="sh-purple" viewBox="0 0 13 15"><path d="M.5.5h12v6c0 4.2-2.9 6.9-6 8-3.1-1.1-6-3.8-6-8z" fill="#7b3c8c" stroke="#060403"/><rect x="1" y="5.5" width="11" height="3" fill="#d8b25e"/></symbol>
+  </defs>
+</svg>
+
+<div class="page">
+  <div class="kick">Maquette 2 · hors jeu</div>
+  <h1>La première fois, et entre deux parties</h1>
+  <p class="lead">Comment on relie l’overlay à son compte, à quoi ressemble la fenêtre hors partie, ses réglages, et ce que dit le bandeau quand quelque chose coince.</p>
+
+  <h2>Se connecter, une seule fois</h2>
+  <p class="sub">Pas de mot de passe dans l’overlay&nbsp;: on valide sur le site, où l’on est déjà connecté. Chacun de vos amis fait pareil avec son propre compte.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="snum"><b>1</b>L’overlay affiche un code et ouvre le site.</div>
+      <div class="win">
+        <div class="wbar"><span class="n">Greg</span><span class="sp"></span><span class="b"><svg><use href="#i-min"/></svg></span><span class="b"><svg><use href="#i-x"/></svg></span></div>
+        <div class="wbody center">
+          <img class="portrait" src="data:image/webp;base64,%%IMG_FACE192%%" alt="">
+          <div class="kick">Valet de musique de Sa Majesté</div>
+          <div class="dtitle">Greg le Consanguin</div>
+          <p class="body">Pour que je vous obéisse en jeu, validez ce code sur le site.</p>
+          <div class="code plaque">GRK·4H7</div>
+          <div class="small">Valable 10&nbsp;minutes</div>
+          <div class="btns"><span class="btn solid"><svg class="ico" width="18" height="18"><use href="#i-ext"/></svg>Valider sur le site</span></div>
+          <p class="quip" style="margin-top:14px">— Qui va là&#8239;? Montrez patte blanche.</p>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="snum"><b>2</b>Sur le site, on vérifie le code et on autorise.</div>
+      <div class="win browser">
+        <div class="wbar"><span class="dots"><i></i><i></i><i></i></span><span class="url">greg-le-consanguin.up.railway.app/<b>lier</b></span></div>
+        <div class="site"><span class="wm">Greg <span>le</span> Consanguin</span><span class="king"><img src="data:image/webp;base64,%%IMG_CROWN%%" alt=""></span></div>
+        <div class="wbody" style="padding-top:4px">
+          <div class="authbox plaque">
+            <div class="kick">Lier un overlay</div>
+            <div class="title">Autoriser cet overlay&#8239;?</div>
+            <p class="body" style="margin:0 auto 10px">Vérifiez qu’il affiche bien ce code&nbsp;:</p>
+            <div class="code" style="font-size:32px;padding:4px 0 8px">GRK·4H7</div>
+            <p class="small" style="margin:0">Il pourra, en votre nom, lancer, passer et ajouter des titres sur vos serveurs.</p>
+            <div class="btns"><span class="btn solid">Autoriser</span><span class="btn ghost">Refuser</span></div>
+            <p class="small" style="margin:12px 0 0">Vous n’avez rien demandé&#8239;? Refusez&nbsp;: rien ne sera lié.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="snum"><b>3</b>L’overlay est lié&nbsp;; on choisit son serveur.</div>
+      <div class="win">
+        <div class="wbar"><span class="n">Greg</span><span class="sp"></span><span class="b"><svg><use href="#i-min"/></svg></span><span class="b"><svg><use href="#i-x"/></svg></span></div>
+        <div class="wbody center">
+          <img class="portrait" style="width:64px;height:64px" src="data:image/webp;base64,%%IMG_FACE192%%" alt="">
+          <div class="dtitle" style="font-size:28px">À votre service, Sire.</div>
+          <p class="body" style="margin-bottom:10px">Sur quel serveur dois-je jouer&#8239;?</p>
+          <div class="guilds">
+            <div class="g sel"><span class="gi" style="background:#5a3d2b">LD</span><div><div class="gn">Le Donjon</div><div class="gs"><span class="live"></span>Greg est là</div></div></div>
+            <div class="g"><span class="gi" style="background:#2c4a5e">CA</span><div><div class="gn">Les Copains d’abord</div><div class="gs"><span class="live"></span>Greg est là</div></div></div>
+            <div class="g off"><span class="gi" style="background:#3b3b3b">SB</span><div><div class="gn">Serveur du boulot</div><div class="gs">Greg n’y est pas invité</div></div></div>
+          </div>
+          <span class="btn solid">Continuer</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Pourquoi un code</b>&nbsp;: personne d’autre ne peut lier un overlay à votre compte sans le voir sur votre écran. On peut délier un appareil depuis le site à tout moment.</p>
+
+  <h2>Entre deux parties</h2>
+  <p class="sub">La fenêtre hors partie reprend le panneau de jeu, en plus confortable, avec ses réglages derrière la roue dentée.</p>
+  <div class="two">
+    <div class="win">
+      <div class="wbar"><span class="n">Greg</span><span class="sp"></span><span class="b"><svg><use href="#i-gear"/></svg></span><span class="b"><svg><use href="#i-min"/></svg></span><span class="b"><svg><use href="#i-x"/></svg></span></div>
+      <div class="wbody" style="padding:16px 18px">
+        <div class="ptop">
+          <img class="medal" src="data:image/webp;base64,%%IMG_FACE%%" alt="">
+          <div class="wm">Greg</div>
+          <div class="guild"><span class="live"></span>Le Donjon<svg class="ico" width="16" height="16"><use href="#i-chev"/></svg></div>
+        </div>
+        <div class="now">
+          <div class="kicker"><span class="eq"><i></i><i></i><i></i></span>En lecture</div>
+          <div class="quip">— Ça s’écoute, Sire. Même moi, je tape du pied.</div>
+          <div class="title">Around the World</div>
+          <div class="meta">Daft Punk <span class="dot"></span><img class="seal" src="data:image/webp;base64,%%IMG_SEAL%%" alt=""><span class="who">Demandé par vous</span></div>
+        </div>
+        <div class="prog"><div class="bar"><i></i></div><div class="times tnum"><b>2:14</b><span>7:09</span></div></div>
+        <div class="transport">
+          <div class="tbtn"><svg><use href="#i-stop"/></svg></div>
+          <div class="tbtn"><svg><use href="#i-restart"/></svg></div>
+          <div class="roundel"><svg><use href="#i-pause"/></svg></div>
+          <div class="tbtn"><svg><use href="#i-skip"/></svg></div>
+          <div class="tbtn on"><svg><use href="#i-repeat"/></svg></div>
+        </div>
+        <div class="search" style="margin-top:14px"><svg><use href="#i-search"/></svg>Ajouter un morceau, ou coller un lien…</div>
+        <div class="qhead"><div class="qlabel">À suivre · 3 titres</div><span class="tnum">14&nbsp;min</span></div>
+        <div class="qrow"><div class="thumb" style="background:linear-gradient(135deg,#6b2a1f,#e0a15e)"></div><div style="min-width:0"><div class="t">Bohemian Rhapsody</div><div class="meta">Queen <span class="dot"></span><svg class="shield"><use href="#sh-blue"/></svg>Martin</div></div><div class="side tnum">5:55<small>À SUIVRE</small></div></div>
+        <div class="qrow"><div class="thumb" style="background:linear-gradient(135deg,#1f3b4a,#7ec1d6)"></div><div style="min-width:0"><div class="t">Le vent nous portera</div><div class="meta">Noir Désir <span class="dot"></span><svg class="shield"><use href="#sh-green"/></svg>Léa</div></div><div class="side tnum">4:49</div></div>
+        <div class="qrow"><div class="thumb" style="background:linear-gradient(135deg,#2b1838,#b05ab8)"></div><div style="min-width:0"><div class="t">Tout va bien</div><div class="meta">Orelsan <span class="dot"></span><svg class="shield"><use href="#sh-purple"/></svg>Yanis</div></div><div class="side tnum">4:09</div></div>
+      </div>
+    </div>
+    <div class="win">
+      <div class="wbar"><span class="n">Greg · Réglages</span><span class="sp"></span><span class="b"><svg><use href="#i-x"/></svg></span></div>
+      <div class="wbody set">
+        <h4>Raccourcis</h4>
+        <div class="line"><div class="l">Ouvrir ou fermer le panneau</div><div class="keys"><kbd>Ctrl</kbd><kbd>Maj</kbd><kbd>G</kbd></div><span class="mod">Changer</span></div>
+        <div class="line"><div class="l">Pause ou reprise</div><div class="keys"><kbd>Ctrl</kbd><kbd>Maj</kbd><kbd>Espace</kbd></div><span class="mod">Changer</span></div>
+        <div class="line"><div class="l">Titre suivant</div><div class="keys"><kbd>Ctrl</kbd><kbd>Maj</kbd><kbd>→</kbd></div><span class="mod">Changer</span></div>
+        <div class="line"><div class="l">Masquer ou montrer le bandeau</div><div class="keys"><kbd>Ctrl</kbd><kbd>Maj</kbd><kbd>B</kbd></div><span class="mod">Changer</span></div>
+        <h4>Le bandeau en jeu</h4>
+        <div class="line"><div class="l">Afficher le bandeau</div><span class="switch on"></span></div>
+        <div class="line"><div class="l">Emplacement<small>Un coin, ou glissez-le où vous voulez en jeu.</small></div><span class="corners"><i style="left:4px;top:4px" class="on"></i><i style="right:4px;top:4px"></i><i style="left:4px;bottom:4px"></i><i style="right:4px;bottom:4px"></i></span></div>
+        <div class="line"><div class="l">Taille</div><div class="seg"><span>Petit</span><span class="on">Normal</span><span>Grand</span></div></div>
+        <div class="line"><div class="l">Annoncer ce que font les amis<small>Une ligne sous le bandeau, quelques secondes.</small></div><span class="switch on"></span></div>
+        <h4>Greg</h4>
+        <div class="line"><div class="l">Phrases de Greg<small>Ses commentaires en italique doré.</small></div><span class="switch on"></span></div>
+        <h4>Compte</h4>
+        <div class="line"><div class="l">Lié au compte de Sa Majesté<small>Délier cet appareil le déconnecte partout où il est utilisé.</small></div><span class="btn ghost" style="height:34px;font-size:14px">Délier</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Quand quelque chose coince</h2>
+  <p class="sub">Le bandeau dit les faits d’abord&nbsp;; la phrase de Greg vient en dessous, si on les a laissées.</p>
+  <div class="states">
+    <div class="st">
+      <h3>Rien en lecture</h3>
+      <p>La file est vide. Le bandeau rappelle comment ajouter un titre.</p>
+      <div class="stage"><div class="bandeau glass"><div class="row"><div class="thumb" style="background:var(--voute-2)"></div><div class="txt"><div class="kicker k-wait">En attente</div><div class="title">Rien en lecture</div><div class="meta"><kbd>Ctrl</kbd><kbd>Maj</kbd><kbd>G</kbd> pour ajouter un titre</div></div></div><div class="bar none"></div></div></div>
+    </div>
+    <div class="st">
+      <h3>Greg hors ligne</h3>
+      <p>Le bot ne répond plus. Rien ne marche jusqu’à son retour, et on le dit.</p>
+      <div class="stage"><div class="bandeau glass"><div class="row"><div class="thumb" style="background:var(--voute-2)"></div><div class="txt"><div class="kicker k-off">Hors ligne</div><div class="title">Greg est hors ligne</div><div class="meta">La musique reprendra à son retour.</div></div></div><div class="bar none"></div></div></div>
+    </div>
+    <div class="st">
+      <h3>Une demande refusée</h3>
+      <p>Par exemple, on ajoute un titre sans être dans un salon vocal.</p>
+      <div class="stage"><div class="toast plaque"><span class="ic"><svg class="ico"><use href="#i-x"/></svg></span><div><div class="f">Rejoignez d’abord un salon vocal sur ce serveur, puis réessayez.</div><div class="quip">— Je veux bien jouer, Sire. Mais où êtes-vous&#8239;?</div></div></div></div>
+    </div>
+    <div class="st">
+      <h3>Ce que font les amis</h3>
+      <p>Une ligne glisse sous le bandeau quelques secondes, puis s’efface. Désactivable.</p>
+      <div class="stage"><div style="display:grid;justify-items:center"><div class="bandeau glass" style="border-radius:12px 12px 0 0"><div class="row"><div class="thumb" style="background:linear-gradient(135deg,#1f3b4a,#7ec1d6)"></div><div class="txt"><div class="kicker"><span class="eq"><i></i><i></i><i></i></span>En lecture</div><div class="title">Le vent nous portera</div><div class="meta">Noir Désir <span class="dot"></span><svg class="shield"><use href="#sh-green"/></svg><span class="who">Demandé par Léa</span></div></div></div><div class="bar"><i style="transform:scaleX(.04)"></i></div></div><div class="echo"><svg class="shield"><use href="#sh-green"/></svg><span><b>Léa</b> a passé le titre&nbsp;: Bohemian Rhapsody</span></div></div></div>
+    </div>
+  </div>
+  <p class="note">Réponds dans le chat. La place du bandeau dans League of Legends viendra dans la maquette suivante, une fois vérifié ce que le jeu permet.</p>
+</div>
+</body>
+</html>

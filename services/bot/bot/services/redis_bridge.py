@@ -4,6 +4,8 @@ Le bot :
 - Écoute `greg:commands` (commandes envoyées par l'API)
 - Publie sur `greg:player:state` (state updates)
 - Publie sur `greg:player:progress` (ticks de progression)
+- Publie sur `greg:player:event` (activité : qui a fait quoi, après chaque commande
+  réussie qui change l'état)
 - Écrit `greg:bot:guilds` (liste JSON des serveurs où Greg est présent)
 
 Robustesse (v2.2) :
@@ -38,6 +40,7 @@ import json
 import logging
 import os
 import socket
+import time
 import uuid
 from typing import Any, Dict, Optional, Set
 
@@ -50,11 +53,14 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from greg_shared.config import settings
 
+from bot.services.playlist_manager import StaleQueueError
+
 logger = logging.getLogger("greg.redis")
 
 CHANNEL_COMMANDS = "greg:commands"
 CHANNEL_STATE = "greg:player:state"
 CHANNEL_PROGRESS = "greg:player:progress"
+CHANNEL_PLAYER_EVENT = "greg:player:event"
 CHANNEL_BOT_STATUS = "greg:bot:status"
 KEY_BOT_GUILDS = "greg:bot:guilds"
 # SEC-C3 : réservation d'une commande par une instance (SET NX EX).
@@ -66,7 +72,7 @@ _CLAIM_TIMEOUT = 2.0
 _MEMBER_CHECK_TIMEOUT = 5.0
 
 # Commandes en lecture seule : jamais sérialisées derrière une commande lente.
-_READ_ONLY_ACTIONS = frozenset({"get_state", "get_history"})
+_READ_ONLY_ACTIONS = frozenset({"get_state", "get_history", "user_guilds"})
 
 # Échéance des commandes : l'API pose `timeout` (s, relatif à la réception) = le
 # temps qu'elle attend la réponse. Une commande restée en file au-delà est abandonnée
@@ -89,6 +95,31 @@ def _command_timeout(data: Dict[str, Any]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return t if t > 0 else None
+
+
+def _expected_arg(cmd_data: Dict[str, Any]) -> Optional[dict]:
+    """Élément attendu `{url, added_by, ts}` de remove / move / play_at s'il est un objet, sinon None (ignoré)."""
+    expected = cmd_data.get("expected")
+    return expected if isinstance(expected, dict) else None
+
+
+# Activité (greg:player:event) : actions publiées sous leur propre nom.
+_EVENT_ACTIONS = frozenset({"skip", "stop", "pause", "resume", "remove", "move", "play_at", "repeat", "restart"})
+# Actions dont l'événement nomme le titre en cours, lu avant l'exécution.
+_CURRENT_TITLE_ACTIONS = frozenset({"skip", "stop", "pause", "resume", "toggle_pause", "restart"})
+
+
+def _event_action(action: str, result: dict) -> Optional[str]:
+    """Nom de l'événement d'activité d'une commande, ou None (échec, lecture, join…)."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    if action in ("play_for_user", "enqueue"):
+        return "add"
+    if action == "toggle_pause":
+        done = result.get("action")
+        return done if done in ("pause", "resume") else None
+    return action if action in _EVENT_ACTIONS else None
+
 
 # Surveillance de l'abonnement : sans aucun message depuis _WATCHDOG_PING_EVERY s,
 # on envoie un PING ; sans rien reçu depuis _WATCHDOG_DEAD_AFTER s, la connexion
@@ -364,6 +395,8 @@ class RedisBridge:
         request_id = data.get("request_id", "")
         cmd_data = data.get("data", {}) or {}
         guild_id = 0
+        user_id = 0
+        title_before: Optional[str] = None
 
         svc = self.bot.player_service
         result = {"ok": False, "error": "UNKNOWN_ACTION"}
@@ -372,6 +405,8 @@ class RedisBridge:
             guild_id = int(data.get("guild_id", 0) or 0)
             user_id = int(data.get("user_id", 0) or 0)
             logger.info("Redis CMD: action=%s guild=%s user=%s", action, guild_id, user_id)
+            # Titre visé, lu AVANT le changement (après un skip, le « titre en cours » est le suivant).
+            title_before = self._title_before(action, guild_id, cmd_data)
 
             if action == "enqueue":
                 item = cmd_data.get("item", {})
@@ -421,13 +456,13 @@ class RedisBridge:
 
             elif action == "remove":
                 index = int(cmd_data.get("index", -1))
-                ok = svc.remove_at(guild_id, user_id, index)
+                ok = svc.remove_at(guild_id, user_id, index, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "move":
                 src = int(cmd_data.get("src", -1))
                 dst = int(cmd_data.get("dst", -1))
-                ok = svc.move(guild_id, user_id, src, dst)
+                ok = svc.move(guild_id, user_id, src, dst, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "get_state":
@@ -436,7 +471,7 @@ class RedisBridge:
 
             elif action == "play_at":
                 index = int(cmd_data.get("index", 0))
-                ok = await svc.play_at(guild_id, user_id, index)
+                ok = await svc.play_at(guild_id, user_id, index, expected=_expected_arg(cmd_data))
                 result = {"ok": ok}
 
             elif action == "restart":
@@ -447,6 +482,9 @@ class RedisBridge:
                 mode = cmd_data.get("mode", "top")
                 limit = int(cmd_data.get("limit", 20))
                 result = svc.get_history(guild_id, mode=mode, limit=limit)
+
+            elif action == "user_guilds":
+                result = {"ok": True, "guilds": self.user_guilds(user_id)}
 
             elif action == "join":
                 g = self.bot.get_guild(guild_id)
@@ -471,6 +509,8 @@ class RedisBridge:
             else:
                 result = {"ok": False, "error": f"UNKNOWN_ACTION:{action}"}
 
+        except StaleQueueError:
+            result = {"ok": False, "error": "STALE"}  # la file a bougé : rien n'a été modifié
         except PermissionError:
             result = {"ok": False, "error": "PRIORITY_FORBIDDEN"}
         except Exception as e:
@@ -483,6 +523,15 @@ class RedisBridge:
                 "request_id": request_id,
                 **result,
             })
+
+        # Activité (appli Overwolf) : la réponse est déjà partie, un échec ici ne la change pas.
+        event = _event_action(action, result)
+        if guild_id and event:
+            try:
+                title = result.get("title") if event == "add" else title_before
+                await self.publish_player_event(guild_id, event, user_id, title)
+            except Exception as e:
+                logger.error("publish_player_event failed: %s", e)
 
         # Publier le state update (inutile pour les lectures seules)
         if guild_id and action not in _READ_ONLY_ACTIONS:
@@ -511,6 +560,42 @@ class RedisBridge:
             data["clock"] = clock
         await self._publish(CHANNEL_PROGRESS, data)
 
+    def _title_before(self, action: str, guild_id: int, cmd_data: dict) -> Optional[str]:
+        """Titre que vise la commande, lu avant son exécution ; toute erreur → None."""
+        try:
+            svc = self.bot.player_service
+            if action == "remove":
+                return svc.title_at(guild_id, int(cmd_data.get("index", -1)))
+            if action == "play_at":
+                return svc.title_at(guild_id, int(cmd_data.get("index", 0)))
+            if action == "move":
+                return svc.title_at(guild_id, int(cmd_data.get("src", -1)))
+            if action in _CURRENT_TITLE_ACTIONS:
+                return svc.title_at(guild_id)
+        except Exception:
+            pass
+        return None
+
+    async def publish_player_event(self, guild_id: int, action: str, user_id: int, title: Optional[str]) -> None:
+        """Publie l'activité d'un membre (relayée en `player_event` à la salle `guild:<id>`).
+
+        Ids en chaînes : un nombre JSON au-delà de 2^53 serait arrondi côté JS.
+        """
+        display_name = None
+        try:
+            g = self.bot.get_guild(guild_id)
+            member = g.get_member(user_id) if g is not None else None
+            display_name = getattr(member, "display_name", None)
+        except Exception:
+            pass
+        await self._publish(CHANNEL_PLAYER_EVENT, {
+            "guild_id": str(guild_id),
+            "action": action,
+            "actor": {"id": str(user_id), "display_name": display_name or str(user_id)},
+            "title": title,
+            "at_ms": int(time.time() * 1000),
+        })
+
     async def publish_bot_ready(self):
         """Signale que le bot est prêt."""
         guilds = [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]
@@ -532,6 +617,36 @@ class RedisBridge:
             logger.info("Redis: %s mis à jour (%d serveurs).", KEY_BOT_GUILDS, len(ids))
         except Exception as e:
             logger.error("Redis: écriture de %s impossible: %s", KEY_BOT_GUILDS, e)
+
+    def user_guilds(self, user_id: int) -> list[dict]:
+        """Serveurs communs à Greg et à `user_id`, depuis le cache (appli Overwolf).
+
+        Appelée avec guild_id 0 : aucun contrôle d'appartenance, elle ne rend que les
+        serveurs où l'utilisateur est membre. Ids en chaînes (un nombre JSON au-delà
+        de 2^53 serait arrondi côté JS).
+        """
+        if user_id <= 0:
+            return []
+
+        def _channel(ch) -> Optional[Dict[str, str]]:
+            return {"id": str(ch.id), "name": ch.name} if ch is not None else None
+
+        out = []
+        for g in sorted(self.bot.guilds or [], key=lambda g: (g.name or "").casefold()):
+            member = g.get_member(user_id)
+            if member is None:
+                continue
+            vc = g.voice_client
+            voice = member.voice
+            out.append({
+                "id": str(g.id),
+                "name": g.name,
+                "icon_url": str(g.icon.url) if g.icon is not None else None,
+                "greg_voice": _channel(vc.channel) if vc else None,
+                "user_voice": _channel(voice.channel) if voice else None,
+                "playing": bool(vc and (vc.is_playing() or vc.is_paused())),
+            })
+        return out
 
     async def _publish(self, channel: str, data: dict):
         try:

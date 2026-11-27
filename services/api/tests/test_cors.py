@@ -6,6 +6,7 @@ import pytest
 
 import api
 from api import socketio
+from conftest import OVERLAY_ORIGIN
 
 BASE = "/api/v1"
 FOREIGN = "https://evil.example"
@@ -94,3 +95,48 @@ def test_socketio_handshake_accepts_web_origin(app, client):
     r = client.get("/socket.io/?EIO=4&transport=polling", headers={"Origin": origin})
     assert r.status_code == 200
     assert r.headers.get("Access-Control-Allow-Origin") == origin
+
+
+# ── Origines de l'appli Overwolf (OVERLAY_ORIGINS) ──
+
+def test_overlay_origins_unset_is_empty(monkeypatch):
+    monkeypatch.delenv("OVERLAY_ORIGINS", raising=False)
+    assert api.overlay_origins() == []
+
+
+def test_overlay_origins_keeps_exact_uids_once(monkeypatch):
+    monkeypatch.setenv("OVERLAY_ORIGINS", f" {OVERLAY_ORIGIN} ,overwolf-extension://AHNFLFBOHHIMDMOEOOGPIOHDMJDOKIIOLEIALAGK")
+    assert api.overlay_origins() == [OVERLAY_ORIGIN]
+
+
+@pytest.mark.parametrize("bad", ["*", "overwolf-extension://*", "overwolf-extension://abc", f"{OVERLAY_ORIGIN}/",
+    f"{OVERLAY_ORIGIN}/x", f"{OVERLAY_ORIGIN}:80", "overwolf-extension://ahnflfbohhimdmoeoogp.*",
+    "overwolf-extension://" + "a" * 65, "https://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk",
+    "chrome-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk", "null"])
+def test_overlay_origins_rejects_wildcards_paths_and_regex(monkeypatch, bad):
+    monkeypatch.setenv("OVERLAY_ORIGINS", bad)
+    assert api.overlay_origins() == []
+
+
+def test_app_splits_site_and_overlay_origins(app):
+    assert OVERLAY_ORIGIN not in app.config["WEB_ORIGINS"]
+    assert app.config["ALLOWED_ORIGINS"] == app.config["WEB_ORIGINS"] + [OVERLAY_ORIGIN]
+    assert socketio.server.eio.cors_allowed_origins == app.config["ALLOWED_ORIGINS"]
+
+
+def test_overlay_preflight_allows_authorization(client, fake_send):
+    r = client.options(f"{BASE}/queue/add", headers={"Origin": OVERLAY_ORIGIN, "Access-Control-Request-Method": "POST",
+                                                     "Access-Control-Request-Headers": "authorization, content-type"})
+    assert 200 <= r.status_code < 300 and r.headers.get("Access-Control-Allow-Origin") == OVERLAY_ORIGIN
+    assert "authorization" in r.headers.get("Access-Control-Allow-Headers", "").lower()
+    assert fake_send.calls == []
+
+
+def test_socketio_handshake_accepts_overlay_origin(client):
+    r = client.get("/socket.io/?EIO=4&transport=polling", headers={"Origin": OVERLAY_ORIGIN})
+    assert r.status_code == 200 and r.headers.get("Access-Control-Allow-Origin") == OVERLAY_ORIGIN
+
+
+def test_overlay_origin_never_passes_the_csrf_gate(logged_client, fake_send):
+    r = logged_client.post(f"{BASE}/player/skip", json={"guild_id": "5"}, headers={"Origin": OVERLAY_ORIGIN})
+    assert r.status_code == 403 and r.get_json()["error"] == "CSRF_FAILED" and fake_send.calls == []

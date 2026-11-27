@@ -529,7 +529,7 @@ def test_restore_is_per_king(app, logged_client, login, fr):
 def test_non_object_json_body_is_400(logged_client, fr, path):
     err(post(logged_client, path, [1, 2]), 400, "INVALID_REQUEST")
     err(logged_client.post(f"{BASE}{path}", data="track=x", content_type="application/x-www-form-urlencoded"),
-        400, "INVALID_REQUEST")
+        403, "CSRF_FAILED")
     err(logged_client.post(f"{BASE}{path}", data="{pas du json", content_type="application/json"),
         400, "INVALID_REQUEST")
     assert fr.log == []

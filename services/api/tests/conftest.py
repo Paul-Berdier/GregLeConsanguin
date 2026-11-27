@@ -25,6 +25,8 @@ def app():
     # create_app() réutilise les singletons socketio/compress : une seule app par session.
     from api import create_app
 
+    # L'appli Overwolf est une origine admise (CORS, Socket.IO), jamais une origine du site (CSRF).
+    os.environ["OVERLAY_ORIGINS"] = OVERLAY_ORIGIN
     app = create_app()
     app.config.update(TESTING=True, SESSION_COOKIE_SECURE=False)
     return app
@@ -37,6 +39,9 @@ def client(app):
 
 # Utilisateur Discord de la session (contrat SEC-C1 : seule source d'identité de l'API).
 SESSION_USER_ID = 777
+
+# Origine de l'appli Overwolf (UID de GregLC) posée dans OVERLAY_ORIGINS par la fixture `app`.
+OVERLAY_ORIGIN = "overwolf-extension://ahnflfbohhimdmoeoogpiohdmjdokiioleialagk"
 
 
 def _login(flask_client, user_id=SESSION_USER_ID):

@@ -18,9 +18,14 @@ import requests as req
 
 from flask import Blueprint, jsonify, request
 
+from api.services.authz import require_identity
+
 logger = logging.getLogger("greg.api.search")
 
 bp = Blueprint("search", __name__)
+
+# Plafond du nombre de résultats demandés (`limit`, borné à 1..SEARCH_LIMIT_MAX).
+SEARCH_LIMIT_MAX = 10
 
 _YT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -280,7 +285,7 @@ def _looks_like_link(q: str) -> bool:
 
 def _do_autocomplete():
     q = (request.args.get("q") or request.args.get("query") or "").strip()
-    limit = request.args.get("limit", 8, type=int)
+    limit = max(1, min(SEARCH_LIMIT_MAX, request.args.get("limit", 8, type=int)))
     if not q:
         return jsonify({"ok": True, "results": []}), 200
 
@@ -300,20 +305,23 @@ def _do_autocomplete():
 
 
 @bp.get("/search/autocomplete")
+@require_identity
 def autocomplete():
     return _do_autocomplete()
 
 
 @bp.get("/autocomplete")
+@require_identity
 def autocomplete_compat():
     return _do_autocomplete()
 
 
 @bp.get("/search/suggest")
+@require_identity
 def suggest():
     """Typeahead instantané (text only, ~50ms)."""
     q = (request.args.get("q") or "").strip()
-    limit = request.args.get("limit", 6, type=int)
+    limit = max(1, min(SEARCH_LIMIT_MAX, request.args.get("limit", 6, type=int)))
     if not q or _looks_like_link(q):
         return jsonify({"ok": True, "suggestions": []}), 200
     suggestions = _yt_suggest(q, limit)
